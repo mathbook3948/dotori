@@ -4,7 +4,7 @@ severity: error
 message: Comments are not allowed. Make the code say it through names, types, or structure.
 note: Doc comments on public API are allowed. A comment about an external constraint needs `// ast-grep-ignore` on the line above it.
 files:
-  - src/**/*.rs
+  - crates/*/src/**/*.rs
 rule:
   any:
     - kind: line_comment
@@ -20,7 +20,7 @@ language: rust
 severity: error
 message: Doc comments are for public API contracts only.
 files:
-  - src/**/*.rs
+  - crates/*/src/**/*.rs
 rule:
   kind: line_comment
   regex: ^///

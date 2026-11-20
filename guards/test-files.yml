@@ -8,7 +8,7 @@ note: |
     #[path = "<name>.test.rs"]
     mod tests;
 files:
-  - src/**/*.rs
+  - crates/*/src/**/*.rs
 rule:
   kind: mod_item
   has:
@@ -27,9 +27,9 @@ language: rust
 severity: error
 message: Test functions belong in a `<name>.test.rs` file.
 files:
-  - src/**/*.rs
+  - crates/*/src/**/*.rs
 ignores:
-  - src/**/*.test.rs
+  - crates/*/src/**/*.test.rs
 rule:
   kind: attribute_item
   regex: ^#\[(\w+::)*test\b

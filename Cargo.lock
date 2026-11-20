@@ -5,3 +5,15 @@ version = 4
 [[package]]
 name = "lightbot"
 version = "0.1.0"
+
+[[package]]
+name = "lightbot-connectors"
+version = "0.1.0"
+
+[[package]]
+name = "lightbot-core"
+version = "0.1.0"
+
+[[package]]
+name = "xtask"
+version = "0.1.0"

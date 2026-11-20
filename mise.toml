@@ -5,9 +5,10 @@ ast-grep = "0.51.3"
 [tasks.check]
 description = "Format, lint, test, and guard checks"
 run = [
-  "cargo fmt --check",
-  "cargo clippy --all-targets -- -D warnings",
-  "cargo test",
+  "cargo fmt --all --check",
+  "cargo clippy --workspace --all-targets -- -D warnings",
+  "cargo test --workspace",
   "ast-grep scan --no-ignore hidden",
-  "guards/forbidden-chars.sh",
+  "cargo run --quiet --package xtask -- forbidden-chars",
+  "cargo run --quiet --package xtask -- core-deps",
 ]

@@ -1,9 +1,10 @@
-[package]
-name = "lightbot"
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
 
-[dependencies]
-
-[lints.clippy]
+[workspace.lints.clippy]
 allow_attributes_without_reason = "deny"
