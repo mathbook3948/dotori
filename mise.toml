@@ -9,4 +9,5 @@ run = [
   "cargo clippy --all-targets -- -D warnings",
   "cargo test",
   "ast-grep scan",
+  "guards/forbidden-chars.sh",
 ]
