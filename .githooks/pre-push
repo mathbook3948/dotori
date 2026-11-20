@@ -1,0 +1,3 @@
+#!/bin/sh
+# Block the push unless format, lint, tests, and guards all pass.
+exec mise run check
