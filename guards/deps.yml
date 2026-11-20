@@ -1,0 +1,25 @@
+id: core-must-not-depend-on-ui
+language: rust
+severity: error
+message: Only `src/ui` may use gpui or `crate::ui`; the core must run without a window.
+files:
+  - src/agent/**/*.rs
+  - src/channel/**/*.rs
+  - src/llm/**/*.rs
+  - src/memory/**/*.rs
+  - src/tool/**/*.rs
+rule:
+  any:
+    - kind: identifier
+      regex: ^gpui$
+    - kind: scoped_identifier
+      regex: ^crate::ui$
+    - kind: identifier
+      regex: ^ui$
+      inside:
+        kind: use_list
+        inside:
+          kind: scoped_use_list
+          has:
+            field: path
+            regex: ^crate$
