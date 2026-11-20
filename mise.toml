@@ -8,6 +8,6 @@ run = [
   "cargo fmt --check",
   "cargo clippy --all-targets -- -D warnings",
   "cargo test",
-  "ast-grep scan",
+  "ast-grep scan --no-ignore hidden",
   "guards/forbidden-chars.sh",
 ]
