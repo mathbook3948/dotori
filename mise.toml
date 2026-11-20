@@ -1,3 +1,12 @@
 [tools]
 rust = "1.100.0"
 ast-grep = "0.51.3"
+
+[tasks.check]
+description = "Format, lint, test, and guard checks"
+run = [
+  "cargo fmt --check",
+  "cargo clippy --all-targets -- -D warnings",
+  "cargo test",
+  "ast-grep scan",
+]
