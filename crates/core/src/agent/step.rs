@@ -101,11 +101,12 @@ fn on_model_done(
     call: CallId,
     result: Result<ModelReply, ModelError>,
 ) -> Vec<Effect> {
-    let after = match state.phase {
+    let (after, answered) = match state.phase {
         Phase::Thinking {
             call: current,
             after,
-        } if current == call => after,
+            answered,
+        } if current == call => (after, answered),
         _ => return Vec::new(),
     };
     let reply = match result {
@@ -121,7 +122,11 @@ fn on_model_done(
             return Vec::new();
         }
     };
-    state.conversation.push(Entry::Acted(reply.actions.clone()));
+    state.conversation.push(Entry::Acted {
+        actions: reply.actions.clone(),
+        answered,
+        trace: reply.trace,
+    });
     let (mut effects, waiting) = run_actions(state, reply.actions);
     if !waiting.is_empty() {
         state.phase = Phase::UsingTools { waiting };
@@ -284,6 +289,7 @@ fn call_model(state: &mut AgentState) -> Effect {
     state.phase = Phase::Thinking {
         call,
         after: AfterReply::Finish,
+        answered: state.conversation.len(),
     };
     Effect::CallModel {
         call,

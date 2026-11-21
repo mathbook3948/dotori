@@ -15,6 +15,15 @@ pub struct ModelRequest {
 #[derive(Clone, Debug)]
 pub struct ModelReply {
     pub actions: Vec<Action>,
+    pub trace: Option<ModelTrace>,
+}
+
+/// What a connector needs to replay a reply exactly, such as the provider's raw content with
+/// its thinking blocks. Core records it and hands it back unread.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ModelTrace {
+    pub provider: String,
+    pub data: String,
 }
 
 #[derive(Clone, Debug)]

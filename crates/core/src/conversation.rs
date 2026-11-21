@@ -1,4 +1,5 @@
 use crate::id::ChannelId;
+use crate::llm::ModelTrace;
 use crate::message::Message;
 use crate::sub_task::SubTaskOutcome;
 use crate::sub_task::SubTaskSpec;
@@ -31,7 +32,13 @@ pub enum Entry {
         message: Message,
     },
     /// What the model decided in one reply, recorded before any of it runs.
-    Acted(Vec<Action>),
+    /// `answered` is how many entries the model had read, so a connector can place the reply
+    /// before the entries that arrived while it was thinking.
+    Acted {
+        actions: Vec<Action>,
+        answered: usize,
+        trace: Option<ModelTrace>,
+    },
     ToolReturned {
         call: ToolCallId,
         result: Result<String, ToolError>,

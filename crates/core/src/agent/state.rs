@@ -51,7 +51,7 @@ impl AgentState {
                         message: message.id.clone(),
                     });
                 }
-                Entry::Acted(actions) => {
+                Entry::Acted { actions, .. } => {
                     for action in actions {
                         match action {
                             Action::UseTool(call) => tools.push(call.id.clone()),
@@ -106,6 +106,7 @@ pub(crate) enum Phase {
     Thinking {
         call: CallId,
         after: AfterReply,
+        answered: usize,
     },
     /// An owner message waits here too. Tools finish, or time out, before the next call.
     UsingTools {
