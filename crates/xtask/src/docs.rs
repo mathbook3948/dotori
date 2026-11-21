@@ -1,0 +1,151 @@
+use std::collections::BTreeMap;
+use std::error::Error;
+use std::fs;
+use std::path::Path;
+
+const DOCS_DIR: &str = "docs";
+const INDEX: &str = "docs/README.md";
+const STATUS_PREFIX: &str = "- 상태: ";
+const STATUSES: [&str; 3] = ["초안", "확정", "폐기"];
+const SECTIONS: [&str; 3] = ["## 배경", "## 내용", "## 미정"];
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct Doc {
+    pub domain: String,
+    pub path: String,
+    pub title: String,
+    pub summary: String,
+}
+
+/// Parses one document at `path`, relative to `docs/`, and reports every way it breaks the template.
+pub fn parse_doc(path: &str, text: &str) -> Result<Doc, Vec<String>> {
+    let mut problems = Vec::new();
+
+    let parts: Vec<&str> = path.split('/').collect();
+    let is_name =
+        |part: &str| !part.is_empty() && part.chars().all(|c| c.is_ascii_lowercase() || c == '-');
+    let domain = match parts.as_slice() {
+        [domain, file] if is_name(domain) && file.strip_suffix(".md").is_some_and(is_name) => {
+            *domain
+        }
+        _ => {
+            problems
+                .push("path must be <domain>/<title>.md in lowercase letters and hyphens".into());
+            ""
+        }
+    };
+
+    let lines: Vec<&str> = text.lines().collect();
+    let title = lines
+        .first()
+        .and_then(|line| line.strip_prefix("# "))
+        .unwrap_or_default();
+    if title.is_empty() {
+        problems.push("first line must be `# <title>`".into());
+    }
+    let summary = match lines.get(1..3) {
+        Some(["", summary]) if !summary.is_empty() && !summary.starts_with(['#', '-']) => *summary,
+        _ => {
+            problems.push("a one-line summary must follow the title after a blank line".into());
+            ""
+        }
+    };
+
+    let status = lines
+        .iter()
+        .find_map(|line| line.strip_prefix(STATUS_PREFIX));
+    if !status.is_some_and(|status| STATUSES.contains(&status)) {
+        problems.push(format!("needs `{STATUS_PREFIX}{}`", STATUSES.join(" | ")));
+    }
+
+    let headings: Vec<&str> = lines
+        .iter()
+        .copied()
+        .filter(|line| line.starts_with("## "))
+        .collect();
+    if headings != SECTIONS {
+        problems.push(format!("sections must be exactly {}", SECTIONS.join(", ")));
+    }
+
+    if problems.is_empty() {
+        Ok(Doc {
+            domain: domain.into(),
+            path: path.into(),
+            title: title.into(),
+            summary: summary.into(),
+        })
+    } else {
+        Err(problems)
+    }
+}
+
+pub fn render_index(docs: &[Doc]) -> String {
+    let mut by_domain: BTreeMap<&str, Vec<&Doc>> = BTreeMap::new();
+    for doc in docs {
+        by_domain.entry(&doc.domain).or_default().push(doc);
+    }
+
+    let mut index = String::from(
+        "# 문서\n\n이 목록은 `mise run docs`로 만든다. 직접 고치지 않는다. 문서 규칙은 `docs/CLAUDE.md`에 있다.\n",
+    );
+    for (domain, mut docs) in by_domain {
+        docs.sort_by(|a, b| a.path.cmp(&b.path));
+        index.push_str(&format!("\n## {domain}\n\n"));
+        for doc in docs {
+            index.push_str(&format!(
+                "- [{}]({}): {}\n",
+                doc.title, doc.path, doc.summary
+            ));
+        }
+    }
+    index
+}
+
+fn collect(workspace_root: &Path) -> Result<(Vec<Doc>, Vec<String>), Box<dyn Error>> {
+    let mut docs = Vec::new();
+    let mut violations = Vec::new();
+    let root = workspace_root.join(DOCS_DIR);
+    for domain in fs::read_dir(&root)? {
+        let domain = domain?;
+        if !domain.file_type()?.is_dir() {
+            continue;
+        }
+        for file in fs::read_dir(domain.path())? {
+            let file = file?.path();
+            let path = file
+                .strip_prefix(&root)?
+                .to_string_lossy()
+                .replace('\\', "/");
+            match parse_doc(&path, &fs::read_to_string(&file)?) {
+                Ok(doc) => docs.push(doc),
+                Err(problems) => violations.extend(
+                    problems
+                        .into_iter()
+                        .map(|problem| format!("docs/{path}: {problem}")),
+                ),
+            }
+        }
+    }
+    Ok((docs, violations))
+}
+
+pub fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>> {
+    let (docs, mut violations) = collect(workspace_root)?;
+    let current = fs::read_to_string(workspace_root.join(INDEX)).unwrap_or_default();
+    if violations.is_empty() && current.replace("\r\n", "\n") != render_index(&docs) {
+        violations.push(format!("{INDEX} is out of date, run `mise run docs`"));
+    }
+    Ok(violations)
+}
+
+pub fn write(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>> {
+    let (docs, violations) = collect(workspace_root)?;
+    if violations.is_empty() {
+        fs::write(workspace_root.join(INDEX), render_index(&docs))?;
+    }
+    Ok(violations)
+}
+
+#[cfg(test)]
+#[path = "docs.test.rs"]
+mod tests;

@@ -1,42 +1,15 @@
 # 문서
 
-## 규칙
+이 목록은 `mise run docs`로 만든다. 직접 고치지 않는다. 문서 규칙은 `docs/CLAUDE.md`에 있다.
 
-- 경로는 `docs/<domain>/<상세-제목>.md` 형식이다. 파일과 폴더 이름은 영어 소문자와 하이픈만 쓴다.
-- 모든 문서는 아래 양식을 따른다.
-- 문서를 추가하거나 지우면 이 파일의 목록을 함께 고친다.
+## architecture
 
-## 양식
+- [에이전트 실행](architecture/agents.md): 메인 대화와 하위 작업을 무엇으로 실행하는지 정한다.
+- [그래프 DB](architecture/graph.md): 메모리의 대상과 관계를 저장하고 질의하는 그래프 DB를 Rust로 직접 만든다.
+- [MCP](architecture/mcp.md): 에이전트가 쓰는 도구를 어떻게 제공하는지 정한다.
+- [메모리](architecture/memory.md): 비서가 몇 달에서 몇 년 동안 기억을 유지하는 방법을 정한다.
+- [프로세스 구조](architecture/processes.md): lightbot을 어떤 프로세스로 나눠 실행하는지 정한다.
 
-```markdown
-# <제목>
+## product
 
-<이 문서가 무엇을 정하는지 한두 문장>
-
-- 상태: 초안 | 확정 | 폐기
-
-## 배경
-
-<왜 필요한지, 어떤 상황에서 나온 결정인지>
-
-## 내용
-
-<결정한 것>
-
-## 미정
-
-<아직 정하지 않은 것. 없으면 "없음">
-```
-
-## 목록
-
-### product
-
-- [제품 방향](product/direction.md): lightbot이 어떤 비서인지와 반드시 지킬 성격
-
-### architecture
-
-- [에이전트 실행](architecture/agents.md): 메인 대화와 하위 작업을 무엇으로 실행하는지
-- [MCP](architecture/mcp.md): 에이전트가 쓰는 도구를 어떻게 제공하는지
-- [메모리](architecture/memory.md): 비서가 오래 기억을 유지하는 방법
-- [그래프 DB](architecture/graph.md): 메모리의 대상과 관계를 저장하는 그래프 DB
+- [제품 방향](product/direction.md): lightbot이 어떤 제품인지 정의한다.
