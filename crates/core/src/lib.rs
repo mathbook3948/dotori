@@ -1,10 +1,3 @@
-#![expect(
-    dead_code,
-    unused_imports,
-    unused_variables,
-    reason = "type sketch, bodies are todo!() until the agent loop is implemented"
-)]
-
 use std::pin::Pin;
 
 pub mod channel;
