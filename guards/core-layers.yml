@@ -1,0 +1,9 @@
+id: agent-is-pure
+language: rust
+severity: error
+message: The agent module is a pure state machine. Async runtime code belongs in runtime.
+files:
+  - crates/core/src/agent/**/*.rs
+rule:
+  kind: identifier
+  regex: ^tokio$
