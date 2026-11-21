@@ -1,3 +1,5 @@
+use std::panic;
+
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
@@ -27,10 +29,22 @@ impl Agent {
         Ok(Self { tx, done })
     }
 
-    /// Stops taking input, waits for running tools, aborts sub-tasks and channels, then returns.
-    pub async fn shutdown(self) {
+    /// Stops taking input, waits for running tools, aborts sub-tasks and channels,
+    /// gives queued replies up to the tool timeout to go out, then returns.
+    /// A panic in the agent loop resumes here.
+    pub async fn shutdown(mut self) {
         let _ = self.tx.send(Event::Shutdown).await;
-        let _ = self.done.await;
+        if let Err(error) = (&mut self.done).await
+            && error.is_panic()
+        {
+            panic::resume_unwind(error.into_panic());
+        }
+    }
+}
+
+impl Drop for Agent {
+    fn drop(&mut self) {
+        self.done.abort();
     }
 }
 

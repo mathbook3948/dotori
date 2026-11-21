@@ -60,6 +60,7 @@ pub(crate) struct FakeChannel {
     inbound: Mutex<Option<mpsc::UnboundedReceiver<Incoming>>>,
     delivered: mpsc::UnboundedSender<(Place, String)>,
     shown: mpsc::UnboundedSender<Traffic>,
+    deliver_delay: Duration,
 }
 
 pub(crate) struct FakeChannelProbe {
@@ -70,6 +71,11 @@ pub(crate) struct FakeChannelProbe {
 
 impl FakeChannel {
     pub(crate) fn new(id: &str) -> (Arc<Self>, FakeChannelProbe) {
+        Self::slow(id, Duration::ZERO)
+    }
+
+    /// Each delivery takes `deliver_delay` before it counts as delivered.
+    pub(crate) fn slow(id: &str, deliver_delay: Duration) -> (Arc<Self>, FakeChannelProbe) {
         let (say, inbound) = mpsc::unbounded_channel();
         let (delivered_tx, delivered) = mpsc::unbounded_channel();
         let (shown_tx, shown) = mpsc::unbounded_channel();
@@ -78,6 +84,7 @@ impl FakeChannel {
             inbound: Mutex::new(Some(inbound)),
             delivered: delivered_tx,
             shown: shown_tx,
+            deliver_delay,
         });
         let probe = FakeChannelProbe {
             say,
@@ -109,8 +116,11 @@ impl Channel for FakeChannel {
     }
 
     fn deliver(&self, place: Place, text: String) -> BoxFuture<'_, Result<(), ChannelError>> {
-        let _ = self.delivered.send((place, text));
-        Box::pin(async { Ok(()) })
+        Box::pin(async move {
+            time::sleep(self.deliver_delay).await;
+            let _ = self.delivered.send((place, text));
+            Ok(())
+        })
     }
 }
 

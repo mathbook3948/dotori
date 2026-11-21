@@ -43,6 +43,7 @@ pub(crate) struct Shell {
     sub_tasks: Arc<dyn SubTaskRunner>,
     tool_timeout: Duration,
     tasks: JoinSet<()>,
+    senders: JoinSet<()>,
     model_calls: HashMap<CallId, AbortHandle>,
 }
 
@@ -62,12 +63,13 @@ impl Shell {
         tool_timeout: Duration,
     ) -> Self {
         let mut tasks = JoinSet::new();
-        let shows = spawn_show_worker(&mut tasks, Arc::clone(&ports.app));
+        let mut senders = JoinSet::new();
+        let shows = spawn_show_worker(&mut senders, Arc::clone(&ports.app));
         let app: Arc<dyn Channel> = ports.app;
         let mut outboxes = HashMap::new();
         for channel in std::iter::once(app).chain(ports.channels) {
             spawn_channel(&mut tasks, Arc::clone(&channel), tx.clone());
-            let outbox = spawn_outbox(&mut tasks, Arc::clone(&channel), tx.clone());
+            let outbox = spawn_outbox(&mut senders, Arc::clone(&channel), tx.clone());
             outboxes.insert(channel.id().clone(), outbox);
         }
         Self {
@@ -80,6 +82,7 @@ impl Shell {
             sub_tasks: ports.sub_tasks,
             tool_timeout,
             tasks,
+            senders,
             model_calls: HashMap::new(),
         }
     }
@@ -97,7 +100,19 @@ impl Shell {
             }
             while self.tasks.try_join_next().is_some() {}
         }
+        self.stop().await;
+    }
+
+    async fn stop(mut self) {
+        self.rx.close();
         self.tasks.shutdown().await;
+        drop(self.outboxes);
+        drop(self.shows);
+        let _ = time::timeout(self.tool_timeout, async {
+            while self.senders.join_next().await.is_some() {}
+        })
+        .await;
+        self.senders.shutdown().await;
     }
 
     fn execute(&mut self, effect: Effect) {
@@ -107,16 +122,18 @@ impl Shell {
                 let _ = self.shows.send(traffic);
             }
             Effect::CallModel { call, conversation } => {
-                let request = ModelRequest {
-                    conversation,
-                    tools: self.toolbox.specs(),
-                };
                 let model = Arc::clone(&self.model);
+                let toolbox = Arc::clone(&self.toolbox);
                 let tx = self.tx.clone();
                 let handle = self.tasks.spawn(async move {
-                    let result = caught(model.complete(request))
-                        .await
-                        .unwrap_or_else(|detail| Err(ModelError { detail }));
+                    let result = caught(|| {
+                        model.complete(ModelRequest {
+                            conversation,
+                            tools: toolbox.specs(),
+                        })
+                    })
+                    .await
+                    .unwrap_or_else(|detail| Err(ModelError { detail }));
                     let _ = tx.send(Event::ModelDone { call, result }).await;
                 });
                 self.model_calls.insert(call, handle);
@@ -131,7 +148,7 @@ impl Shell {
                 let tx = self.tx.clone();
                 let timeout = self.tool_timeout;
                 self.tasks.spawn(async move {
-                    let result = match time::timeout(timeout, caught(toolbox.run(call))).await {
+                    let result = match time::timeout(timeout, caught(|| toolbox.run(call))).await {
                         Ok(Ok(result)) => result,
                         Ok(Err(detail)) => Err(ToolError { detail }),
                         Err(_) => Err(ToolError {
@@ -145,7 +162,7 @@ impl Shell {
                 let runner = Arc::clone(&self.sub_tasks);
                 let tx = self.tx.clone();
                 self.tasks.spawn(async move {
-                    let outcome = caught(runner.run(spec))
+                    let outcome = caught(|| runner.run(spec))
                         .await
                         .unwrap_or_else(SubTaskOutcome::Failed);
                     let _ = tx.send(Event::SubTaskDone { sub_task, outcome }).await;
@@ -171,7 +188,7 @@ fn spawn_channel(tasks: &mut JoinSet<()>, channel: Arc<dyn Channel>, tx: mpsc::S
     tasks.spawn(async move {
         let id = channel.id().clone();
         let inbox = Arc::new(ChannelInbox::new(id.clone(), tx.clone()));
-        let result = caught(channel.run(inbox))
+        let result = caught(|| channel.run(inbox))
             .await
             .unwrap_or_else(|detail| Err(ChannelError { detail }));
         let _ = tx
@@ -191,7 +208,7 @@ fn spawn_outbox(
     let (outbox, mut deliveries) = mpsc::unbounded_channel::<Delivery>();
     tasks.spawn(async move {
         while let Some(delivery) = deliveries.recv().await {
-            let result = caught(channel.deliver(delivery.place, delivery.text.clone()))
+            let result = caught(|| channel.deliver(delivery.place, delivery.text.clone()))
                 .await
                 .unwrap_or_else(|detail| Err(ChannelError { detail }));
             let event = Event::DeliveryDone {
@@ -199,9 +216,7 @@ fn spawn_outbox(
                 text: delivery.text,
                 result,
             };
-            if tx.send(event).await.is_err() {
-                return;
-            }
+            let _ = tx.send(event).await;
         }
     });
     outbox
@@ -214,7 +229,7 @@ fn spawn_show_worker(
     let (shows, mut traffic) = mpsc::unbounded_channel::<Traffic>();
     tasks.spawn(async move {
         while let Some(item) = traffic.recv().await {
-            let _ = caught(app.show(item)).await;
+            let _ = caught(|| app.show(item)).await;
         }
     });
     shows

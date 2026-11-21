@@ -1,6 +1,7 @@
 use std::future;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -11,15 +12,18 @@ use tokio::sync::oneshot;
 use tokio::time;
 
 use super::*;
+use crate::BoxFuture;
 use crate::channel::Channel;
 use crate::conversation::Action;
 use crate::conversation::Entry;
 use crate::conversation::ThreadRef;
 use crate::id::ChannelUser;
+use crate::llm::ModelError;
 use crate::llm::ModelReply;
 use crate::llm::ModelRequest;
 use crate::message::Place;
 use crate::runtime::fakes::FakeChannel;
+use crate::runtime::fakes::FakeChannelProbe;
 use crate::runtime::fakes::FnModel;
 use crate::runtime::fakes::FnSubTasks;
 use crate::runtime::fakes::FnToolbox;
@@ -27,10 +31,14 @@ use crate::runtime::fakes::channel_id;
 use crate::runtime::fakes::incoming;
 use crate::runtime::fakes::next;
 use crate::runtime::fakes::ports;
+use crate::sub_task::SubTaskOutcome;
 use crate::sub_task::SubTaskSpec;
 use crate::tool::ToolCall;
 use crate::tool::ToolCallId;
 use crate::tool::ToolError;
+
+type ModelFn =
+    Box<dyn Fn(ModelRequest) -> BoxFuture<'static, Result<ModelReply, ModelError>> + Send + Sync>;
 
 fn block_on(test: impl Future<Output = ()>) {
     runtime::Builder::new_current_thread()
@@ -70,6 +78,20 @@ fn say(thread: ThreadRef, text: &str) -> ModelReply {
     }
 }
 
+fn silence() -> ModelReply {
+    ModelReply {
+        actions: Vec::new(),
+    }
+}
+
+fn tool_call() -> Action {
+    Action::UseTool(ToolCall {
+        id: ToolCallId::new("t1"),
+        name: String::from("read_file"),
+        input: String::from("{}"),
+    })
+}
+
 fn tool_result(request: &ModelRequest) -> Option<Result<String, ToolError>> {
     request.conversation.iter().find_map(|entry| match entry {
         Entry::ToolReturned { result, .. } => Some(result.clone()),
@@ -77,36 +99,41 @@ fn tool_result(request: &ModelRequest) -> Option<Result<String, ToolError>> {
     })
 }
 
-fn use_tool() -> ModelReply {
-    ModelReply {
-        actions: vec![Action::UseTool(ToolCall {
-            id: ToolCallId::new("t1"),
-            name: String::from("read_file"),
-            input: String::from("{}"),
-        })],
-    }
+fn sub_task_outcome(request: &ModelRequest) -> Option<SubTaskOutcome> {
+    request.conversation.iter().find_map(|entry| match entry {
+        Entry::SubTaskReturned { outcome, .. } => Some(outcome.clone()),
+        _ => None,
+    })
+}
+
+fn model(answer: impl Fn(ModelRequest) -> ModelReply + Send + Sync + 'static) -> FnModel {
+    FnModel(Box::new(move |request| {
+        let reply = answer(request);
+        Box::pin(async move { Ok(reply) })
+    }))
 }
 
 fn echo_model() -> FnModel {
-    FnModel(Box::new(|request| {
-        let thread = last_heard(&request);
-        Box::pin(async move { Ok(say(thread, "hello")) })
-    }))
+    model(|request| say(last_heard(&request), "hello"))
 }
 
 fn tool_then_report(seen: mpsc::UnboundedSender<Result<String, ToolError>>) -> FnModel {
-    FnModel(Box::new(move |request| {
-        let reply = match tool_result(&request) {
-            Some(result) => {
-                let _ = seen.send(result);
-                ModelReply {
-                    actions: Vec::new(),
-                }
-            }
-            None => use_tool(),
-        };
-        Box::pin(async move { Ok(reply) })
-    }))
+    model(move |request| match tool_result(&request) {
+        Some(result) => {
+            let _ = seen.send(result);
+            silence()
+        }
+        None => ModelReply {
+            actions: vec![tool_call()],
+        },
+    })
+}
+
+fn owner_says(probe: &FakeChannelProbe, id: &str, text: &str) {
+    probe
+        .say
+        .send(incoming(id, "main", "me", text))
+        .expect("channel alive");
 }
 
 #[test]
@@ -117,10 +144,7 @@ fn owner_message_on_the_app_gets_a_reply() {
         ports.model = Arc::new(echo_model());
         let agent = Agent::spawn(config(Duration::from_secs(1)), ports).expect("valid");
 
-        probe
-            .say
-            .send(incoming("m1", "main", "me", "hi"))
-            .expect("channel alive");
+        owner_says(&probe, "m1", "hi");
 
         assert_eq!(
             next(&mut probe.delivered).await,
@@ -159,27 +183,33 @@ fn other_channel_traffic_and_its_reply_are_shown_on_the_app() {
     });
 }
 
-#[test]
-fn panicking_tool_is_reported_to_the_model_as_an_error() {
+fn panicking_tool_is_reported(toolbox: FnToolbox) {
     block_on(async {
         let (app, probe) = FakeChannel::new("app");
         let (seen_tx, mut seen) = mpsc::unbounded_channel();
         let mut ports = ports(app, Vec::new());
         ports.model = Arc::new(tool_then_report(seen_tx));
-        ports.toolbox = Arc::new(FnToolbox(Box::new(|_| {
-            Box::pin(async { panic!("disk on fire") })
-        })));
+        ports.toolbox = Arc::new(toolbox);
         let agent = Agent::spawn(config(Duration::from_secs(1)), ports).expect("valid");
 
-        probe
-            .say
-            .send(incoming("m1", "main", "me", "read it"))
-            .expect("channel alive");
+        owner_says(&probe, "m1", "read it");
 
         let error = next(&mut seen).await.expect_err("tool failed");
         assert!(error.detail.contains("disk on fire"), "{}", error.detail);
         agent.shutdown().await;
     });
+}
+
+#[test]
+fn tool_panicking_while_running_is_reported_to_the_model() {
+    panicking_tool_is_reported(FnToolbox(Box::new(|_| {
+        Box::pin(async { panic!("disk on fire") })
+    })));
+}
+
+#[test]
+fn tool_panicking_before_it_starts_is_reported_to_the_model() {
+    panicking_tool_is_reported(FnToolbox(Box::new(|_| panic!("disk on fire"))));
 }
 
 #[test]
@@ -192,10 +222,7 @@ fn slow_tool_times_out() {
         ports.toolbox = Arc::new(FnToolbox(Box::new(|_| Box::pin(future::pending()))));
         let agent = Agent::spawn(config(Duration::from_millis(50)), ports).expect("valid");
 
-        probe
-            .say
-            .send(incoming("m1", "main", "me", "read it"))
-            .expect("channel alive");
+        owner_says(&probe, "m1", "read it");
 
         let error = next(&mut seen).await.expect_err("tool timed out");
         assert!(error.detail.contains("timed out"), "{}", error.detail);
@@ -203,119 +230,84 @@ fn slow_tool_times_out() {
     });
 }
 
-#[test]
-fn panicking_model_does_not_stop_the_agent() {
+fn agent_recovers_from_a_panicking_model(
+    crash: fn() -> BoxFuture<'static, Result<ModelReply, ModelError>>,
+) {
     block_on(async {
-        let (app, mut probe) = FakeChannel::new("app");
+        let (app, probe) = FakeChannel::new("app");
+        let (slack, mut slack_probe) = FakeChannel::new("slack");
+        let slack: Arc<dyn Channel> = slack;
+        let (failed_tx, mut failed) = mpsc::unbounded_channel();
         let calls = Arc::new(AtomicUsize::new(0));
-        let mut ports = ports(app, Vec::new());
-        ports.model = Arc::new(FnModel(Box::new(move |request| {
-            let first = calls.fetch_add(1, Ordering::SeqCst) == 0;
+        let mut ports = ports(app, vec![slack]);
+        let answer: ModelFn = Box::new(move |request| {
+            if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                return crash();
+            }
+            let failure = request.conversation.iter().find_map(|entry| match entry {
+                Entry::ModelFailed { detail } => Some(detail.clone()),
+                _ => None,
+            });
+            let _ = failed_tx.send(failure);
             let thread = last_heard(&request);
-            Box::pin(async move {
-                assert!(!first, "model crashed");
-                Ok(say(thread, "back"))
-            })
-        })));
+            Box::pin(async move { Ok(say(thread, "back")) })
+        });
+        ports.model = Arc::new(FnModel(answer));
         let agent = Agent::spawn(config(Duration::from_secs(1)), ports).expect("valid");
 
-        probe
+        owner_says(&probe, "m1", "hi");
+        slack_probe
             .say
-            .send(incoming("m1", "main", "me", "hi"))
-            .expect("channel alive");
-        time::sleep(Duration::from_millis(50)).await;
-        probe
-            .say
-            .send(incoming("m2", "main", "me", "hello?"))
+            .send(incoming("m2", "general", "guest", "hello?"))
             .expect("channel alive");
 
-        assert_eq!(next(&mut probe.delivered).await.1, "back");
+        assert_eq!(next(&mut slack_probe.delivered).await.1, "back");
+        let failure = next(&mut failed).await.expect("model failure recorded");
+        assert!(failure.contains("model crashed"), "{failure}");
         agent.shutdown().await;
     });
 }
 
 #[test]
-fn shutdown_returns_while_a_model_call_and_a_sub_task_hang() {
-    block_on(async {
-        let (app, probe) = FakeChannel::new("app");
-        let calls = Arc::new(AtomicUsize::new(0));
-        let (started_tx, mut started) = mpsc::unbounded_channel();
-        let mut ports = ports(app, Vec::new());
-        ports.model = Arc::new(FnModel(Box::new(move |_| {
-            if calls.fetch_add(1, Ordering::SeqCst) > 0 {
-                return Box::pin(future::pending());
-            }
-            Box::pin(async {
-                Ok(ModelReply {
-                    actions: vec![Action::Delegate(SubTaskSpec {
-                        title: String::from("research"),
-                        brief: String::from("look into it"),
-                    })],
-                })
-            })
-        })));
-        ports.sub_tasks = Arc::new(FnSubTasks(Box::new(move |_| {
-            let _ = started_tx.send(());
-            Box::pin(future::pending())
-        })));
-        let agent = Agent::spawn(config(Duration::from_secs(1)), ports).expect("valid");
-
-        probe
-            .say
-            .send(incoming("m1", "main", "me", "research this"))
-            .expect("channel alive");
-        next(&mut started).await;
-        probe
-            .say
-            .send(incoming("m2", "main", "me", "and that"))
-            .expect("channel alive");
-        time::sleep(Duration::from_millis(50)).await;
-
-        time::timeout(Duration::from_secs(5), agent.shutdown())
-            .await
-            .expect("shutdown finished");
-    });
+fn model_panicking_while_running_does_not_stop_the_agent() {
+    agent_recovers_from_a_panicking_model(|| Box::pin(async { panic!("model crashed") }));
 }
 
 #[test]
-fn shutdown_waits_for_a_running_tool() {
+fn model_panicking_before_it_starts_does_not_stop_the_agent() {
+    agent_recovers_from_a_panicking_model(|| panic!("model crashed"));
+}
+
+#[test]
+fn panicking_sub_task_is_reported_as_failed() {
     block_on(async {
         let (app, probe) = FakeChannel::new("app");
-        let (release_tx, release) = oneshot::channel::<()>();
-        let release = Arc::new(std::sync::Mutex::new(Some(release)));
-        let (finished_tx, mut finished) = mpsc::unbounded_channel();
-        let (seen_tx, _seen) = mpsc::unbounded_channel();
+        let (outcome_tx, mut outcome) = mpsc::unbounded_channel();
         let mut ports = ports(app, Vec::new());
-        ports.model = Arc::new(tool_then_report(seen_tx));
-        ports.toolbox = Arc::new(FnToolbox(Box::new(move |_| {
-            let release = release.lock().expect("unpoisoned").take();
-            let finished = finished_tx.clone();
-            Box::pin(async move {
-                if let Some(release) = release {
-                    let _ = release.await;
-                }
-                let _ = finished.send(());
-                Ok(String::from("done"))
-            })
-        })));
-        let agent = Agent::spawn(config(Duration::from_secs(5)), ports).expect("valid");
+        ports.model = Arc::new(model(move |request| match sub_task_outcome(&request) {
+            Some(result) => {
+                let _ = outcome_tx.send(result);
+                silence()
+            }
+            None => ModelReply {
+                actions: vec![Action::Delegate(SubTaskSpec {
+                    title: String::from("research"),
+                    brief: String::from("look into it"),
+                })],
+            },
+        }));
+        ports.sub_tasks = Arc::new(FnSubTasks(Box::new(|_| panic!("runner crashed"))));
+        let agent = Agent::spawn(config(Duration::from_secs(1)), ports).expect("valid");
 
-        probe
-            .say
-            .send(incoming("m1", "main", "me", "read it"))
-            .expect("channel alive");
-        time::sleep(Duration::from_millis(50)).await;
-        let shutdown = tokio::spawn(agent.shutdown());
-        time::sleep(Duration::from_millis(50)).await;
-        assert!(!shutdown.is_finished(), "shutdown waits for the tool");
+        owner_says(&probe, "m1", "research this");
 
-        release_tx.send(()).expect("tool waiting");
-
-        next(&mut finished).await;
-        time::timeout(Duration::from_secs(5), shutdown)
-            .await
-            .expect("shutdown finished")
-            .expect("shutdown did not panic");
+        match next(&mut outcome).await {
+            SubTaskOutcome::Failed(detail) => {
+                assert!(detail.contains("runner crashed"), "{detail}")
+            }
+            SubTaskOutcome::Finished(text) => panic!("expected a failure, got {text}"),
+        }
+        agent.shutdown().await;
     });
 }
 
@@ -333,32 +325,150 @@ impl Drop for DropSignal {
 fn interrupted_model_call_is_dropped() {
     block_on(async {
         let (app, probe) = FakeChannel::new("app");
+        let (started_tx, mut started) = mpsc::unbounded_channel();
         let (dropped_tx, dropped) = oneshot::channel();
-        let dropped_tx = Arc::new(std::sync::Mutex::new(Some(dropped_tx)));
+        let dropped_tx = Arc::new(Mutex::new(Some(dropped_tx)));
         let mut ports = ports(app, Vec::new());
-        ports.model = Arc::new(FnModel(Box::new(move |_| {
+        let answer: ModelFn = Box::new(move |_| {
             let guard = DropSignal(dropped_tx.lock().expect("unpoisoned").take());
+            let started = started_tx.clone();
             Box::pin(async move {
                 let _guard = guard;
+                let _ = started.send(());
                 future::pending().await
             })
-        })));
+        });
+        ports.model = Arc::new(FnModel(answer));
         let agent = Agent::spawn(config(Duration::from_secs(1)), ports).expect("valid");
 
-        probe
-            .say
-            .send(incoming("m1", "main", "me", "find my flight"))
-            .expect("channel alive");
-        time::sleep(Duration::from_millis(50)).await;
-        probe
-            .say
-            .send(incoming("m2", "main", "me", "never mind"))
-            .expect("channel alive");
+        owner_says(&probe, "m1", "find my flight");
+        next(&mut started).await;
+        owner_says(&probe, "m2", "never mind");
 
         time::timeout(Duration::from_secs(5), dropped)
             .await
             .expect("cancelled in time")
             .expect("first call was dropped");
         agent.shutdown().await;
+    });
+}
+
+#[test]
+fn shutdown_returns_while_a_model_call_and_a_sub_task_hang() {
+    block_on(async {
+        let (app, probe) = FakeChannel::new("app");
+        let (started_tx, mut started) = mpsc::unbounded_channel();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut ports = ports(app, Vec::new());
+        let model_started = started_tx.clone();
+        let answer: ModelFn = Box::new(move |_| {
+            if calls.fetch_add(1, Ordering::SeqCst) > 0 {
+                let _ = model_started.send("model");
+                return Box::pin(future::pending());
+            }
+            Box::pin(async {
+                Ok(ModelReply {
+                    actions: vec![Action::Delegate(SubTaskSpec {
+                        title: String::from("research"),
+                        brief: String::from("look into it"),
+                    })],
+                })
+            })
+        });
+        ports.model = Arc::new(FnModel(answer));
+        ports.sub_tasks = Arc::new(FnSubTasks(Box::new(move |_| {
+            let _ = started_tx.send("sub-task");
+            Box::pin(future::pending())
+        })));
+        let agent = Agent::spawn(config(Duration::from_secs(1)), ports).expect("valid");
+
+        owner_says(&probe, "m1", "research this");
+        assert_eq!(next(&mut started).await, "sub-task");
+        owner_says(&probe, "m2", "and that");
+        assert_eq!(next(&mut started).await, "model");
+
+        time::timeout(Duration::from_secs(5), agent.shutdown())
+            .await
+            .expect("shutdown finished");
+    });
+}
+
+#[test]
+fn shutdown_waits_for_a_running_tool() {
+    block_on(async {
+        let (app, probe) = FakeChannel::new("app");
+        let (started_tx, mut started) = mpsc::unbounded_channel();
+        let (release_tx, release) = oneshot::channel::<()>();
+        let release = Arc::new(Mutex::new(Some(release)));
+        let (finished_tx, mut finished) = mpsc::unbounded_channel();
+        let (seen_tx, _seen) = mpsc::unbounded_channel();
+        let mut ports = ports(app, Vec::new());
+        ports.model = Arc::new(tool_then_report(seen_tx));
+        ports.toolbox = Arc::new(FnToolbox(Box::new(move |_| {
+            let release = release.lock().expect("unpoisoned").take();
+            let started = started_tx.clone();
+            let finished = finished_tx.clone();
+            Box::pin(async move {
+                let _ = started.send(());
+                if let Some(release) = release {
+                    let _ = release.await;
+                }
+                let _ = finished.send(());
+                Ok(String::from("done"))
+            })
+        })));
+        let agent = Agent::spawn(config(Duration::from_secs(5)), ports).expect("valid");
+
+        owner_says(&probe, "m1", "read it");
+        next(&mut started).await;
+        let shutdown = tokio::spawn(agent.shutdown());
+        time::sleep(Duration::from_millis(50)).await;
+        assert!(!shutdown.is_finished(), "shutdown waits for the tool");
+
+        release_tx.send(()).expect("tool waiting");
+
+        next(&mut finished).await;
+        time::timeout(Duration::from_secs(5), shutdown)
+            .await
+            .expect("shutdown finished")
+            .expect("shutdown did not panic");
+    });
+}
+
+#[test]
+fn queued_reply_is_delivered_before_shutdown_returns() {
+    block_on(async {
+        let (app, mut probe) = FakeChannel::slow("app", Duration::from_millis(100));
+        let (started_tx, mut started) = mpsc::unbounded_channel();
+        let mut ports = ports(app, Vec::new());
+        ports.model = Arc::new(model(|request| match tool_result(&request) {
+            Some(_) => silence(),
+            None => ModelReply {
+                actions: vec![
+                    Action::Say {
+                        thread: last_heard(&request),
+                        text: String::from("on it"),
+                    },
+                    tool_call(),
+                ],
+            },
+        }));
+        ports.toolbox = Arc::new(FnToolbox(Box::new(move |_| {
+            let started = started_tx.clone();
+            Box::pin(async move {
+                let _ = started.send(());
+                Ok(String::from("done"))
+            })
+        })));
+        let agent = Agent::spawn(config(Duration::from_secs(5)), ports).expect("valid");
+
+        owner_says(&probe, "m1", "read it");
+        next(&mut started).await;
+        agent.shutdown().await;
+
+        assert_eq!(
+            probe.delivered.try_recv().ok(),
+            Some((Place::new("main"), String::from("on it")))
+        );
     });
 }
