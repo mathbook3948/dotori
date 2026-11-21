@@ -1,7 +1,7 @@
 use crate::BoxFuture;
 
 /// What the main conversation hands to a sub-task. The brief is the only context it gets.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SubTaskSpec {
     pub title: String,
     pub brief: String,

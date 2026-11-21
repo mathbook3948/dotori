@@ -23,6 +23,6 @@ impl Threads {
     }
 
     pub(crate) fn resolve(&self, thread: ThreadRef) -> Option<&Address> {
-        self.addresses.get(thread.index())
+        self.addresses.get(thread.get() as usize)
     }
 }

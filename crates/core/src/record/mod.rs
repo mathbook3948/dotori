@@ -31,7 +31,7 @@ pub trait RecordStore: Send + Sync + 'static {
     /// Every record in the order it was appended.
     fn load(&self) -> BoxFuture<'_, Result<Vec<Record>, RecordError>>;
 
-    /// Stores all records in order or none of them. Core appends a batch again after a
-    /// failure, and never edits or removes a record.
+    /// Stores all records in order or none of them, so an error means nothing was stored.
+    /// Core appends the batch again until it succeeds, and never edits or removes a record.
     fn append(&self, records: Vec<Record>) -> BoxFuture<'_, Result<(), RecordError>>;
 }

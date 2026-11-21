@@ -53,7 +53,7 @@ fn on_received(state: &mut AgentState, channel: ChannelId, incoming: Incoming) -
     }
     let key = MessageKey {
         channel: channel.clone(),
-        message: incoming.id,
+        message: incoming.id.clone(),
     };
     if !state.seen.first_time(key) {
         return Vec::new();
@@ -78,6 +78,7 @@ fn on_received(state: &mut AgentState, channel: ChannelId, incoming: Incoming) -
     state.conversation.push(Entry::Heard {
         thread,
         message: Message {
+            id: incoming.id,
             address,
             sender: Sender {
                 id: incoming.sender_id,

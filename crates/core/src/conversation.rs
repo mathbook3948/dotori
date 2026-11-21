@@ -12,12 +12,14 @@ use crate::tool::ToolError;
 pub struct ThreadRef(u32);
 
 impl ThreadRef {
-    pub(crate) fn new(index: u32) -> Self {
+    /// For connectors that read a handle back, such as from model output or the raw record.
+    /// Core refuses a reply to a handle it never gave out.
+    pub fn new(index: u32) -> Self {
         Self(index)
     }
 
-    pub(crate) fn index(self) -> usize {
-        self.0 as usize
+    pub fn get(self) -> u32 {
+        self.0
     }
 }
 

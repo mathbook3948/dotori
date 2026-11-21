@@ -35,6 +35,9 @@ use crate::sub_task::SubTaskRunner;
 use crate::tool::ToolError;
 use crate::tool::Toolbox;
 
+const RETRY_FIRST: Duration = Duration::from_millis(100);
+const RETRY_MAX: Duration = Duration::from_secs(30);
+
 /// The only impure part of the agent. Receives events, runs `step`, and executes the effects.
 /// Slow work is spawned into `tasks` and returns as an event, so the loop never waits on a port.
 pub(crate) struct Shell {
@@ -126,7 +129,7 @@ impl Shell {
         self.tasks.shutdown().await;
     }
 
-    fn record(&self, entries: &[Entry]) {
+    pub(crate) fn record(&self, entries: &[Entry]) {
         let at = SystemTime::now();
         for entry in entries {
             let _ = self.records.send(Record {
@@ -263,18 +266,25 @@ fn spawn_record_writer(
     let (records, mut incoming) = mpsc::unbounded_channel::<Record>();
     senders.spawn(async move {
         let mut pending = Vec::new();
-        while let Some(record) = incoming.recv().await {
-            pending.push(record);
+        let mut backoff = RETRY_FIRST;
+        loop {
+            if pending.is_empty() {
+                match incoming.recv().await {
+                    Some(record) => pending.push(record),
+                    None => return,
+                }
+            }
             while let Ok(record) = incoming.try_recv() {
                 pending.push(record);
             }
             let batch = pending.clone();
             if let Ok(Ok(())) = caught(|| store.append(batch)).await {
                 pending.clear();
+                backoff = RETRY_FIRST;
+            } else {
+                time::sleep(backoff).await;
+                backoff = (backoff * 2).min(RETRY_MAX);
             }
-        }
-        if !pending.is_empty() {
-            let _ = caught(|| store.append(pending)).await;
         }
     });
     records

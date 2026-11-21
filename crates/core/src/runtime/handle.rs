@@ -31,10 +31,12 @@ impl Agent {
             .await
             .unwrap_or_else(|detail| Err(RecordError { detail }))
             .map_err(SpawnError::Load)?;
+        let loaded = records.len();
         let conversation = records.into_iter().map(|record| record.entry).collect();
         let state = AgentState::resume(roster, config.seen_capacity, conversation);
         let (tx, rx) = mpsc::channel(config.queue_capacity.get());
         let shell = Shell::start(rx, tx.clone(), ports, config.tool_timeout);
+        shell.record(&state.conversation[loaded..]);
         let done = tokio::spawn(shell.run(state));
         Ok(Self { tx, done })
     }
