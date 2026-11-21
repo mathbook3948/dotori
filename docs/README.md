@@ -33,3 +33,8 @@
 ### product
 
 - [제품 방향](product/direction.md): lightbot이 어떤 비서인지와 반드시 지킬 성격
+
+### architecture
+
+- [에이전트 실행](architecture/agents.md): 메인 대화와 하위 작업을 무엇으로 실행하는지
+- [MCP](architecture/mcp.md): 에이전트가 쓰는 도구를 어떻게 제공하는지
