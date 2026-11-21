@@ -5,8 +5,6 @@ use std::path::Path;
 
 const DOCS_DIR: &str = "docs";
 const INDEX: &str = "docs/README.md";
-const STATUS_PREFIX: &str = "- 상태: ";
-const STATUSES: [&str; 3] = ["초안", "확정", "폐기"];
 const SECTIONS: [&str; 3] = ["## 배경", "## 내용", "## 미정"];
 
 #[derive(Debug, PartialEq, Eq)]
@@ -50,13 +48,6 @@ pub fn parse_doc(path: &str, text: &str) -> Result<Doc, Vec<String>> {
             ""
         }
     };
-
-    let status = lines
-        .iter()
-        .find_map(|line| line.strip_prefix(STATUS_PREFIX));
-    if !status.is_some_and(|status| STATUSES.contains(&status)) {
-        problems.push(format!("needs `{STATUS_PREFIX}{}`", STATUSES.join(" | ")));
-    }
 
     let headings: Vec<&str> = lines
         .iter()
