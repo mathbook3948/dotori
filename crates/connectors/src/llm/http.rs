@@ -24,7 +24,7 @@ const BODY_SHOWN: usize = 300;
 pub(crate) const RETRY: Retry = Retry {
     attempts: 3,
     first_wait: Duration::from_secs(1),
-    max_wait: Duration::from_secs(20),
+    max_wait: Duration::from_secs(60),
 };
 
 #[derive(Deserialize)]
@@ -76,7 +76,7 @@ pub(crate) async fn send(
                 }
                 (detail, retry_after)
             }
-            Err(error) if error.is_connect() || error.is_timeout() => {
+            Err(error) if error.is_connect() => {
                 (format!("{provider} unreachable: {}", chain(&error)), None)
             }
             Err(error) => {

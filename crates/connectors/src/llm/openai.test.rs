@@ -211,3 +211,48 @@ async fn complete_posts_to_chat_completions_with_the_bearer_key() {
     assert!(head.starts_with("post /v1/chat/completions http/1.1"));
     assert!(head.contains("authorization: bearer sk-test"));
 }
+
+fn replayed(reply: &str) -> Value {
+    let reply = parse(reply).expect("parsed");
+    let conversation = vec![
+        heard("hi"),
+        Entry::Acted {
+            actions: reply.actions,
+            answered: 1,
+            trace: reply.trace,
+        },
+        heard("next"),
+    ];
+    sent(&config(), &request(conversation))["messages"][2].clone()
+}
+
+#[test]
+fn a_reply_with_no_content_and_no_calls_is_replayed_with_empty_content() {
+    let message = replayed(
+        r#"{"choices":[{"message":{"role":"assistant","content":null},"finish_reason":"stop"}]}"#,
+    );
+
+    assert_eq!(message["role"], "assistant");
+    assert_eq!(message["content"], "");
+    assert!(message.get("tool_calls").is_none());
+}
+
+#[test]
+fn an_empty_tool_call_list_is_not_replayed() {
+    let message = replayed(
+        r#"{"choices":[{"message":{"role":"assistant","content":"ok","tool_calls":[]},"finish_reason":"stop"}]}"#,
+    );
+
+    assert_eq!(message["content"], "ok");
+    assert!(message.get("tool_calls").is_none());
+}
+
+#[test]
+fn arguments_given_as_an_object_are_accepted() {
+    let reply = parse(r#"{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"c","type":"function","function":{"name":"read_file","arguments":{"path":"a"}}}]},"finish_reason":"tool_calls"}]}"#).expect("parsed");
+
+    match reply.actions.as_slice() {
+        [Action::UseTool(call)] => assert_eq!(call.input, r#"{"path":"a"}"#),
+        other => panic!("unexpected actions {other:?}"),
+    }
+}

@@ -213,6 +213,7 @@ struct Block {
     id: Option<String>,
     name: Option<String>,
     input: Option<Box<RawValue>>,
+    text: Option<String>,
 }
 
 fn parse(text: &str) -> Result<ModelReply, ModelError> {
@@ -246,6 +247,13 @@ fn parse(text: &str) -> Result<ModelReply, ModelError> {
             detail: format!("{PROVIDER} reply content unreadable: {error}"),
         })?;
     let blocks_empty = blocks.is_empty();
+    let blank_text = blocks.iter().any(|block| {
+        block.kind == "text"
+            && block
+                .text
+                .as_deref()
+                .is_some_and(|text| text.trim().is_empty())
+    });
     let mut uses = Vec::new();
     for block in blocks {
         if block.kind != "tool_use" {
@@ -262,13 +270,13 @@ fn parse(text: &str) -> Result<ModelReply, ModelError> {
             .unwrap_or_else(|| String::from("{}"));
         uses.push(Use { id, name, input });
     }
-    if blocks_empty {
+    let decided = reply::decide(uses);
+    if blocks_empty || blank_text {
         return Ok(ModelReply {
-            actions: Vec::new(),
+            actions: decided.actions,
             trace: None,
         });
     }
-    let decided = reply::decide(uses);
     let trace = Trace {
         raw: response.content.to_owned(),
         ids: decided.ids,

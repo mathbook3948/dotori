@@ -264,3 +264,11 @@ async fn retries_stop_after_the_last_attempt() {
 
     assert!(error.detail.contains("after 3 attempts"));
 }
+
+#[test]
+fn a_reply_with_a_blank_text_block_is_not_replayed_raw() {
+    let reply = parse(r#"{"content":[{"type":"text","text":""},{"type":"tool_use","id":"toolu_1","name":"say","input":{"thread":0,"text":"hi"}}],"stop_reason":"tool_use"}"#).expect("parsed");
+
+    assert_eq!(reply.actions.len(), 1);
+    assert!(reply.trace.is_none());
+}

@@ -23,7 +23,6 @@ core는 대화를 항목 목록으로만 갖고, 공급자마다 형식이 다�
 - Anthropic은 adaptive thinking을 쓰고, thinking 블록 검증이 틀리면 블록만 버리게 한다.
 - Anthropic은 거절된 요청을 서버에서 권장 대체 모델로 다시 돌리게 한다.
 - OpenAI 호환 API는 chat completions 형식을 쓴다.
-- HTTP는 reqwest와 운영체제의 TLS를 쓴다. 의존성에 Unicode-3.0 라이선스를 허용한다.
 
 ## 미정
 

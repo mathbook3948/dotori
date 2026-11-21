@@ -140,8 +140,8 @@ fn body(config: &OpenAiConfig, request: &ModelRequest) -> Result<String, ModelEr
 
 #[derive(Deserialize)]
 struct Echo {
-    content: Option<Box<RawValue>>,
-    tool_calls: Option<Box<RawValue>>,
+    content: Option<Value>,
+    tool_calls: Option<Value>,
 }
 
 fn turn_messages(turn: Turn) -> Vec<Value> {
@@ -178,11 +178,17 @@ fn turn_messages(turn: Turn) -> Vec<Value> {
             let mut message = json!({ "role": "assistant", "content": Value::Null });
             match echo {
                 Some(echo) => {
-                    if let Some(content) = echo.content {
-                        message["content"] = json!(content);
-                    }
-                    if let Some(tool_calls) = echo.tool_calls {
-                        message["tool_calls"] = json!(tool_calls);
+                    let tool_calls = echo
+                        .tool_calls
+                        .filter(|calls| !calls.as_array().is_some_and(Vec::is_empty));
+                    match (echo.content, tool_calls) {
+                        (Some(content), Some(tool_calls)) => {
+                            message["content"] = content;
+                            message["tool_calls"] = tool_calls;
+                        }
+                        (Some(content), None) => message["content"] = content,
+                        (None, Some(tool_calls)) => message["tool_calls"] = tool_calls,
+                        (None, None) => message["content"] = json!(""),
                     }
                 }
                 None if !said.calls.is_empty() => {
@@ -231,7 +237,7 @@ struct Call {
 #[derive(Deserialize)]
 struct Function {
     name: String,
-    arguments: Option<String>,
+    arguments: Option<Value>,
 }
 
 fn parse(text: &str) -> Result<ModelReply, ModelError> {
@@ -265,11 +271,11 @@ fn parse(text: &str) -> Result<ModelReply, ModelError> {
         .map(|call| Use {
             id: call.id,
             name: call.function.name,
-            input: call
-                .function
-                .arguments
-                .filter(|arguments| !arguments.trim().is_empty())
-                .unwrap_or_else(|| String::from("{}")),
+            input: match call.function.arguments {
+                Some(Value::String(text)) if !text.trim().is_empty() => text,
+                Some(Value::String(_)) | Some(Value::Null) | None => String::from("{}"),
+                Some(other) => other.to_string(),
+            },
         })
         .collect();
     let decided = reply::decide(uses);
