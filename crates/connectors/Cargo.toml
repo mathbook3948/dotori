@@ -1,5 +1,5 @@
 [package]
-name = "lightbot-connectors"
+name = "dotori-connectors"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

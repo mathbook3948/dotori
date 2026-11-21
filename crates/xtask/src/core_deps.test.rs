@@ -1,6 +1,6 @@
 use super::*;
 
-const CARGO_TREE: &str = "lightbot-core v0.1.0 (/repo/crates/core)\n\
+const CARGO_TREE: &str = "dotori-core v0.1.0 (/repo/crates/core)\n\
 serde v1.0.0\n\
 gpui v0.2.0\n\
 [dev-dependencies]\n\
@@ -21,5 +21,5 @@ fn passes_when_every_dep_is_listed() {
 
 #[test]
 fn passes_when_core_has_no_deps() {
-    assert!(unlisted_deps("lightbot-core v0.1.0 (/repo/crates/core)\n", "").is_empty());
+    assert!(unlisted_deps("dotori-core v0.1.0 (/repo/crates/core)\n", "").is_empty());
 }

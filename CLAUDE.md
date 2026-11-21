@@ -1,4 +1,4 @@
-# lightbot
+# dotori
 
 Rust로 만드는 가벼운 개인 비서.
 

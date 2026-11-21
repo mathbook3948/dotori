@@ -29,7 +29,7 @@ pub fn run(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>> {
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
     let tree = Command::new(cargo)
         .current_dir(workspace_root)
-        .args(["tree", "--package", "lightbot-core", "--depth", "1"])
+        .args(["tree", "--package", "dotori-core", "--depth", "1"])
         .args(["--prefix", "none"])
         .output()?;
     if !tree.status.success() {
@@ -45,7 +45,7 @@ pub fn run(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>> {
         unlisted_deps(&String::from_utf8(tree.stdout)?, &allowed_deps)
             .into_iter()
             .map(|name| {
-                format!("lightbot-core depends on {name}, which is not listed in {ALLOWED_DEPS}")
+                format!("dotori-core depends on {name}, which is not listed in {ALLOWED_DEPS}")
             })
             .collect(),
     )
