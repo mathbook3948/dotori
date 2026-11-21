@@ -4,6 +4,7 @@ use std::sync::Arc;
 use crate::channel::AppWindow;
 use crate::channel::Channel;
 use crate::llm::Model;
+use crate::record::RecordStore;
 use crate::sub_task::SubTaskRunner;
 use crate::tool::Toolbox;
 
@@ -14,6 +15,7 @@ pub struct Ports {
     pub model: Arc<dyn Model>,
     pub toolbox: Arc<dyn Toolbox>,
     pub sub_tasks: Arc<dyn SubTaskRunner>,
+    pub records: Arc<dyn RecordStore>,
 }
 
 impl fmt::Debug for Ports {

@@ -10,4 +10,5 @@ mod shell;
 pub use config::AgentConfig;
 pub use config::ConfigError;
 pub use handle::Agent;
+pub use handle::SpawnError;
 pub use ports::Ports;
