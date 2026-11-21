@@ -1,4 +1,7 @@
+mod caught;
 mod config;
+#[cfg(test)]
+mod fakes;
 mod handle;
 mod inbox;
 mod ports;

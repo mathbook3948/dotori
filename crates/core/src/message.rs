@@ -88,3 +88,7 @@ pub struct Message {
     pub sender: Sender,
     pub content: Content,
 }
+
+#[cfg(test)]
+#[path = "message.test.rs"]
+mod tests;

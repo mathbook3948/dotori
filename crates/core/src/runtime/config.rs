@@ -1,5 +1,7 @@
+use std::collections::HashSet;
 use std::error::Error;
 use std::fmt;
+use std::iter;
 use std::num::NonZeroUsize;
 use std::time::Duration;
 
@@ -38,5 +40,26 @@ impl Error for ConfigError {}
 /// The single check between untrusted wiring and the agent.
 /// Channel ids are unique, the app window's id included, and every owner names a connected channel.
 pub(crate) fn validate(config: &AgentConfig, ports: &Ports) -> Result<Roster, ConfigError> {
-    todo!()
+    let mut connected = HashSet::new();
+    let ids = iter::once(ports.app.id()).chain(ports.channels.iter().map(|channel| channel.id()));
+    for id in ids {
+        if !connected.insert(id) {
+            return Err(ConfigError::DuplicateChannel(id.clone()));
+        }
+    }
+    if let Some(owner) = config
+        .owners
+        .iter()
+        .find(|owner| !connected.contains(&owner.channel))
+    {
+        return Err(ConfigError::UnknownOwnerChannel(owner.channel.clone()));
+    }
+    Ok(Roster::new(
+        ports.app.id().clone(),
+        config.owners.iter().cloned().collect(),
+    ))
 }
+
+#[cfg(test)]
+#[path = "config.test.rs"]
+mod tests;

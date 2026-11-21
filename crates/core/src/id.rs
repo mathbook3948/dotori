@@ -77,3 +77,7 @@ pub struct ChannelUser {
     pub channel: ChannelId,
     pub user: ExternalUserId,
 }
+
+#[cfg(test)]
+#[path = "id.test.rs"]
+mod tests;
