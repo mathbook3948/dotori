@@ -8,3 +8,6 @@ edition = "2024"
 
 [workspace.lints.clippy]
 allow_attributes_without_reason = "deny"
+
+[workspace.lints.rust]
+missing_debug_implementations = "warn"
