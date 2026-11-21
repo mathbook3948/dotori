@@ -472,3 +472,25 @@ fn queued_reply_is_delivered_before_shutdown_returns() {
         );
     });
 }
+
+#[test]
+fn hung_delivery_does_not_hang_shutdown() {
+    block_on(async {
+        let (app, probe) = FakeChannel::slow("app", Duration::from_secs(3600));
+        let (asked_tx, mut asked) = mpsc::unbounded_channel();
+        let mut ports = ports(app, Vec::new());
+        ports.model = Arc::new(model(move |request| {
+            let _ = asked_tx.send(());
+            say(last_heard(&request), "on it")
+        }));
+        let agent = Agent::spawn(config(Duration::from_millis(100)), ports).expect("valid");
+
+        owner_says(&probe, "m1", "hi");
+        next(&mut asked).await;
+        time::sleep(Duration::from_millis(20)).await;
+
+        time::timeout(Duration::from_secs(5), agent.shutdown())
+            .await
+            .expect("shutdown finished");
+    });
+}

@@ -105,7 +105,6 @@ impl Shell {
 
     async fn stop(mut self) {
         self.rx.close();
-        self.tasks.shutdown().await;
         drop(self.outboxes);
         drop(self.shows);
         let _ = time::timeout(self.tool_timeout, async {
@@ -113,6 +112,7 @@ impl Shell {
         })
         .await;
         self.senders.shutdown().await;
+        self.tasks.shutdown().await;
     }
 
     fn execute(&mut self, effect: Effect) {
