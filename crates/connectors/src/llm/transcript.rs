@@ -214,7 +214,6 @@ impl Builder {
                 }))
             })
             .collect();
-        self.results.clear();
         parts.extend(self.notes.drain(..).map(Part::Note));
         if parts.is_empty() {
             return;

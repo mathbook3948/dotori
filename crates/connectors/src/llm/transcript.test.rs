@@ -261,3 +261,20 @@ fn message_text_cannot_close_its_own_tag() {
     ));
     assert_eq!(note.matches("</message>").count(), 1);
 }
+
+#[test]
+fn a_trace_that_does_not_match_its_actions_is_ignored() {
+    let conversation = vec![
+        heard(0, "go"),
+        acted(
+            1,
+            vec![say(0, "a"), say(0, "b")],
+            Some(trace("anthropic", "[]", &["toolu_a"], &[])),
+        ),
+    ];
+
+    let turns = build(&conversation, "anthropic");
+
+    let ids: Vec<&str> = calls(&turns[1]).into_iter().map(|call| call.0).collect();
+    assert_eq!(ids, vec!["call_1_0", "call_1_1"]);
+}
