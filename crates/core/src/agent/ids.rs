@@ -15,14 +15,19 @@ pub(crate) struct Ids {
 
 impl Ids {
     pub(crate) fn next_call(&mut self) -> CallId {
-        todo!()
+        CallId(self.bump())
     }
 
     pub(crate) fn next_tool_run(&mut self) -> ToolRunId {
-        todo!()
+        ToolRunId(self.bump())
     }
 
     pub(crate) fn next_sub_task(&mut self) -> SubTaskId {
-        todo!()
+        SubTaskId(self.bump())
+    }
+
+    fn bump(&mut self) -> u64 {
+        self.next += 1;
+        self.next
     }
 }

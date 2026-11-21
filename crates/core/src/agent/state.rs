@@ -28,7 +28,15 @@ pub(crate) struct AgentState {
 
 impl AgentState {
     pub(crate) fn new(roster: Roster, seen_capacity: NonZeroUsize) -> Self {
-        todo!()
+        Self {
+            conversation: Vec::new(),
+            phase: Phase::Idle,
+            roster,
+            threads: Threads::default(),
+            sub_tasks: HashMap::new(),
+            seen: Seen::new(seen_capacity),
+            ids: Ids::default(),
+        }
     }
 }
 
@@ -44,11 +52,12 @@ pub(crate) enum Phase {
     },
     /// Shutdown waits for running tools, so their results are recorded.
     Stopping {
-        waiting: HashSet<ToolRunId>,
+        waiting: HashMap<ToolRunId, ToolCallId>,
     },
 }
 
 /// What happens when the reply in flight arrives. Its actions always run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AfterReply {
     /// Nothing new arrived. The turn ends unless tools were requested.
     Finish,
@@ -78,7 +87,24 @@ pub(crate) struct Seen {
 }
 
 impl Seen {
+    pub(crate) fn new(capacity: NonZeroUsize) -> Self {
+        Self {
+            order: VecDeque::with_capacity(capacity.get()),
+            set: HashSet::with_capacity(capacity.get()),
+            capacity,
+        }
+    }
+
     pub(crate) fn first_time(&mut self, key: MessageKey) -> bool {
-        todo!()
+        if !self.set.insert(key.clone()) {
+            return false;
+        }
+        self.order.push_back(key);
+        if self.order.len() > self.capacity.get()
+            && let Some(oldest) = self.order.pop_front()
+        {
+            self.set.remove(&oldest);
+        }
+        true
     }
 }

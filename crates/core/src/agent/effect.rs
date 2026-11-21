@@ -2,8 +2,8 @@ use crate::agent::ids::CallId;
 use crate::agent::ids::SubTaskId;
 use crate::agent::ids::ToolRunId;
 use crate::channel::Traffic;
+use crate::conversation::Entry;
 use crate::conversation::ThreadRef;
-use crate::llm::ModelRequest;
 use crate::message::Address;
 use crate::sub_task::SubTaskSpec;
 use crate::tool::ToolCall;
@@ -17,9 +17,10 @@ pub(crate) enum Effect {
         text: String,
     },
     Show(Traffic),
+    /// The shell adds the current tool specs to build the request.
     CallModel {
         call: CallId,
-        request: ModelRequest,
+        conversation: Vec<Entry>,
     },
     CancelModel(CallId),
     RunTool {

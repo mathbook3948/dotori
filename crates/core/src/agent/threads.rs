@@ -12,10 +12,17 @@ pub(crate) struct Threads {
 
 impl Threads {
     pub(crate) fn intern(&mut self, address: Address) -> ThreadRef {
-        todo!()
+        if let Some(thread) = self.refs.get(&address) {
+            return *thread;
+        }
+        let index = u32::try_from(self.addresses.len()).expect("fewer than 2^32 threads");
+        let thread = ThreadRef::new(index);
+        self.addresses.push(address.clone());
+        self.refs.insert(address, thread);
+        thread
     }
 
     pub(crate) fn resolve(&self, thread: ThreadRef) -> Option<&Address> {
-        todo!()
+        self.addresses.get(thread.index())
     }
 }
