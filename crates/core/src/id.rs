@@ -26,7 +26,16 @@ pub struct ChannelId(Arc<str>);
 impl ChannelId {
     /// Accepts lowercase ascii letters, digits, and `-`.
     pub fn parse(raw: &str) -> Result<Self, ChannelIdError> {
-        todo!()
+        if raw.is_empty() {
+            return Err(ChannelIdError::Empty);
+        }
+        match raw
+            .chars()
+            .find(|c| !(c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '-'))
+        {
+            Some(c) => Err(ChannelIdError::Invalid(c)),
+            None => Ok(Self(raw.into())),
+        }
     }
 
     pub fn as_str(&self) -> &str {

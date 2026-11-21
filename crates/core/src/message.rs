@@ -32,7 +32,11 @@ pub struct Content(String);
 
 impl Content {
     pub fn parse(text: impl Into<String>) -> Result<Self, EmptyContentError> {
-        todo!()
+        let text = text.into();
+        if text.trim().is_empty() {
+            return Err(EmptyContentError);
+        }
+        Ok(Self(text))
     }
 
     pub fn as_str(&self) -> &str {

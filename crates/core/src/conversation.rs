@@ -15,6 +15,10 @@ impl ThreadRef {
     pub(crate) fn new(index: u32) -> Self {
         Self(index)
     }
+
+    pub(crate) fn index(self) -> usize {
+        self.0 as usize
+    }
 }
 
 /// One line of the main conversation, in arrival order. The model reads this.

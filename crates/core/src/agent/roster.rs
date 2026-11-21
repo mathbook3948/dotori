@@ -20,6 +20,10 @@ impl Roster {
     }
 
     pub(crate) fn role_of(&self, sender: &ChannelUser) -> Role {
-        todo!()
+        if sender.channel == self.app || self.owners.contains(sender) {
+            Role::Owner
+        } else {
+            Role::Other
+        }
     }
 }
