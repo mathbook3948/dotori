@@ -13,3 +13,4 @@
 ## product
 
 - [제품 방향](product/direction.md): lightbot이 어떤 제품인지 정의한다.
+- [개발 순서](product/roadmap.md): lightbot을 어떤 순서로 만드는지 정한다.
