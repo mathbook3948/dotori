@@ -38,3 +38,5 @@
 
 - [에이전트 실행](architecture/agents.md): 메인 대화와 하위 작업을 무엇으로 실행하는지
 - [MCP](architecture/mcp.md): 에이전트가 쓰는 도구를 어떻게 제공하는지
+- [메모리](architecture/memory.md): 비서가 오래 기억을 유지하는 방법
+- [그래프 DB](architecture/graph.md): 메모리의 대상과 관계를 저장하는 그래프 DB
