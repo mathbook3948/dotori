@@ -6,6 +6,7 @@
 
 - [에이전트 실행](architecture/agents.md): 메인 대화와 하위 작업을 무엇으로 실행하는지 정한다.
 - [그래프 DB](architecture/graph.md): 메모리의 대상과 관계를 저장하고 질의하는 그래프 DB를 Rust로 직접 만든다.
+- [LLM 연결](architecture/llm.md): 메인 대화가 LLM API와 주고받는 방식을 정한다.
 - [MCP](architecture/mcp.md): 에이전트가 쓰는 도구를 어떻게 제공하는지 정한다.
 - [메모리](architecture/memory.md): 비서가 몇 달에서 몇 년 동안 기억을 유지하는 방법을 정한다.
 - [프로세스 구조](architecture/processes.md): dotori를 어떤 프로세스로 나눠 실행하는지 정한다.
