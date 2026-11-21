@@ -9,11 +9,14 @@ use crate::agent::ids::SubTaskId;
 use crate::agent::ids::ToolRunId;
 use crate::agent::roster::Roster;
 use crate::agent::threads::Threads;
+use crate::conversation::Action;
 use crate::conversation::Entry;
 use crate::id::ChannelId;
 use crate::id::ExternalMessageId;
+use crate::sub_task::SubTaskOutcome;
 use crate::sub_task::SubTaskSpec;
 use crate::tool::ToolCallId;
+use crate::tool::ToolError;
 
 /// Everything the agent knows. Owned by the single consumer of the queue, so it needs no lock.
 pub(crate) struct AgentState {
@@ -28,23 +31,61 @@ pub(crate) struct AgentState {
 
 impl AgentState {
     /// Resumes a conversation loaded from the raw record. Threads are interned again in
-    /// arrival order, so every recorded `ThreadRef` points at the same place.
+    /// arrival order, so every recorded `ThreadRef` points at the same place, and recent
+    /// message ids are seen again. Work that was running when the process stopped never
+    /// returns, so it gets a result that says so, appended after the loaded entries.
     pub(crate) fn resume(
         roster: Roster,
         seen_capacity: NonZeroUsize,
         conversation: Vec<Entry>,
     ) -> Self {
-        let mut threads = Threads::default();
+        let mut state = Self::new(roster, seen_capacity);
+        let mut tools = Vec::new();
+        let mut delegated = Vec::new();
         for entry in &conversation {
-            if let Entry::Heard { message, .. } = entry {
-                threads.intern(message.address.clone());
+            match entry {
+                Entry::Heard { message, .. } => {
+                    state.threads.intern(message.address.clone());
+                    state.seen.first_time(MessageKey {
+                        channel: message.address.channel.clone(),
+                        message: message.id.clone(),
+                    });
+                }
+                Entry::Acted(actions) => {
+                    for action in actions {
+                        match action {
+                            Action::UseTool(call) => tools.push(call.id.clone()),
+                            Action::Delegate(spec) => delegated.push(spec.clone()),
+                            Action::Say { .. } => {}
+                        }
+                    }
+                }
+                Entry::ToolReturned { call, .. } => tools.retain(|running| running != call),
+                Entry::SubTaskReturned { spec, .. } => {
+                    if let Some(index) = delegated.iter().position(|running| running == spec) {
+                        delegated.remove(index);
+                    }
+                }
+                _ => {}
             }
         }
-        Self {
-            conversation,
-            threads,
-            ..Self::new(roster, seen_capacity)
+        state.conversation = conversation;
+        let stopped = String::from("stopped by a restart");
+        for call in tools {
+            state.conversation.push(Entry::ToolReturned {
+                call,
+                result: Err(ToolError {
+                    detail: stopped.clone(),
+                }),
+            });
         }
+        for spec in delegated {
+            state.conversation.push(Entry::SubTaskReturned {
+                spec,
+                outcome: SubTaskOutcome::Failed(stopped.clone()),
+            });
+        }
+        state
     }
 
     pub(crate) fn new(roster: Roster, seen_capacity: NonZeroUsize) -> Self {

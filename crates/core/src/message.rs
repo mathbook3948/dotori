@@ -82,8 +82,8 @@ pub struct Sender {
 
 /// An inbound message after core stamped its channel and resolved its sender.
 #[derive(Clone, Debug)]
-#[non_exhaustive]
 pub struct Message {
+    pub id: ExternalMessageId,
     pub address: Address,
     pub sender: Sender,
     pub content: Content,

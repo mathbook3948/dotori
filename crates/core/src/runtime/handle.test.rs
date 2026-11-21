@@ -5,6 +5,7 @@ use std::sync::Mutex;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
+use std::time::SystemTime;
 
 use tokio::runtime;
 use tokio::sync::mpsc;
@@ -18,10 +19,18 @@ use crate::conversation::Action;
 use crate::conversation::Entry;
 use crate::conversation::ThreadRef;
 use crate::id::ChannelUser;
+use crate::id::ExternalMessageId;
+use crate::id::ExternalUserId;
 use crate::llm::ModelError;
 use crate::llm::ModelReply;
 use crate::llm::ModelRequest;
+use crate::message::Address;
+use crate::message::Content;
+use crate::message::Message;
 use crate::message::Place;
+use crate::message::Role;
+use crate::message::Sender;
+use crate::record::Record;
 use crate::runtime::fakes::FakeChannel;
 use crate::runtime::fakes::FakeChannelProbe;
 use crate::runtime::fakes::FnModel;
@@ -639,5 +648,136 @@ fn spawn_fails_when_the_record_cannot_be_loaded() {
         let result = Agent::spawn(config(Duration::from_secs(1)), ports).await;
 
         assert!(matches!(result, Err(SpawnError::Load(_))));
+    });
+}
+
+#[test]
+fn refused_record_is_retried_while_the_agent_is_idle() {
+    block_on(async {
+        let store = Arc::new(MemoryStore::default());
+        store.failing_appends.store(2, Ordering::SeqCst);
+        let (app, mut probe) = FakeChannel::new("app");
+        let mut ports = ports(app, Vec::new());
+        ports.model = Arc::new(echo_model());
+        ports.records = Arc::clone(&store) as _;
+        let agent = Agent::spawn(config(Duration::from_secs(1)), ports)
+            .await
+            .expect("valid");
+
+        owner_says(&probe, "m1", "only message");
+        next(&mut probe.delivered).await;
+
+        time::timeout(Duration::from_secs(5), async {
+            while heard_texts(&stored(&store)).is_empty() {
+                time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("record stored without another message");
+        agent.shutdown().await;
+    });
+}
+
+#[test]
+fn message_redelivered_after_a_restart_is_heard_once() {
+    block_on(async {
+        let store = Arc::new(MemoryStore::default());
+        let (app, mut probe) = FakeChannel::new("app");
+        let mut first = ports(app, Vec::new());
+        first.model = Arc::new(echo_model());
+        first.records = Arc::clone(&store) as _;
+        let agent = Agent::spawn(config(Duration::from_secs(1)), first)
+            .await
+            .expect("valid");
+        owner_says(&probe, "m1", "hi");
+        next(&mut probe.delivered).await;
+        agent.shutdown().await;
+
+        let (app, probe) = FakeChannel::new("app");
+        let (asked_tx, mut asked) = mpsc::unbounded_channel();
+        let mut second = ports(app, Vec::new());
+        second.model = Arc::new(model(move |request| {
+            let _ = asked_tx.send(heard_texts(&request.conversation));
+            silence()
+        }));
+        second.records = Arc::clone(&store) as _;
+        let agent = Agent::spawn(config(Duration::from_secs(1)), second)
+            .await
+            .expect("valid");
+        owner_says(&probe, "m1", "hi");
+        owner_says(&probe, "m2", "still there?");
+
+        assert_eq!(next(&mut asked).await, vec!["hi", "still there?"]);
+        agent.shutdown().await;
+    });
+}
+
+fn record(entry: Entry) -> Record {
+    Record {
+        at: SystemTime::now(),
+        entry,
+    }
+}
+
+#[test]
+fn work_cut_off_by_a_restart_is_reported_as_stopped() {
+    block_on(async {
+        let research = SubTaskSpec {
+            title: String::from("research"),
+            brief: String::from("look into it"),
+        };
+        let store = Arc::new(MemoryStore::default());
+        store.records.lock().expect("unpoisoned").extend([
+            record(Entry::Heard {
+                thread: ThreadRef::new(0),
+                message: Message {
+                    id: ExternalMessageId::new("m1"),
+                    address: Address {
+                        channel: channel_id("app"),
+                        place: Place::new("main"),
+                    },
+                    sender: Sender {
+                        id: ExternalUserId::new("me"),
+                        name: String::from("me"),
+                        role: Role::Owner,
+                    },
+                    content: Content::parse("read it and research").expect("non-empty"),
+                },
+            }),
+            record(Entry::Acted(vec![
+                tool_call(),
+                Action::Delegate(research.clone()),
+            ])),
+        ]);
+        let (app, probe) = FakeChannel::new("app");
+        let (asked_tx, mut asked) = mpsc::unbounded_channel();
+        let mut ports = ports(app, Vec::new());
+        ports.model = Arc::new(model(move |request| {
+            let _ = asked_tx.send(request);
+            silence()
+        }));
+        ports.records = Arc::clone(&store) as _;
+        let agent = Agent::spawn(config(Duration::from_secs(1)), ports)
+            .await
+            .expect("valid");
+
+        owner_says(&probe, "m2", "where were we?");
+
+        let request = next(&mut asked).await;
+        let error = tool_result(&request)
+            .expect("tool result")
+            .expect_err("stopped");
+        assert!(error.detail.contains("restart"), "{}", error.detail);
+        match sub_task_outcome(&request) {
+            Some(SubTaskOutcome::Failed(detail)) => assert!(detail.contains("restart"), "{detail}"),
+            other => panic!("expected a stopped sub-task, got {other:?}"),
+        }
+        agent.shutdown().await;
+        assert!(
+            stored(&store)
+                .iter()
+                .any(|entry| matches!(entry, Entry::ToolReturned { .. })),
+            "the stopped result is recorded"
+        );
     });
 }
