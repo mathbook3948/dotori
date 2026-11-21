@@ -5,6 +5,7 @@ pub mod conversation;
 pub mod id;
 pub mod llm;
 pub mod message;
+pub mod record;
 pub mod runtime;
 pub mod sub_task;
 pub mod tool;

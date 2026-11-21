@@ -27,6 +27,26 @@ pub(crate) struct AgentState {
 }
 
 impl AgentState {
+    /// Resumes a conversation loaded from the raw record. Threads are interned again in
+    /// arrival order, so every recorded `ThreadRef` points at the same place.
+    pub(crate) fn resume(
+        roster: Roster,
+        seen_capacity: NonZeroUsize,
+        conversation: Vec<Entry>,
+    ) -> Self {
+        let mut threads = Threads::default();
+        for entry in &conversation {
+            if let Entry::Heard { message, .. } = entry {
+                threads.intern(message.address.clone());
+            }
+        }
+        Self {
+            conversation,
+            threads,
+            ..Self::new(roster, seen_capacity)
+        }
+    }
+
     pub(crate) fn new(roster: Roster, seen_capacity: NonZeroUsize) -> Self {
         Self {
             conversation: Vec::new(),

@@ -27,6 +27,7 @@ use crate::runtime::fakes::FakeChannelProbe;
 use crate::runtime::fakes::FnModel;
 use crate::runtime::fakes::FnSubTasks;
 use crate::runtime::fakes::FnToolbox;
+use crate::runtime::fakes::MemoryStore;
 use crate::runtime::fakes::channel_id;
 use crate::runtime::fakes::incoming;
 use crate::runtime::fakes::next;
@@ -142,7 +143,9 @@ fn owner_message_on_the_app_gets_a_reply() {
         let (app, mut probe) = FakeChannel::new("app");
         let mut ports = ports(app, Vec::new());
         ports.model = Arc::new(echo_model());
-        let agent = Agent::spawn(config(Duration::from_secs(1)), ports).expect("valid");
+        let agent = Agent::spawn(config(Duration::from_secs(1)), ports)
+            .await
+            .expect("valid");
 
         owner_says(&probe, "m1", "hi");
 
@@ -162,7 +165,9 @@ fn other_channel_traffic_and_its_reply_are_shown_on_the_app() {
         let slack: Arc<dyn Channel> = slack;
         let mut ports = ports(app, vec![slack]);
         ports.model = Arc::new(echo_model());
-        let agent = Agent::spawn(config(Duration::from_secs(1)), ports).expect("valid");
+        let agent = Agent::spawn(config(Duration::from_secs(1)), ports)
+            .await
+            .expect("valid");
 
         slack_probe
             .say
@@ -190,7 +195,9 @@ fn panicking_tool_is_reported(toolbox: FnToolbox) {
         let mut ports = ports(app, Vec::new());
         ports.model = Arc::new(tool_then_report(seen_tx));
         ports.toolbox = Arc::new(toolbox);
-        let agent = Agent::spawn(config(Duration::from_secs(1)), ports).expect("valid");
+        let agent = Agent::spawn(config(Duration::from_secs(1)), ports)
+            .await
+            .expect("valid");
 
         owner_says(&probe, "m1", "read it");
 
@@ -220,7 +227,9 @@ fn slow_tool_times_out() {
         let mut ports = ports(app, Vec::new());
         ports.model = Arc::new(tool_then_report(seen_tx));
         ports.toolbox = Arc::new(FnToolbox(Box::new(|_| Box::pin(future::pending()))));
-        let agent = Agent::spawn(config(Duration::from_millis(50)), ports).expect("valid");
+        let agent = Agent::spawn(config(Duration::from_millis(50)), ports)
+            .await
+            .expect("valid");
 
         owner_says(&probe, "m1", "read it");
 
@@ -253,7 +262,9 @@ fn agent_recovers_from_a_panicking_model(
             Box::pin(async move { Ok(say(thread, "back")) })
         });
         ports.model = Arc::new(FnModel(answer));
-        let agent = Agent::spawn(config(Duration::from_secs(1)), ports).expect("valid");
+        let agent = Agent::spawn(config(Duration::from_secs(1)), ports)
+            .await
+            .expect("valid");
 
         owner_says(&probe, "m1", "hi");
         slack_probe
@@ -297,7 +308,9 @@ fn panicking_sub_task_is_reported_as_failed() {
             },
         }));
         ports.sub_tasks = Arc::new(FnSubTasks(Box::new(|_| panic!("runner crashed"))));
-        let agent = Agent::spawn(config(Duration::from_secs(1)), ports).expect("valid");
+        let agent = Agent::spawn(config(Duration::from_secs(1)), ports)
+            .await
+            .expect("valid");
 
         owner_says(&probe, "m1", "research this");
 
@@ -339,7 +352,9 @@ fn interrupted_model_call_is_dropped() {
             })
         });
         ports.model = Arc::new(FnModel(answer));
-        let agent = Agent::spawn(config(Duration::from_secs(1)), ports).expect("valid");
+        let agent = Agent::spawn(config(Duration::from_secs(1)), ports)
+            .await
+            .expect("valid");
 
         owner_says(&probe, "m1", "find my flight");
         next(&mut started).await;
@@ -380,7 +395,9 @@ fn shutdown_returns_while_a_model_call_and_a_sub_task_hang() {
             let _ = started_tx.send("sub-task");
             Box::pin(future::pending())
         })));
-        let agent = Agent::spawn(config(Duration::from_secs(1)), ports).expect("valid");
+        let agent = Agent::spawn(config(Duration::from_secs(1)), ports)
+            .await
+            .expect("valid");
 
         owner_says(&probe, "m1", "research this");
         assert_eq!(next(&mut started).await, "sub-task");
@@ -417,7 +434,9 @@ fn shutdown_waits_for_a_running_tool() {
                 Ok(String::from("done"))
             })
         })));
-        let agent = Agent::spawn(config(Duration::from_secs(5)), ports).expect("valid");
+        let agent = Agent::spawn(config(Duration::from_secs(5)), ports)
+            .await
+            .expect("valid");
 
         owner_says(&probe, "m1", "read it");
         next(&mut started).await;
@@ -460,7 +479,9 @@ fn queued_reply_is_delivered_before_shutdown_returns() {
                 Ok(String::from("done"))
             })
         })));
-        let agent = Agent::spawn(config(Duration::from_secs(5)), ports).expect("valid");
+        let agent = Agent::spawn(config(Duration::from_secs(5)), ports)
+            .await
+            .expect("valid");
 
         owner_says(&probe, "m1", "read it");
         next(&mut started).await;
@@ -483,7 +504,9 @@ fn hung_delivery_does_not_hang_shutdown() {
             let _ = asked_tx.send(());
             say(last_heard(&request), "on it")
         }));
-        let agent = Agent::spawn(config(Duration::from_millis(100)), ports).expect("valid");
+        let agent = Agent::spawn(config(Duration::from_millis(100)), ports)
+            .await
+            .expect("valid");
 
         owner_says(&probe, "m1", "hi");
         next(&mut asked).await;
@@ -492,5 +515,129 @@ fn hung_delivery_does_not_hang_shutdown() {
         time::timeout(Duration::from_secs(5), agent.shutdown())
             .await
             .expect("shutdown finished");
+    });
+}
+
+fn heard_texts(entries: &[Entry]) -> Vec<String> {
+    entries
+        .iter()
+        .filter_map(|entry| match entry {
+            Entry::Heard { message, .. } => Some(message.content.as_str().to_owned()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn stored(store: &MemoryStore) -> Vec<Entry> {
+    store
+        .records
+        .lock()
+        .expect("unpoisoned")
+        .iter()
+        .map(|record| record.entry.clone())
+        .collect()
+}
+
+#[test]
+fn conversation_resumes_after_a_restart() {
+    block_on(async {
+        let store = Arc::new(MemoryStore::default());
+
+        let (app, mut probe) = FakeChannel::new("app");
+        let mut first = ports(app, Vec::new());
+        first.model = Arc::new(echo_model());
+        first.records = Arc::clone(&store) as _;
+        let agent = Agent::spawn(config(Duration::from_secs(1)), first)
+            .await
+            .expect("valid");
+        owner_says(&probe, "m1", "remember the blue door");
+        next(&mut probe.delivered).await;
+        agent.shutdown().await;
+
+        let (app, mut probe) = FakeChannel::new("app");
+        let (asked_tx, mut asked) = mpsc::unbounded_channel();
+        let mut second = ports(app, Vec::new());
+        second.model = Arc::new(model(move |request| {
+            let thread = match request.conversation.first() {
+                Some(Entry::Heard { thread, .. }) => *thread,
+                _ => panic!("the old message comes first"),
+            };
+            let _ = asked_tx.send(request.conversation);
+            say(thread, "still here")
+        }));
+        second.records = Arc::clone(&store) as _;
+        let agent = Agent::spawn(config(Duration::from_secs(1)), second)
+            .await
+            .expect("valid");
+        probe
+            .say
+            .send(incoming("m2", "side", "me", "which door?"))
+            .expect("channel alive");
+
+        let conversation = next(&mut asked).await;
+        assert_eq!(
+            heard_texts(&conversation),
+            vec!["remember the blue door", "which door?"]
+        );
+        assert!(
+            conversation
+                .iter()
+                .any(|entry| matches!(entry, Entry::Acted(_))),
+            "the earlier reply resumes too"
+        );
+        assert_eq!(
+            next(&mut probe.delivered).await,
+            (Place::new("main"), String::from("still here"))
+        );
+        agent.shutdown().await;
+    });
+}
+
+#[test]
+fn records_refused_by_the_store_are_appended_once_it_recovers() {
+    block_on(async {
+        let store = Arc::new(MemoryStore::default());
+        store.failing_appends.store(1, Ordering::SeqCst);
+        let (app, mut probe) = FakeChannel::new("app");
+        let mut ports = ports(app, Vec::new());
+        ports.model = Arc::new(echo_model());
+        ports.records = Arc::clone(&store) as _;
+        let agent = Agent::spawn(config(Duration::from_secs(1)), ports)
+            .await
+            .expect("valid");
+
+        owner_says(&probe, "m1", "first");
+        next(&mut probe.delivered).await;
+        owner_says(&probe, "m2", "second");
+        next(&mut probe.delivered).await;
+        agent.shutdown().await;
+
+        let entries = stored(&store);
+        assert_eq!(heard_texts(&entries), vec!["first", "second"]);
+        let kinds: Vec<&str> = entries
+            .iter()
+            .map(|entry| match entry {
+                Entry::Heard { .. } => "heard",
+                Entry::Acted(_) => "acted",
+                _ => "other",
+            })
+            .collect();
+        assert_eq!(kinds, vec!["heard", "acted", "heard", "acted"]);
+    });
+}
+
+#[test]
+fn spawn_fails_when_the_record_cannot_be_loaded() {
+    block_on(async {
+        let (app, _probe) = FakeChannel::new("app");
+        let mut ports = ports(app, Vec::new());
+        ports.records = Arc::new(MemoryStore {
+            failing_load: true,
+            ..MemoryStore::default()
+        });
+
+        let result = Agent::spawn(config(Duration::from_secs(1)), ports).await;
+
+        assert!(matches!(result, Err(SpawnError::Load(_))));
     });
 }

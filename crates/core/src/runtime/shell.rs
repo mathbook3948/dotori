@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
+use std::time::SystemTime;
 
 use tokio::sync::mpsc;
 use tokio::task::AbortHandle;
@@ -16,6 +17,7 @@ use crate::channel::AppWindow;
 use crate::channel::Channel;
 use crate::channel::ChannelError;
 use crate::channel::Traffic;
+use crate::conversation::Entry;
 use crate::conversation::ThreadRef;
 use crate::id::ChannelId;
 use crate::llm::Model;
@@ -23,6 +25,8 @@ use crate::llm::ModelError;
 use crate::llm::ModelRequest;
 use crate::message::Address;
 use crate::message::Place;
+use crate::record::Record;
+use crate::record::RecordStore;
 use crate::runtime::Ports;
 use crate::runtime::caught::caught;
 use crate::runtime::inbox::ChannelInbox;
@@ -37,6 +41,7 @@ pub(crate) struct Shell {
     rx: mpsc::Receiver<Event>,
     tx: mpsc::Sender<Event>,
     shows: mpsc::UnboundedSender<Traffic>,
+    records: mpsc::UnboundedSender<Record>,
     outboxes: HashMap<ChannelId, mpsc::UnboundedSender<Delivery>>,
     model: Arc<dyn Model>,
     toolbox: Arc<dyn Toolbox>,
@@ -65,6 +70,7 @@ impl Shell {
         let mut tasks = JoinSet::new();
         let mut senders = JoinSet::new();
         let shows = spawn_show_worker(&mut senders, Arc::clone(&ports.app));
+        let records = spawn_record_writer(&mut senders, ports.records);
         let app: Arc<dyn Channel> = ports.app;
         let mut outboxes = HashMap::new();
         for channel in std::iter::once(app).chain(ports.channels) {
@@ -76,6 +82,7 @@ impl Shell {
             rx,
             tx,
             shows,
+            records,
             outboxes,
             model: ports.model,
             toolbox: ports.toolbox,
@@ -92,7 +99,10 @@ impl Shell {
             if let Event::ModelDone { call, .. } = &event {
                 self.model_calls.remove(call);
             }
-            for effect in step(&mut state, event) {
+            let recorded = state.conversation.len();
+            let effects = step(&mut state, event);
+            self.record(&state.conversation[recorded..]);
+            for effect in effects {
                 if matches!(effect, Effect::Stop) {
                     break 'events;
                 }
@@ -107,12 +117,23 @@ impl Shell {
         self.rx.close();
         drop(self.outboxes);
         drop(self.shows);
+        drop(self.records);
         let _ = time::timeout(self.tool_timeout, async {
             while self.senders.join_next().await.is_some() {}
         })
         .await;
         self.senders.shutdown().await;
         self.tasks.shutdown().await;
+    }
+
+    fn record(&self, entries: &[Entry]) {
+        let at = SystemTime::now();
+        for entry in entries {
+            let _ = self.records.send(Record {
+                at,
+                entry: entry.clone(),
+            });
+        }
     }
 
     fn execute(&mut self, effect: Effect) {
@@ -233,4 +254,28 @@ fn spawn_show_worker(
         }
     });
     shows
+}
+
+fn spawn_record_writer(
+    senders: &mut JoinSet<()>,
+    store: Arc<dyn RecordStore>,
+) -> mpsc::UnboundedSender<Record> {
+    let (records, mut incoming) = mpsc::unbounded_channel::<Record>();
+    senders.spawn(async move {
+        let mut pending = Vec::new();
+        while let Some(record) = incoming.recv().await {
+            pending.push(record);
+            while let Ok(record) = incoming.try_recv() {
+                pending.push(record);
+            }
+            let batch = pending.clone();
+            if let Ok(Ok(())) = caught(|| store.append(batch)).await {
+                pending.clear();
+            }
+        }
+        if !pending.is_empty() {
+            let _ = caught(|| store.append(pending)).await;
+        }
+    });
+    records
 }

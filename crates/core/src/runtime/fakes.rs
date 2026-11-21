@@ -1,6 +1,8 @@
 use std::future;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use tokio::sync::mpsc;
@@ -22,6 +24,9 @@ use crate::llm::ModelRequest;
 use crate::message::Content;
 use crate::message::Incoming;
 use crate::message::Place;
+use crate::record::Record;
+use crate::record::RecordError;
+use crate::record::RecordStore;
 use crate::runtime::Ports;
 use crate::sub_task::SubTaskOutcome;
 use crate::sub_task::SubTaskRunner;
@@ -190,5 +195,48 @@ pub(crate) fn ports(app: Arc<FakeChannel>, channels: Vec<Arc<dyn Channel>>) -> P
         model: idle_model(),
         toolbox: idle_toolbox(),
         sub_tasks: idle_sub_tasks(),
+        records: Arc::new(MemoryStore::default()),
+    }
+}
+
+/// A record store in memory. It can refuse the next few appends, or every load.
+#[derive(Default)]
+pub(crate) struct MemoryStore {
+    pub(crate) records: Mutex<Vec<Record>>,
+    pub(crate) failing_appends: AtomicUsize,
+    pub(crate) failing_load: bool,
+}
+
+impl RecordStore for MemoryStore {
+    fn load(&self) -> BoxFuture<'_, Result<Vec<Record>, RecordError>> {
+        let result = if self.failing_load {
+            Err(RecordError {
+                detail: String::from("disk unreadable"),
+            })
+        } else {
+            Ok(self.records.lock().expect("unpoisoned").clone())
+        };
+        Box::pin(async move { result })
+    }
+
+    fn append(&self, records: Vec<Record>) -> BoxFuture<'_, Result<(), RecordError>> {
+        let refused = self
+            .failing_appends
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                left.checked_sub(1)
+            })
+            .is_ok();
+        if !refused {
+            self.records.lock().expect("unpoisoned").extend(records);
+        }
+        Box::pin(async move {
+            if refused {
+                Err(RecordError {
+                    detail: String::from("disk full"),
+                })
+            } else {
+                Ok(())
+            }
+        })
     }
 }
