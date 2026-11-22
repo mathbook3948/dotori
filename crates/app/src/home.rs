@@ -39,6 +39,16 @@ impl Home {
         self.root.join("daemon.lock")
     }
 
+    /// The keyword index over the raw record. It can always be made again from the record.
+    pub(crate) fn search_index(&self) -> PathBuf {
+        self.root.join("search.sqlite3")
+    }
+
+    /// Dictionaries for splitting words, fetched on first use.
+    pub(crate) fn dictionaries(&self) -> PathBuf {
+        self.root.join("dictionaries")
+    }
+
     /// The browser profile, which keeps the owner's logins.
     pub(crate) fn browser(&self) -> PathBuf {
         self.root.join("browser")
