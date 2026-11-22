@@ -60,6 +60,82 @@ impl Default for ModelSettings {
     }
 }
 
+/// What the settings window holds, each field already trimmed. A blank field means the default.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(
+    not(feature = "window"),
+    expect(dead_code, reason = "only the settings window reads a form")
+)]
+pub(crate) struct Form {
+    pub(crate) openai_compatible: bool,
+    pub(crate) model: Option<String>,
+    pub(crate) base_url: Option<String>,
+    pub(crate) api_key_env: Option<String>,
+    pub(crate) effort: Option<String>,
+}
+
+#[cfg_attr(
+    not(feature = "window"),
+    expect(dead_code, reason = "only the settings window reads a form")
+)]
+impl Form {
+    pub(crate) fn of(settings: &ModelSettings) -> Self {
+        match settings.clone() {
+            ModelSettings::Anthropic {
+                api_key_env,
+                model,
+                base_url,
+                effort,
+                ..
+            } => Self {
+                openai_compatible: false,
+                model,
+                base_url,
+                api_key_env,
+                effort,
+            },
+            ModelSettings::OpenaiCompatible {
+                base_url,
+                model,
+                api_key_env,
+                ..
+            } => Self {
+                openai_compatible: true,
+                model: Some(model),
+                base_url: Some(base_url),
+                api_key_env,
+                effort: None,
+            },
+        }
+    }
+
+    /// The settings this form describes. `earlier` keeps what the form does not show.
+    pub(crate) fn settings(self, earlier: &ModelSettings) -> Result<ModelSettings, String> {
+        let kept_max_tokens = match earlier {
+            ModelSettings::Anthropic { max_tokens, .. }
+            | ModelSettings::OpenaiCompatible { max_tokens, .. } => *max_tokens,
+        };
+        if !self.openai_compatible {
+            return Ok(ModelSettings::Anthropic {
+                api_key_env: self.api_key_env,
+                model: self.model,
+                base_url: self.base_url,
+                max_tokens: kept_max_tokens,
+                effort: self.effort,
+            });
+        }
+        match (self.base_url, self.model) {
+            (Some(base_url), Some(model)) => Ok(ModelSettings::OpenaiCompatible {
+                base_url,
+                model,
+                api_key_env: self.api_key_env,
+                max_tokens: kept_max_tokens,
+            }),
+            _ => Err(String::from("OpenAI 호환 API는 주소와 모델이 필요합니다.")),
+        }
+    }
+}
+
 impl Settings {
     pub(crate) fn load(path: &Path) -> Result<Self, String> {
         match fs::read_to_string(path) {
@@ -69,6 +145,22 @@ impl Settings {
             Err(error) if error.kind() == ErrorKind::NotFound => Ok(Self::default()),
             Err(error) => Err(format!("{}: {error}", path.display())),
         }
+    }
+
+    #[cfg_attr(
+        not(feature = "window"),
+        expect(dead_code, reason = "only the settings window writes settings")
+    )]
+    /// Writes the whole file anew. A file left half written by a crash is never read.
+    pub(crate) fn save(&self, path: &Path) -> Result<(), String> {
+        let fail = |error: std::io::Error| format!("{}: {error}", path.display());
+        let text = toml::to_string(self).map_err(|error| error.to_string())?;
+        if let Some(folder) = path.parent() {
+            fs::create_dir_all(folder).map_err(fail)?;
+        }
+        let draft = path.with_extension("toml.new");
+        fs::write(&draft, text).map_err(fail)?;
+        fs::rename(&draft, path).map_err(fail)
     }
 
     /// Builds the main conversation's model, reading keys through `key`.

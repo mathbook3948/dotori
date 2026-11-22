@@ -12,3 +12,6 @@ allow_attributes_without_reason = "deny"
 
 [workspace.lints.rust]
 missing_debug_implementations = "warn"
+
+[patch.crates-io]
+xattr = { path = "vendor/xattr" }
