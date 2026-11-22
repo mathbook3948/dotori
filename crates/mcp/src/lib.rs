@@ -4,6 +4,7 @@
 pub mod browser;
 mod cdp;
 pub mod fetch;
+pub mod memory;
 pub mod server;
 
 use std::future::Future;

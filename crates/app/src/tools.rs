@@ -19,6 +19,8 @@ use dotori_mcp::Tool;
 use dotori_mcp::browser::Browser;
 use dotori_mcp::browser::BrowserConfig;
 use dotori_mcp::fetch::WebFetch;
+use dotori_mcp::memory::Memory;
+use dotori_mcp::memory::MemoryConfig;
 use dotori_mcp::server::PATH;
 use dotori_mcp::server::Server;
 use serde::Deserialize;
@@ -58,6 +60,12 @@ pub(crate) async fn serve(home: Home) -> Result<(), String> {
     });
     let mut tools: Vec<Box<dyn Tool>> = vec![Box::new(WebFetch::new()?)];
     tools.extend(browser.tools());
+    let memory = Memory::new(MemoryConfig {
+        record: home.record(),
+        index: home.search_index(),
+        dictionaries: home.dictionaries(),
+    });
+    tools.extend(memory.tools());
     let token = door::token()?;
     let listener = TcpListener::bind(("127.0.0.1", 0))
         .await
