@@ -16,5 +16,6 @@ confidence-threshold = 0.9
 exceptions = [
     { name = "cbindgen", allow = ["MPL-2.0"] },
     { name = "dwrote", allow = ["MPL-2.0"] },
+    { name = "ksni", allow = ["Unlicense"] },
     { name = "option-ext", allow = ["MPL-2.0"] },
 ]

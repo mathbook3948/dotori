@@ -1,4 +1,5 @@
 use std::fs;
+use std::future;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::Duration;
@@ -24,6 +25,16 @@ const TOOL_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Runs the agent until Ctrl-C or a terminate signal, with the app channel open for windows.
 pub(crate) async fn run(home: Home) -> Result<(), String> {
+    serve(home, || {}, future::pending()).await
+}
+
+/// Runs the agent like `run`. It calls `ready` once windows can connect, and also stops when
+/// `quit` completes.
+pub(crate) async fn serve(
+    home: Home,
+    ready: impl FnOnce(),
+    quit: impl Future<Output = ()>,
+) -> Result<(), String> {
     let _lock = DaemonLock::take(&home.lock())?;
     let settings = Settings::load(&home.settings())?;
     let model = settings.model(environment)?;
@@ -52,7 +63,11 @@ pub(crate) async fn run(home: Home) -> Result<(), String> {
         .map_err(|error| error.to_string())?;
     door.write(&home.door())?;
     eprintln!("dotori is running. Open a window with `dotori chat`.");
-    let stopped = stop_signal().await;
+    ready();
+    let stopped = tokio::select! {
+        stopped = stop_signal() => stopped,
+        () = quit => Ok(()),
+    };
     let _ = fs::remove_file(home.door());
     agent.shutdown().await;
     stopped
