@@ -6,10 +6,12 @@ license.workspace = true
 
 [dependencies]
 dotori-core = { path = "../core" }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 reqwest = { version = "0.13.5", default-features = false, features = ["native-tls", "http2"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
 tokio = { version = "1.54.1", default-features = false, features = ["rt", "time", "net", "io-util", "sync", "macros"] }
+tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["connect", "native-tls"] }
 
 [dev-dependencies]
 tokio = { version = "1.54.1", features = ["rt", "macros", "net", "io-util", "time"] }

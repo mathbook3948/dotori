@@ -125,3 +125,50 @@ fn saved_settings_load_back() {
 
     assert_eq!(Settings::load(&path).expect("loaded"), settings);
 }
+
+#[test]
+fn without_a_slack_section_there_is_no_other_channel() {
+    assert!(
+        Settings::default()
+            .channels(|_| None)
+            .expect("built")
+            .is_empty()
+    );
+}
+
+#[test]
+fn slack_takes_both_tokens_from_their_variables_and_names_the_owner() {
+    let settings = parse("[slack]\nowner = \"U012AB3CD\"").expect("parsed");
+    let missing = settings.channels(|_| None).err().expect("needs tokens");
+    assert!(missing.contains("SLACK_APP_TOKEN"), "{missing}");
+    let only_app = settings
+        .channels(|name| (name == "SLACK_APP_TOKEN").then(|| String::from("xapp")))
+        .err()
+        .expect("needs the bot token");
+    assert!(only_app.contains("SLACK_BOT_TOKEN"), "{only_app}");
+
+    let channels = settings
+        .channels(|_| Some(String::from("token")))
+        .expect("built");
+    assert_eq!(channels.len(), 1);
+    let (channel, owner) = &channels[0];
+    assert_eq!(channel.id().as_str(), "slack");
+    let owner = owner.as_ref().expect("owner set");
+    assert_eq!(owner.channel.as_str(), "slack");
+    assert_eq!(owner.user.as_str(), "U012AB3CD");
+}
+
+#[test]
+fn a_slack_token_written_into_the_file_is_refused() {
+    assert!(parse("[slack]\nbot_token = \"xoxb-1\"").is_err());
+}
+
+#[test]
+fn slack_settings_survive_a_save() {
+    let settings = parse(
+        "[model]\nprovider = \"anthropic\"\n\n[slack]\nbot_token_env = \"MY_BOT\"\nowner = \"U1\"",
+    )
+    .expect("parsed");
+    let text = toml::to_string(&settings).expect("written");
+    assert_eq!(parse(&text).expect("read back"), settings);
+}

@@ -14,14 +14,13 @@ use gpui::rgb;
 
 use crate::home::Home;
 use crate::settings::Form;
-use crate::settings::ModelSettings;
 use crate::settings::Settings;
 use crate::window::input::TextInput;
 
 /// The settings window. It writes `settings.toml`, which the daemon reads when it starts.
 pub(crate) struct SettingsView {
     home: Home,
-    earlier: ModelSettings,
+    earlier: Settings,
     openai_compatible: bool,
     model: Entity<TextInput>,
     base_url: Entity<TextInput>,
@@ -49,7 +48,7 @@ impl SettingsView {
         };
         Self {
             home,
-            earlier: settings.model,
+            earlier: settings,
             openai_compatible: form.openai_compatible,
             model: field("기본값 사용", form.model, cx),
             base_url: field("기본값 사용", form.base_url, cx),
@@ -98,12 +97,13 @@ impl SettingsView {
 
     fn save(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
         let form = self.form(cx);
-        let saved = form.settings(&self.earlier).and_then(|model| {
-            Settings {
-                model: model.clone(),
-            }
-            .save(&self.home.settings())?;
-            self.earlier = model;
+        let saved = form.settings(&self.earlier.model).and_then(|model| {
+            let settings = Settings {
+                model,
+                ..self.earlier.clone()
+            };
+            settings.save(&self.home.settings())?;
+            self.earlier = settings;
             Ok(())
         });
         self.note = Some(SharedString::from(match saved {

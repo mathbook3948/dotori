@@ -10,6 +10,7 @@
 - [MCP](architecture/mcp.md): 에이전트가 쓰는 도구를 어떻게 제공하는지 정한다.
 - [메모리](architecture/memory.md): 비서가 몇 달에서 몇 년 동안 기억을 유지하는 방법을 정한다.
 - [프로세스 구조](architecture/processes.md): dotori를 어떤 프로세스로 나눠 실행하는지 정한다.
+- [Slack 연결](architecture/slack.md): Slack 채널이 무엇을 듣고 어디에 답하는지 정한다.
 
 ## product
 
