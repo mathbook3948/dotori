@@ -1,5 +1,6 @@
 use std::convert::Infallible;
 use std::sync::Arc;
+use std::time::Duration;
 
 use http_body_util::BodyExt;
 use http_body_util::Full;
@@ -16,17 +17,25 @@ use hyper::header::ORIGIN;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
+use hyper_util::rt::TokioTimer;
 use serde_json::Value;
 use serde_json::json;
 use tokio::net::TcpListener;
+use tokio::sync::Semaphore;
+use tokio::time;
 
 use crate::Tool;
 
 /// The only path the server answers on.
 pub const PATH: &str = "/mcp";
 /// The protocol versions the server speaks, newest first.
-pub const VERSIONS: [&str; 3] = ["2025-11-25", "2025-06-18", "2025-03-26"];
+pub const VERSIONS: [&str; 2] = ["2025-11-25", "2025-06-18"];
+const PROTOCOL: &str = "mcp-protocol-version";
 const MAX_BODY: usize = 4 * 1024 * 1024;
+const MAX_CONNECTIONS: usize = 64;
+const HEADER_WAIT: Duration = Duration::from_secs(10);
+const BODY_WAIT: Duration = Duration::from_secs(30);
+const ACCEPT_PAUSE: Duration = Duration::from_millis(50);
 const PARSE_ERROR: i64 = -32700;
 const INVALID_REQUEST: i64 = -32600;
 const NO_METHOD: i64 = -32601;
@@ -55,17 +64,28 @@ impl Server {
     /// Serves every connection on `listener` until the future is dropped.
     pub async fn serve(self, listener: TcpListener) {
         let server = Arc::new(self);
+        let open = Arc::new(Semaphore::new(MAX_CONNECTIONS));
         loop {
-            let Ok((stream, _)) = listener.accept().await else {
-                continue;
+            let Ok(permit) = Arc::clone(&open).acquire_owned().await else {
+                return;
+            };
+            let stream = match listener.accept().await {
+                Ok((stream, _)) => stream,
+                Err(_) => {
+                    time::sleep(ACCEPT_PAUSE).await;
+                    continue;
+                }
             };
             let server = Arc::clone(&server);
             tokio::spawn(async move {
+                let _permit = permit;
                 let service = service_fn(move |request| {
                     let server = Arc::clone(&server);
                     async move { Ok::<_, Infallible>(server.handle(request).await) }
                 });
                 let _ = http1::Builder::new()
+                    .timer(TokioTimer::new())
+                    .header_read_timeout(HEADER_WAIT)
                     .serve_connection(TokioIo::new(stream), service)
                     .await;
             });
@@ -93,9 +113,21 @@ impl Server {
         if request.method() != Method::POST {
             return plain(StatusCode::METHOD_NOT_ALLOWED);
         }
-        let body = match Limited::new(request.into_body(), MAX_BODY).collect().await {
-            Ok(body) => body.to_bytes(),
-            Err(_) => return plain(StatusCode::PAYLOAD_TOO_LARGE),
+        if let Some(version) = request.headers().get(PROTOCOL)
+            && !VERSIONS
+                .iter()
+                .any(|known| version.as_bytes() == known.as_bytes())
+        {
+            return plain(StatusCode::BAD_REQUEST);
+        }
+        let read = time::timeout(
+            BODY_WAIT,
+            Limited::new(request.into_body(), MAX_BODY).collect(),
+        );
+        let body = match read.await {
+            Ok(Ok(body)) => body.to_bytes(),
+            Ok(Err(_)) => return plain(StatusCode::PAYLOAD_TOO_LARGE),
+            Err(_) => return plain(StatusCode::REQUEST_TIMEOUT),
         };
         match self.answer(&body).await {
             Some(reply) => Response::builder()

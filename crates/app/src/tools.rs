@@ -2,10 +2,17 @@
 //! line it prints, and stops it by closing its input.
 
 use std::env;
+use std::fmt;
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Duration;
 
 use dotori_connectors::tool::mcp::McpTools;
+use dotori_core::BoxFuture;
+use dotori_core::tool::ToolCall;
+use dotori_core::tool::ToolError;
+use dotori_core::tool::ToolSpec;
+use dotori_core::tool::Toolbox;
 use dotori_mcp::Tool;
 use dotori_mcp::fetch::WebFetch;
 use dotori_mcp::server::PATH;
@@ -19,6 +26,7 @@ use tokio::io::BufReader;
 use tokio::net::TcpListener;
 use tokio::process::Child;
 use tokio::process::Command;
+use tokio::sync::Mutex;
 use tokio::time;
 
 use crate::door;
@@ -62,8 +70,58 @@ pub(crate) async fn serve() -> Result<(), String> {
     Ok(())
 }
 
-/// Starts `dotori mcp` and connects to it. The server stops when the returned child is dropped.
-pub(crate) async fn start() -> Result<(Child, McpTools), String> {
+/// The shared tools of a `dotori mcp` child. A child that died is started again before the next
+/// call, so a crash costs one restart rather than every later call.
+pub(crate) struct SharedTools {
+    specs: Vec<ToolSpec>,
+    running: Mutex<Running>,
+}
+
+struct Running {
+    child: Child,
+    tools: Arc<McpTools>,
+}
+
+impl fmt::Debug for SharedTools {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SharedTools").finish_non_exhaustive()
+    }
+}
+
+impl SharedTools {
+    pub(crate) async fn start() -> Result<Self, String> {
+        let running = launch().await?;
+        Ok(Self {
+            specs: running.tools.specs(),
+            running: Mutex::new(running),
+        })
+    }
+
+    async fn call(&self, call: ToolCall) -> Result<String, ToolError> {
+        let tools = {
+            let mut running = self.running.lock().await;
+            if !matches!(running.child.try_wait(), Ok(None)) {
+                *running = launch().await.map_err(|error| ToolError {
+                    detail: format!("the tool server stopped and did not start again: {error}"),
+                })?;
+            }
+            Arc::clone(&running.tools)
+        };
+        tools.run(call).await
+    }
+}
+
+impl Toolbox for SharedTools {
+    fn specs(&self) -> Vec<ToolSpec> {
+        self.specs.clone()
+    }
+
+    fn run(&self, call: ToolCall) -> BoxFuture<'_, Result<String, ToolError>> {
+        Box::pin(self.call(call))
+    }
+}
+
+async fn launch() -> Result<Running, String> {
     let exe = env::current_exe().map_err(|error| error.to_string())?;
     let mut child = Command::new(exe)
         .arg("mcp")
@@ -73,14 +131,24 @@ pub(crate) async fn start() -> Result<(Child, McpTools), String> {
         .spawn()
         .map_err(|error| format!("cannot start the MCP server: {error}"))?;
     let stdout = child.stdout.take().ok_or("the MCP server has no output")?;
-    let first = time::timeout(START_WAIT, BufReader::new(stdout).lines().next_line())
+    let mut reader = BufReader::new(stdout);
+    let mut first = String::new();
+    let read = time::timeout(START_WAIT, reader.read_line(&mut first))
         .await
         .map_err(|_| String::from("the MCP server did not start in time"))?
-        .map_err(|error| error.to_string())?
-        .ok_or("the MCP server ended at once")?;
-    let listening: Listening = serde_json::from_str(&first)
-        .map_err(|error| format!("the MCP server said `{first}`: {error}"))?;
+        .map_err(|error| error.to_string())?;
+    if read == 0 {
+        return Err(String::from("the MCP server ended at once"));
+    }
+    tokio::spawn(async move {
+        let _ = tokio::io::copy(&mut reader, &mut tokio::io::sink()).await;
+    });
+    let listening: Listening = serde_json::from_str(first.trim())
+        .map_err(|error| format!("the MCP server said `{}`: {error}", first.trim()))?;
     let url = format!("http://127.0.0.1:{}{PATH}", listening.port);
     let tools = McpTools::connect(url, listening.token).await?;
-    Ok((child, tools))
+    Ok(Running {
+        child,
+        tools: Arc::new(tools),
+    })
 }

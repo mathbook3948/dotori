@@ -20,10 +20,22 @@ fn only_public_addresses_are_public() {
         "fc00::1",
         "fe80::1",
         "::ffff:127.0.0.1",
+        "::127.0.0.1",
+        "64:ff9b::7f00:1",
+        "2002:7f00:1::",
+        "2001::1",
+        "2001:db8::1",
+        "fec0::1",
+        "192.0.0.8",
     ] {
         assert!(!public(ip(private)), "{private}");
     }
-    for open in ["1.1.1.1", "93.184.215.14", "2606:4700::1111"] {
+    for open in [
+        "1.1.1.1",
+        "93.184.215.14",
+        "2606:4700::1111",
+        "2002:101:101::",
+    ] {
         assert!(public(ip(open)), "{open}");
     }
 }
@@ -39,6 +51,7 @@ fn only_http_to_hosts_not_written_as_private_is_allowed() {
         "http://127.0.0.1:8080/",
         "http://[::1]/",
         "http://localhost/",
+        "http://localhost./",
         "http://app.localhost/",
         "http://192.168.0.1/admin",
     ] {
@@ -79,6 +92,7 @@ fn a_long_page_comes_in_parts() {
     assert!(first.contains("start_index 3"), "{first}");
     assert_eq!(window(text, 3, 100), "라마바사");
     assert!(window(text, 50, 10).contains("7 characters"));
+    assert_eq!(window(text, 1, usize::MAX), "나다라마바사");
 }
 
 #[tokio::test]

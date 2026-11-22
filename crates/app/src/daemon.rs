@@ -45,11 +45,11 @@ pub(crate) async fn serve(
         Vec::new()
     });
     let (channels, owners): (Vec<_>, Vec<_>) = connected.into_iter().unzip();
-    let (_mcp, toolbox): (_, Arc<dyn Toolbox>) = match tools::start().await {
-        Ok((child, tools)) => (Some(child), Arc::new(tools)),
+    let toolbox: Arc<dyn Toolbox> = match tools::SharedTools::start().await {
+        Ok(tools) => Arc::new(tools),
         Err(error) => {
             eprintln!("dotori: no shared tools: {error}");
-            (None, Arc::new(NoTools))
+            Arc::new(NoTools)
         }
     };
     let token = door::token()?;

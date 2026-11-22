@@ -133,6 +133,16 @@ async fn http_needs_the_token_the_path_and_a_local_origin() {
             client
                 .post(&url)
                 .bearer_auth("secret")
+                .header("mcp-protocol-version", "1999-01-01")
+        )
+        .await,
+        400
+    );
+    assert_eq!(
+        send(
+            client
+                .post(&url)
+                .bearer_auth("secret")
                 .header("origin", "https://evil.example")
         )
         .await,

@@ -1,4 +1,5 @@
 use std::net::IpAddr;
+use std::net::Ipv4Addr;
 use std::net::SocketAddr;
 use std::time::Duration;
 
@@ -20,6 +21,7 @@ const TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_DOWNLOAD: usize = 5 * 1024 * 1024;
 const MAX_REDIRECTS: usize = 5;
 const DEFAULT_LENGTH: usize = 20_000;
+const MAX_LENGTH: usize = 200_000;
 const AGENT: &str = concat!("dotori/", env!("CARGO_PKG_VERSION"));
 
 /// Reads a web page as Markdown. It reaches only public addresses, so a page cannot steer it
@@ -31,10 +33,11 @@ pub struct WebFetch {
 
 impl WebFetch {
     pub fn new() -> Result<Self, String> {
-        let client = Client::builder()
-            .timeout(TIMEOUT)
-            .user_agent(AGENT)
-            .dns_resolver(PublicOnly)
+        let mut builder = Client::builder().timeout(TIMEOUT).user_agent(AGENT);
+        if !proxied() {
+            builder = builder.dns_resolver(PublicOnly);
+        }
+        let client = builder
             .redirect(redirect::Policy::custom(|attempt| {
                 if attempt.previous().len() >= MAX_REDIRECTS {
                     attempt.error("too many redirects")
@@ -59,7 +62,7 @@ impl WebFetch {
         let start = number(&arguments, "start_index").unwrap_or(0);
         let length = number(&arguments, "max_length")
             .unwrap_or(DEFAULT_LENGTH)
-            .max(1);
+            .clamp(1, MAX_LENGTH);
         let raw = arguments
             .get("raw")
             .and_then(Value::as_bool)
@@ -88,7 +91,10 @@ impl WebFetch {
             }
             body.extend_from_slice(&chunk);
         }
-        let page = window(&read(&kind, &body, raw)?, start, length);
+        let text = tokio::task::spawn_blocking(move || read(&kind, &body, raw))
+            .await
+            .map_err(|error| error.to_string())??;
+        let page = window(&text, start, length);
         if status.is_success() {
             Ok(page)
         } else {
@@ -137,7 +143,8 @@ pub(crate) fn allowed(url: &Url) -> Result<(), String> {
     {
         return Err(format!("{host} is not a public address"));
     }
-    if host.eq_ignore_ascii_case("localhost") || host.to_ascii_lowercase().ends_with(".localhost") {
+    let name = host.trim_end_matches('.').to_ascii_lowercase();
+    if name == "localhost" || name.ends_with(".localhost") {
         return Err(format!("{host} is this machine"));
     }
     Ok(())
@@ -158,18 +165,30 @@ pub(crate) fn public(address: IpAddr) -> bool {
                 || a == 0
                 || (a == 100 && (64..128).contains(&b))
                 || (a == 198 && (b == 18 || b == 19))
+                || (a == 192 && b == 0 && v4.octets()[2] == 0)
                 || a >= 240)
         }
         IpAddr::V6(v6) => {
             if let Some(v4) = v6.to_ipv4_mapped() {
                 return public(IpAddr::V4(v4));
             }
-            let first = v6.segments()[0];
+            let segments = v6.segments();
+            let first = segments[0];
+            if first == 0x2002 {
+                let [a, b] = segments[1].to_be_bytes();
+                let [c, d] = segments[2].to_be_bytes();
+                return public(IpAddr::V4(Ipv4Addr::new(a, b, c, d)));
+            }
             !(v6.is_loopback()
                 || v6.is_unspecified()
                 || v6.is_multicast()
+                || segments[..6].iter().all(|segment| *segment == 0)
+                || (first == 0x64 && segments[1] == 0xff9b)
+                || (first == 0x2001 && segments[1] == 0)
+                || (first == 0x2001 && segments[1] == 0xdb8)
                 || (first & 0xfe00) == 0xfc00
-                || (first & 0xffc0) == 0xfe80)
+                || (first & 0xffc0) == 0xfe80
+                || (first & 0xffc0) == 0xfec0)
         }
     }
 }
@@ -198,7 +217,7 @@ pub(crate) fn window(text: &str, start: usize, length: usize) -> String {
     if start >= total {
         return format!("[nothing at start_index {start}; the page has {total} characters]");
     }
-    let end = (start + length).min(total);
+    let end = start.saturating_add(length).min(total);
     let part: String = text.chars().skip(start).take(end - start).collect();
     if end < total {
         format!(
@@ -208,6 +227,20 @@ pub(crate) fn window(text: &str, start: usize, length: usize) -> String {
     } else {
         part
     }
+}
+
+/// With a proxy the proxy looks names up, so only addresses written in the URL are checked here.
+pub(crate) fn proxied() -> bool {
+    [
+        "HTTPS_PROXY",
+        "https_proxy",
+        "HTTP_PROXY",
+        "http_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+    ]
+    .iter()
+    .any(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty()))
 }
 
 fn number(arguments: &Value, key: &str) -> Option<usize> {
