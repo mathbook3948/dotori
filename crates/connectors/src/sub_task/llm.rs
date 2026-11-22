@@ -78,6 +78,7 @@ impl LlmRunner {
             let request = ModelRequest {
                 conversation: conversation.clone(),
                 tools: self.toolbox.specs(),
+                context: None,
             };
             let reply = match self.model.complete(request).await {
                 Ok(reply) => reply,

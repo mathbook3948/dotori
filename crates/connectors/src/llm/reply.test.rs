@@ -81,3 +81,10 @@ fn built_in_tools_come_first_and_win_a_name_clash() {
         serde_json::from_str::<serde_json::Value>(&spec.input_schema).expect("valid schema");
     }
 }
+
+#[test]
+fn a_blank_context_leaves_the_system_prompt_alone() {
+    assert_eq!(system("base", None), "base");
+    assert_eq!(system("base", Some("  ")), "base");
+    assert_eq!(system("base", Some("more")), "base\n\nmore");
+}

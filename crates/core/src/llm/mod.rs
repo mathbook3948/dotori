@@ -10,6 +10,9 @@ use crate::tool::ToolSpec;
 pub struct ModelRequest {
     pub conversation: Vec<Entry>,
     pub tools: Vec<ToolSpec>,
+    /// What the app adds to the model's instructions, such as the owner's profile. Core leaves
+    /// it empty.
+    pub context: Option<String>,
 }
 
 #[derive(Clone, Debug)]

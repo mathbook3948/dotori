@@ -48,6 +48,7 @@ fn request(conversation: Vec<Entry>) -> ModelRequest {
                 r#"{"type":"object","properties":{"path":{"type":"string"}}}"#,
             ),
         }],
+        context: None,
     }
 }
 
@@ -271,4 +272,18 @@ fn a_reply_with_a_blank_text_block_is_not_replayed_raw() {
 
     assert_eq!(reply.actions.len(), 1);
     assert!(reply.trace.is_none());
+}
+
+#[test]
+fn the_app_context_follows_the_system_prompt() {
+    let config = AnthropicConfig::new("key");
+    let mut asked = request(vec![heard("hi")]);
+    asked.context = Some(String::from("The owner likes tea."));
+
+    let body = sent(&config, &asked);
+
+    assert_eq!(
+        body["system"],
+        format!("{DEFAULT_SYSTEM}\n\nThe owner likes tea.")
+    );
 }

@@ -125,7 +125,7 @@ fn body(config: &AnthropicConfig, request: &ModelRequest) -> Result<String, Mode
     let mut body = json!({
         "model": config.model,
         "max_tokens": config.max_tokens,
-        "system": config.system,
+        "system": reply::system(&config.system, request.context.as_deref()),
         "messages": messages,
         "tools": tools,
         "tool_choice": { "type": "auto" },

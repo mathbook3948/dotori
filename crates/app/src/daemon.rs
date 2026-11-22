@@ -12,6 +12,7 @@ use dotori_connectors::sub_task::cli::CliRunner;
 use dotori_connectors::sub_task::cli::CodingAgent;
 use dotori_connectors::sub_task::cli::McpServer;
 use dotori_connectors::sub_task::llm::LlmRunner;
+use dotori_core::llm::Model;
 use dotori_core::record::RecordError;
 use dotori_core::record::RecordStore;
 use dotori_core::runtime::Agent;
@@ -25,6 +26,9 @@ use crate::door::Door;
 use crate::home::Home;
 use crate::idle::NoTools;
 use crate::lock::DaemonLock;
+use crate::notes::MainTools;
+use crate::notes::Noted;
+use crate::notes::Notes;
 use crate::settings::RunnerChoice;
 use crate::settings::Settings;
 use crate::settings::environment;
@@ -69,6 +73,15 @@ pub(crate) async fn serve(
     };
     let sub_tasks = sub_task_runner(&home, &settings, &toolbox, shared)?;
     let records = open_record(&home).await?;
+    let notes = Notes::new(home.notes());
+    let model: Arc<dyn Model> = Arc::new(Noted {
+        model,
+        notes: Arc::clone(&notes),
+    });
+    let toolbox: Arc<dyn Toolbox> = Arc::new(MainTools {
+        notes,
+        shared: toolbox,
+    });
     let token = door::token()?;
     let (app, address) = AppChannel::bind(token.clone()).map_err(|error| error.to_string())?;
     let door = Door {

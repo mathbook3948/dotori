@@ -49,6 +49,7 @@ fn request(conversation: Vec<Entry>) -> ModelRequest {
             description: String::from("Reads a file."),
             input_schema: String::from(r#"{"type":"object"}"#),
         }],
+        context: None,
     }
 }
 
