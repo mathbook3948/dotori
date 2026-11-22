@@ -5,15 +5,22 @@ use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
 
+use dotori_connectors::channel::slack::SlackChannel;
+use dotori_connectors::channel::slack::SlackConfig;
 use dotori_connectors::llm::anthropic::Anthropic;
 use dotori_connectors::llm::anthropic::AnthropicConfig;
 use dotori_connectors::llm::openai::OpenAi;
 use dotori_connectors::llm::openai::OpenAiConfig;
+use dotori_core::channel::Channel;
+use dotori_core::id::ChannelUser;
+use dotori_core::id::ExternalUserId;
 use dotori_core::llm::Model;
 use serde::Deserialize;
 use serde::Serialize;
 
 const ANTHROPIC_KEY: &str = "ANTHROPIC_API_KEY";
+const SLACK_APP_KEY: &str = "SLACK_APP_TOKEN";
+const SLACK_BOT_KEY: &str = "SLACK_BOT_TOKEN";
 
 /// What the user sets in `settings.toml`. A missing file means every default.
 /// Keys never live in the file. It names the environment variable that holds each key.
@@ -22,7 +29,24 @@ const ANTHROPIC_KEY: &str = "ANTHROPIC_API_KEY";
 pub(crate) struct Settings {
     #[serde(default)]
     pub(crate) model: ModelSettings,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) slack: Option<SlackSettings>,
 }
+
+/// Slack is on when this section is in the file. The owner is a Slack user id, such as `U012AB3CD`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SlackSettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) app_token_env: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) bot_token_env: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) owner: Option<String>,
+}
+
+/// A channel to connect, and the owner's account on it if one is set.
+pub(crate) type Connected = (Arc<dyn Channel>, Option<ChannelUser>);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "provider", rename_all = "kebab-case", deny_unknown_fields)]
@@ -215,6 +239,32 @@ impl Settings {
                 ))
             }
         }
+    }
+}
+
+impl Settings {
+    /// The channels besides the app, reading tokens through `key`.
+    pub(crate) fn channels(
+        &self,
+        key: impl Fn(&str) -> Option<String>,
+    ) -> Result<Vec<Connected>, String> {
+        let Some(slack) = &self.slack else {
+            return Ok(Vec::new());
+        };
+        let token = |named: &Option<String>, default: &str, what: &str| {
+            let variable = named.as_deref().unwrap_or(default);
+            key(variable).ok_or_else(|| format!("set {variable} to your Slack {what}"))
+        };
+        let config = SlackConfig::new(
+            token(&slack.app_token_env, SLACK_APP_KEY, "app token")?,
+            token(&slack.bot_token_env, SLACK_BOT_KEY, "bot token")?,
+        );
+        let channel = SlackChannel::new(config).map_err(|error| error.detail)?;
+        let owner = slack.owner.as_ref().map(|user| ChannelUser {
+            channel: channel.id().clone(),
+            user: ExternalUserId::new(user.as_str()),
+        });
+        Ok(vec![(Arc::new(channel), owner)])
     }
 }
 

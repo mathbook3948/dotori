@@ -6,7 +6,7 @@ pub mod openai;
 
 mod http;
 #[cfg(test)]
-mod mock;
+pub(crate) mod mock;
 mod reply;
 mod transcript;
 
