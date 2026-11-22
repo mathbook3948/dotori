@@ -42,8 +42,10 @@ const KEPT: &[&str] = &["NN", "NP", "VV", "VA", "MAG", "XR", "SL", "SH", "SN"];
 
 /// Turns text into the terms the index stores: the base forms of content words, so particles and
 /// endings do not split one word into many.
+#[derive(Default)]
 pub(crate) enum Analyzer {
     Korean(Box<Segmenter>),
+    #[default]
     Plain,
 }
 

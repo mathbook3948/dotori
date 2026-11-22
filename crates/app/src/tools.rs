@@ -38,6 +38,7 @@ use tokio::time;
 use crate::door;
 use crate::home;
 use crate::home::Home;
+use crate::settings;
 use crate::settings::Settings;
 
 const START_WAIT: Duration = Duration::from_secs(10);
@@ -52,7 +53,7 @@ pub(crate) struct Listening {
 /// `dotori mcp`: serves the shared tools until its input closes.
 pub(crate) async fn serve(home: Home) -> Result<(), String> {
     let settings = Settings::load(&home.settings())?;
-    let chosen = settings.browser.unwrap_or_default();
+    let chosen = settings.browser.clone().unwrap_or_default();
     let browser = Browser::new(BrowserConfig {
         executable: chosen.path,
         profile: home.browser(),
@@ -60,10 +61,17 @@ pub(crate) async fn serve(home: Home) -> Result<(), String> {
     });
     let mut tools: Vec<Box<dyn Tool>> = vec![Box::new(WebFetch::new()?)];
     tools.extend(browser.tools());
+    let embedding = settings
+        .embedding(settings::environment)
+        .unwrap_or_else(|error| {
+            eprintln!("dotori: memory search matches words only: {error}");
+            None
+        });
     let memory = Memory::new(MemoryConfig {
         record: home.record(),
         index: home.search_index(),
         dictionaries: home.dictionaries(),
+        embedding,
     });
     tools.extend(memory.tools());
     let token = door::token()?;

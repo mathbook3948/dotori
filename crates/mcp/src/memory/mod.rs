@@ -1,12 +1,18 @@
-//! The memory search tool: keyword search over the raw record, with an index that can always be
-//! made again from it.
+//! The memory search tool: keyword search over the raw record, joined with search by meaning when
+//! an embedding API is set, from an index that can always be made again from the record.
 
 mod analyzer;
 mod dictionary;
+mod embedding;
+mod vectors;
 
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::Weak;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 use rusqlite::Connection;
 use rusqlite::OpenFlags;
@@ -19,14 +25,24 @@ use serde_json::json;
 use crate::Tool;
 use crate::ToolFuture;
 use analyzer::Analyzer;
+use embedding::Embedder;
+pub use embedding::EmbeddingConfig;
+use vectors::Vectors;
 
 const BATCH: i64 = 1000;
 const DEFAULT_LIMIT: u64 = 10;
 const MAX_LIMIT: u64 = 50;
 const SHOWN: usize = 400;
+const CANDIDATES: u64 = 50;
+const EMBED_BATCH: i64 = 64;
+const QUERY_WAIT: Duration = Duration::from_secs(15);
+const BATCH_PAUSE: Duration = Duration::from_secs(1);
+const FILL_PAUSE: Duration = Duration::from_secs(30);
+const FAILED_PAUSE: Duration = Duration::from_secs(300);
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE VIRTUAL TABLE IF NOT EXISTS terms USING fts5(words, tokenize = 'unicode61');
+CREATE TABLE IF NOT EXISTS vectors (seq INTEGER PRIMARY KEY, model TEXT NOT NULL, vector BLOB NOT NULL);
 ";
 
 /// Where memory reads the raw record, keeps its index, and keeps dictionaries.
@@ -35,18 +51,23 @@ pub struct MemoryConfig {
     pub record: PathBuf,
     pub index: PathBuf,
     pub dictionaries: PathBuf,
+    pub embedding: Option<EmbeddingConfig>,
 }
 
 /// Memory shared by its tools. The index catches up with the raw record before every search.
 pub struct Memory {
     config: MemoryConfig,
+    embedder: Option<Arc<Embedder>>,
+    meaning_ready: AtomicBool,
     state: Mutex<State>,
 }
 
+#[derive(Default)]
 struct State {
     index: Option<Connection>,
     analyzer: Analyzer,
     dictionary_failed: bool,
+    vectors: Vectors,
 }
 
 impl std::fmt::Debug for Memory {
@@ -59,15 +80,24 @@ impl std::fmt::Debug for Memory {
 
 impl Memory {
     /// Starts fetching the Korean dictionary in the background. Until it arrives, words are
-    /// split by a simpler rule.
+    /// split by a simpler rule. With an embedding API, records get vectors in the background too.
     pub fn new(config: MemoryConfig) -> Arc<Self> {
+        let embedder =
+            config
+                .embedding
+                .clone()
+                .and_then(|embedding| match Embedder::new(embedding) {
+                    Ok(embedder) => Some(Arc::new(embedder)),
+                    Err(error) => {
+                        eprintln!("dotori: memory search matches words only: {error}");
+                        None
+                    }
+                });
         let memory = Arc::new(Self {
             config,
-            state: Mutex::new(State {
-                index: None,
-                analyzer: Analyzer::Plain,
-                dictionary_failed: false,
-            }),
+            embedder,
+            meaning_ready: AtomicBool::new(false),
+            state: Mutex::new(State::default()),
         });
         let folder = memory.config.dictionaries.clone();
         if tokio::runtime::Handle::try_current().is_ok() {
@@ -76,8 +106,68 @@ impl Memory {
                     eprintln!("dotori: memory search uses a simpler word split: {error}");
                 }
             });
+            if memory.embedder.is_some() {
+                tokio::spawn(fill(Arc::downgrade(&memory)));
+            }
         }
         memory
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, State> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn opened(&self, state: &mut State) -> Result<(), String> {
+        if state.index.is_none() {
+            state.index = Some(open_index(&self.config.index)?);
+        }
+        Ok(())
+    }
+
+    async fn fill_once(self: &Arc<Self>) -> Result<bool, String> {
+        let Some(embedder) = self.embedder.clone() else {
+            return Ok(false);
+        };
+        let model = embedder.name();
+        let memory = Arc::clone(self);
+        let wanted = model.clone();
+        let (texts, last) = tokio::task::spawn_blocking(move || {
+            let mut state = memory.lock();
+            memory.opened(&mut state)?;
+            let index = state.index.as_mut().ok_or("no index")?;
+            if vectors::any(index, &wanted).map_err(|error| error.to_string())? {
+                memory.meaning_ready.store(true, Ordering::SeqCst);
+            }
+            let Some(record) = open_record(&memory.config.record)? else {
+                return Ok((Vec::new(), None));
+            };
+            match vectors::pending(index, &record, &wanted, EMBED_BATCH) {
+                Err(error) if error.to_string().contains("no such table") => Ok((Vec::new(), None)),
+                found => found.map_err(|error| error.to_string()),
+            }
+        })
+        .await
+        .map_err(|error| error.to_string())??;
+        let Some(last) = last else {
+            return Ok(false);
+        };
+        let made = made(&embedder, texts).await?;
+        let memory = Arc::clone(self);
+        tokio::task::spawn_blocking(move || {
+            let mut state = memory.lock();
+            memory.opened(&mut state)?;
+            let index = state.index.as_mut().ok_or("no index")?;
+            vectors::store(index, &model, &made, last)?;
+            if !made.is_empty() {
+                memory.meaning_ready.store(true, Ordering::SeqCst);
+            }
+            Ok::<(), String>(())
+        })
+        .await
+        .map_err(|error| error.to_string())??;
+        Ok(true)
     }
 
     /// The tools that use this memory.
@@ -87,11 +177,13 @@ impl Memory {
         })]
     }
 
-    fn search(&self, query: &str, limit: u64) -> Result<String, String> {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+    fn search(
+        &self,
+        query: &str,
+        limit: u64,
+        meaning: Option<Result<Vec<f32>, String>>,
+    ) -> Result<String, String> {
+        let mut state = self.lock();
         if matches!(state.analyzer, Analyzer::Plain)
             && !state.dictionary_failed
             && dictionary::ready(&self.config.dictionaries)
@@ -104,11 +196,12 @@ impl Memory {
                 }
             }
         }
-        if state.index.is_none() {
-            state.index = Some(open_index(&self.config.index)?);
-        }
+        self.opened(&mut state)?;
         let State {
-            index, analyzer, ..
+            index,
+            analyzer,
+            vectors,
+            ..
         } = &mut *state;
         let index = index.as_mut().ok_or("no index")?;
         let record = match open_record(&self.config.record)? {
@@ -123,27 +216,70 @@ impl Memory {
             Err(error) => return Err(format!("the search index could not catch up: {error}")),
         }
         let terms = analyzer.terms(query);
-        if terms.is_empty() {
+        let mut note = None;
+        let by_meaning = match (meaning, &self.embedder) {
+            (Some(Ok(wanted)), Some(embedder)) => {
+                match vectors
+                    .load(index, &embedder.name())
+                    .map_err(|error| error.to_string())
+                    .and_then(|()| vectors.nearest(&wanted, CANDIDATES as usize))
+                {
+                    Ok(found) => Some(found),
+                    Err(error) => {
+                        note = Some(format!(
+                            "(Only words were matched: search by meaning failed. {error})"
+                        ));
+                        None
+                    }
+                }
+            }
+            (Some(Err(error)), _) => {
+                note = Some(format!(
+                    "(Only words were matched: search by meaning failed. {error})"
+                ));
+                None
+            }
+            _ => None,
+        };
+        if terms.is_empty() && by_meaning.is_none() {
             return Err(String::from("the query has no words to search for"));
         }
-        let matched = terms
-            .iter()
-            .map(|term| format!("\"{}\"", term.replace('"', "\"\"")))
-            .collect::<Vec<_>>()
-            .join(" OR ");
-        let seqs: Vec<i64> = index
-            .prepare("SELECT rowid FROM terms WHERE words MATCH ?1 ORDER BY rank LIMIT ?2")
-            .and_then(|mut found| {
-                found
-                    .query_map(
-                        params![matched, i64::try_from(limit).unwrap_or(MAX_LIMIT as i64)],
-                        |row| row.get(0),
-                    )?
-                    .collect()
-            })
-            .map_err(|error| error.to_string())?;
+        let by_words: Vec<i64> = if terms.is_empty() {
+            Vec::new()
+        } else {
+            let matched = terms
+                .iter()
+                .map(|term| format!("\"{}\"", term.replace('"', "\"\"")))
+                .collect::<Vec<_>>()
+                .join(" OR ");
+            let wanted = if by_meaning.is_some() {
+                CANDIDATES
+            } else {
+                limit
+            };
+            index
+                .prepare("SELECT rowid FROM terms WHERE words MATCH ?1 ORDER BY rank LIMIT ?2")
+                .and_then(|mut found| {
+                    found
+                        .query_map(
+                            params![matched, i64::try_from(wanted).unwrap_or(MAX_LIMIT as i64)],
+                            |row| row.get(0),
+                        )?
+                        .collect()
+                })
+                .map_err(|error| error.to_string())?
+        };
+        let count = usize::try_from(limit).unwrap_or(MAX_LIMIT as usize);
+        let seqs = match by_meaning {
+            Some(by_meaning) => vectors::fuse(&[by_words, by_meaning], count),
+            None => by_words,
+        };
         if seqs.is_empty() {
-            return Ok(String::from("Nothing in memory matches."));
+            let mut nothing = String::from("Nothing in memory matches.");
+            if let Some(note) = note {
+                nothing = format!("{nothing}\n{note}");
+            }
+            return Ok(nothing);
         }
         let mut shown = Vec::new();
         for seq in seqs {
@@ -170,7 +306,57 @@ impl Memory {
                 shown.push(hit.line());
             }
         }
+        shown.extend(note);
         Ok(shown.join("\n"))
+    }
+}
+
+async fn made(
+    embedder: &Embedder,
+    texts: Vec<(i64, String)>,
+) -> Result<Vec<(i64, Vec<f32>)>, String> {
+    if texts.is_empty() {
+        return Ok(Vec::new());
+    }
+    let wording: Vec<String> = texts.iter().map(|(_, text)| text.clone()).collect();
+    match embedder.embed(&wording).await {
+        Ok(vectors) => Ok(texts.iter().map(|(seq, _)| *seq).zip(vectors).collect()),
+        Err(refused) if refused.by_text => {
+            let mut made = Vec::new();
+            for (seq, text) in texts {
+                match embedder.embed(std::slice::from_ref(&text)).await {
+                    Ok(mut vectors) => made.extend(vectors.pop().map(|vector| (seq, vector))),
+                    Err(refused) if refused.by_text => {
+                        eprintln!("dotori: record {seq} gets no vector: {}", refused.detail);
+                    }
+                    Err(refused) => return Err(refused.detail),
+                }
+            }
+            Ok(made)
+        }
+        Err(refused) => Err(refused.detail),
+    }
+}
+
+async fn fill(memory: Weak<Memory>) {
+    let mut reported = None;
+    loop {
+        let Some(strong) = memory.upgrade() else {
+            return;
+        };
+        let pause = match strong.fill_once().await {
+            Ok(true) => BATCH_PAUSE,
+            Ok(false) => FILL_PAUSE,
+            Err(error) => {
+                if reported.as_ref() != Some(&error) {
+                    eprintln!("dotori: records wait for their vectors: {error}");
+                    reported = Some(error);
+                }
+                FAILED_PAUSE
+            }
+        };
+        drop(strong);
+        tokio::time::sleep(pause).await;
     }
 }
 
@@ -326,7 +512,8 @@ impl Tool for MemorySearch {
     }
 
     fn description(&self) -> &str {
-        "Searches everything dotori has heard and said for these words, best matches first. \
+        "Searches everything dotori has heard and said for these words, and for their meaning \
+         when that is set up, best matches first. \
          Each hit names its record, time, place, and who said it. Hits can hold the owner's \
          private messages: pass them on only to the owner."
     }
@@ -357,7 +544,24 @@ impl Tool for MemorySearch {
                     .filter(|limit| (1..=MAX_LIMIT).contains(limit))
                     .ok_or_else(|| format!("`limit` must be from 1 to {MAX_LIMIT}"))?,
             };
-            tokio::task::spawn_blocking(move || memory.search(&query, limit))
+            let meaning = match &memory.embedder {
+                Some(embedder) if memory.meaning_ready.load(Ordering::SeqCst) => Some(
+                    match tokio::time::timeout(
+                        QUERY_WAIT,
+                        embedder.embed(&[query.chars().take(vectors::LONGEST).collect()]),
+                    )
+                    .await
+                    {
+                        Ok(Ok(mut vectors)) => {
+                            vectors.pop().ok_or_else(|| String::from("no vector"))
+                        }
+                        Ok(Err(refused)) => Err(refused.detail),
+                        Err(_) => Err(String::from("the embedding API took too long")),
+                    },
+                ),
+                _ => None,
+            };
+            tokio::task::spawn_blocking(move || memory.search(&query, limit, meaning))
                 .await
                 .map_err(|error| error.to_string())?
         })

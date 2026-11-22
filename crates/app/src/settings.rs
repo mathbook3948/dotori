@@ -18,6 +18,7 @@ use dotori_core::channel::Channel;
 use dotori_core::id::ChannelUser;
 use dotori_core::id::ExternalUserId;
 use dotori_core::llm::Model;
+use dotori_mcp::memory::EmbeddingConfig;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -38,6 +39,29 @@ pub(crate) struct Settings {
     pub(crate) browser: Option<BrowserSettings>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) sub_tasks: Option<SubTaskSettings>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) memory: Option<MemorySettings>,
+}
+
+/// How memory is searched. Without embeddings it matches words only.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct MemorySettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) embeddings: Option<EmbeddingSettings>,
+}
+
+/// An embedding API in the OpenAI `/embeddings` shape, such as OpenAI's or a local Ollama.
+/// Every recorded message is sent to it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct EmbeddingSettings {
+    pub(crate) base_url: String,
+    pub(crate) model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) api_key_env: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) dimensions: Option<u32>,
 }
 
 /// What runs sub-tasks. Without a runner the main conversation's model runs them in dotori's
@@ -306,6 +330,32 @@ impl Settings {
 }
 
 impl Settings {
+    /// The embedding API memory search uses, reading its key through `key`.
+    pub(crate) fn embedding(
+        &self,
+        key: impl Fn(&str) -> Option<String>,
+    ) -> Result<Option<EmbeddingConfig>, String> {
+        let Some(chosen) = self
+            .memory
+            .as_ref()
+            .and_then(|memory| memory.embeddings.as_ref())
+        else {
+            return Ok(None);
+        };
+        let api_key = match &chosen.api_key_env {
+            Some(variable) => Some(
+                key(variable).ok_or_else(|| format!("set {variable} to your embedding API key"))?,
+            ),
+            None => None,
+        };
+        Ok(Some(EmbeddingConfig {
+            base_url: chosen.base_url.clone(),
+            model: chosen.model.clone(),
+            api_key,
+            dimensions: chosen.dimensions,
+        }))
+    }
+
     /// The channels besides the app, reading tokens through `key`.
     pub(crate) fn channels(
         &self,

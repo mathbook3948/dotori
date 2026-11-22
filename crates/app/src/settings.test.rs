@@ -198,3 +198,38 @@ fn the_sub_task_section_names_a_runner() {
     );
     assert!(parse("[sub_tasks]\nrunner = \"cursor\"").is_err());
 }
+
+#[test]
+fn embeddings_are_off_unless_named_and_take_their_key_from_a_variable() {
+    let none = Settings::default();
+    assert_eq!(none.embedding(|_| None), Ok(None));
+
+    let settings = parse(
+        "[memory.embeddings]\nbase_url = \"https://api.openai.com/v1\"\nmodel = \"text-embedding-3-small\"\napi_key_env = \"OPENAI_API_KEY\"\ndimensions = 512",
+    )
+    .expect("parsed");
+    let config = settings
+        .embedding(|name| (name == "OPENAI_API_KEY").then(|| String::from("sk-test")))
+        .expect("built")
+        .expect("on");
+    assert_eq!(config.model, "text-embedding-3-small");
+    assert_eq!(config.api_key.as_deref(), Some("sk-test"));
+    assert_eq!(config.dimensions, Some(512));
+    let missing = settings.embedding(|_| None).expect_err("no key");
+    assert!(missing.contains("OPENAI_API_KEY"), "{missing}");
+
+    let local =
+        parse("[memory.embeddings]\nbase_url = \"http://localhost:11434/v1\"\nmodel = \"bge-m3\"")
+            .expect("parsed");
+    assert_eq!(
+        local
+            .embedding(|_| None)
+            .expect("built")
+            .expect("on")
+            .api_key,
+        None
+    );
+    assert!(
+        parse("[memory.embeddings]\nmodel = \"x\"\nbase_url = \"y\"\napi_key = \"sk\"").is_err()
+    );
+}
