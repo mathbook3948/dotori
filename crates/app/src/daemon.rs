@@ -7,10 +7,13 @@ use std::time::Duration;
 
 use dotori_connectors::channel::app::AppChannel;
 use dotori_connectors::record::jsonl::JsonlStore;
+use dotori_connectors::record::sqlite::SqliteStore;
 use dotori_connectors::sub_task::cli::CliRunner;
 use dotori_connectors::sub_task::cli::CodingAgent;
 use dotori_connectors::sub_task::cli::McpServer;
 use dotori_connectors::sub_task::llm::LlmRunner;
+use dotori_core::record::RecordError;
+use dotori_core::record::RecordStore;
 use dotori_core::runtime::Agent;
 use dotori_core::runtime::AgentConfig;
 use dotori_core::runtime::Ports;
@@ -65,6 +68,7 @@ pub(crate) async fn serve(
         None => Arc::new(NoTools),
     };
     let sub_tasks = sub_task_runner(&home, &settings, &toolbox, shared)?;
+    let records = open_record(&home).await?;
     let token = door::token()?;
     let (app, address) = AppChannel::bind(token.clone()).map_err(|error| error.to_string())?;
     let door = Door {
@@ -77,7 +81,7 @@ pub(crate) async fn serve(
         model,
         toolbox,
         sub_tasks,
-        records: Arc::new(JsonlStore::new(home.record())),
+        records: Arc::new(records),
     };
     let config = AgentConfig {
         owners: owners.into_iter().flatten().collect(),
@@ -98,6 +102,21 @@ pub(crate) async fn serve(
     let _ = fs::remove_file(home.door());
     agent.shutdown().await;
     stopped
+}
+
+async fn open_record(home: &Home) -> Result<SqliteStore, String> {
+    let store = SqliteStore::new(home.record());
+    let old = home.old_record();
+    if !old.exists() {
+        return Ok(store);
+    }
+    let fail = |error: RecordError| error.to_string();
+    if store.load().await.map_err(fail)?.is_empty() {
+        let earlier = JsonlStore::new(old.clone()).load().await.map_err(fail)?;
+        store.append(earlier).await.map_err(fail)?;
+    }
+    fs::rename(&old, old.with_extension("jsonl.moved")).map_err(|error| error.to_string())?;
+    Ok(store)
 }
 
 fn sub_task_runner(

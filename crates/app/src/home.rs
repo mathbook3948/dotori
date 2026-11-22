@@ -27,6 +27,11 @@ impl Home {
     }
 
     pub(crate) fn record(&self) -> PathBuf {
+        self.root.join("record.sqlite3")
+    }
+
+    /// The raw record before it moved to SQLite. It is copied over once and then renamed.
+    pub(crate) fn old_record(&self) -> PathBuf {
         self.root.join("record.jsonl")
     }
 
