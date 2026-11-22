@@ -14,6 +14,7 @@ fn config() -> MemoryConfig {
         record: folder.join("record.sqlite3"),
         index: folder.join("search.sqlite3"),
         dictionaries: folder.join("dictionaries"),
+        embedding: None,
     }
 }
 
@@ -40,11 +41,9 @@ fn record(config: &MemoryConfig, rows: &[(&str, Option<&str>, Option<&str>)]) {
 fn memory(config: MemoryConfig) -> Arc<Memory> {
     Arc::new(Memory {
         config,
-        state: Mutex::new(State {
-            index: None,
-            analyzer: Analyzer::Plain,
-            dictionary_failed: false,
-        }),
+        embedder: None,
+        meaning_ready: AtomicBool::new(false),
+        state: Mutex::new(State::default()),
     })
 }
 
@@ -61,19 +60,19 @@ fn a_search_finds_records_by_their_words_and_names_them() {
     );
     let memory = memory(config.clone());
 
-    let found = memory.search("회의 언제", 10).expect("searched");
+    let found = memory.search("회의 언제", 10, None).expect("searched");
     assert_eq!(
         found,
         "[record 1] 2023-11-14 22:13 UTC in slack C1, 민지 (other): 내일 회의는 3시에 해요"
     );
-    assert_eq!(memory.search("민지가", 10).expect("by sender"), found);
+    assert_eq!(memory.search("민지가", 10, None).expect("by sender"), found);
     assert_eq!(
-        memory.search("저녁", 10).expect("searched"),
+        memory.search("저녁", 10, None).expect("searched"),
         "Nothing in memory matches."
     );
 
     record(&config, &[("acted", None, Some("회의 장소는 2층입니다"))]);
-    let later = memory.search("회의", 10).expect("caught up");
+    let later = memory.search("회의", 10, None).expect("caught up");
     assert!(
         later.contains("[record 4]") && later.contains("dotori: 회의 장소"),
         "{later}"
@@ -85,7 +84,7 @@ fn a_search_finds_records_by_their_words_and_names_them() {
 fn nothing_recorded_yet_is_not_an_error() {
     let memory = memory(config());
     assert_eq!(
-        memory.search("아무거나", 10).expect("searched"),
+        memory.search("아무거나", 10, None).expect("searched"),
         "Nothing is recorded yet."
     );
 }
@@ -94,7 +93,7 @@ fn nothing_recorded_yet_is_not_an_error() {
 fn a_query_of_only_symbols_is_refused() {
     let config = config();
     record(&config, &[("heard", Some("민지"), Some("안녕"))]);
-    assert!(memory(config).search("?!", 10).is_err());
+    assert!(memory(config).search("?!", 10, None).is_err());
 }
 
 #[test]
@@ -141,7 +140,249 @@ fn a_record_file_without_its_table_yet_is_empty() {
     let config = config();
     Connection::open(&config.record).expect("made");
     assert_eq!(
-        memory(config).search("회의", 10).expect("searched"),
+        memory(config).search("회의", 10, None).expect("searched"),
         "Nothing is recorded yet."
+    );
+}
+
+async fn embedding_api(failing: bool) -> String {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("bound");
+    let address = listener.local_addr().expect("an address");
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                return;
+            };
+            tokio::spawn(async move {
+                use tokio::io::AsyncReadExt;
+                use tokio::io::AsyncWriteExt;
+                let mut read = Vec::new();
+                let mut buffer = [0u8; 4096];
+                let body = loop {
+                    let got = stream.read(&mut buffer).await.expect("read");
+                    read.extend_from_slice(&buffer[..got]);
+                    let text = String::from_utf8_lossy(&read).to_string();
+                    if let Some((head, body)) = text.split_once("\r\n\r\n") {
+                        let length: usize = head
+                            .lines()
+                            .find_map(|line| {
+                                line.to_ascii_lowercase()
+                                    .strip_prefix("content-length:")
+                                    .map(|value| value.trim().parse().expect("a length"))
+                            })
+                            .unwrap_or(0);
+                        if body.len() >= length {
+                            break body.to_owned();
+                        }
+                    }
+                };
+                let refused = body.contains("거절");
+                let answer = if failing || refused {
+                    String::from("{\"error\":\"no\"}")
+                } else {
+                    let asked: Value = serde_json::from_str(&body).expect("json");
+                    let data: Vec<Value> = asked["input"]
+                        .as_array()
+                        .expect("inputs")
+                        .iter()
+                        .enumerate()
+                        .map(|(index, text)| {
+                            let text = text.as_str().expect("text");
+                            let has = |words: &[&str]| {
+                                if words.iter().any(|word| text.contains(word)) {
+                                    1.0
+                                } else {
+                                    0.0
+                                }
+                            };
+                            json!({ "index": index, "embedding": [
+                                has(&["미팅", "회의", "meeting"]),
+                                has(&["점심", "lunch"]),
+                                0.1
+                            ]})
+                        })
+                        .collect();
+                    json!({ "data": data }).to_string()
+                };
+                let status = if failing {
+                    "500 Internal Server Error"
+                } else if refused {
+                    "400 Bad Request"
+                } else {
+                    "200 OK"
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{answer}",
+                    answer.len()
+                );
+                stream.write_all(response.as_bytes()).await.expect("wrote");
+            });
+        }
+    });
+    format!("http://{address}/v1")
+}
+
+fn embedded(config: MemoryConfig, base_url: String) -> Arc<Memory> {
+    let embedding = EmbeddingConfig {
+        base_url,
+        model: String::from("test"),
+        api_key: Some(String::from("key")),
+        dimensions: None,
+    };
+    Arc::new(Memory {
+        config,
+        embedder: Some(Arc::new(Embedder::new(embedding).expect("made"))),
+        meaning_ready: AtomicBool::new(false),
+        state: Mutex::new(State::default()),
+    })
+}
+
+#[tokio::test]
+async fn records_are_also_found_by_their_meaning() {
+    let config = config();
+    record(
+        &config,
+        &[
+            ("heard", Some("민지"), Some("내일 미팅은 3시에 해요")),
+            ("tool_returned", None, None),
+            ("heard", Some("유노"), Some("점심 메뉴 추천해줘")),
+        ],
+    );
+    let memory = embedded(config.clone(), embedding_api(false).await);
+    while memory.fill_once().await.expect("filled") {}
+    let search = &memory.tools()[0];
+
+    let found = search
+        .call(json!({ "query": "meeting", "limit": 1 }))
+        .await
+        .expect("searched");
+    assert!(found.starts_with("[record 1]"), "{found}");
+    let both = search
+        .call(json!({ "query": "점심 meeting" }))
+        .await
+        .expect("searched");
+    assert_eq!(both.lines().count(), 2, "{both}");
+    assert!(both.starts_with("[record 3]"), "{both}");
+
+    record(&config, &[("acted", None, Some("회의실은 2층입니다"))]);
+    while memory.fill_once().await.expect("filled again") {}
+    let later = search
+        .call(json!({ "query": "meeting", "limit": 2 }))
+        .await
+        .expect("searched");
+    assert!(
+        later.contains("[record 1]") && later.contains("[record 4]"),
+        "{later}"
+    );
+}
+
+#[tokio::test]
+async fn a_failing_embedding_api_leaves_word_search_working() {
+    let config = config();
+    record(
+        &config,
+        &[("heard", Some("민지"), Some("내일 회의는 3시에 해요"))],
+    );
+    let memory = embedded(config, embedding_api(true).await);
+    let refused = memory.fill_once().await.expect_err("the API is down");
+    assert!(refused.contains("500"), "{refused}");
+    let words = memory.tools()[0]
+        .call(json!({ "query": "회의" }))
+        .await
+        .expect("searched");
+    assert!(
+        !words.contains("Only words"),
+        "no vectors yet, so the query is not sent: {words}"
+    );
+
+    memory.meaning_ready.store(true, Ordering::SeqCst);
+
+    let found = memory.tools()[0]
+        .call(json!({ "query": "회의" }))
+        .await
+        .expect("searched");
+    assert!(found.starts_with("[record 1]"), "{found}");
+    assert!(found.contains("Only words were matched"), "{found}");
+}
+
+#[tokio::test]
+async fn another_model_makes_every_vector_again() {
+    let config = config();
+    record(
+        &config,
+        &[("heard", Some("민지"), Some("내일 미팅은 3시에 해요"))],
+    );
+    let base_url = embedding_api(false).await;
+    let first = embedded(config.clone(), base_url.clone());
+    while first.fill_once().await.expect("filled") {}
+    assert!(!first.fill_once().await.expect("nothing left"));
+    drop(first);
+
+    let second = Arc::new(Memory {
+        config,
+        embedder: Some(Arc::new(
+            Embedder::new(EmbeddingConfig {
+                base_url,
+                model: String::from("other"),
+                api_key: None,
+                dimensions: None,
+            })
+            .expect("made"),
+        )),
+        meaning_ready: AtomicBool::new(false),
+        state: Mutex::new(State::default()),
+    });
+    assert!(second.fill_once().await.expect("starts over"));
+    let found = second.tools()[0]
+        .call(json!({ "query": "meeting" }))
+        .await
+        .expect("searched");
+    assert!(found.starts_with("[record 1]"), "{found}");
+}
+
+#[tokio::test]
+async fn a_text_the_api_refuses_is_passed_over() {
+    let config = config();
+    record(
+        &config,
+        &[
+            ("heard", Some("민지"), Some("내일 미팅은 3시에 해요")),
+            ("heard", Some("민지"), Some("이건 거절될 글")),
+            ("heard", Some("유노"), Some("점심 메뉴 추천해줘")),
+        ],
+    );
+    let memory = embedded(config.clone(), embedding_api(false).await);
+    while memory.fill_once().await.expect("filled") {}
+    let index = open_index(&config.index).expect("index");
+    let kept: Vec<i64> = index
+        .prepare("SELECT seq FROM vectors ORDER BY seq")
+        .expect("prepared")
+        .query_map([], |row| row.get(0))
+        .expect("read")
+        .collect::<rusqlite::Result<_>>()
+        .expect("read");
+    assert_eq!(kept, [1, 3]);
+}
+
+#[test]
+fn vectors_are_kept_only_for_the_current_model_and_length() {
+    let config = config();
+    record(&config, &[("heard", Some("민지"), Some("회의"))]);
+    let mut index = open_index(&config.index).expect("index");
+    let source = open_record(&config.record).expect("read").expect("there");
+
+    vectors::pending(&mut index, &source, "a", 10).expect("pending");
+    vectors::store(&mut index, "a", &[(1, vec![1.0, 0.0])], 1).expect("stored");
+    let longer = vectors::store(&mut index, "a", &[(1, vec![1.0, 0.0, 0.0])], 1);
+    assert!(longer.expect_err("another length").contains("length"));
+
+    vectors::pending(&mut index, &source, "b", 10).expect("another model");
+    assert!(!vectors::any(&index, "a").expect("checked"));
+    let late = vectors::store(&mut index, "a", &[(1, vec![1.0, 0.0])], 1);
+    assert!(
+        late.expect_err("the model changed")
+            .contains("another model")
     );
 }
