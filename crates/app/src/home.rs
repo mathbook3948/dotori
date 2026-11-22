@@ -39,6 +39,11 @@ impl Home {
         self.root.join("daemon.lock")
     }
 
+    /// The notes the owner asked dotori to keep in mind.
+    pub(crate) fn notes(&self) -> PathBuf {
+        self.root.join("notes.sqlite3")
+    }
+
     /// The keyword index over the raw record. It can always be made again from the record.
     pub(crate) fn search_index(&self) -> PathBuf {
         self.root.join("search.sqlite3")

@@ -105,6 +105,14 @@ fn parse<'a, T: Deserialize<'a>>(input: &'a str) -> Result<T, String> {
     serde_json::from_str(input).map_err(|error| format!("invalid input: {error}"))
 }
 
+/// The system prompt with what the app added after it.
+pub(crate) fn system(base: &str, context: Option<&str>) -> String {
+    match context.filter(|context| !context.trim().is_empty()) {
+        Some(context) => format!("{base}\n\n{context}"),
+        None => base.to_owned(),
+    }
+}
+
 /// The tools the model sees: core's built-in `say` and `delegate`, then the toolbox's.
 /// A toolbox tool that reuses a built-in name is left out.
 pub(crate) fn tools(toolbox: &[ToolSpec]) -> Vec<ToolSpec> {

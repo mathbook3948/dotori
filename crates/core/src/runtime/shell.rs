@@ -154,6 +154,7 @@ impl Shell {
                         model.complete(ModelRequest {
                             conversation,
                             tools: toolbox.specs(),
+                            context: None,
                         })
                     })
                     .await
