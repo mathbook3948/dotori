@@ -74,7 +74,6 @@ impl LlmRunner {
                 content,
             },
         }];
-        let mut result = None;
         for _ in 0..self.max_turns {
             let request = ModelRequest {
                 conversation: conversation.clone(),
@@ -92,6 +91,7 @@ impl LlmRunner {
                 trace: reply.trace,
             });
             let mut used_tools = false;
+            let mut result = None;
             for action in actions {
                 match action {
                     Action::Say { thread, text } if thread == brief_thread() => result = Some(text),

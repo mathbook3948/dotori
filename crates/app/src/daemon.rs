@@ -123,6 +123,7 @@ fn sub_task_runner(
         agent,
         program: chosen
             .path
+            .or_else(|| agent.find())
             .unwrap_or_else(|| PathBuf::from(agent.program())),
         folder: home.work(),
         mcp: shared.map(|shared| shared as Arc<dyn McpServer>),

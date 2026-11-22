@@ -35,7 +35,8 @@ pub struct McpAddress {
 
 /// The MCP server a coding agent connects to. Its address can change when it restarts.
 pub trait McpServer: Send + Sync + 'static {
-    fn address(&self) -> BoxFuture<'_, Option<McpAddress>>;
+    /// Fails when the server is down and could not start again.
+    fn address(&self) -> BoxFuture<'_, Result<McpAddress, String>>;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -45,12 +46,61 @@ pub enum CodingAgent {
 }
 
 impl CodingAgent {
-    /// The command each agent installs, found through `PATH`.
+    /// The command each agent installs.
     pub fn program(self) -> &'static str {
         match self {
             Self::ClaudeCode => "claude",
             Self::Codex => "codex",
         }
+    }
+
+    /// The agent's command found through `PATH`, including the `.cmd` shims npm installs on
+    /// Windows.
+    pub fn find(self) -> Option<PathBuf> {
+        let suffixes: &[&str] = if cfg!(windows) {
+            &[".exe", ".cmd", ""]
+        } else {
+            &[""]
+        };
+        let paths = std::env::var_os("PATH")?;
+        std::env::split_paths(&paths).find_map(|folder| {
+            suffixes.iter().find_map(|suffix| {
+                let candidate = folder.join(format!("{}{suffix}", self.program()));
+                candidate.is_file().then_some(candidate)
+            })
+        })
+    }
+}
+
+struct Tree(Option<u32>);
+
+impl Drop for Tree {
+    fn drop(&mut self) {
+        let Some(id) = self.0 else {
+            return;
+        };
+        let mut kill = if cfg!(windows) {
+            let mut kill = std::process::Command::new("taskkill");
+            kill.args(["/T", "/F", "/PID", &id.to_string()]);
+            kill
+        } else {
+            let mut kill = std::process::Command::new("kill");
+            kill.args(["-KILL", "--", &format!("-{id}")]);
+            kill
+        };
+        let _ = kill
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+}
+
+struct Removed(PathBuf);
+
+impl Drop for Removed {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
     }
 }
 
@@ -85,7 +135,11 @@ impl CliRunner {
         std::fs::create_dir_all(&self.folder)
             .map_err(|error| format!("cannot make {}: {error}", self.folder.display()))?;
         let address = match &self.mcp {
-            Some(mcp) => mcp.address().await,
+            Some(mcp) => Some(
+                mcp.address()
+                    .await
+                    .map_err(|error| format!("dotori's tools are down: {error}"))?,
+            ),
             None => None,
         };
         let last = std::env::temp_dir().join(format!(
@@ -93,20 +147,29 @@ impl CliRunner {
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&last)
+            .map_err(|error| format!("cannot make {}: {error}", last.display()))?;
+        let last = Removed(last);
         let mut command = Command::new(&self.program);
         command
-            .args(arguments(self.agent, address.as_ref(), &last))
+            .args(arguments(self.agent, address.as_ref(), &last.0))
             .current_dir(&self.folder)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        #[cfg(unix)]
+        command.process_group(0);
         if let Some(address) = &address {
             command.env(TOKEN_VARIABLE, &address.token);
         }
         let mut child = command
             .spawn()
             .map_err(|error| format!("cannot start {}: {error}", self.program.display()))?;
+        let mut tree = Tree(child.id());
         let mut stdin = child.stdin.take().ok_or("the agent has no input")?;
         let prompt = prompt(self.agent, &spec);
         tokio::spawn(async move {
@@ -116,8 +179,8 @@ impl CliRunner {
             .await
             .map_err(|_| format!("the sub-task did not finish in {:?}", self.limit))?
             .map_err(|error| error.to_string())?;
-        let written = std::fs::read_to_string(&last).ok();
-        let _ = std::fs::remove_file(&last);
+        tree.0 = None;
+        let written = std::fs::read_to_string(&last.0).ok();
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             let stdout = String::from_utf8_lossy(&output.stdout);
@@ -225,7 +288,12 @@ fn claude_result(stdout: &str) -> SubTaskOutcome {
         .trim()
         .to_owned();
     if answer.get("is_error").and_then(Value::as_bool) == Some(true) {
-        return SubTaskOutcome::Failed(format!("claude failed: {}", tail(&text)));
+        let detail = if text.is_empty() {
+            "no detail"
+        } else {
+            tail(&text)
+        };
+        return SubTaskOutcome::Failed(format!("claude failed: {detail}"));
     }
     if text.is_empty() {
         return SubTaskOutcome::Failed(String::from("claude gave no final answer"));

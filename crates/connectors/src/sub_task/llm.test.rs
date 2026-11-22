@@ -114,3 +114,13 @@ async fn a_model_failure_fails_the_sub_task() {
     let outcome = runner.run(spec()).await;
     assert!(matches!(outcome, SubTaskOutcome::Failed(text) if text.contains("no more replies")));
 }
+
+#[tokio::test]
+async fn an_answer_given_alongside_tools_is_not_the_final_result() {
+    let (runner, _) = runner(
+        vec![vec![say(0, "partial"), tool("a")], vec![say(3, "bye")]],
+        5,
+    );
+    let outcome = runner.run(spec()).await;
+    assert!(matches!(outcome, SubTaskOutcome::Failed(text) if text.contains("without a result")));
+}

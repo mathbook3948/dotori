@@ -133,8 +133,8 @@ impl SharedTools {
 }
 
 impl McpServer for SharedTools {
-    fn address(&self) -> BoxFuture<'_, Option<McpAddress>> {
-        Box::pin(async { self.current().await.ok().map(|(_, address)| address) })
+    fn address(&self) -> BoxFuture<'_, Result<McpAddress, String>> {
+        Box::pin(async { self.current().await.map(|(_, address)| address) })
     }
 }
 

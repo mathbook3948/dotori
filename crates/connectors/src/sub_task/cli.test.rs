@@ -83,8 +83,8 @@ async fn a_run_returns_the_agent_answer_and_its_failures() {
 
     struct Fixed;
     impl McpServer for Fixed {
-        fn address(&self) -> BoxFuture<'_, Option<McpAddress>> {
-            Box::pin(async { Some(address()) })
+        fn address(&self) -> BoxFuture<'_, Result<McpAddress, String>> {
+            Box::pin(async { Ok(address()) })
         }
     }
     let runner = CliRunner {
@@ -109,4 +109,75 @@ async fn a_run_returns_the_agent_answer_and_its_failures() {
         "{failed:?}"
     );
     let _ = std::fs::remove_dir_all(&folder);
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_run_past_its_limit_ends_with_everything_it_started() {
+    use std::os::unix::fs::PermissionsExt;
+    let folder = std::env::temp_dir().join(format!("dotori-cli-limit-{}", std::process::id()));
+    std::fs::create_dir_all(&folder).expect("made");
+    let script = folder.join("slow");
+    let marker = folder.join("child.pid");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nsleep 30 &\necho $! > {}\nwait\n",
+            marker.display()
+        ),
+    )
+    .expect("written");
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("runnable");
+    let runner = CliRunner {
+        agent: CodingAgent::ClaudeCode,
+        program: script,
+        folder: folder.join("work"),
+        mcp: None,
+        limit: Duration::from_secs(1),
+    };
+    let outcome = runner
+        .run(SubTaskSpec {
+            title: String::from("slow"),
+            brief: String::from("Wait."),
+        })
+        .await;
+    assert!(
+        matches!(&outcome, SubTaskOutcome::Failed(text) if text.contains("did not finish")),
+        "{outcome:?}"
+    );
+    let child = std::fs::read_to_string(&marker).expect("the child started");
+    std::thread::sleep(Duration::from_millis(200));
+    let state = std::fs::read_to_string(format!("/proc/{}/stat", child.trim())).unwrap_or_default();
+    let running = state
+        .rsplit_once(')')
+        .is_some_and(|(_, rest)| !rest.trim_start().starts_with(['Z', 'X']));
+    assert!(!running, "the child of the agent was left running: {state}");
+    let _ = std::fs::remove_dir_all(&folder);
+}
+
+#[tokio::test]
+async fn a_server_that_is_down_fails_the_run_before_it_starts() {
+    struct Down;
+    impl McpServer for Down {
+        fn address(&self) -> BoxFuture<'_, Result<McpAddress, String>> {
+            Box::pin(async { Err(String::from("it crashed")) })
+        }
+    }
+    let runner = CliRunner {
+        agent: CodingAgent::Codex,
+        program: PathBuf::from("no-such-program"),
+        folder: std::env::temp_dir().join("dotori-cli-down"),
+        mcp: Some(Arc::new(Down)),
+        limit: Duration::from_secs(1),
+    };
+    let outcome = runner
+        .run(SubTaskSpec {
+            title: String::from("t"),
+            brief: String::from("b"),
+        })
+        .await;
+    assert!(
+        matches!(&outcome, SubTaskOutcome::Failed(text) if text.contains("it crashed")),
+        "{outcome:?}"
+    );
 }
