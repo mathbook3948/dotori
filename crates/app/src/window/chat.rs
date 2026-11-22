@@ -24,6 +24,7 @@ use crate::window::input::TextInput;
 pub(crate) struct ChatView {
     lines: Vec<ToWindow>,
     status: Option<SharedString>,
+    down: bool,
     input: Entity<TextInput>,
     say: mpsc::UnboundedSender<String>,
     scroll: ScrollHandle,
@@ -47,6 +48,7 @@ impl ChatView {
         Self {
             lines: Vec::new(),
             status: Some(SharedString::new_static("연결하는 중")),
+            down: false,
             input: cx.new(|cx| TextInput::new("dotori에게 말하기", cx)),
             say,
             scroll: ScrollHandle::new(),
@@ -59,8 +61,10 @@ impl ChatView {
             Update::Connected => {
                 self.lines.clear();
                 self.status = None;
+                self.down = false;
             }
             Update::Down(reason) => {
+                self.down = true;
                 self.status = Some(SharedString::from(format!("{reason}. 다시 연결하는 중")))
             }
             Update::Event(event) => self.lines.push(event),
@@ -69,8 +73,11 @@ impl ChatView {
     }
 
     fn submit(&mut self, _: &Submit, _: &mut Window, cx: &mut Context<Self>) {
+        if self.down {
+            return;
+        }
         let text = self.input.update(cx, |input, cx| {
-            if input.text().trim().is_empty() {
+            if input.composing() || input.text().trim().is_empty() {
                 None
             } else {
                 Some(input.take(cx))

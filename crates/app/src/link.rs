@@ -16,18 +16,21 @@ use crate::home::Home;
 use crate::lock::DaemonLock;
 
 const RETRY: Duration = Duration::from_secs(2);
+const SETTLE: Duration = Duration::from_millis(500);
 
 /// What a window learns from its link to the daemon, in order.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Update {
-    /// The link is up. The backlog follows, so a window drops what it showed before.
+    /// The daemon kept the link open past the hello, so it took the token. The backlog follows,
+    /// so a window drops what it showed before.
     Connected,
     Down(String),
     Event(ToWindow),
 }
 
 /// A window's link to the daemon. It reconnects by itself, so a daemon restart or a hang-up for
-/// falling behind only shows as `Down` followed by `Connected`.
+/// falling behind only shows as `Down` followed by `Connected`. A window does not send on
+/// `say` after `Down` until the next `Connected`, since that text would go out late and unseen.
 #[derive(Debug)]
 pub(crate) struct Link {
     pub(crate) updates: mpsc::UnboundedReceiver<Update>,
@@ -91,17 +94,26 @@ async fn session(
     let hello =
         serde_json::to_string(&Hello { token: door.token }).map_err(|error| error.to_string())?;
     line(&mut write, &hello).await?;
+    let mut events = BufReader::new(read).lines();
+    let first = match time::timeout(SETTLE, events.next_line()).await {
+        Err(_) => None,
+        Ok(Ok(Some(text))) => Some(text),
+        Ok(Ok(None)) => return Ok(Ended::HungUp),
+        Ok(Err(error)) => return Err(format!("dotori is not reachable: {error}")),
+    };
     if updates.send(Update::Connected).is_err() {
         return Ok(Ended::WindowClosed);
     }
-    let mut events = BufReader::new(read).lines();
+    if let Some(text) = first
+        && !forward(updates, &text)
+    {
+        return Ok(Ended::WindowClosed);
+    }
     loop {
         tokio::select! {
             event = events.next_line() => match event {
                 Ok(Some(text)) => {
-                    if let Ok(event) = serde_json::from_str::<ToWindow>(&text)
-                        && updates.send(Update::Event(event)).is_err()
-                    {
+                    if !forward(updates, &text) {
                         return Ok(Ended::WindowClosed);
                     }
                 }
@@ -116,6 +128,13 @@ async fn session(
                 None => return Ok(Ended::WindowClosed),
             },
         }
+    }
+}
+
+fn forward(updates: &mpsc::UnboundedSender<Update>, text: &str) -> bool {
+    match serde_json::from_str::<ToWindow>(text) {
+        Ok(event) => updates.send(Update::Event(event)).is_ok(),
+        Err(_) => true,
     }
 }
 

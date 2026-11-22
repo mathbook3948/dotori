@@ -2,13 +2,18 @@ mod chat;
 mod input;
 mod settings;
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use gpui::App;
 use gpui::AppContext;
 use gpui::Application;
 use gpui::Bounds;
 use gpui::Focusable;
+use gpui::KeyBinding;
 use gpui::WindowBounds;
 use gpui::WindowOptions;
+use gpui::actions;
 use gpui::px;
 use gpui::size;
 
@@ -16,6 +21,8 @@ use crate::home::Home;
 use crate::link;
 use crate::window::chat::ChatView;
 use crate::window::settings::SettingsView;
+
+actions!(dotori, [Quit]);
 
 /// Which window the process opens. Each runs in a process of its own, so closing it frees
 /// everything GPUI held.
@@ -30,8 +37,12 @@ pub(crate) fn run(home: Home, which: Which) -> Result<(), String> {
         Which::Settings => Some(crate::settings::Settings::load(&home.settings())?),
         Which::Chat => None,
     };
+    let failed = Rc::new(RefCell::new(None));
+    let failure = Rc::clone(&failed);
     Application::new().run(move |cx: &mut App| {
+        let failed = failure;
         cx.bind_keys(input::bindings());
+        cx.bind_keys([KeyBinding::new("secondary-q", Quit, None)]);
         let bounds = Bounds::centered(None, size(px(520.), px(640.)), cx);
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -53,10 +64,12 @@ pub(crate) fn run(home: Home, which: Which) -> Result<(), String> {
                 })
                 .map(|_| ()),
         };
-        if opened.is_err() {
+        if let Err(error) = opened {
+            *failed.borrow_mut() = Some(error.to_string());
             cx.quit();
             return;
         }
+        cx.on_action(|_: &Quit, cx| cx.quit());
         cx.on_window_closed(|cx| {
             if cx.windows().is_empty() {
                 cx.quit();
@@ -65,5 +78,8 @@ pub(crate) fn run(home: Home, which: Which) -> Result<(), String> {
         .detach();
         cx.activate(true);
     });
-    Ok(())
+    match failed.take() {
+        Some(error) => Err(format!("cannot open a window: {error}")),
+        None => Ok(()),
+    }
 }

@@ -1,3 +1,5 @@
+use std::mem;
+
 use gpui::App;
 use gpui::ClickEvent;
 use gpui::Context;
@@ -25,6 +27,7 @@ pub(crate) struct SettingsView {
     base_url: Entity<TextInput>,
     api_key_env: Entity<TextInput>,
     effort: Entity<TextInput>,
+    other: Form,
     note: Option<SharedString>,
 }
 
@@ -40,36 +43,61 @@ impl SettingsView {
                 input
             })
         };
+        let other = Form {
+            openai_compatible: !form.openai_compatible,
+            ..Form::default()
+        };
         Self {
             home,
             earlier: settings.model,
             openai_compatible: form.openai_compatible,
             model: field("기본값 사용", form.model, cx),
             base_url: field("기본값 사용", form.base_url, cx),
-            api_key_env: field("ANTHROPIC_API_KEY", form.api_key_env, cx),
+            api_key_env: field("기본값 사용", form.api_key_env, cx),
             effort: field("기본값 사용 (low, medium, high)", form.effort, cx),
+            other,
             note: None,
         }
     }
 
     fn choose(&mut self, openai_compatible: bool, cx: &mut Context<Self>) {
+        if self.openai_compatible == openai_compatible {
+            return;
+        }
+        let shown = self.form(cx);
+        let next = mem::replace(&mut self.other, shown);
+        let fill = |field: &Entity<TextInput>, text: Option<String>, cx: &mut Context<Self>| {
+            field.update(cx, |input, cx| {
+                input.set_text(text.as_deref().unwrap_or(""), cx)
+            });
+        };
+        fill(&self.model, next.model, cx);
+        fill(&self.base_url, next.base_url, cx);
+        fill(&self.api_key_env, next.api_key_env, cx);
+        fill(&self.effort, next.effort, cx);
         self.openai_compatible = openai_compatible;
         self.note = None;
         cx.notify();
     }
 
-    fn save(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
+    fn form(&self, cx: &Context<Self>) -> Form {
         let read = |field: &Entity<TextInput>| {
             let text = field.read(cx).text().trim().to_owned();
             (!text.is_empty()).then_some(text)
         };
-        let form = Form {
+        Form {
             openai_compatible: self.openai_compatible,
             model: read(&self.model),
             base_url: read(&self.base_url),
             api_key_env: read(&self.api_key_env),
-            effort: read(&self.effort),
-        };
+            effort: (!self.openai_compatible)
+                .then(|| read(&self.effort))
+                .flatten(),
+        }
+    }
+
+    fn save(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
+        let form = self.form(cx);
         let saved = form.settings(&self.earlier).and_then(|model| {
             Settings {
                 model: model.clone(),

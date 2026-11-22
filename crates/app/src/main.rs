@@ -14,7 +14,10 @@ use std::process::ExitCode;
 
 use crate::home::Home;
 
+#[cfg(feature = "window")]
 const USAGE: &str = "usage: dotori [daemon | chat | window | settings]";
+#[cfg(not(feature = "window"))]
+const USAGE: &str = "usage: dotori [daemon | chat]";
 
 #[tokio::main]
 async fn main() -> ExitCode {

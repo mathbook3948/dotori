@@ -1,3 +1,5 @@
+use std::cell::Cell;
+
 use dotori_connectors::channel::app::ToWindow;
 use tokio::io::AsyncBufReadExt;
 use tokio::io::BufReader;
@@ -13,11 +15,22 @@ pub(crate) async fn run(home: Home) -> Result<(), String> {
         return Err(String::from("dotori is not running"));
     }
     let mut link = link::open(home);
+    let down = Cell::new(false);
+    let mut before = false;
     let printing = async {
         while let Some(update) = link.updates.recv().await {
             match update {
-                Update::Connected => {}
-                Update::Down(reason) => eprintln!("({reason}; reconnecting)"),
+                Update::Connected => {
+                    if before {
+                        eprintln!("(reconnected; the conversation so far follows again)");
+                    }
+                    before = true;
+                    down.set(false);
+                }
+                Update::Down(reason) => {
+                    down.set(true);
+                    eprintln!("({reason}; reconnecting)");
+                }
                 Update::Event(event) => println!("{}", shown(&event)),
             }
         }
@@ -25,7 +38,14 @@ pub(crate) async fn run(home: Home) -> Result<(), String> {
     let typing = async {
         let mut input = BufReader::new(tokio::io::stdin()).lines();
         while let Ok(Some(text)) = input.next_line().await {
-            if !text.trim().is_empty() && link.say.send(text).is_err() {
+            if text.trim().is_empty() {
+                continue;
+            }
+            if down.get() {
+                eprintln!("(not connected; not sent)");
+                continue;
+            }
+            if link.say.send(text).is_err() {
                 break;
             }
         }

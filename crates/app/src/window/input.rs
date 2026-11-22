@@ -309,6 +309,11 @@ impl TextInput {
         cx.notify();
     }
 
+    /// Whether an input method is still composing text in the field.
+    pub(crate) fn composing(&self) -> bool {
+        self.marked_range.is_some()
+    }
+
     pub(crate) fn take(&mut self, cx: &mut Context<Self>) -> String {
         let text = self.content.to_string();
         self.reset();

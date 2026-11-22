@@ -1,6 +1,7 @@
 use std::env;
 use std::fs;
 use std::io::ErrorKind;
+use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -63,7 +64,7 @@ impl Default for ModelSettings {
 /// What the settings window holds, each field already trimmed. A blank field means the default.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(
-    not(feature = "window"),
+    all(not(feature = "window"), not(test)),
     expect(dead_code, reason = "only the settings window reads a form")
 )]
 pub(crate) struct Form {
@@ -75,7 +76,7 @@ pub(crate) struct Form {
 }
 
 #[cfg_attr(
-    not(feature = "window"),
+    all(not(feature = "window"), not(test)),
     expect(dead_code, reason = "only the settings window reads a form")
 )]
 impl Form {
@@ -148,7 +149,7 @@ impl Settings {
     }
 
     #[cfg_attr(
-        not(feature = "window"),
+        all(not(feature = "window"), not(test)),
         expect(dead_code, reason = "only the settings window writes settings")
     )]
     /// Writes the whole file anew. A file left half written by a crash is never read.
@@ -159,7 +160,9 @@ impl Settings {
             fs::create_dir_all(folder).map_err(fail)?;
         }
         let draft = path.with_extension("toml.new");
-        fs::write(&draft, text).map_err(fail)?;
+        let mut file = fs::File::create(&draft).map_err(fail)?;
+        file.write_all(text.as_bytes()).map_err(fail)?;
+        file.sync_all().map_err(fail)?;
         fs::rename(&draft, path).map_err(fail)
     }
 
