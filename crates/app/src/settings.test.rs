@@ -185,3 +185,16 @@ fn the_browser_section_names_a_path_and_whether_to_hide_it() {
     );
     assert!(parse("[browser]\nprofile = \"x\"").is_err());
 }
+
+#[test]
+fn the_sub_task_section_names_a_runner() {
+    let settings = parse("[sub_tasks]\nrunner = \"claude-code\"").expect("parsed");
+    assert_eq!(
+        settings.sub_tasks,
+        Some(SubTaskSettings {
+            runner: Some(RunnerChoice::ClaudeCode),
+            path: None,
+        })
+    );
+    assert!(parse("[sub_tasks]\nrunner = \"cursor\"").is_err());
+}

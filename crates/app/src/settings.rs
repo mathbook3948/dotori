@@ -12,6 +12,8 @@ use dotori_connectors::llm::anthropic::Anthropic;
 use dotori_connectors::llm::anthropic::AnthropicConfig;
 use dotori_connectors::llm::openai::OpenAi;
 use dotori_connectors::llm::openai::OpenAiConfig;
+use dotori_connectors::sub_task::SUB_TASK_SYSTEM;
+use dotori_connectors::sub_task::llm::LLM_SUB_TASK_SYSTEM;
 use dotori_core::channel::Channel;
 use dotori_core::id::ChannelUser;
 use dotori_core::id::ExternalUserId;
@@ -34,6 +36,28 @@ pub(crate) struct Settings {
     pub(crate) slack: Option<SlackSettings>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) browser: Option<BrowserSettings>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) sub_tasks: Option<SubTaskSettings>,
+}
+
+/// What runs sub-tasks. Without a runner the main conversation's model runs them in dotori's
+/// loop. Without a path a coding agent is found through `PATH`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SubTaskSettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) runner: Option<RunnerChoice>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) path: Option<PathBuf>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum RunnerChoice {
+    #[default]
+    Llm,
+    ClaudeCode,
+    Codex,
 }
 
 /// Which browser the browser tools drive. Without a path dotori looks for Chrome, Chromium or Edge.
@@ -209,6 +233,25 @@ impl Settings {
         &self,
         key: impl Fn(&str) -> Option<String>,
     ) -> Result<Arc<dyn Model>, String> {
+        self.model_told(None, key)
+    }
+
+    /// Builds the model that runs sub-tasks in dotori's loop, told about the sub-task.
+    pub(crate) fn sub_task_model(
+        &self,
+        key: impl Fn(&str) -> Option<String>,
+    ) -> Result<Arc<dyn Model>, String> {
+        self.model_told(
+            Some(format!("{SUB_TASK_SYSTEM}\n{LLM_SUB_TASK_SYSTEM}")),
+            key,
+        )
+    }
+
+    fn model_told(
+        &self,
+        system: Option<String>,
+        key: impl Fn(&str) -> Option<String>,
+    ) -> Result<Arc<dyn Model>, String> {
         match &self.model {
             ModelSettings::Anthropic {
                 api_key_env,
@@ -231,6 +274,9 @@ impl Settings {
                     config.max_tokens = *max_tokens;
                 }
                 config.effort.clone_from(effort);
+                if let Some(system) = system {
+                    config.system = system;
+                }
                 Ok(Arc::new(
                     Anthropic::new(config).map_err(|error| error.to_string())?,
                 ))
@@ -248,6 +294,9 @@ impl Settings {
                     );
                 }
                 config.max_tokens = *max_tokens;
+                if let Some(system) = system {
+                    config.system = system;
+                }
                 Ok(Arc::new(
                     OpenAi::new(config).map_err(|error| error.to_string())?,
                 ))
