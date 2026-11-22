@@ -13,11 +13,12 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "signal", "time", "io-std", "io-util", "net"] }
 toml = "0.9"
+tray-icon = { version = "0.26.1", default-features = false, features = ["ksni"], optional = true }
 unicode-segmentation = { version = "1", optional = true }
 
 [features]
 default = ["window"]
-window = ["dep:gpui", "dep:unicode-segmentation"]
+window = ["dep:gpui", "dep:tray-icon", "dep:unicode-segmentation"]
 
 [lints]
 workspace = true

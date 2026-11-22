@@ -7,6 +7,8 @@ mod link;
 mod lock;
 mod settings;
 #[cfg(feature = "window")]
+mod tray;
+#[cfg(feature = "window")]
 mod window;
 
 use std::env;
@@ -27,6 +29,8 @@ async fn main() -> ExitCode {
         Err(error) => return fail(&error),
     };
     let result = match command.as_deref() {
+        #[cfg(feature = "window")]
+        None | Some("daemon") if tray::desktop() => tray::run(home).await,
         None | Some("daemon") => daemon::run(home).await,
         Some("chat") => chat::run(home).await,
         #[cfg(feature = "window")]
