@@ -124,3 +124,24 @@ async fn the_record_refuses_edits_and_removals() {
     assert!(connection.execute("DELETE FROM records", []).is_err());
     assert_eq!(store.load().await.expect("loaded").len(), 1);
 }
+
+#[tokio::test]
+async fn a_file_from_a_newer_dotori_is_refused() {
+    let path = scratch();
+    let store = SqliteStore::new(path.clone());
+    assert!(store.is_empty().await.expect("checked"));
+    store
+        .append(vec![record(Entry::ModelFailed {
+            detail: String::from("one"),
+        })])
+        .await
+        .expect("appended");
+    assert!(!store.is_empty().await.expect("checked"));
+    Connection::open(&path)
+        .expect("opened")
+        .pragma_update(None, "user_version", 99)
+        .expect("set");
+
+    let error = SqliteStore::new(path).load().await.expect_err("newer");
+    assert!(error.detail.contains("newer dotori"), "{}", error.detail);
+}

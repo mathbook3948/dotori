@@ -15,6 +15,7 @@ use rusqlite::params;
 
 use crate::record::form::Line;
 
+const VERSION: i64 = 1;
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS records (
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -66,7 +67,11 @@ impl SqliteStore {
                     *held = Some(open(&path)?);
                 }
                 let opened = held.as_mut().ok_or_else(|| fail("no connection"))?;
-                work(opened)
+                let done = work(opened);
+                if done.is_err() {
+                    *held = None;
+                }
+                done
             })
             .await
             .unwrap_or_else(|error| Err(fail(format!("record task failed: {error}"))))
@@ -85,8 +90,34 @@ fn open(path: &PathBuf) -> Result<Connection, RecordError> {
     connection
         .pragma_update(None, "synchronous", "FULL")
         .map_err(fail)?;
+    let version: i64 = connection
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .map_err(fail)?;
+    if version > VERSION {
+        return Err(fail(format!(
+            "{} is from a newer dotori (format {version})",
+            path.display()
+        )));
+    }
     connection.execute_batch(SCHEMA).map_err(fail)?;
+    connection
+        .pragma_update(None, "user_version", VERSION)
+        .map_err(fail)?;
     Ok(connection)
+}
+
+impl SqliteStore {
+    /// Whether nothing has been recorded yet.
+    pub async fn is_empty(&self) -> Result<bool, RecordError> {
+        self.with(|connection| {
+            connection
+                .query_row("SELECT NOT EXISTS(SELECT 1 FROM records)", [], |row| {
+                    row.get(0)
+                })
+                .map_err(fail)
+        })
+        .await
+    }
 }
 
 impl RecordStore for SqliteStore {

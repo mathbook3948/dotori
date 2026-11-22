@@ -111,11 +111,22 @@ async fn open_record(home: &Home) -> Result<SqliteStore, String> {
         return Ok(store);
     }
     let fail = |error: RecordError| error.to_string();
-    if store.load().await.map_err(fail)?.is_empty() {
-        let earlier = JsonlStore::new(old.clone()).load().await.map_err(fail)?;
-        store.append(earlier).await.map_err(fail)?;
+    if !store.is_empty().await.map_err(fail)? {
+        eprintln!(
+            "dotori: {} is left alone because the SQLite record already has records",
+            old.display()
+        );
+        return Ok(store);
     }
-    fs::rename(&old, old.with_extension("jsonl.moved")).map_err(|error| error.to_string())?;
+    let earlier = JsonlStore::new(old.clone()).load().await.map_err(fail)?;
+    store.append(earlier).await.map_err(fail)?;
+    let mut moved = old.with_extension("jsonl.moved");
+    let mut n = 1;
+    while moved.exists() {
+        moved = old.with_extension(format!("jsonl.moved.{n}"));
+        n += 1;
+    }
+    fs::rename(&old, moved).map_err(|error| error.to_string())?;
     Ok(store)
 }
 
