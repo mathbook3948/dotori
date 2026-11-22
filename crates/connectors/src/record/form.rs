@@ -125,6 +125,10 @@ impl Line {
         }
     }
 
+    pub(crate) fn at_ms(&self) -> u64 {
+        self.at_ms
+    }
+
     pub(crate) fn into_record(self) -> Result<Record, String> {
         Ok(Record {
             at: UNIX_EPOCH + Duration::from_millis(self.at_ms),
