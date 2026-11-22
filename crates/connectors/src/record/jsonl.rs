@@ -92,12 +92,14 @@ impl RecordStore for JsonlStore {
             }
             let mut file = OpenOptions::new()
                 .read(true)
-                .append(true)
+                .write(true)
                 .create(true)
+                .truncate(false)
                 .open(path.as_path())
                 .map_err(fail)?;
             let kept = whole_lines(&mut file).map_err(fail)?;
             file.set_len(kept).map_err(fail)?;
+            file.seek(SeekFrom::Start(kept)).map_err(fail)?;
             let written = file
                 .write_all(text.as_bytes())
                 .and_then(|()| file.sync_data());
