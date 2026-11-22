@@ -158,6 +158,7 @@ impl Toolbox for FnToolbox {
         vec![ToolSpec {
             name: String::from("read_file"),
             description: String::from("Reads a file."),
+            input_schema: String::from(r#"{"type":"object"}"#),
         }]
     }
 

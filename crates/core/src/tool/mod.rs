@@ -29,6 +29,8 @@ pub struct ToolCall {
 pub struct ToolSpec {
     pub name: String,
     pub description: String,
+    /// JSON Schema of the input object, as JSON text.
+    pub input_schema: String,
 }
 
 #[derive(Clone, Debug)]

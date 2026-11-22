@@ -85,12 +85,14 @@ fn say(thread: ThreadRef, text: &str) -> ModelReply {
             thread,
             text: text.to_owned(),
         }],
+        trace: None,
     }
 }
 
 fn silence() -> ModelReply {
     ModelReply {
         actions: Vec::new(),
+        trace: None,
     }
 }
 
@@ -135,6 +137,7 @@ fn tool_then_report(seen: mpsc::UnboundedSender<Result<String, ToolError>>) -> F
         }
         None => ModelReply {
             actions: vec![tool_call()],
+            trace: None,
         },
     })
 }
@@ -314,6 +317,7 @@ fn panicking_sub_task_is_reported_as_failed() {
                     title: String::from("research"),
                     brief: String::from("look into it"),
                 })],
+                trace: None,
             },
         }));
         ports.sub_tasks = Arc::new(FnSubTasks(Box::new(|_| panic!("runner crashed"))));
@@ -396,6 +400,7 @@ fn shutdown_returns_while_a_model_call_and_a_sub_task_hang() {
                         title: String::from("research"),
                         brief: String::from("look into it"),
                     })],
+                    trace: None,
                 })
             })
         });
@@ -479,6 +484,7 @@ fn queued_reply_is_delivered_before_shutdown_returns() {
                     },
                     tool_call(),
                 ],
+                trace: None,
             },
         }));
         ports.toolbox = Arc::new(FnToolbox(Box::new(move |_| {
@@ -591,7 +597,7 @@ fn conversation_resumes_after_a_restart() {
         assert!(
             conversation
                 .iter()
-                .any(|entry| matches!(entry, Entry::Acted(_))),
+                .any(|entry| matches!(entry, Entry::Acted { .. })),
             "the earlier reply resumes too"
         );
         assert_eq!(
@@ -627,7 +633,7 @@ fn records_refused_by_the_store_are_appended_once_it_recovers() {
             .iter()
             .map(|entry| match entry {
                 Entry::Heard { .. } => "heard",
-                Entry::Acted(_) => "acted",
+                Entry::Acted { .. } => "acted",
                 _ => "other",
             })
             .collect();
@@ -744,10 +750,11 @@ fn work_cut_off_by_a_restart_is_reported_as_stopped() {
                     content: Content::parse("read it and research").expect("non-empty"),
                 },
             }),
-            record(Entry::Acted(vec![
-                tool_call(),
-                Action::Delegate(research.clone()),
-            ])),
+            record(Entry::Acted {
+                actions: vec![tool_call(), Action::Delegate(research.clone())],
+                answered: 1,
+                trace: None,
+            }),
         ]);
         let (app, probe) = FakeChannel::new("app");
         let (asked_tx, mut asked) = mpsc::unbounded_channel();

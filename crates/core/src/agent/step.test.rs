@@ -45,7 +45,13 @@ impl Harness {
 
     fn model_answers(&mut self, actions: Vec<Action>) {
         let call = self.call_in_flight();
-        self.answer(call, Ok(ModelReply { actions }));
+        self.answer(
+            call,
+            Ok(ModelReply {
+                actions,
+                trace: None,
+            }),
+        );
     }
 
     fn tool_returns(&mut self, result: Result<String, ToolError>) {
@@ -270,6 +276,7 @@ fn result_of_a_cancelled_call_is_ignored() {
         cancelled,
         Ok(ModelReply {
             actions: vec![say(thread, "stale")],
+            trace: None,
         }),
     );
 
@@ -278,7 +285,7 @@ fn result_of_a_cancelled_call_is_ignored() {
         !h.state
             .conversation
             .iter()
-            .any(|entry| matches!(entry, Entry::Acted(_)))
+            .any(|entry| matches!(entry, Entry::Acted { .. }))
     );
 }
 
@@ -484,4 +491,19 @@ fn sub_task_outcome_joins_the_next_call() {
         entry,
         Entry::SubTaskReturned { outcome: SubTaskOutcome::Finished(text), .. } if text == "booked"
     )));
+}
+
+#[test]
+fn reply_records_how_much_of_the_conversation_it_answered() {
+    let mut h = Harness::new();
+    h.owner_says("hello");
+    h.other_says("general", "is the owner around");
+
+    h.model_answers(Vec::new());
+
+    let answered = h.state.conversation.iter().find_map(|entry| match entry {
+        Entry::Acted { answered, .. } => Some(*answered),
+        _ => None,
+    });
+    assert_eq!(answered, Some(1));
 }
