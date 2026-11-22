@@ -9,6 +9,7 @@ use dotori_connectors::record::jsonl::JsonlStore;
 use dotori_core::runtime::Agent;
 use dotori_core::runtime::AgentConfig;
 use dotori_core::runtime::Ports;
+use dotori_core::tool::Toolbox;
 
 use crate::door;
 use crate::door::Door;
@@ -18,6 +19,7 @@ use crate::idle::NoTools;
 use crate::lock::DaemonLock;
 use crate::settings::Settings;
 use crate::settings::environment;
+use crate::tools;
 
 const QUEUE: NonZeroUsize = NonZeroUsize::new(256).expect("non-zero");
 const SEEN: NonZeroUsize = NonZeroUsize::new(4096).expect("non-zero");
@@ -43,6 +45,13 @@ pub(crate) async fn serve(
         Vec::new()
     });
     let (channels, owners): (Vec<_>, Vec<_>) = connected.into_iter().unzip();
+    let (_mcp, toolbox): (_, Arc<dyn Toolbox>) = match tools::start().await {
+        Ok((child, tools)) => (Some(child), Arc::new(tools)),
+        Err(error) => {
+            eprintln!("dotori: no shared tools: {error}");
+            (None, Arc::new(NoTools))
+        }
+    };
     let token = door::token()?;
     let (app, address) = AppChannel::bind(token.clone()).map_err(|error| error.to_string())?;
     let door = Door {
@@ -53,7 +62,7 @@ pub(crate) async fn serve(
         app: Arc::new(app),
         channels,
         model,
-        toolbox: Arc::new(NoTools),
+        toolbox,
         sub_tasks: Arc::new(NoSubTasks),
         records: Arc::new(JsonlStore::new(home.record())),
     };

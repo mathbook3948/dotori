@@ -7,11 +7,12 @@ license.workspace = true
 [dependencies]
 dotori-connectors = { path = "../connectors" }
 dotori-core = { path = "../core" }
+dotori-mcp = { path = "../mcp" }
 getrandom = "0.4"
 gpui = { version = "0.2.2", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "signal", "time", "io-std", "io-util", "net"] }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "signal", "time", "io-std", "io-util", "net", "process"] }
 toml = "0.9"
 tray-icon = { version = "0.26.1", default-features = false, features = ["ksni"], optional = true }
 unicode-segmentation = { version = "1", optional = true }
