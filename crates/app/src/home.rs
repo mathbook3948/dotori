@@ -34,9 +34,20 @@ impl Home {
         self.root.join("daemon.lock")
     }
 
+    /// The browser profile, which keeps the owner's logins.
+    pub(crate) fn browser(&self) -> PathBuf {
+        self.root.join("browser")
+    }
+
     pub(crate) fn door(&self) -> PathBuf {
         self.root.join("door.json")
     }
+}
+
+/// Whether a screen is there to show windows on. A Linux machine with no display has none.
+pub(crate) fn desktop() -> bool {
+    let set = |name: &str| env::var_os(name).is_some_and(|value| !value.is_empty());
+    !cfg!(target_os = "linux") || set("DISPLAY") || set("WAYLAND_DISPLAY")
 }
 
 #[cfg(target_os = "windows")]

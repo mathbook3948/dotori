@@ -34,13 +34,6 @@ const POLL: Duration = Duration::from_millis(100);
 const ICON_SIZE: u32 = 32;
 const ACORN: [u8; 3] = [0x8a, 0x5a, 0x1c];
 
-/// Whether this process may try a tray icon. A Linux machine with no display runs the daemon
-/// without one.
-pub(crate) fn desktop() -> bool {
-    let set = |name: &str| env::var_os(name).is_some_and(|value| !value.is_empty());
-    !cfg!(target_os = "linux") || set("DISPLAY") || set("WAYLAND_DISPLAY")
-}
-
 /// Runs the tray on this thread and the daemon on the runtime's workers. Either one ending ends
 /// both. If GPUI cannot reach the display, the daemon runs without a tray.
 pub(crate) async fn run(home: Home) -> Result<(), String> {

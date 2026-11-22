@@ -31,10 +31,10 @@ async fn main() -> ExitCode {
     };
     let result = match command.as_deref() {
         #[cfg(feature = "window")]
-        None | Some("daemon") if tray::desktop() => tray::run(home).await,
+        None | Some("daemon") if home::desktop() => tray::run(home).await,
         None | Some("daemon") => daemon::run(home).await,
         Some("chat") => chat::run(home).await,
-        Some("mcp") => tools::serve().await,
+        Some("mcp") => tools::serve(home).await,
         #[cfg(feature = "window")]
         Some("window") => window::run(home, window::Which::Chat),
         #[cfg(feature = "window")]

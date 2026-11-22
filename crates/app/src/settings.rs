@@ -3,6 +3,7 @@ use std::fs;
 use std::io::ErrorKind;
 use std::io::Write;
 use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use dotori_connectors::channel::slack::SlackChannel;
@@ -31,6 +32,19 @@ pub(crate) struct Settings {
     pub(crate) model: ModelSettings,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) slack: Option<SlackSettings>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) browser: Option<BrowserSettings>,
+}
+
+/// Which browser the browser tools drive. Without a path dotori looks for Chrome, Chromium or Edge.
+/// Without `headless` the browser shows its window when there is a screen, so the owner can log in.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct BrowserSettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) path: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) headless: Option<bool>,
 }
 
 /// Slack is on when this section is in the file. The owner is a Slack user id, such as `U012AB3CD`.

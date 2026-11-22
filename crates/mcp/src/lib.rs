@@ -1,5 +1,8 @@
-//! dotori's MCP server: the tools every runner shares, such as webfetch, served over HTTP.
+//! dotori's MCP server: the tools every runner shares, such as webfetch and the browser, served
+//! over HTTP.
 
+pub mod browser;
+mod cdp;
 pub mod fetch;
 pub mod server;
 
