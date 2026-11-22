@@ -43,6 +43,7 @@ fn memory(config: MemoryConfig) -> Arc<Memory> {
         state: Mutex::new(State {
             index: None,
             analyzer: Analyzer::Plain,
+            dictionary_failed: false,
         }),
     })
 }
@@ -128,9 +129,19 @@ fn the_korean_dictionary_finds_inflected_words() {
     let terms = korean.terms("내일 회의는 민지네 사무실에서 했었다");
     assert!(terms.contains(&String::from("회의")), "{terms:?}");
     assert!(terms.contains(&String::from("사무실")), "{terms:?}");
-    assert!(terms.contains(&String::from("하")), "{terms:?}");
+    assert!(!terms.contains(&String::from("하")), "{terms:?}");
     assert!(
         !terms.iter().any(|term| term == "는" || term == "에서"),
         "{terms:?}"
+    );
+}
+
+#[test]
+fn a_record_file_without_its_table_yet_is_empty() {
+    let config = config();
+    Connection::open(&config.record).expect("made");
+    assert_eq!(
+        memory(config).search("회의", 10).expect("searched"),
+        "Nothing is recorded yet."
     );
 }

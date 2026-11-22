@@ -17,7 +17,14 @@ fn a_dictionary_word_keeps_its_base_form() {
             "했었",
             &details("VV+EP,*,T,했었,Inflect,VV,EP,하/VV/*+았었/EP/*")
         ),
-        Some(String::from("하"))
+        None
+    );
+    assert_eq!(
+        lemma(
+            "갔었",
+            &details("VV+EP,*,T,갔었,Inflect,VV,EP,가/VV/*+았었/EP/*")
+        ),
+        Some(String::from("가"))
     );
     assert_eq!(
         lemma(

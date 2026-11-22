@@ -36,6 +36,8 @@ const PARTICLES: &[&str] = &[
     "께",
 ];
 
+const LIGHT: &[&str] = &["하", "되", "이", "있"];
+
 const KEPT: &[&str] = &["NN", "NP", "VV", "VA", "MAG", "XR", "SL", "SH", "SN"];
 
 /// Turns text into the terms the index stores: the base forms of content words, so particles and
@@ -101,6 +103,9 @@ fn lemma(surface: &str, details: &[String]) -> Option<String> {
             .map_or(surface, String::as_str),
     };
     let base = base.to_lowercase();
+    if tag.starts_with('V') && LIGHT.contains(&base.as_str()) {
+        return None;
+    }
     (!base.trim().is_empty()).then_some(base)
 }
 

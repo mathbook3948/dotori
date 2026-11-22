@@ -64,7 +64,7 @@ fn unpack(bytes: &[u8], folder: &Path) -> Result<PathBuf, String> {
             "the dictionary download is damaged (sha-256 {digest})"
         ));
     }
-    let draft = folder.join(format!("{NAME}.new"));
+    let draft = folder.join(format!("{NAME}.new.{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&draft);
     std::fs::create_dir_all(&draft).map_err(|error| error.to_string())?;
     let mut archive =
@@ -77,8 +77,10 @@ fn unpack(bytes: &[u8], folder: &Path) -> Result<PathBuf, String> {
         return Err(String::from("the dictionary archive has no metadata.json"));
     }
     let target = path(folder);
-    let _ = std::fs::remove_dir_all(&target);
-    std::fs::rename(&unpacked, &target).map_err(|error| error.to_string())?;
+    if !ready(folder) {
+        let _ = std::fs::remove_dir_all(&target);
+        std::fs::rename(&unpacked, &target).map_err(|error| error.to_string())?;
+    }
     let _ = std::fs::remove_dir_all(&draft);
     Ok(target)
 }

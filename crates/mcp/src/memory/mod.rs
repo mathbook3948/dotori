@@ -11,6 +11,7 @@ use std::sync::Mutex;
 use rusqlite::Connection;
 use rusqlite::OpenFlags;
 use rusqlite::OptionalExtension;
+use rusqlite::TransactionBehavior;
 use rusqlite::params;
 use serde_json::Value;
 use serde_json::json;
@@ -45,6 +46,7 @@ pub struct Memory {
 struct State {
     index: Option<Connection>,
     analyzer: Analyzer,
+    dictionary_failed: bool,
 }
 
 impl std::fmt::Debug for Memory {
@@ -64,6 +66,7 @@ impl Memory {
             state: Mutex::new(State {
                 index: None,
                 analyzer: Analyzer::Plain,
+                dictionary_failed: false,
             }),
         });
         let folder = memory.config.dictionaries.clone();
@@ -89,24 +92,36 @@ impl Memory {
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if matches!(state.analyzer, Analyzer::Plain) && dictionary::ready(&self.config.dictionaries)
+        if matches!(state.analyzer, Analyzer::Plain)
+            && !state.dictionary_failed
+            && dictionary::ready(&self.config.dictionaries)
         {
             match Analyzer::korean(&dictionary::path(&self.config.dictionaries)) {
                 Ok(korean) => state.analyzer = korean,
-                Err(error) => eprintln!("dotori: {error}"),
+                Err(error) => {
+                    state.dictionary_failed = true;
+                    eprintln!("dotori: memory search keeps a simpler word split: {error}");
+                }
             }
         }
         if state.index.is_none() {
             state.index = Some(open_index(&self.config.index)?);
         }
-        let State { index, analyzer } = &mut *state;
+        let State {
+            index, analyzer, ..
+        } = &mut *state;
         let index = index.as_mut().ok_or("no index")?;
         let record = match open_record(&self.config.record)? {
             Some(record) => record,
             None => return Ok(String::from("Nothing is recorded yet.")),
         };
-        catch_up(index, &record, analyzer)
-            .map_err(|error| format!("the search index could not catch up: {error}"))?;
+        match catch_up(index, &record, analyzer) {
+            Ok(()) => {}
+            Err(error) if error.to_string().contains("no such table") => {
+                return Ok(String::from("Nothing is recorded yet."));
+            }
+            Err(error) => return Err(format!("the search index could not catch up: {error}")),
+        }
         let terms = analyzer.terms(query);
         if terms.is_empty() {
             return Err(String::from("the query has no words to search for"));
@@ -229,7 +244,7 @@ fn catch_up(
     analyzer: &Analyzer,
 ) -> rusqlite::Result<()> {
     if meta(index, "analyzer")?.as_deref() != Some(analyzer.name()) {
-        let rebuild = index.transaction()?;
+        let rebuild = index.transaction_with_behavior(TransactionBehavior::Immediate)?;
         rebuild.execute("DELETE FROM terms", [])?;
         rebuild.execute(
             "INSERT OR REPLACE INTO meta (key, value) VALUES ('analyzer', ?1), ('done', '0')",
@@ -238,7 +253,8 @@ fn catch_up(
         rebuild.commit()?;
     }
     loop {
-        let done: i64 = meta(index, "done")?
+        let batch = index.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let done: i64 = meta(&batch, "done")?
             .and_then(|done| done.parse().ok())
             .unwrap_or(0);
         let rows: Vec<(i64, Option<String>, Option<String>)> = record
@@ -252,7 +268,6 @@ fn catch_up(
         let Some(last) = rows.last().map(|row| row.0) else {
             return Ok(());
         };
-        let batch = index.transaction()?;
         for (seq, sender, text) in &rows {
             let Some(text) = text else {
                 continue;
@@ -262,7 +277,7 @@ fn catch_up(
                 terms.extend(analyzer.terms(sender));
             }
             batch.execute(
-                "INSERT INTO terms (rowid, words) VALUES (?1, ?2)",
+                "INSERT OR REPLACE INTO terms (rowid, words) VALUES (?1, ?2)",
                 params![seq, terms.join(" ")],
             )?;
         }
@@ -312,7 +327,8 @@ impl Tool for MemorySearch {
 
     fn description(&self) -> &str {
         "Searches everything dotori has heard and said for these words, best matches first. \
-         Each hit names its record, time, place, and who said it."
+         Each hit names its record, time, place, and who said it. Hits can hold the owner's \
+         private messages: pass them on only to the owner."
     }
 
     fn input_schema(&self) -> Value {
