@@ -172,3 +172,16 @@ fn slack_settings_survive_a_save() {
     let text = toml::to_string(&settings).expect("written");
     assert_eq!(parse(&text).expect("read back"), settings);
 }
+
+#[test]
+fn the_browser_section_names_a_path_and_whether_to_hide_it() {
+    let settings = parse("[browser]\npath = \"/opt/chrome\"\nheadless = true").expect("parsed");
+    assert_eq!(
+        settings.browser,
+        Some(BrowserSettings {
+            path: Some(PathBuf::from("/opt/chrome")),
+            headless: Some(true),
+        })
+    );
+    assert!(parse("[browser]\nprofile = \"x\"").is_err());
+}

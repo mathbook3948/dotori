@@ -14,6 +14,8 @@ use dotori_core::tool::ToolError;
 use dotori_core::tool::ToolSpec;
 use dotori_core::tool::Toolbox;
 use dotori_mcp::Tool;
+use dotori_mcp::browser::Browser;
+use dotori_mcp::browser::BrowserConfig;
 use dotori_mcp::fetch::WebFetch;
 use dotori_mcp::server::PATH;
 use dotori_mcp::server::Server;
@@ -30,6 +32,9 @@ use tokio::sync::Mutex;
 use tokio::time;
 
 use crate::door;
+use crate::home;
+use crate::home::Home;
+use crate::settings::Settings;
 
 const START_WAIT: Duration = Duration::from_secs(10);
 
@@ -41,8 +46,16 @@ pub(crate) struct Listening {
 }
 
 /// `dotori mcp`: serves the shared tools until its input closes.
-pub(crate) async fn serve() -> Result<(), String> {
-    let tools: Vec<Box<dyn Tool>> = vec![Box::new(WebFetch::new()?)];
+pub(crate) async fn serve(home: Home) -> Result<(), String> {
+    let settings = Settings::load(&home.settings())?;
+    let chosen = settings.browser.unwrap_or_default();
+    let browser = Browser::new(BrowserConfig {
+        executable: chosen.path,
+        profile: home.browser(),
+        headless: chosen.headless.unwrap_or(!home::desktop()),
+    });
+    let mut tools: Vec<Box<dyn Tool>> = vec![Box::new(WebFetch::new()?)];
+    tools.extend(browser.tools());
     let token = door::token()?;
     let listener = TcpListener::bind(("127.0.0.1", 0))
         .await
@@ -127,7 +140,6 @@ async fn launch() -> Result<Running, String> {
         .arg("mcp")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .kill_on_drop(true)
         .spawn()
         .map_err(|error| format!("cannot start the MCP server: {error}"))?;
     let stdout = child.stdout.take().ok_or("the MCP server has no output")?;
