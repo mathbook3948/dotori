@@ -14,6 +14,7 @@ tokio = { version = "1.54.1", default-features = false, features = ["rt", "time"
 tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["connect", "native-tls"] }
 
 [dev-dependencies]
+dotori-mcp = { path = "../mcp" }
 tokio = { version = "1.54.1", features = ["rt", "macros", "net", "io-util", "time"] }
 
 [lints]

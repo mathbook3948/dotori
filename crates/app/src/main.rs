@@ -6,6 +6,7 @@ mod idle;
 mod link;
 mod lock;
 mod settings;
+mod tools;
 #[cfg(feature = "window")]
 mod tray;
 #[cfg(feature = "window")]
@@ -33,6 +34,7 @@ async fn main() -> ExitCode {
         None | Some("daemon") if tray::desktop() => tray::run(home).await,
         None | Some("daemon") => daemon::run(home).await,
         Some("chat") => chat::run(home).await,
+        Some("mcp") => tools::serve().await,
         #[cfg(feature = "window")]
         Some("window") => window::run(home, window::Which::Chat),
         #[cfg(feature = "window")]
