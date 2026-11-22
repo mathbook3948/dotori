@@ -1,10 +1,7 @@
-use std::collections::hash_map::RandomState;
 use std::fs;
 use std::fs::OpenOptions;
-use std::hash::BuildHasher;
 use std::io::Write;
 use std::path::Path;
-use std::time::SystemTime;
 
 use serde::Deserialize;
 use serde::Serialize;
@@ -18,13 +15,6 @@ pub(crate) struct Door {
 }
 
 impl Door {
-    pub(crate) fn new(port: u16) -> Self {
-        Self {
-            port,
-            token: token(),
-        }
-    }
-
     pub(crate) fn write(&self, path: &Path) -> Result<(), String> {
         let fail = |error: std::io::Error| format!("{}: {error}", path.display());
         if let Some(folder) = path.parent() {
@@ -57,11 +47,11 @@ fn only_the_user(options: &mut OpenOptions) {
 #[cfg(not(unix))]
 fn only_the_user(_options: &mut OpenOptions) {}
 
-fn token() -> String {
-    let now = SystemTime::now();
-    let high = RandomState::new().hash_one(now);
-    let low = RandomState::new().hash_one((now, std::process::id()));
-    format!("{high:016x}{low:016x}")
+/// 128 bits from the operating system's random source, as hex.
+pub(crate) fn token() -> Result<String, String> {
+    let mut bytes = [0u8; 16];
+    getrandom::fill(&mut bytes).map_err(|error| format!("no random source: {error}"))?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
 #[cfg(test)]

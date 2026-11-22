@@ -159,3 +159,26 @@ async fn message_ids_never_repeat() {
 
     assert_ne!(first, second);
 }
+
+#[tokio::test]
+async fn an_endless_hello_is_hung_up_on() {
+    let (_channel, address, _inbox) = start().await;
+    let stream = TcpStream::connect(address).await.expect("connected");
+    let (read, mut write) = stream.into_split();
+    let flood = vec![b'x'; 300 * 1024];
+
+    let _ = write.write_all(&flood).await;
+
+    let mut lines = BufReader::new(read).lines();
+    let ended = time::timeout(WAIT, lines.next_line())
+        .await
+        .expect("in time");
+    assert!(matches!(ended, Ok(None) | Err(_)));
+}
+
+#[test]
+fn the_token_never_shows_in_debug_output() {
+    let (channel, _address) = AppChannel::bind("sk-window-token").expect("bound");
+
+    assert!(!format!("{channel:?}").contains("sk-window-token"));
+}

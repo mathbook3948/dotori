@@ -3,6 +3,7 @@ mod daemon;
 mod door;
 mod home;
 mod idle;
+mod lock;
 mod settings;
 
 use std::env;

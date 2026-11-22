@@ -30,6 +30,10 @@ impl Home {
         self.root.join("record.jsonl")
     }
 
+    pub(crate) fn lock(&self) -> PathBuf {
+        self.root.join("daemon.lock")
+    }
+
     pub(crate) fn door(&self) -> PathBuf {
         self.root.join("door.json")
     }

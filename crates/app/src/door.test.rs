@@ -5,7 +5,10 @@ fn a_door_written_is_read_back() {
     let path = std::env::temp_dir()
         .join(format!("dotori-door-{}", std::process::id()))
         .join("door.json");
-    let door = Door::new(4242);
+    let door = Door {
+        port: 4242,
+        token: token().expect("random"),
+    };
 
     door.write(&path).expect("written");
 
@@ -20,8 +23,8 @@ fn a_door_written_is_read_back() {
 
 #[test]
 fn tokens_are_long_and_differ() {
-    let first = Door::new(1).token;
-    let second = Door::new(1).token;
+    let first = token().expect("random");
+    let second = token().expect("random");
 
     assert_eq!(first.len(), 32);
     assert_ne!(first, second);

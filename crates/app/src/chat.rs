@@ -8,9 +8,13 @@ use tokio::net::TcpStream;
 
 use crate::door::Door;
 use crate::home::Home;
+use crate::lock::DaemonLock;
 
 /// A window in the terminal: each line typed goes to dotori, and everything the app shows is printed.
 pub(crate) async fn run(home: Home) -> Result<(), String> {
+    if !DaemonLock::held(&home.lock())? {
+        return Err(String::from("dotori is not running"));
+    }
     let door = Door::read(&home.door())?;
     let stream = TcpStream::connect(("127.0.0.1", door.port))
         .await

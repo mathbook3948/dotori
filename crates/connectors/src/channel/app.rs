@@ -1,10 +1,12 @@
 use std::collections::VecDeque;
+use std::fmt;
 use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
@@ -23,13 +25,16 @@ use dotori_core::message::Place;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::io::AsyncBufReadExt;
+use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
 use tokio::io::BufReader;
 use tokio::net::TcpListener;
 use tokio::net::TcpStream;
+use tokio::net::tcp::OwnedReadHalf;
 use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::task::JoinSet;
+use tokio::time;
 
 /// The channel id of the app. Everyone who reaches it is the owner.
 pub const APP: &str = "app";
@@ -38,6 +43,8 @@ pub const MAIN: &str = "main";
 const OWNER: &str = "owner";
 const BACKLOG: usize = 500;
 const LIVE: usize = 1024;
+const MAX_LINE: u64 = 256 * 1024;
+const HELLO_WAIT: Duration = Duration::from_secs(5);
 
 /// The first line a window sends. Without the right token the daemon hangs up.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -54,6 +61,7 @@ pub enum FromWindow {
 
 /// What the daemon sends to every window, one JSON object per line.
 /// A window that connects first gets the recent backlog, then everything live.
+/// A window that falls too far behind is hung up on, so it reconnects and reads the backlog.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ToWindow {
@@ -72,7 +80,6 @@ pub enum ToWindow {
 
 /// The app channel on the daemon's side. Windows connect over local TCP and prove themselves
 /// with a token the daemon writes where only the user can read it.
-#[derive(Debug)]
 pub struct AppChannel {
     id: ChannelId,
     token: String,
@@ -105,6 +112,15 @@ impl AppChannel {
             }),
         };
         Ok((channel, address))
+    }
+}
+
+impl fmt::Debug for AppChannel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AppChannel")
+            .field("id", &self.id)
+            .field("token", &"<hidden>")
+            .finish_non_exhaustive()
     }
 }
 
@@ -194,9 +210,11 @@ impl AppWindow for AppChannel {
 
 async fn serve(stream: TcpStream, token: String, hub: Arc<Hub>, inbox: Arc<dyn Inbox>) {
     let (read, mut write) = stream.into_split();
-    let mut lines = BufReader::new(read).lines();
-    let hello = match lines.next_line().await {
-        Ok(Some(line)) => serde_json::from_str::<Hello>(&line).ok(),
+    let mut reader = BufReader::new(read);
+    let mut line = Vec::new();
+    let greeted = time::timeout(HELLO_WAIT, next_line(&mut reader, &mut line)).await;
+    let hello = match greeted {
+        Ok(Ok(true)) => serde_json::from_slice::<Hello>(&line).ok(),
         _ => None,
     };
     if hello.is_none_or(|hello| hello.token != token) {
@@ -210,14 +228,13 @@ async fn serve(stream: TcpStream, token: String, hub: Arc<Hub>, inbox: Arc<dyn I
         loop {
             match live.recv().await {
                 Ok(line) => send(&mut write, &line).await?,
-                Err(RecvError::Lagged(_)) => continue,
-                Err(RecvError::Closed) => return Ok::<(), io::Error>(()),
+                Err(RecvError::Lagged(_) | RecvError::Closed) => return Ok::<(), io::Error>(()),
             }
         }
     };
     let receiving = async {
-        while let Ok(Some(line)) = lines.next_line().await {
-            let Ok(FromWindow::Say { text }) = serde_json::from_str::<FromWindow>(&line) else {
+        while let Ok(true) = next_line(&mut reader, &mut line).await {
+            let Ok(FromWindow::Say { text }) = serde_json::from_slice::<FromWindow>(&line) else {
                 continue;
             };
             let Ok(content) = Content::parse(text.clone()) else {
@@ -240,6 +257,21 @@ async fn serve(stream: TcpStream, token: String, hub: Arc<Hub>, inbox: Arc<dyn I
         _ = sending => {}
         () = receiving => {}
     }
+}
+
+async fn next_line(reader: &mut BufReader<OwnedReadHalf>, line: &mut Vec<u8>) -> io::Result<bool> {
+    line.clear();
+    let read = (&mut *reader)
+        .take(MAX_LINE + 1)
+        .read_until(b'\n', line)
+        .await?;
+    if read == 0 {
+        return Ok(false);
+    }
+    if line.len() as u64 > MAX_LINE {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "line too long"));
+    }
+    Ok(true)
 }
 
 async fn send(write: &mut tokio::net::tcp::OwnedWriteHalf, line: &str) -> io::Result<()> {

@@ -150,7 +150,8 @@ async fn a_missing_file_is_an_empty_record() {
 
 fn torn(path: &Path) {
     let mut file = OpenOptions::new().append(true).open(path).expect("open");
-    file.write_all(br#"{"at_ms":1,"entry":{"kind":"model_fa"#)
+    let cut = "[{\"at_ms\":1,\"entry\":{\"kind\":\"model_failed\",\"detail\":\"한";
+    file.write_all(&cut.as_bytes()[..cut.len() - 1])
         .expect("write");
 }
 

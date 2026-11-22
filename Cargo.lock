@@ -81,6 +81,7 @@ version = "0.1.0"
 dependencies = [
  "dotori-connectors",
  "dotori-core",
+ "getrandom 0.4.3",
  "serde",
  "serde_json",
  "tokio",

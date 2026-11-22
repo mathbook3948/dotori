@@ -16,8 +16,9 @@ use dotori_core::record::RecordStore;
 
 use crate::record::form::Line;
 
-/// The raw record as one JSON object per line in a single file that only grows.
-/// A line cut short by a crash is dropped on load and cut away before the next append.
+/// The raw record in a single file that only grows. Each appended batch is one line holding a
+/// JSON array, so a batch cut short by a crash is a torn line: dropped on load and cut away before
+/// the next append. One process at a time may use the file.
 #[derive(Clone, Debug)]
 pub struct JsonlStore {
     path: Arc<PathBuf>,
@@ -38,25 +39,36 @@ impl RecordStore for JsonlStore {
     fn load(&self) -> BoxFuture<'_, Result<Vec<Record>, RecordError>> {
         let path = Arc::clone(&self.path);
         Box::pin(blocking(move || {
-            let mut text = String::new();
+            let mut bytes = Vec::new();
             match File::open(path.as_path()) {
-                Ok(mut file) => file.read_to_string(&mut text).map_err(fail)?,
+                Ok(mut file) => file.read_to_end(&mut bytes).map_err(fail)?,
                 Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
                 Err(error) => return Err(fail(error)),
             };
-            let whole = text.rfind('\n').map_or(0, |end| end + 1);
+            let whole = bytes
+                .iter()
+                .rposition(|byte| *byte == b'\n')
+                .map_or(0, |end| end + 1);
             let mut records = Vec::new();
-            for (number, line) in text[..whole].lines().enumerate() {
-                if line.trim().is_empty() {
+            for (number, line) in bytes[..whole].split(|byte| *byte == b'\n').enumerate() {
+                if line.iter().all(u8::is_ascii_whitespace) {
                     continue;
                 }
-                let record = serde_json::from_str::<Line>(line)
+                let batch = std::str::from_utf8(line)
                     .map_err(|error| error.to_string())
-                    .and_then(Line::into_record)
+                    .and_then(|line| {
+                        serde_json::from_str::<Vec<Line>>(line).map_err(|error| error.to_string())
+                    })
+                    .and_then(|lines| {
+                        lines
+                            .into_iter()
+                            .map(Line::into_record)
+                            .collect::<Result<Vec<_>, _>>()
+                    })
                     .map_err(|detail| RecordError {
                         detail: format!("line {} of {}: {detail}", number + 1, path.display()),
                     })?;
-                records.push(record);
+                records.extend(batch);
             }
             Ok(records)
         }))
@@ -66,12 +78,12 @@ impl RecordStore for JsonlStore {
         let path = Arc::clone(&self.path);
         let writing = Arc::clone(&self.writing);
         Box::pin(blocking(move || {
-            let mut text = String::new();
-            for record in &records {
-                let line = serde_json::to_string(&Line::of(record)).map_err(fail)?;
-                text.push_str(&line);
-                text.push('\n');
+            if records.is_empty() {
+                return Ok(());
             }
+            let lines: Vec<Line> = records.iter().map(Line::of).collect();
+            let mut text = serde_json::to_string(&lines).map_err(fail)?;
+            text.push('\n');
             let _guard = writing
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
