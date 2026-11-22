@@ -7,6 +7,8 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
+use dotori_connectors::sub_task::cli::McpAddress;
+use dotori_connectors::sub_task::cli::McpServer;
 use dotori_connectors::tool::mcp::McpTools;
 use dotori_core::BoxFuture;
 use dotori_core::tool::ToolCall;
@@ -93,6 +95,7 @@ pub(crate) struct SharedTools {
 struct Running {
     child: Child,
     tools: Arc<McpTools>,
+    address: McpAddress,
 }
 
 impl fmt::Debug for SharedTools {
@@ -110,17 +113,28 @@ impl SharedTools {
         })
     }
 
+    async fn current(&self) -> Result<(Arc<McpTools>, McpAddress), String> {
+        let mut running = self.running.lock().await;
+        if !matches!(running.child.try_wait(), Ok(None)) {
+            *running = launch().await.map_err(|error| {
+                format!("the tool server stopped and did not start again: {error}")
+            })?;
+        }
+        Ok((Arc::clone(&running.tools), running.address.clone()))
+    }
+
     async fn call(&self, call: ToolCall) -> Result<String, ToolError> {
-        let tools = {
-            let mut running = self.running.lock().await;
-            if !matches!(running.child.try_wait(), Ok(None)) {
-                *running = launch().await.map_err(|error| ToolError {
-                    detail: format!("the tool server stopped and did not start again: {error}"),
-                })?;
-            }
-            Arc::clone(&running.tools)
-        };
+        let (tools, _) = self
+            .current()
+            .await
+            .map_err(|detail| ToolError { detail })?;
         tools.run(call).await
+    }
+}
+
+impl McpServer for SharedTools {
+    fn address(&self) -> BoxFuture<'_, Result<McpAddress, String>> {
+        Box::pin(async { self.current().await.map(|(_, address)| address) })
     }
 }
 
@@ -158,9 +172,14 @@ async fn launch() -> Result<Running, String> {
     let listening: Listening = serde_json::from_str(first.trim())
         .map_err(|error| format!("the MCP server said `{}`: {error}", first.trim()))?;
     let url = format!("http://127.0.0.1:{}{PATH}", listening.port);
+    let address = McpAddress {
+        url: url.clone(),
+        token: listening.token.clone(),
+    };
     let tools = McpTools::connect(url, listening.token).await?;
     Ok(Running {
         child,
         tools: Arc::new(tools),
+        address,
     })
 }

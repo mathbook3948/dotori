@@ -1,7 +1,4 @@
 use dotori_core::BoxFuture;
-use dotori_core::sub_task::SubTaskOutcome;
-use dotori_core::sub_task::SubTaskRunner;
-use dotori_core::sub_task::SubTaskSpec;
 use dotori_core::tool::ToolCall;
 use dotori_core::tool::ToolError;
 use dotori_core::tool::ToolSpec;
@@ -22,15 +19,5 @@ impl Toolbox for NoTools {
                 detail: format!("there is no tool named `{}`", call.name),
             })
         })
-    }
-}
-
-/// The runner until the sub-task runners exist. Every sub-task fails at once.
-#[derive(Debug)]
-pub(crate) struct NoSubTasks;
-
-impl SubTaskRunner for NoSubTasks {
-    fn run(&self, _spec: SubTaskSpec) -> BoxFuture<'_, SubTaskOutcome> {
-        Box::pin(async { SubTaskOutcome::Failed(String::from("sub-tasks are not available yet")) })
     }
 }

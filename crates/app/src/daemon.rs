@@ -1,22 +1,28 @@
 use std::fs;
 use std::future;
 use std::num::NonZeroUsize;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use dotori_connectors::channel::app::AppChannel;
 use dotori_connectors::record::jsonl::JsonlStore;
+use dotori_connectors::sub_task::cli::CliRunner;
+use dotori_connectors::sub_task::cli::CodingAgent;
+use dotori_connectors::sub_task::cli::McpServer;
+use dotori_connectors::sub_task::llm::LlmRunner;
 use dotori_core::runtime::Agent;
 use dotori_core::runtime::AgentConfig;
 use dotori_core::runtime::Ports;
+use dotori_core::sub_task::SubTaskRunner;
 use dotori_core::tool::Toolbox;
 
 use crate::door;
 use crate::door::Door;
 use crate::home::Home;
-use crate::idle::NoSubTasks;
 use crate::idle::NoTools;
 use crate::lock::DaemonLock;
+use crate::settings::RunnerChoice;
 use crate::settings::Settings;
 use crate::settings::environment;
 use crate::tools;
@@ -24,6 +30,8 @@ use crate::tools;
 const QUEUE: NonZeroUsize = NonZeroUsize::new(256).expect("non-zero");
 const SEEN: NonZeroUsize = NonZeroUsize::new(4096).expect("non-zero");
 const TOOL_TIMEOUT: Duration = Duration::from_secs(120);
+const SUB_TASK_TURNS: usize = 50;
+const SUB_TASK_LIMIT: Duration = Duration::from_secs(60 * 60);
 
 /// Runs the agent until Ctrl-C or a terminate signal, with the app channel open for windows.
 pub(crate) async fn run(home: Home) -> Result<(), String> {
@@ -45,13 +53,18 @@ pub(crate) async fn serve(
         Vec::new()
     });
     let (channels, owners): (Vec<_>, Vec<_>) = connected.into_iter().unzip();
-    let toolbox: Arc<dyn Toolbox> = match tools::SharedTools::start().await {
-        Ok(tools) => Arc::new(tools),
+    let shared = match tools::SharedTools::start().await {
+        Ok(tools) => Some(Arc::new(tools)),
         Err(error) => {
             eprintln!("dotori: no shared tools: {error}");
-            Arc::new(NoTools)
+            None
         }
     };
+    let toolbox: Arc<dyn Toolbox> = match &shared {
+        Some(tools) => Arc::clone(tools) as Arc<dyn Toolbox>,
+        None => Arc::new(NoTools),
+    };
+    let sub_tasks = sub_task_runner(&home, &settings, &toolbox, shared)?;
     let token = door::token()?;
     let (app, address) = AppChannel::bind(token.clone()).map_err(|error| error.to_string())?;
     let door = Door {
@@ -63,7 +76,7 @@ pub(crate) async fn serve(
         channels,
         model,
         toolbox,
-        sub_tasks: Arc::new(NoSubTasks),
+        sub_tasks,
         records: Arc::new(JsonlStore::new(home.record())),
     };
     let config = AgentConfig {
@@ -85,6 +98,37 @@ pub(crate) async fn serve(
     let _ = fs::remove_file(home.door());
     agent.shutdown().await;
     stopped
+}
+
+fn sub_task_runner(
+    home: &Home,
+    settings: &Settings,
+    toolbox: &Arc<dyn Toolbox>,
+    shared: Option<Arc<tools::SharedTools>>,
+) -> Result<Arc<dyn SubTaskRunner>, String> {
+    let chosen = settings.sub_tasks.clone().unwrap_or_default();
+    let agent = match chosen.runner.unwrap_or_default() {
+        RunnerChoice::Llm => {
+            return Ok(Arc::new(LlmRunner {
+                model: settings.sub_task_model(environment)?,
+                toolbox: Arc::clone(toolbox),
+                max_turns: SUB_TASK_TURNS,
+                tool_timeout: TOOL_TIMEOUT,
+            }));
+        }
+        RunnerChoice::ClaudeCode => CodingAgent::ClaudeCode,
+        RunnerChoice::Codex => CodingAgent::Codex,
+    };
+    Ok(Arc::new(CliRunner {
+        agent,
+        program: chosen
+            .path
+            .or_else(|| agent.find())
+            .unwrap_or_else(|| PathBuf::from(agent.program())),
+        folder: home.work(),
+        mcp: shared.map(|shared| shared as Arc<dyn McpServer>),
+        limit: SUB_TASK_LIMIT,
+    }))
 }
 
 #[cfg(unix)]

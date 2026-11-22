@@ -39,6 +39,11 @@ impl Home {
         self.root.join("browser")
     }
 
+    /// The folder coding agents work in.
+    pub(crate) fn work(&self) -> PathBuf {
+        self.root.join("work")
+    }
+
     pub(crate) fn door(&self) -> PathBuf {
         self.root.join("door.json")
     }
