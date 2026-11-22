@@ -1,16 +1,18 @@
 (() => {
   const seen = new Set();
   let next = 1;
-  document.querySelectorAll('[data-dotori-ref]').forEach((el) => el.removeAttribute('data-dotori-ref'));
+  const refs = new Map();
+  window.__dotoriRefs = refs;
   const interactive = 'a[href],button,input,select,textarea,summary,[role=button],[role=link],[role=checkbox],[role=tab],[role=menuitem],[contenteditable=true]';
   const hidden = (el) => {
     const style = getComputedStyle(el);
     if (style.display === 'none' || style.visibility === 'hidden') return true;
+    if (style.display === 'contents') return false;
     const rect = el.getBoundingClientRect();
     return rect.width === 0 && rect.height === 0;
   };
   const label = (el) => {
-    const text = (el.getAttribute('aria-label') || el.innerText || el.value || el.placeholder || el.title || el.alt || el.name || '').trim();
+    const text = (el.getAttribute('aria-label') || el.innerText || el.placeholder || (el.type === 'password' ? '' : el.value) || el.title || el.alt || el.name || '').trim();
     return text.replace(/\s+/g, ' ').slice(0, 120);
   };
   const kind = (el) => {
@@ -31,10 +33,14 @@
     const tag = el.tagName.toLowerCase();
     if (['script', 'style', 'noscript', 'template', 'svg', 'head'].includes(tag)) return;
     if (hidden(el)) return;
+    if (tag === 'iframe') {
+      lines.push('[frame: ' + (el.title || el.src || 'unnamed') + ', not read]');
+      return;
+    }
     if (el.matches(interactive) && !seen.has(el)) {
       seen.add(el);
       const ref = next++;
-      el.setAttribute('data-dotori-ref', String(ref));
+      refs.set(ref, el);
       let line = '[' + ref + '] ' + kind(el) + ': ' + label(el);
       if (tag === 'a') line += ' (' + el.href + ')';
       if (tag === 'input' && el.type !== 'password' && el.value && el.value !== label(el)) line += ' = ' + el.value;

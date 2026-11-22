@@ -24,6 +24,10 @@ const SETTLE: Duration = Duration::from_millis(400);
 const POLL: Duration = Duration::from_millis(200);
 const SNAPSHOT: &str = include_str!("snapshot.js");
 const SHOWN: usize = 20_000;
+const CLOSE_WAIT: Duration = Duration::from_secs(10);
+const QUIET_DIALOGS: &str =
+    "window.alert = () => {}; window.confirm = () => false; window.prompt = () => null;";
+const FIND: &str = "window.__dotoriRefs && window.__dotoriRefs.get(";
 
 /// How the browser runs. The profile folder keeps logins between runs.
 #[derive(Clone, Debug)]
@@ -38,10 +42,11 @@ pub struct BrowserConfig {
 pub struct Browser {
     config: BrowserConfig,
     running: Mutex<Option<Running>>,
+    acting: Mutex<()>,
 }
 
 struct Running {
-    _child: Child,
+    child: Child,
     cdp: Arc<Cdp>,
     session: String,
 }
@@ -72,6 +77,7 @@ impl Browser {
         Arc::new(Self {
             config,
             running: Mutex::new(None),
+            acting: Mutex::new(()),
         })
     }
 
@@ -95,7 +101,9 @@ impl Browser {
         {
             return Ok((Arc::clone(&current.cdp), current.session.clone()));
         }
-        *running = None;
+        if let Some(mut ended) = running.take() {
+            let _ = ended.child.kill().await;
+        }
         let started = self.launch().await?;
         let page = (Arc::clone(&started.cdp), started.session.clone());
         *running = Some(started);
@@ -103,7 +111,32 @@ impl Browser {
     }
 
     async fn forget(&self) {
-        *self.running.lock().await = None;
+        if let Some(mut ended) = self.running.lock().await.take() {
+            let _ = ended.child.kill().await;
+        }
+    }
+
+    async fn close_left_over(&self) {
+        let Ok(port) = std::fs::read_to_string(self.config.profile.join("DevToolsActivePort"))
+        else {
+            return;
+        };
+        let mut lines = port.lines();
+        let (Some(port), Some(path)) = (lines.next(), lines.next()) else {
+            return;
+        };
+        let Ok(cdp) = Cdp::connect(&format!("ws://127.0.0.1:{}{}", port.trim(), path.trim())).await
+        else {
+            return;
+        };
+        let _ = cdp.send("Browser.close", json!({}), None).await;
+        let _ = time::timeout(CLOSE_WAIT, async {
+            while cdp.open() {
+                time::sleep(POLL).await;
+            }
+        })
+        .await;
+        time::sleep(SETTLE).await;
     }
 
     async fn launch(&self) -> Result<Running, String> {
@@ -113,6 +146,7 @@ impl Browser {
                 .ok_or("no Chrome, Chromium or Edge was found; set its path in the settings")?,
         };
         std::fs::create_dir_all(&self.config.profile).map_err(|error| error.to_string())?;
+        self.close_left_over().await;
         let mut command = Command::new(&executable);
         command
             .arg(format!("--user-data-dir={}", self.config.profile.display()))
@@ -175,8 +209,14 @@ impl Browser {
             )
             .await?;
         let session = text_at(&attached, "sessionId")?;
+        cdp.send(
+            "Page.addScriptToEvaluateOnNewDocument",
+            json!({ "source": QUIET_DIALOGS }),
+            Some(&session),
+        )
+        .await?;
         Ok(Running {
-            _child: child,
+            child,
             cdp,
             session,
         })
@@ -186,6 +226,14 @@ impl Browser {
 impl BrowserTool {
     async fn act(&self, arguments: Value) -> Result<String, String> {
         let step = Step::read(self.action, &arguments)?;
+        let start = match arguments.get("start_index") {
+            None => 0,
+            Some(start) => start
+                .as_u64()
+                .and_then(|start| usize::try_from(start).ok())
+                .ok_or("`start_index` must be a whole number from 0")?,
+        };
+        let _acting = self.browser.acting.lock().await;
         let (cdp, session) = self.browser.page().await?;
         let page = Page {
             cdp: &cdp,
@@ -202,17 +250,17 @@ impl BrowserTool {
             } => page.type_into(element, &text, submit).await,
         };
         let shown = match done {
-            Ok(()) => page.snapshot().await,
+            Ok(()) => match page.guard().await {
+                Ok(()) => page.snapshot().await,
+                Err(error) => Err(error),
+            },
             Err(error) => Err(error),
         };
-        if shown.is_err() && !cdp.open() {
+        if let Err(error) = &shown
+            && (!cdp.open() || error.contains("not found"))
+        {
             self.browser.forget().await;
         }
-        let start = arguments
-            .get("start_index")
-            .and_then(Value::as_u64)
-            .and_then(|start| usize::try_from(start).ok())
-            .unwrap_or(0);
         Ok(fetch::window(&shown?, start, SHOWN))
     }
 }
@@ -318,12 +366,35 @@ impl Page<'_> {
         Ok(())
     }
 
+    async fn guard(&self) -> Result<(), String> {
+        let at = self.evaluate("location.href").await?;
+        let at = at.as_str().unwrap_or_default();
+        if at == "about:blank" || at.starts_with("data:") {
+            return Ok(());
+        }
+        let refused = match Url::parse(at) {
+            Ok(url) => fetch::allowed(&url).err(),
+            Err(error) => Some(error.to_string()),
+        };
+        let Some(refused) = refused else {
+            return Ok(());
+        };
+        let _ = self
+            .send("Page.navigate", json!({ "url": "about:blank" }))
+            .await;
+        Err(format!(
+            "the page went to {at}, which is refused: {refused}"
+        ))
+    }
+
     async fn center(&self, element: u64) -> Result<(f64, f64), String> {
         let found = self
             .evaluate(&format!(
-                "(() => {{ const el = document.querySelector('[data-dotori-ref=\"{element}\"]'); \
-                 if (!el) return null; el.scrollIntoView({{block: 'center', inline: 'center'}}); \
-                 const r = el.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; }})()"
+                "(() => {{ const el = {FIND}{element}); \
+                 if (!el || !el.isConnected) return null; \
+                 el.scrollIntoView({{block: 'center', inline: 'center', behavior: 'instant'}}); \
+                 const r = el.getClientRects()[0] || el.getBoundingClientRect(); \
+                 return [r.left + r.width / 2, r.top + r.height / 2]; }})()"
             ))
             .await?;
         let point = found
@@ -346,12 +417,33 @@ impl Page<'_> {
     }
 
     async fn type_into(&self, element: u64, text: &str, submit: bool) -> Result<(), String> {
-        self.click(element).await?;
-        self.evaluate(&format!(
-            "(() => {{ const el = document.querySelector('[data-dotori-ref=\"{element}\"]'); \
-             if (el && 'value' in el) {{ el.value = ''; el.dispatchEvent(new Event('input', {{bubbles: true}})); }} }})()"
-        ))
-        .await?;
+        let ready = self
+            .evaluate(&format!(
+                "(() => {{ const el = {FIND}{element}); \
+                 if (!el || !el.isConnected) return 'gone'; \
+                 const tag = el.tagName.toLowerCase(); \
+                 const text = tag === 'textarea' || el.isContentEditable || (tag === 'input' && \
+                   ['text', 'search', 'email', 'url', 'tel', 'password', 'number', ''].includes(el.type)); \
+                 if (!text) return 'not text'; \
+                 el.scrollIntoView({{block: 'center', behavior: 'instant'}}); el.focus(); \
+                 if (el.isContentEditable) {{ document.execCommand('selectAll'); }} \
+                 else {{ el.value = ''; el.dispatchEvent(new Event('input', {{bubbles: true}})); }} \
+                 return 'ready'; }})()"
+            ))
+            .await?;
+        match ready.as_str() {
+            Some("ready") => {}
+            Some("not text") => {
+                return Err(format!(
+                    "element [{element}] does not take text; use browser_click"
+                ));
+            }
+            _ => {
+                return Err(format!(
+                    "there is no element [{element}]; read the page again"
+                ));
+            }
+        }
         self.send("Input.insertText", json!({ "text": text }))
             .await?;
         if submit {
@@ -368,9 +460,17 @@ impl Page<'_> {
     }
 
     async fn snapshot(&self) -> Result<String, String> {
-        match self.evaluate(SNAPSHOT).await? {
-            Value::String(text) => Ok(text),
-            _ => Err(String::from("the page could not be read")),
+        let mut tries = 0;
+        loop {
+            match self.evaluate(SNAPSHOT).await {
+                Ok(Value::String(text)) => return Ok(text),
+                Ok(_) => return Err(String::from("the page could not be read")),
+                Err(error) if tries < 2 && error.contains("context") => {
+                    tries += 1;
+                    self.settle().await?;
+                }
+                Err(error) => return Err(error),
+            }
         }
     }
 }
@@ -453,39 +553,64 @@ fn text_at(value: &Value, key: &str) -> Result<String, String> {
 
 /// The first Chrome, Chromium or Edge found in the usual places.
 pub fn find() -> Option<PathBuf> {
-    let names: &[&str] = if cfg!(target_os = "macos") {
-        &[
-            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-            "/Applications/Chromium.app/Contents/MacOS/Chromium",
-            "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-        ]
-    } else if cfg!(windows) {
-        &[
-            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
-            r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
-        ]
-    } else {
-        &[
-            "google-chrome",
-            "google-chrome-stable",
-            "chromium",
-            "chromium-browser",
-            "microsoft-edge",
-        ]
-    };
-    names.iter().find_map(|name| {
-        let path = PathBuf::from(name);
+    candidates().into_iter().find_map(|path| {
         if path.is_absolute() {
             return path.is_file().then_some(path);
         }
         std::env::var_os("PATH").and_then(|paths| {
             std::env::split_paths(&paths)
-                .map(|folder| folder.join(name))
+                .map(|folder| folder.join(&path))
                 .find(|candidate| candidate.is_file())
         })
     })
+}
+
+fn candidates() -> Vec<PathBuf> {
+    let under = |variable: &str, paths: &[&str]| -> Vec<PathBuf> {
+        std::env::var_os(variable)
+            .map(|base| {
+                paths
+                    .iter()
+                    .map(|path| PathBuf::from(&base).join(path))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    if cfg!(target_os = "macos") {
+        let apps = [
+            "Google Chrome.app/Contents/MacOS/Google Chrome",
+            "Chromium.app/Contents/MacOS/Chromium",
+            "Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+        ];
+        let home = std::env::var_os("HOME").map(|home| PathBuf::from(home).join("Applications"));
+        [Some(PathBuf::from("/Applications")), home]
+            .into_iter()
+            .flatten()
+            .flat_map(|folder| apps.map(|app| folder.join(app)))
+            .collect()
+    } else if cfg!(windows) {
+        let chrome = r"Google\Chrome\Application\chrome.exe";
+        let edge = r"Microsoft\Edge\Application\msedge.exe";
+        let mut found = Vec::new();
+        for variable in ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"] {
+            found.extend(under(variable, &[chrome]));
+        }
+        for variable in ["ProgramFiles(x86)", "ProgramFiles"] {
+            found.extend(under(variable, &[edge]));
+        }
+        found
+    } else {
+        [
+            "google-chrome",
+            "google-chrome-stable",
+            "chromium",
+            "chromium-browser",
+            "chrome",
+            "microsoft-edge",
+        ]
+        .map(PathBuf::from)
+        .into()
+    }
 }
 
 fn root() -> bool {

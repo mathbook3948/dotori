@@ -21,7 +21,7 @@ use tokio_tungstenite::tungstenite::Message;
 const ANSWER_WAIT: Duration = Duration::from_secs(30);
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
-type Waiting = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, String>>>>>;
+type Waiting = Arc<Mutex<Option<HashMap<u64, oneshot::Sender<Result<Value, String>>>>>>;
 
 /// A Chrome DevTools Protocol connection to the browser. Commands for a page carry its session.
 pub(crate) struct Cdp {
@@ -37,7 +37,7 @@ impl Cdp {
             .await
             .map_err(|error| format!("cannot reach the browser: {error}"))?;
         let (sink, mut stream) = socket.split();
-        let waiting: Waiting = Arc::new(Mutex::new(HashMap::new()));
+        let waiting: Waiting = Arc::new(Mutex::new(Some(HashMap::new())));
         let answers = Arc::clone(&waiting);
         let reader = tokio::spawn(async move {
             while let Some(Ok(frame)) = stream.next().await {
@@ -50,7 +50,12 @@ impl Cdp {
                 let Some(id) = message.get("id").and_then(Value::as_u64) else {
                     continue;
                 };
-                let Some(waiter) = answers.lock().expect("unpoisoned").remove(&id) else {
+                let Some(waiter) = answers
+                    .lock()
+                    .expect("unpoisoned")
+                    .as_mut()
+                    .and_then(|waiting| waiting.remove(&id))
+                else {
                     continue;
                 };
                 let answer = match message.get("error") {
@@ -63,7 +68,7 @@ impl Cdp {
                 };
                 let _ = waiter.send(answer);
             }
-            answers.lock().expect("unpoisoned").clear();
+            answers.lock().expect("unpoisoned").take();
         });
         Ok(Self {
             sink: tokio::sync::Mutex::new(sink),
@@ -90,7 +95,10 @@ impl Cdp {
             message["sessionId"] = json!(session);
         }
         let (tx, rx) = oneshot::channel();
-        self.waiting.lock().expect("unpoisoned").insert(id, tx);
+        match self.waiting.lock().expect("unpoisoned").as_mut() {
+            Some(waiting) => waiting.insert(id, tx),
+            None => return Err(String::from("the browser connection closed")),
+        };
         let sent = self
             .sink
             .lock()
@@ -98,16 +106,24 @@ impl Cdp {
             .send(Message::text(message.to_string()))
             .await;
         if let Err(error) = sent {
-            self.waiting.lock().expect("unpoisoned").remove(&id);
+            self.forget(id);
             return Err(format!("the browser connection failed: {error}"));
         }
         match time::timeout(ANSWER_WAIT, rx).await {
             Ok(Ok(answer)) => answer.map_err(|error| format!("{method}: {error}")),
             Ok(Err(_)) => Err(String::from("the browser connection closed")),
             Err(_) => {
-                self.waiting.lock().expect("unpoisoned").remove(&id);
+                self.forget(id);
                 Err(format!("the browser did not answer {method} in time"))
             }
+        }
+    }
+}
+
+impl Cdp {
+    fn forget(&self, id: u64) {
+        if let Some(waiting) = self.waiting.lock().expect("unpoisoned").as_mut() {
+            waiting.remove(&id);
         }
     }
 }
