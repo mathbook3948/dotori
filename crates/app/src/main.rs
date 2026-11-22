@@ -3,14 +3,20 @@ mod daemon;
 mod door;
 mod home;
 mod idle;
+mod link;
 mod lock;
 mod settings;
+#[cfg(feature = "window")]
+mod window;
 
 use std::env;
 use std::process::ExitCode;
 
 use crate::home::Home;
 
+#[cfg(feature = "window")]
+const USAGE: &str = "usage: dotori [daemon | chat | window | settings]";
+#[cfg(not(feature = "window"))]
 const USAGE: &str = "usage: dotori [daemon | chat]";
 
 #[tokio::main]
@@ -23,6 +29,10 @@ async fn main() -> ExitCode {
     let result = match command.as_deref() {
         None | Some("daemon") => daemon::run(home).await,
         Some("chat") => chat::run(home).await,
+        #[cfg(feature = "window")]
+        Some("window") => window::run(home, window::Which::Chat),
+        #[cfg(feature = "window")]
+        Some("settings") => window::run(home, window::Which::Settings),
         Some(_) => return fail(USAGE),
     };
     match result {

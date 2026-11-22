@@ -72,3 +72,56 @@ fn settings_written_back_read_the_same() {
 
     assert_eq!(parse(&text).expect("parsed"), settings);
 }
+
+#[test]
+fn a_form_round_trips_and_keeps_what_it_does_not_show() {
+    let earlier = ModelSettings::Anthropic {
+        api_key_env: Some(String::from("KEY")),
+        model: None,
+        base_url: None,
+        max_tokens: Some(8000),
+        effort: Some(String::from("low")),
+    };
+
+    let form = Form::of(&earlier);
+
+    assert_eq!(form.clone().settings(&earlier).expect("valid"), earlier);
+    let switched = Form {
+        openai_compatible: true,
+        model: Some(String::from("qwen3")),
+        base_url: Some(String::from("http://localhost:11434/v1")),
+        ..form
+    };
+    assert_eq!(
+        switched.settings(&earlier).expect("valid"),
+        ModelSettings::OpenaiCompatible {
+            base_url: String::from("http://localhost:11434/v1"),
+            model: String::from("qwen3"),
+            api_key_env: Some(String::from("KEY")),
+            max_tokens: Some(8000),
+        }
+    );
+}
+
+#[test]
+fn an_openai_compatible_form_without_an_address_is_refused() {
+    let form = Form {
+        openai_compatible: true,
+        model: Some(String::from("qwen3")),
+        ..Form::default()
+    };
+
+    assert!(form.settings(&ModelSettings::default()).is_err());
+}
+
+#[test]
+fn saved_settings_load_back() {
+    let path = std::env::temp_dir()
+        .join(format!("dotori-settings-{}", std::process::id()))
+        .join("settings.toml");
+    let settings = parse("[model]\nprovider = \"anthropic\"\neffort = \"high\"").expect("parsed");
+
+    settings.save(&path).expect("saved");
+
+    assert_eq!(Settings::load(&path).expect("loaded"), settings);
+}

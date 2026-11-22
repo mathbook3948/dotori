@@ -138,10 +138,11 @@ fn a_reply_follows_what_it_answered_and_precedes_what_arrived_while_thinking() {
     assert_eq!(turns.len(), 3);
     assert_eq!(notes(&turns[0]).len(), 1);
     assert!(notes(&turns[0])[0].contains("first"));
-    assert_eq!(
-        calls(&turns[1]),
-        vec![("call_2_0", "say", r#"{"text":"hi","thread":0}"#)]
-    );
+    let said = calls(&turns[1]);
+    assert_eq!(said.len(), 1);
+    assert_eq!((said[0].0, said[0].1), ("call_2_0", "say"));
+    let input: serde_json::Value = serde_json::from_str(said[0].2).expect("json");
+    assert_eq!(input, serde_json::json!({ "thread": 0, "text": "hi" }));
     assert_eq!(results(&turns[2]), vec![("call_2_0", SAID, false)]);
     assert!(notes(&turns[2])[0].contains("second"));
 }
