@@ -477,3 +477,58 @@ async fn a_window_the_page_opens_is_followed_until_it_closes() {
     );
     let _ = std::fs::remove_dir_all(&browser.config.profile);
 }
+
+#[tokio::test]
+#[ignore = "starts a real Chrome; set DOTORI_TEST_CHROME or let it download one"]
+async fn a_popup_to_a_refused_address_never_loads_it() {
+    let browser = browser();
+    let running = browser.page().await.expect("started");
+    let (cdp, session) = (Arc::clone(&running.cdp), running.session.clone());
+    Page { running: &running }
+        .go("data:text/html,<a href=\"http://127.0.0.1:9/secret\" target=\"_blank\" style=\"position:absolute;left:0;top:0;width:200px;height:50px;display:block\">open</a>")
+        .await
+        .expect("opened");
+    drop(running);
+    for kind in ["mousePressed", "mouseReleased"] {
+        cdp.send(
+            "Input.dispatchMouseEvent",
+            json!({ "type": kind, "x": 20, "y": 20, "button": "left", "clickCount": 1 }),
+            Some(&session),
+        )
+        .await
+        .expect("clicked");
+    }
+    let mut popup = None;
+    for _ in 0..50 {
+        popup = browser
+            .shown
+            .lock()
+            .expect("unpoisoned")
+            .as_ref()
+            .and_then(|shown| shown.popup.clone());
+        if popup.is_some() {
+            break;
+        }
+        time::sleep(Duration::from_millis(100)).await;
+    }
+    let state = browser.screen.state.lock().expect("unpoisoned").clone();
+    let (_, popup_session) = popup.unwrap_or_else(|| panic!("the popup is followed: {state}"));
+    time::sleep(Duration::from_millis(800)).await;
+
+    let at = in_world(&cdp, &popup_session, "location.href")
+        .await
+        .expect("read");
+    let text = in_world(
+        &cdp,
+        &popup_session,
+        "document.body ? document.body.innerText : ''",
+    )
+    .await
+    .expect("read");
+    assert!(
+        !text.as_str().unwrap_or_default().contains("secret"),
+        "{text}"
+    );
+    assert_ne!(at, "http://127.0.0.1:9/secret", "{at}");
+    let _ = std::fs::remove_dir_all(&browser.config.profile);
+}

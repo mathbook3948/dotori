@@ -475,6 +475,12 @@ impl Browser {
             None,
         )
         .await?;
+        cdp.send(
+            "Target.setAutoAttach",
+            json!({ "autoAttach": true, "waitForDebuggerOnStart": true, "flatten": true }),
+            None,
+        )
+        .await?;
         *self.shown.lock().expect("unpoisoned") = Some(Shown {
             cdp: Arc::clone(&cdp),
             main: session.clone(),
@@ -592,20 +598,44 @@ async fn watch(
                 );
                 Some(("Page.handleJavaScriptDialog", json!({ "accept": accept })))
             }
-            Some("Target.targetCreated") => {
+            Some("Target.attachedToTarget") => {
                 let info = params.get("targetInfo").cloned().unwrap_or(Value::Null);
-                let opened_here = info.get("type").and_then(Value::as_str) == Some("page")
-                    && info.get("openerId").and_then(Value::as_str) == Some(main_target.as_str());
-                if let (true, Some(target)) =
-                    (opened_here, info.get("targetId").and_then(Value::as_str))
-                {
+                let attached = params
+                    .get("sessionId")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
+                let target = info
+                    .get("targetId")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
+                let opened_here = info.get("type").and_then(Value::as_str) == Some("page");
+                let ours = target.as_deref() == Some(main_target.as_str());
+                if let (false, Some(attached), Some(target)) = (ours, attached, target) {
                     let cdp = Arc::clone(&cdp);
                     let screen = Arc::clone(&screen);
                     let shown = Arc::clone(&shown);
-                    let target = target.to_owned();
                     tokio::spawn(async move {
-                        if let Err(error) = follow_popup(&cdp, &screen, &shown, target).await {
-                            screen.update(json!({ "error": error }));
+                        if opened_here {
+                            if let Err(error) =
+                                follow_popup(&cdp, &screen, &shown, target, attached).await
+                            {
+                                screen.update(json!({ "error": error }));
+                            }
+                        } else {
+                            let _ = cdp
+                                .send(
+                                    "Runtime.runIfWaitingForDebugger",
+                                    json!({}),
+                                    Some(&attached),
+                                )
+                                .await;
+                            let _ = cdp
+                                .send(
+                                    "Target.detachFromTarget",
+                                    json!({ "sessionId": attached }),
+                                    None,
+                                )
+                                .await;
                         }
                     });
                 }
@@ -1031,15 +1061,8 @@ async fn follow_popup(
     screen: &Screen,
     shown: &std::sync::Mutex<Option<Shown>>,
     target: String,
+    session: String,
 ) -> Result<(), String> {
-    let attached = cdp
-        .send(
-            "Target.attachToTarget",
-            json!({ "targetId": target, "flatten": true }),
-            None,
-        )
-        .await?;
-    let session = text_at(&attached, "sessionId")?;
     let page = |method: &'static str, params: Value| {
         let cdp = Arc::clone(cdp);
         let session = session.clone();
@@ -1050,19 +1073,19 @@ async fn follow_popup(
         json!({ "patterns": [{ "resourceType": "Document", "requestStage": "Request" }] }),
     )
     .await?;
-    page("Page.enable", json!({})).await?;
-    page(
-        "Page.setInterceptFileChooserDialog",
-        json!({ "enabled": true }),
-    )
-    .await?;
+    page("Runtime.runIfWaitingForDebugger", json!({})).await?;
     let version = cdp.send("Browser.getVersion", json!({}), None).await?;
     if let Some(agent) = version.get("userAgent").and_then(Value::as_str)
         && agent.contains("HeadlessChrome")
     {
         page("Emulation.setUserAgentOverride", plain_agent(agent)).await?;
     }
-    page("Runtime.runIfWaitingForDebugger", json!({})).await?;
+    page("Page.enable", json!({})).await?;
+    page(
+        "Page.setInterceptFileChooserDialog",
+        json!({ "enabled": true }),
+    )
+    .await?;
     let main = {
         let mut held = shown.lock().expect("unpoisoned");
         let Some(current) = held.as_mut() else {

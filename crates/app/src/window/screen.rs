@@ -74,6 +74,7 @@ pub(crate) struct ScreenView {
     error: Option<SharedString>,
     popup: bool,
     picker: Option<Value>,
+    prompted: bool,
     typed: Option<Entity<TextInput>>,
     down: bool,
     pointer: Option<(f64, f64, Instant)>,
@@ -105,6 +106,7 @@ impl ScreenView {
             error: None,
             popup: false,
             picker: None,
+            prompted: false,
             typed: None,
             down: true,
             pointer: None,
@@ -151,7 +153,13 @@ impl ScreenView {
                     .get("picker")
                     .filter(|picker| picker.is_object())
                     .cloned();
-                if picker != self.picker {
+                let files = picker
+                    .as_ref()
+                    .and_then(|picker| picker.get("kind"))
+                    .and_then(Value::as_str)
+                    == Some("files");
+                if picker != self.picker || (files && self.mode == Mode::Owner && !self.prompted) {
+                    self.prompted = false;
                     self.open_picker(picker.as_ref(), cx);
                 }
                 self.picker = picker;
@@ -217,7 +225,8 @@ impl ScreenView {
                     input
                 }));
             }
-            Some("files") => {
+            Some("files") if self.mode == Mode::Owner => {
+                self.prompted = true;
                 let multiple = picker
                     .get("multiple")
                     .and_then(Value::as_bool)
@@ -359,7 +368,11 @@ impl ScreenView {
                 .into_any_element(),
             _ => div()
                 .text_color(theme.muted)
-                .child("파일 대화상자에서 고르면 브라우저에 올라가요.")
+                .child(if self.mode == Mode::Owner {
+                    "파일 대화상자에서 고르면 브라우저에 올라가요."
+                } else {
+                    "페이지가 파일을 달라고 해요. 넘겨받으면 파일을 고를 수 있어요."
+                })
                 .into_any_element(),
         };
         Some(
