@@ -257,7 +257,10 @@ impl Browser {
             )
             .await?;
         let session = text_at(&attached, "sessionId")?;
-        let watcher = tokio::spawn(watch(Arc::clone(&cdp), cdp.events()));
+        let events = cdp
+            .events()
+            .ok_or("the browser's events are already taken")?;
+        let watcher = tokio::spawn(watch(Arc::clone(&cdp), events));
         let page = |method: &'static str, params: Value| {
             let cdp = Arc::clone(&cdp);
             let session = session.clone();
@@ -371,13 +374,8 @@ pub(crate) fn plain_agent(agent: &str) -> Value {
     })
 }
 
-async fn watch(cdp: Arc<Cdp>, mut events: tokio::sync::broadcast::Receiver<Value>) {
-    loop {
-        let event = match events.recv().await {
-            Ok(event) => event,
-            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-            Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
-        };
+async fn watch(cdp: Arc<Cdp>, mut events: tokio::sync::mpsc::UnboundedReceiver<Value>) {
+    while let Some(event) = events.recv().await {
         let session = event.get("sessionId").and_then(Value::as_str);
         let params = event.get("params").cloned().unwrap_or(Value::Null);
         let reply = match event.get("method").and_then(Value::as_str) {
