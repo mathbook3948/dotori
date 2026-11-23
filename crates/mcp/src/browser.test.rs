@@ -37,33 +37,134 @@ async fn in_page(running: &Running, expression: &str) -> Value {
 fn every_tool_has_a_distinct_name_and_an_object_schema() {
     let tools = browser().tools();
     let names: Vec<&str> = tools.iter().map(|tool| tool.name()).collect();
-    assert_eq!(
-        names,
-        [
-            "browser_open",
-            "browser_read",
-            "browser_click",
-            "browser_type"
-        ]
-    );
+    assert_eq!(names, ["browser_run", "browser_read"]);
     for tool in &tools {
         assert_eq!(tool.input_schema()["type"], "object", "{}", tool.name());
     }
 }
 
 #[tokio::test]
-async fn opening_a_local_address_is_refused_before_the_browser_starts() {
+async fn code_that_does_not_parse_is_refused_before_the_browser_starts() {
     let tools = browser().tools();
     let refused = tools[0]
-        .call(json!({ "url": "http://127.0.0.1:8080/" }))
+        .call(json!({ "code": "class Foo {}" }))
         .await
         .expect_err("refused");
-    assert!(refused.contains("not a public address"), "{refused}");
+    assert!(refused.contains("does not parse"), "{refused}");
+    assert!(refused.contains("`class`"), "{refused}");
+}
+
+const SHOP: &str = "data:text/html,<html><head><title>Shop</title></head><body>\
+<h1>Order</h1><p id=said>nothing yet</p>\
+<label>Name <input id=q placeholder=Search></label><input type=password value=hunter2>\
+<select id=fruit><option value=a>Apple</option><option value=b>Banana</option></select>\
+<label><input type=checkbox id=agree> Agree</label>\
+<button onclick=\"document.getElementById('said').textContent='got '+document.getElementById('q').value+' '+document.getElementById('fruit').value+' '+document.getElementById('agree').checked\">Go</button>\
+<a href=\"https://example.com/\">Example</a><a href=\"https://example.org/\">Other</a>\
+<div style=\"display:none\"><button>Hidden</button></div></body></html>";
+
+#[tokio::test]
+#[ignore = "starts a real Chrome; set DOTORI_TEST_CHROME or let it download one"]
+async fn a_playwright_script_fills_clicks_and_reads_the_page() {
+    let browser = browser();
+    let running = browser.page().await.expect("started");
+    let page = Page { running: &running };
+    page.go(SHOP).await.expect("opened");
+    let driver = Driver {
+        page: Page { running: &running },
+    };
+    let body = script::parse::parse(
+        "await page.getByLabel('Name').fill('도토리');\n\
+         await page.locator('#fruit').selectOption('Banana');\n\
+         await page.getByRole('checkbox', { name: 'Agree' }).check();\n\
+         await page.getByRole('button', { name: 'Go' }).click();\n\
+         const said = await page.locator('#said').textContent();\n\
+         console.log('links', await page.getByRole('link').count());\n\
+         try { await page.locator('input').fill('x'); } catch (e) { console.log(e.message); }\n\
+         try { await page.getByText('Nowhere').click({ timeout: 300 }); } catch (e) { console.log(e.message); }\n\
+         await page.locator('#q').press('Control+A');\n\
+         await page.keyboard.press('Backspace');\n\
+         const names = await page.getByRole('link').allInnerTexts();\n\
+         return { said, left: await page.locator('#q').inputValue(), names, title: await page.evaluate(() => document.title) };",
+    )
+    .expect("parsed");
+
+    let outcome = script::run::run(
+        &body,
+        &driver,
+        Native {
+            kind: "page",
+            data: Value::Null,
+        },
+    )
+    .await
+    .expect("ran");
+
+    assert_eq!(
+        outcome.value.as_deref(),
+        Some(
+            r#"{"said":"got 도토리 b true","left":"","names":["Example","Other"],"title":"Shop"}"#
+        )
+    );
+    assert_eq!(outcome.logs[0], "links 2");
+    assert!(
+        outcome.logs[1].contains("locator('input') matched 3 elements"),
+        "{}",
+        outcome.logs[1]
+    );
+    assert!(
+        outcome.logs[2].contains("matches no element after 300 ms"),
+        "{}",
+        outcome.logs[2]
+    );
+    let snapshot = page.snapshot().await.expect("read");
+    let marked = snapshot
+        .lines()
+        .find(|line| line.contains("link: Other"))
+        .and_then(|line| line.strip_prefix('['))
+        .and_then(|line| line.split(']').next())
+        .expect("a numbered link")
+        .to_owned();
+    let picked = script::parse::parse(&format!(
+        "return await page.locator('ref={marked}').getAttribute('href');"
+    ))
+    .expect("parsed");
+    let found = script::run::run(
+        &picked,
+        &driver,
+        Native {
+            kind: "page",
+            data: Value::Null,
+        },
+    )
+    .await
+    .expect("ran");
+    assert_eq!(found.value.as_deref(), Some("https://example.org/"));
+    drop(running);
+
+    let tools = browser.tools();
+    let result = tools[0]
+        .call(json!({ "code": "console.log('hi'); return 1 + 1;" }))
+        .await
+        .expect("ran");
+    assert!(
+        result.starts_with("hi\nReturned: 2\n\n---\nTitle: Shop"),
+        "{result}"
+    );
+    let failed = tools[0]
+        .call(json!({ "code": "await page.goto('http://127.0.0.1:9/');" }))
+        .await
+        .expect_err("refused");
+    assert!(
+        failed.contains("not a public address") && failed.contains("The page now:"),
+        "{failed}"
+    );
+    let _ = std::fs::remove_dir_all(&browser.config.profile);
 }
 
 #[tokio::test]
 #[ignore = "starts a real Chrome; set DOTORI_TEST_CHROME or let it download one"]
-async fn a_page_is_read_clicked_and_typed_into() {
+async fn a_page_is_read_and_a_move_to_a_refused_address_is_undone() {
     let browser = browser();
     let running = browser.page().await.expect("started");
     let cdp = Arc::clone(&running.cdp);
@@ -84,14 +185,6 @@ async fn a_page_is_read_clicked_and_typed_into() {
         !body.contains("Hidden") && !body.contains("color") && !body.contains("hunter2"),
         "{body}"
     );
-
-    page.type_into(1, "도토리", false).await.expect("typed");
-    page.click(3).await.expect("clicked");
-    let after = page.snapshot().await.expect("read again");
-    assert!(after.contains("got 도토리"), "{after}");
-    assert!(page.click(99).await.is_err());
-    let refused = page.type_into(3, "x", false).await.expect_err("a button");
-    assert!(refused.contains("does not take text"), "{refused}");
     page.guard().await.expect("a data page is fine");
 
     page.evaluate("location.href = 'http://127.0.0.1:9/'")

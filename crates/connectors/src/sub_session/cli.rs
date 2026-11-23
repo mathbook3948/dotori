@@ -23,6 +23,9 @@ use super::SUB_SESSION_SYSTEM;
 
 const TOKEN_VARIABLE: &str = "DOTORI_MCP_TOKEN";
 const SHOWN_ERROR: usize = 2000;
+const TEXT_FILE_BUSY: i32 = if cfg!(unix) { 26 } else { -1 };
+const BUSY_TRIES: u32 = 20;
+const BUSY_WAIT: std::time::Duration = std::time::Duration::from_millis(50);
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
@@ -166,9 +169,21 @@ impl CliRunner {
         if let Some(address) = &address {
             command.env(TOKEN_VARIABLE, &address.token);
         }
-        let mut child = command
-            .spawn()
-            .map_err(|error| format!("cannot start {}: {error}", self.program.display()))?;
+        let mut tries = 0;
+        let mut child = loop {
+            match command.spawn() {
+                Ok(child) => break child,
+                Err(error)
+                    if error.raw_os_error() == Some(TEXT_FILE_BUSY) && tries < BUSY_TRIES =>
+                {
+                    tries += 1;
+                    time::sleep(BUSY_WAIT).await;
+                }
+                Err(error) => {
+                    return Err(format!("cannot start {}: {error}", self.program.display()));
+                }
+            }
+        };
         let mut tree = Tree(child.id());
         let mut stdin = child.stdin.take().ok_or("the agent has no input")?;
         let prompt = prompt(self.agent, &spec);
