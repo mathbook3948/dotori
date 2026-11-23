@@ -151,11 +151,17 @@ fn slack_takes_both_tokens_from_their_variables_and_names_the_owner() {
         .channels(|_| Some(String::from("token")))
         .expect("built");
     assert_eq!(channels.len(), 1);
-    let (channel, owner) = &channels[0];
-    assert_eq!(channel.id().as_str(), "slack");
-    let owner = owner.as_ref().expect("owner set");
-    assert_eq!(owner.channel.as_str(), "slack");
-    assert_eq!(owner.user.as_str(), "U012AB3CD");
+    assert_eq!(channels[0].id().as_str(), "slack");
+}
+
+#[test]
+fn slack_stays_off_until_it_knows_whose_messages_to_hear() {
+    let key = |_: &str| Some(String::from("token"));
+    for text in ["[slack]", "[slack]\nowner = \"  \""] {
+        let settings = parse(text).expect("parsed");
+        let error = settings.channels(key).err().expect("needs the owner");
+        assert!(error.contains("owner"), "{error}");
+    }
 }
 
 #[test]

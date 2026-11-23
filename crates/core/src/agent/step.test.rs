@@ -1,8 +1,6 @@
-use std::collections::HashSet;
 use std::num::NonZeroUsize;
 
 use super::*;
-use crate::agent::roster::Roster;
 use crate::id::ExternalMessageId;
 use crate::id::ExternalUserId;
 use crate::message::Content;
@@ -18,10 +16,9 @@ struct Harness {
 
 impl Harness {
     fn new() -> Self {
-        let roster = Roster::new(app(), HashSet::new());
         let capacity = NonZeroUsize::new(16).expect("non-zero");
         Self {
-            state: AgentState::new(roster, capacity),
+            state: AgentState::new(app(), capacity),
             effects: Vec::new(),
             sent: 0,
         }
@@ -35,11 +32,33 @@ impl Harness {
         });
     }
 
-    fn other_says(&mut self, place: &str, text: &str) {
-        let incoming = self.incoming(place, "guest", text);
+    fn owner_says_on_slack(&mut self, place: &str, text: &str) {
+        let incoming = self.incoming(place, "me", text);
         self.feed(Event::Received {
             channel: slack(),
             incoming,
+        });
+    }
+
+    fn delegated(&mut self) -> SubSessionId {
+        self.owner_says("book a table");
+        self.model_answers(vec![Action::Delegate(SubSessionSpec {
+            title: String::from("booking"),
+            brief: String::from("book a table for two"),
+        })]);
+        self.effects
+            .iter()
+            .find_map(|effect| match effect {
+                Effect::SpawnSubSession { sub_session, .. } => Some(*sub_session),
+                _ => None,
+            })
+            .expect("sub-session spawned")
+    }
+
+    fn sub_session_finishes(&mut self, sub_session: SubSessionId) {
+        self.feed(Event::SubSessionDone {
+            sub_session,
+            outcome: SubSessionOutcome::Finished(String::from("booked")),
         });
     }
 
@@ -224,23 +243,20 @@ fn owner_message_cancels_the_call_in_flight_and_calls_again() {
 }
 
 #[test]
-fn other_message_lets_the_reply_run_then_calls_again() {
+fn the_owner_on_slack_interrupts_like_in_the_app() {
     let mut h = Harness::new();
     h.owner_says("hello");
-    h.other_says("general", "is the owner around");
+    let first = h.call_in_flight();
 
-    assert!(h.cancelled().is_empty());
-    assert!(h.model_calls().is_empty());
+    h.owner_says_on_slack("general", "actually, never mind");
 
-    let owner = h.thread_of("hello");
-    h.model_answers(vec![say(owner, "hi")]);
-
-    assert_eq!(h.deliveries().len(), 1);
-    assert_eq!(h.deliveries()[0].1, "hi");
-    assert_eq!(
-        heard(h.the_model_call()),
-        vec!["hello", "is the owner around"]
-    );
+    assert_eq!(h.cancelled(), vec![first]);
+    let conversation = h.the_model_call();
+    assert_eq!(heard(conversation), vec!["hello", "actually, never mind"]);
+    assert!(conversation.iter().all(|entry| match entry {
+        Entry::Heard { message, .. } => message.sender.role == Role::Owner,
+        _ => true,
+    }));
 }
 
 #[test]
@@ -292,7 +308,7 @@ fn result_of_a_cancelled_call_is_ignored() {
 #[test]
 fn redelivered_message_is_heard_once() {
     let mut h = Harness::new();
-    let incoming = h.incoming("general", "guest", "ping");
+    let incoming = h.incoming("general", "me", "ping");
     h.feed(Event::Received {
         channel: slack(),
         incoming: incoming.clone(),
@@ -334,9 +350,10 @@ fn model_failure_is_recorded_and_ends_the_turn() {
 #[test]
 fn input_that_joined_a_failed_call_is_answered() {
     let mut h = Harness::new();
+    let sub_session = h.delegated();
     h.owner_says("hello");
     let call = h.call_in_flight();
-    h.other_says("general", "is the owner around");
+    h.sub_session_finishes(sub_session);
 
     h.answer(
         call,
@@ -345,9 +362,12 @@ fn input_that_joined_a_failed_call_is_answered() {
         }),
     );
 
-    assert_eq!(
-        heard(h.the_model_call()),
-        vec!["hello", "is the owner around"]
+    let conversation = h.the_model_call();
+    assert_eq!(heard(conversation), vec!["book a table", "hello"]);
+    assert!(
+        conversation
+            .iter()
+            .any(|entry| matches!(entry, Entry::SubSessionReturned { .. }))
     );
 }
 
@@ -412,19 +432,19 @@ fn app_window_shows_traffic_of_other_channels() {
     assert!(h.shown().is_empty());
 
     h.model_answers(Vec::new());
-    h.other_says("general", "lunch at noon?");
+    h.owner_says_on_slack("general", "lunch at noon?");
 
     let shown = h.shown();
     assert_eq!(shown.len(), 1);
     assert_eq!(shown[0].address.channel, slack());
     assert_eq!(shown[0].address.place, Place::new("general"));
-    assert_eq!(shown[0].who, "guest");
+    assert_eq!(shown[0].who, "me");
     assert_eq!(shown[0].text, "lunch at noon?");
 
-    let guest = h.thread_of("lunch at noon?");
-    h.model_answers(vec![say(guest, "sure")]);
+    let general = h.thread_of("lunch at noon?");
+    h.model_answers(vec![say(general, "sure")]);
     h.feed(Event::DeliveryDone {
-        thread: guest,
+        thread: general,
         text: String::from("sure"),
         result: Ok(()),
     });
@@ -496,14 +516,20 @@ fn sub_session_outcome_joins_the_next_call() {
 #[test]
 fn reply_records_how_much_of_the_conversation_it_answered() {
     let mut h = Harness::new();
+    let sub_session = h.delegated();
     h.owner_says("hello");
-    h.other_says("general", "is the owner around");
+    h.sub_session_finishes(sub_session);
 
     h.model_answers(Vec::new());
 
-    let answered = h.state.conversation.iter().find_map(|entry| match entry {
-        Entry::Acted { answered, .. } => Some(*answered),
-        _ => None,
-    });
-    assert_eq!(answered, Some(1));
+    let answered: Vec<usize> = h
+        .state
+        .conversation
+        .iter()
+        .filter_map(|entry| match entry {
+            Entry::Acted { answered, .. } => Some(*answered),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(answered, vec![1, 3]);
 }

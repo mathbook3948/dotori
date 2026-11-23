@@ -1,5 +1,5 @@
-//! Slack over Socket Mode, so no public address is needed. The assistant hears direct messages
-//! and mentions, and answers a mention in its thread.
+//! Slack over Socket Mode, so no public address is needed. The assistant hears the owner's direct
+//! messages and mentions, and answers a mention in its thread. Nobody else is heard.
 
 mod api;
 mod envelope;
@@ -43,18 +43,25 @@ const NAME_WAIT: Duration = Duration::from_secs(2);
 const NAMES_KEPT: usize = 4096;
 
 /// What the Slack channel needs. The app token opens Socket Mode and the bot token speaks.
+/// The owner is the one Slack user id whose messages are heard.
 #[derive(Clone)]
 pub struct SlackConfig {
     pub app_token: String,
     pub bot_token: String,
+    pub owner: String,
     pub api_base: String,
 }
 
 impl SlackConfig {
-    pub fn new(app_token: impl Into<String>, bot_token: impl Into<String>) -> Self {
+    pub fn new(
+        app_token: impl Into<String>,
+        bot_token: impl Into<String>,
+        owner: impl Into<String>,
+    ) -> Self {
         Self {
             app_token: app_token.into(),
             bot_token: bot_token.into(),
+            owner: owner.into(),
             api_base: String::from(API_BASE),
         }
     }
@@ -63,6 +70,7 @@ impl SlackConfig {
 impl fmt::Debug for SlackConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SlackConfig")
+            .field("owner", &self.owner)
             .field("api_base", &self.api_base)
             .finish_non_exhaustive()
     }
@@ -71,6 +79,7 @@ impl fmt::Debug for SlackConfig {
 /// The Slack channel. It reconnects by itself and ends only when a token stops working.
 pub struct SlackChannel {
     id: ChannelId,
+    owner: String,
     api: Api,
     names: Mutex<HashMap<String, String>>,
 }
@@ -94,6 +103,7 @@ impl SlackChannel {
             id: ChannelId::parse(SLACK).map_err(|error| ChannelError {
                 detail: error.to_string(),
             })?,
+            owner: config.owner,
             api,
             names: Mutex::new(HashMap::new()),
         })
@@ -140,7 +150,7 @@ impl SlackChannel {
             let Message::Text(text) = frame else {
                 continue;
             };
-            let frame = envelope::read(text.as_str(), bot);
+            let frame = envelope::read(text.as_str(), bot, &self.owner);
             if let Some(ack) = frame.ack {
                 let ack = serde_json::json!({ "envelope_id": ack }).to_string();
                 socket

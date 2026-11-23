@@ -1,6 +1,7 @@
 use super::*;
 
 const BOT: &str = "UBOT";
+const OWNER: &str = "U1";
 
 fn event(event: &str) -> String {
     format!(r#"{{"type":"events_api","envelope_id":"e1","payload":{{"event":{event}}}}}"#)
@@ -20,6 +21,7 @@ fn a_mention_in_a_channel_is_answered_in_its_thread() {
             r#"{"type":"app_mention","channel":"C1","user":"U1","text":"<@UBOT> hi &amp; bye","ts":"10.5"}"#,
         ),
         BOT,
+        OWNER,
     );
     assert_eq!(frame.ack.as_deref(), Some("e1"));
     assert_eq!(
@@ -40,6 +42,7 @@ fn a_mention_inside_a_thread_stays_in_that_thread() {
             r#"{"type":"app_mention","channel":"C1","user":"U1","text":"<@UBOT> more","ts":"11.0","thread_ts":"10.5"}"#,
         ),
         BOT,
+        OWNER,
     );
     assert_eq!(message(&frame).place, "C1/10.5");
     assert_eq!(message(&frame).id, "C1/11.0");
@@ -52,6 +55,7 @@ fn a_direct_message_is_answered_in_the_conversation() {
             r#"{"type":"message","channel_type":"im","channel":"D1","user":"U1","text":"안녕","ts":"3.0"}"#,
         ),
         BOT,
+        OWNER,
     );
     assert_eq!(message(&frame).place, "D1");
     assert_eq!(message(&frame).text, "안녕");
@@ -67,7 +71,21 @@ fn messages_not_for_the_assistant_are_acknowledged_and_dropped() {
         r#"{"type":"app_mention","channel":"C1","user":"U1","text":"<@UBOT>","ts":"1.0"}"#,
     ];
     for case in cases {
-        let frame = read(&event(case), BOT);
+        let frame = read(&event(case), BOT, OWNER);
+        assert_eq!(frame.ack.as_deref(), Some("e1"), "{case}");
+        assert_eq!(frame.kind, Kind::Nothing, "{case}");
+    }
+}
+
+#[test]
+fn someone_other_than_the_owner_is_not_heard() {
+    let cases = [
+        r#"{"type":"app_mention","channel":"C1","user":"U2","text":"<@UBOT> do my homework","ts":"1.0"}"#,
+        r#"{"type":"message","channel_type":"im","channel":"D2","user":"U2","text":"hi dotori","ts":"1.0"}"#,
+        r#"{"type":"app_mention","channel":"C1","user":"U2","text":"<@UBOT> more","ts":"2.0","thread_ts":"1.0"}"#,
+    ];
+    for case in cases {
+        let frame = read(&event(case), BOT, OWNER);
         assert_eq!(frame.ack.as_deref(), Some("e1"), "{case}");
         assert_eq!(frame.kind, Kind::Nothing, "{case}");
     }
@@ -75,13 +93,18 @@ fn messages_not_for_the_assistant_are_acknowledged_and_dropped() {
 
 #[test]
 fn control_frames_are_read() {
-    assert_eq!(read(r#"{"type":"hello"}"#, BOT).kind, Kind::Hello);
+    assert_eq!(read(r#"{"type":"hello"}"#, BOT, OWNER).kind, Kind::Hello);
     assert_eq!(
-        read(r#"{"type":"disconnect","reason":"refresh_requested"}"#, BOT).kind,
+        read(
+            r#"{"type":"disconnect","reason":"refresh_requested"}"#,
+            BOT,
+            OWNER
+        )
+        .kind,
         Kind::Disconnect
     );
     assert_eq!(
-        read("not json", BOT),
+        read("not json", BOT, OWNER),
         Frame {
             ack: None,
             kind: Kind::Nothing
@@ -102,6 +125,7 @@ fn slack_markup_becomes_plain_text() {
             r#"{"type":"message","channel_type":"im","channel":"D1","user":"U1","text":"see <https://a.io/x|the doc> and <https://b.io> in <#C9|general>, ask <@U2> <!here> &lt;b&gt;","ts":"1.0"}"#,
         ),
         BOT,
+        OWNER,
     );
     assert_eq!(
         message(&frame).text,
@@ -117,6 +141,7 @@ fn a_shared_file_with_text_and_a_thread_broadcast_are_heard() {
                 r#"{{"type":"message","subtype":"{subtype}","channel_type":"im","channel":"D1","user":"U1","text":"look","ts":"1.0"}}"#
             )),
             BOT,
+            OWNER,
         );
         assert_eq!(message(&frame).text, "look", "{subtype}");
     }

@@ -18,7 +18,6 @@ use crate::channel::Channel;
 use crate::conversation::Action;
 use crate::conversation::Entry;
 use crate::conversation::ThreadRef;
-use crate::id::ChannelUser;
 use crate::id::ExternalMessageId;
 use crate::id::ExternalUserId;
 use crate::llm::ModelError;
@@ -60,7 +59,6 @@ fn block_on(test: impl Future<Output = ()>) {
 
 fn config(tool_timeout: Duration) -> AgentConfig {
     AgentConfig {
-        owners: Vec::<ChannelUser>::new(),
         queue_capacity: NonZeroUsize::new(8).expect("non-zero"),
         seen_capacity: NonZeroUsize::new(8).expect("non-zero"),
         tool_timeout,
@@ -183,7 +181,7 @@ fn other_channel_traffic_and_its_reply_are_shown_on_the_app() {
 
         slack_probe
             .say
-            .send(incoming("m1", "general", "guest", "lunch?"))
+            .send(incoming("m1", "general", "me", "lunch?"))
             .expect("channel alive");
 
         assert_eq!(
@@ -261,6 +259,8 @@ fn agent_recovers_from_a_panicking_model(
         let (failed_tx, mut failed) = mpsc::unbounded_channel();
         let calls = Arc::new(AtomicUsize::new(0));
         let mut ports = ports(app, vec![slack]);
+        let store = Arc::new(MemoryStore::default());
+        ports.records = Arc::clone(&store) as _;
         let answer: ModelFn = Box::new(move |request| {
             if calls.fetch_add(1, Ordering::SeqCst) == 0 {
                 return crash();
@@ -279,9 +279,19 @@ fn agent_recovers_from_a_panicking_model(
             .expect("valid");
 
         owner_says(&probe, "m1", "hi");
+        time::timeout(Duration::from_secs(5), async {
+            while !stored(&store)
+                .iter()
+                .any(|entry| matches!(entry, Entry::ModelFailed { .. }))
+            {
+                time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the crash was recorded");
         slack_probe
             .say
-            .send(incoming("m2", "general", "guest", "hello?"))
+            .send(incoming("m2", "general", "me", "hello?"))
             .expect("channel alive");
 
         assert_eq!(next(&mut slack_probe.delivered).await.1, "back");

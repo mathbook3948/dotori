@@ -47,10 +47,12 @@ fn leaked(text: String) -> &'static str {
 }
 
 #[tokio::test]
-async fn a_mention_reaches_the_inbox_with_the_sender_name_and_is_acknowledged() {
+async fn the_owners_mention_reaches_the_inbox_with_their_name_and_is_acknowledged() {
+    let stranger = r#"{"type":"events_api","envelope_id":"e0","payload":{"event":{"type":"app_mention","channel":"C1","user":"U2","text":"<@UBOT> 나도","ts":"10.4"}}}"#;
     let mention = r#"{"type":"events_api","envelope_id":"e1","payload":{"event":{"type":"app_mention","channel":"C1","user":"U1","text":"<@UBOT> 안녕","ts":"10.5"}}}"#;
     let (socket_url, mut heard) = socket(vec![
         String::from(r#"{"type":"hello"}"#),
+        String::from(stranger),
         String::from(mention),
     ])
     .await;
@@ -63,7 +65,7 @@ async fn a_mention_reaches_the_inbox_with_the_sender_name_and_is_acknowledged() 
         ),
     ])
     .await;
-    let mut config = SlackConfig::new("xapp-1", "xoxb-1");
+    let mut config = SlackConfig::new("xapp-1", "xoxb-1", "U1");
     config.api_base = base;
     let channel = Arc::new(SlackChannel::new(config).expect("built"));
     let (tx, mut rx) = mpsc::unbounded_channel();
@@ -81,8 +83,13 @@ async fn a_mention_reaches_the_inbox_with_the_sender_name_and_is_acknowledged() 
     assert_eq!(incoming.sender_id.as_str(), "U1");
     assert_eq!(incoming.sender_name, "Yuno");
     assert_eq!(incoming.content.as_str(), "안녕");
-    let ack = time::timeout(WAIT, heard.recv()).await.expect("in time");
-    assert_eq!(ack.as_deref(), Some(r#"{"envelope_id":"e1"}"#));
+    for envelope in ["e0", "e1"] {
+        let ack = time::timeout(WAIT, heard.recv()).await.expect("in time");
+        assert_eq!(
+            ack.as_deref(),
+            Some(format!(r#"{{"envelope_id":"{envelope}"}}"#).as_str())
+        );
+    }
 
     let auth = requests.recv().await.expect("auth.test");
     assert!(auth.head.starts_with("POST /auth.test"), "{}", auth.head);
@@ -109,7 +116,7 @@ async fn a_mention_reaches_the_inbox_with_the_sender_name_and_is_acknowledged() 
 #[tokio::test]
 async fn a_reply_goes_to_the_thread_of_its_place() {
     let (base, mut requests) = mock::serve(vec![(200, r#"{"ok":true}"#)]).await;
-    let mut config = SlackConfig::new("xapp-1", "xoxb-1");
+    let mut config = SlackConfig::new("xapp-1", "xoxb-1", "U1");
     config.api_base = base;
     let channel = SlackChannel::new(config).expect("built");
     channel
@@ -129,7 +136,7 @@ async fn a_reply_goes_to_the_thread_of_its_place() {
 async fn a_refused_reply_is_a_delivery_error() {
     let (base, _requests) =
         mock::serve(vec![(200, r#"{"ok":false,"error":"channel_not_found"}"#)]).await;
-    let mut config = SlackConfig::new("xapp-1", "xoxb-1");
+    let mut config = SlackConfig::new("xapp-1", "xoxb-1", "U1");
     config.api_base = base;
     let channel = SlackChannel::new(config).expect("built");
     let error = channel
@@ -143,7 +150,7 @@ async fn a_refused_reply_is_a_delivery_error() {
 async fn a_revoked_token_ends_the_channel() {
     let (base, _requests) =
         mock::serve(vec![(200, r#"{"ok":false,"error":"invalid_auth"}"#)]).await;
-    let mut config = SlackConfig::new("xapp-1", "xoxb-1");
+    let mut config = SlackConfig::new("xapp-1", "xoxb-1", "U1");
     config.api_base = base;
     let channel = SlackChannel::new(config).expect("built");
     let (tx, _rx) = mpsc::unbounded_channel();
@@ -158,6 +165,6 @@ async fn a_revoked_token_ends_the_channel() {
 
 #[test]
 fn the_config_hides_its_tokens() {
-    let shown = format!("{:?}", SlackConfig::new("xapp-secret", "xoxb-secret"));
+    let shown = format!("{:?}", SlackConfig::new("xapp-secret", "xoxb-secret", "U1"));
     assert!(!shown.contains("secret"), "{shown}");
 }
