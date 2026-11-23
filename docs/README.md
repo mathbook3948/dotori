@@ -14,6 +14,7 @@
 - [프로세스 구조](architecture/processes.md): dotori를 어떤 프로세스로 나눠 실행하는지 정한다.
 - [세션](architecture/sessions.md): 주인이 어디서 비서와 말하고, 대화를 어떤 세션으로 나누는지 정한다.
 - [Slack 연결](architecture/slack.md): Slack을 채널과 연동으로 어떻게 쓰는지 정한다.
+- [창](architecture/windows.md): 채팅창과 설정창이 어떻게 보이는지 정한다.
 
 ## engineering
 
