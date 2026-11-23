@@ -81,6 +81,9 @@ pub enum ToWindow {
     /// Which of the owner's PCs answers now. Sent only while PCs are linked, and never kept in
     /// the conversation.
     Answering { pc: String, here: bool },
+    /// Which of the owner's PCs holds the browser now. Sent only while PCs are linked, and never
+    /// kept in the conversation.
+    BrowserAt { pc: String, here: bool },
 }
 
 /// The app channel on the daemon's side. Windows connect over local TCP and prove themselves
@@ -98,6 +101,7 @@ struct Hub {
     live: broadcast::Sender<Published>,
     next_id: AtomicU64,
     answering: watch::Sender<Option<String>>,
+    browser: watch::Sender<Option<String>>,
 }
 
 /// One line every window shows, and the other PC whose window it came from, if it did.
@@ -123,6 +127,7 @@ impl AppChannel {
                 live,
                 next_id: AtomicU64::new(0),
                 answering: watch::channel(None).0,
+                browser: watch::channel(None).0,
             }),
         };
         Ok((channel, address))
@@ -151,12 +156,22 @@ impl AppChannel {
         }
     }
 
+    /// Tells every window which PC holds the browser now.
+    pub fn browser_at(&self, pc: String, here: bool) {
+        if let Ok(line) = serde_json::to_string(&ToWindow::BrowserAt { pc, here }) {
+            self.hub.browser.send_replace(Some(line));
+        }
+    }
+
     /// Shows a line another PC's windows were shown. Anything that is not such a line is
     /// passed over.
     pub fn show_line(&self, line: &str) {
-        if serde_json::from_str::<ToWindow>(line)
-            .is_ok_and(|shown| !matches!(shown, ToWindow::Answering { .. }))
-        {
+        if serde_json::from_str::<ToWindow>(line).is_ok_and(|shown| {
+            !matches!(
+                shown,
+                ToWindow::Answering { .. } | ToWindow::BrowserAt { .. }
+            )
+        }) {
             self.hub.publish_line(line.to_owned(), None);
         }
     }
@@ -295,11 +310,16 @@ async fn serve(stream: TcpStream, token: String, hub: Arc<Hub>, inbox: Arc<dyn I
     }
     let (backlog, mut live) = hub.join();
     let mut answering = hub.answering.subscribe();
+    let mut browser = hub.browser.subscribe();
     let sending = async move {
         for line in backlog {
             send(&mut write, &line).await?;
         }
         let now = answering.borrow_and_update().clone();
+        if let Some(line) = now {
+            send(&mut write, &line).await?;
+        }
+        let now = browser.borrow_and_update().clone();
         if let Some(line) = now {
             send(&mut write, &line).await?;
         }
@@ -316,6 +336,15 @@ async fn serve(stream: TcpStream, token: String, hub: Arc<Hub>, inbox: Arc<dyn I
                         return Ok(());
                     }
                     let now = answering.borrow_and_update().clone();
+                    if let Some(line) = now {
+                        send(&mut write, &line).await?;
+                    }
+                }
+                changed = browser.changed() => {
+                    if changed.is_err() {
+                        return Ok(());
+                    }
+                    let now = browser.borrow_and_update().clone();
                     if let Some(line) = now {
                         send(&mut write, &line).await?;
                     }

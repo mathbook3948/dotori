@@ -18,6 +18,7 @@ use dotori_core::tool::Toolbox;
 use dotori_mcp::Tool;
 use dotori_mcp::browser::Browser;
 use dotori_mcp::browser::BrowserConfig;
+use dotori_mcp::browser::Logins;
 use dotori_mcp::fetch::WebFetch;
 use dotori_mcp::memory::Memory;
 use dotori_mcp::memory::MemoryConfig;
@@ -53,6 +54,16 @@ pub(crate) struct Listening {
 }
 
 /// `dotori mcp`: serves the shared tools until its input closes.
+/// Whether this PC holds `job` now, as the daemon wrote. Without the file, this PC alone does
+/// everything.
+pub(crate) fn holds_job(jobs: &std::path::Path, job: &str) -> bool {
+    std::fs::read_to_string(jobs)
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .and_then(|jobs| jobs.get(job).and_then(serde_json::Value::as_bool))
+        .unwrap_or(true)
+}
+
 pub(crate) async fn serve(home: Home) -> Result<(), String> {
     let settings = Settings::load(&home.settings())?;
     let chosen = settings.browser.clone().unwrap_or_default();
@@ -62,10 +73,21 @@ pub(crate) async fn serve(home: Home) -> Result<(), String> {
             executable: chosen.path,
             downloads: home.chrome(),
             profile: home.browser(),
+            logins: Some(Logins {
+                out: home.logins_out(),
+                into: home.logins_in(),
+            }),
         },
         Arc::clone(&screen),
         asks,
     );
+    {
+        let jobs = home.jobs();
+        tokio::spawn(
+            Arc::clone(&browser)
+                .share_logins(move || holds_job(&jobs, "browser") && holds_job(&jobs, "linked")),
+        );
+    }
     let shown = TcpListener::bind(("127.0.0.1", 0))
         .await
         .map_err(|error| error.to_string())?;
@@ -91,6 +113,7 @@ pub(crate) async fn serve(home: Home) -> Result<(), String> {
         index: home.search_index(),
         dictionaries: home.dictionaries(),
         embedding,
+        jobs: Some(home.jobs()),
     });
     tools.extend(memory.tools());
     let (relays, wrong) = settings.relays(settings::environment);

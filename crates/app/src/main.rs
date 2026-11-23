@@ -1,3 +1,4 @@
+mod browser_route;
 mod chat;
 mod daemon;
 mod device;
@@ -6,14 +7,17 @@ mod home;
 mod idle;
 mod link;
 mod lock;
+mod logins;
 mod main_session;
 mod notes;
 mod peers;
 mod replace;
 mod screen_link;
 mod settings;
+mod settings_copies;
 mod tools;
 mod tray;
+mod vector_copies;
 mod window;
 
 use std::env;

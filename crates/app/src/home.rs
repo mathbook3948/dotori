@@ -65,6 +65,27 @@ impl Home {
         self.root.join("peers-seen.json")
     }
 
+    /// Which jobs that one PC at a time does this PC holds now, for the MCP server. The daemon
+    /// writes it.
+    pub(crate) fn jobs(&self) -> PathBuf {
+        self.root.join("jobs.json")
+    }
+
+    /// When the settings every PC shares last changed.
+    pub(crate) fn settings_stamp(&self) -> PathBuf {
+        self.root.join("settings.stamp")
+    }
+
+    /// The browser's cookies, for the owner's other PCs, while this PC holds the browser.
+    pub(crate) fn logins_out(&self) -> PathBuf {
+        self.root.join("logins-out.json")
+    }
+
+    /// Another PC's browser cookies, taken in when the browser here starts next.
+    pub(crate) fn logins_in(&self) -> PathBuf {
+        self.root.join("logins-in.json")
+    }
+
     pub(crate) fn lock(&self) -> PathBuf {
         self.root.join("daemon.lock")
     }

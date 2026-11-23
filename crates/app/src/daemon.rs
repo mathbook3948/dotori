@@ -31,12 +31,16 @@ use dotori_core::runtime::Ports;
 use dotori_core::sub_session::SubSessionRunner;
 use dotori_core::tool::Toolbox;
 
+use crate::browser_route::BROWSER_JOB;
+use crate::browser_route::BrowserRoute;
 use crate::device;
 use crate::door;
 use crate::door::Door;
 use crate::home::Home;
 use crate::idle::NoTools;
 use crate::lock::DaemonLock;
+use crate::logins;
+use crate::logins::LoginFiles;
 use crate::main_session;
 use crate::main_session::AgentApp;
 use crate::main_session::Fenced;
@@ -53,7 +57,11 @@ use crate::peers;
 use crate::settings::RunnerChoice;
 use crate::settings::Settings;
 use crate::settings::environment;
+use crate::settings_copies::SettingsCopies;
 use crate::tools;
+use crate::vector_copies;
+use crate::vector_copies::VECTORS_JOB;
+use crate::vector_copies::VectorCopies;
 
 const QUEUE: NonZeroUsize = NonZeroUsize::new(256).expect("non-zero");
 const SEEN: NonZeroUsize = NonZeroUsize::new(4096).expect("non-zero");
@@ -97,9 +105,10 @@ pub(crate) async fn serve(
         model,
         notes: Arc::clone(&notes),
     });
+    let browser = BrowserRoute::new(toolbox);
     let toolbox: Arc<dyn Toolbox> = Arc::new(MainTools {
         notes: Arc::clone(&notes),
-        shared: toolbox,
+        shared: Arc::clone(&browser) as Arc<dyn Toolbox>,
     });
     let token = door::token()?;
     let (app, address) = AppChannel::bind(token.clone()).map_err(|error| error.to_string())?;
@@ -109,6 +118,53 @@ pub(crate) async fn serve(
         token,
     };
     let (records, linked, heard) = link(&home, &settings, records, &app).await;
+    if let Some(linked) = &linked {
+        browser.link(linked.clone());
+    }
+    for job in [VECTORS_JOB, BROWSER_JOB] {
+        vector_copies::write_job(&home.jobs(), job, linked.is_none());
+    }
+    vector_copies::write_job(&home.jobs(), "linked", linked.is_some());
+    let login_files = LoginFiles {
+        out: home.logins_out(),
+        into: home.logins_in(),
+    };
+    if let Some(linked) = linked.clone() {
+        tokio::spawn(logins::share(linked.clone(), login_files.clone()));
+        let jobs = home.jobs();
+        tokio::spawn(async move {
+            let Some(mut holder) = linked.keeper.watch(BROWSER_JOB) else {
+                return;
+            };
+            loop {
+                let holds = holder.borrow_and_update().as_deref() == Some(linked.own.as_str());
+                vector_copies::write_job(&jobs, BROWSER_JOB, holds);
+                if holder.changed().await.is_err() {
+                    return;
+                }
+            }
+        });
+    }
+    let vectors = linked
+        .clone()
+        .map(|linked| VectorCopies::new(linked, home.search_index()));
+    if let (Some(linked), Some(vectors)) = (linked.clone(), vectors.clone()) {
+        let jobs = home.jobs();
+        tokio::spawn(Arc::clone(&vectors).keep_asking());
+        tokio::spawn(vectors.on_maker_change());
+        tokio::spawn(async move {
+            let Some(mut holder) = linked.keeper.watch(VECTORS_JOB) else {
+                return;
+            };
+            loop {
+                let makes = holder.borrow_and_update().as_deref() == Some(linked.own.as_str());
+                vector_copies::write_job(&jobs, VECTORS_JOB, makes);
+                if holder.changed().await.is_err() {
+                    return;
+                }
+            }
+        });
+    }
     let route = Route::new(linked.clone());
     if let (Some(linked), Some((mut heard, copies))) = (linked.clone(), heard) {
         let app = Arc::clone(&app);
@@ -134,9 +190,27 @@ pub(crate) async fn serve(
                 }
             });
         }
+        let settings_copies = Arc::new(SettingsCopies::new(home.settings(), home.settings_stamp()));
+        {
+            let settings_copies = Arc::clone(&settings_copies);
+            let linked = linked.clone();
+            tokio::spawn(async move { settings_copies.share(linked).await });
+        }
         tokio::spawn(async move {
             while let Some(heard) = heard.recv().await {
                 linked.keeper.hear(&heard);
+                if settings_copies.hear(&linked, &heard) {
+                    continue;
+                }
+                if vectors.as_ref().is_some_and(|vectors| vectors.hear(&heard)) {
+                    continue;
+                }
+                if browser.hear(&heard) {
+                    continue;
+                }
+                if logins::hear(&linked, &login_files, &heard) {
+                    continue;
+                }
                 if notes::hear(&notes, &linked.hub, &heard) {
                     continue;
                 }
@@ -170,6 +244,20 @@ pub(crate) async fn serve(
                     app.answering(linked.hub.name_of(&key), key == linked.own);
                 }
                 route.flush();
+            }
+        });
+    }
+    if let Some(linked) = linked.clone() {
+        let app = Arc::clone(&app);
+        let mut holder = linked.keeper.watch(BROWSER_JOB);
+        tokio::spawn(async move {
+            while let Some(holder) = holder.as_mut() {
+                if holder.changed().await.is_err() {
+                    return;
+                }
+                let now = holder.borrow_and_update().clone();
+                let key = now.unwrap_or_else(|| linked.own.clone());
+                app.browser_at(linked.hub.name_of(&key), key == linked.own);
             }
         });
     }
@@ -265,7 +353,11 @@ async fn link(
     };
     let own = hub.own().to_owned();
     let copies = Copies::start(Arc::clone(&hub), records.clone());
-    let keeper = Keeper::start(Arc::clone(&hub), own.clone(), &[MAIN_JOB]);
+    let keeper = Keeper::start(
+        Arc::clone(&hub),
+        own.clone(),
+        &[MAIN_JOB, VECTORS_JOB, BROWSER_JOB],
+    );
     let linked = Linked {
         hub,
         keeper: Arc::clone(&keeper),

@@ -56,12 +56,21 @@ CREATE TABLE IF NOT EXISTS docs (
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS terms USING fts5(words, tokenize = 'unicode61');
 CREATE TABLE IF NOT EXISTS vectors (seq INTEGER PRIMARY KEY, model TEXT NOT NULL, vector BLOB NOT NULL);
+CREATE TABLE IF NOT EXISTS vector_log (n INTEGER PRIMARY KEY AUTOINCREMENT, seq INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS copied_vectors (
+    record TEXT NOT NULL,
+    model TEXT NOT NULL,
+    vector BLOB NOT NULL,
+    PRIMARY KEY (record, model)
+);
 ";
 const DROP: &str = "
 DROP TABLE IF EXISTS meta;
 DROP TABLE IF EXISTS docs;
 DROP TABLE IF EXISTS terms;
 DROP TABLE IF EXISTS vectors;
+DROP TABLE IF EXISTS vector_log;
+DROP TABLE IF EXISTS copied_vectors;
 ";
 
 /// Where memory reads the raw record, keeps its index, and keeps dictionaries. The record is a
@@ -72,6 +81,9 @@ pub struct MemoryConfig {
     pub index: PathBuf,
     pub dictionaries: PathBuf,
     pub embedding: Option<EmbeddingConfig>,
+    /// A file that says whether this PC makes vectors, when the owner's PCs share that job.
+    /// Without it, this PC makes them.
+    pub jobs: Option<PathBuf>,
 }
 
 /// Memory shared by its tools. The index catches up with the raw record before every search.
@@ -161,6 +173,12 @@ impl Memory {
                 memory.meaning_ready.store(true, Ordering::SeqCst);
             }
             copy_records(index, &memory.config.record).map_err(|error| error.to_string())?;
+            if vectors::merge_copied(index).map_err(|error| error.to_string())? {
+                memory.meaning_ready.store(true, Ordering::SeqCst);
+            }
+            if !makes_vectors(memory.config.jobs.as_deref()) {
+                return Ok((Vec::new(), None));
+            }
             vectors::pending(index, &wanted, EMBED_BATCH).map_err(|error| error.to_string())
         })
         .await
@@ -425,7 +443,36 @@ fn open_index(path: &PathBuf) -> Result<Connection, String> {
             )
             .map_err(fail)?;
     }
+    index
+        .execute(
+            "INSERT INTO vector_log (seq) SELECT seq FROM vectors \
+             WHERE NOT EXISTS (SELECT 1 FROM vector_log) ORDER BY seq",
+            [],
+        )
+        .map_err(fail)?;
+    let made = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_nanos());
+    index
+        .execute(
+            "INSERT OR IGNORE INTO meta (key, value) VALUES ('index_id', ?1)",
+            [format!("{made}-{}", std::process::id())],
+        )
+        .map_err(fail)?;
     Ok(index)
+}
+
+fn makes_vectors(jobs: Option<&Path>) -> bool {
+    let Some(jobs) = jobs else {
+        return true;
+    };
+    match std::fs::read_to_string(jobs) {
+        Ok(text) => serde_json::from_str::<Value>(&text)
+            .ok()
+            .and_then(|jobs| jobs.get("vectors").and_then(Value::as_bool))
+            .unwrap_or(true),
+        Err(_) => true,
+    }
 }
 
 fn record_years(folder: &Path) -> rusqlite::Result<Vec<(String, Connection)>> {
@@ -543,6 +590,7 @@ struct Doc {
 
 fn catch_up(index: &mut Connection, folder: &Path, analyzer: &Analyzer) -> rusqlite::Result<()> {
     copy_records(index, folder)?;
+    vectors::merge_copied(index)?;
     if meta(index, "analyzer")?.as_deref() != Some(analyzer.name()) {
         let rebuild = index.transaction_with_behavior(TransactionBehavior::Immediate)?;
         rebuild.execute("DELETE FROM terms", [])?;
