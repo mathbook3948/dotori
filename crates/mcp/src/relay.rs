@@ -30,7 +30,7 @@ use crate::ToolFuture;
 const VERSION: &str = "2025-11-25";
 const SESSION: &str = "mcp-session-id";
 const PROTOCOL: &str = "mcp-protocol-version";
-const CONNECT_WAIT: Duration = Duration::from_secs(8);
+const CONNECT_WAIT: Duration = Duration::from_secs(15);
 const CALL_WAIT: Duration = Duration::from_secs(120);
 const LINE: u64 = 16 * 1024 * 1024;
 const PAGES: usize = 20;

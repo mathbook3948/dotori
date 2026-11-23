@@ -27,6 +27,8 @@ pub(crate) struct Theme {
     pub(crate) danger_soft: Rgba,
 }
 
+const THEME_VARIABLE: &str = "DOTORI_THEME";
+
 fn light() -> Theme {
     Theme {
         canvas: rgb(0xf7f3ee),
@@ -74,8 +76,14 @@ fn dark() -> Theme {
 }
 
 impl Theme {
-    /// The theme that matches the system's light or dark look for `window`.
+    /// The theme that matches the system's light or dark look for `window`, unless
+    /// `DOTORI_THEME` asks for `light` or `dark`.
     pub(crate) fn of(window: &Window) -> Self {
+        match std::env::var(THEME_VARIABLE).as_deref() {
+            Ok("dark") => return dark(),
+            Ok("light") => return light(),
+            _ => {}
+        }
         match window.appearance() {
             WindowAppearance::Dark | WindowAppearance::VibrantDark => dark(),
             WindowAppearance::Light | WindowAppearance::VibrantLight => light(),
