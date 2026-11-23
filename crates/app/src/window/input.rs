@@ -1,6 +1,7 @@
 //! A one-line text field, adapted from gpui's `examples/input.rs`
 //! (Apache-2.0, Copyright Zed Industries). Changed: public constructor and text access,
-//! a `Submit` action in place of `Quit`, and the project's import style.
+//! a `Submit` action in place of `Quit`, the project's import style, and colors and size taken
+//! from the theme and the parent instead of fixed ones.
 
 use std::ops::Range;
 
@@ -35,16 +36,14 @@ use gpui::Window;
 use gpui::actions;
 use gpui::div;
 use gpui::fill;
-use gpui::hsla;
 use gpui::point;
 use gpui::prelude::*;
 use gpui::px;
 use gpui::relative;
-use gpui::rgb;
-use gpui::rgba;
 use gpui::size;
-use gpui::white;
 use unicode_segmentation::UnicodeSegmentation;
+
+use crate::window::theme::Theme;
 
 actions!(
     text_input,
@@ -517,8 +516,9 @@ impl Element for TextElement {
         let cursor = input.cursor_offset();
         let style = window.text_style();
 
+        let theme = Theme::of(window);
         let (display_text, text_color) = if content.is_empty() {
-            (input.placeholder.clone(), hsla(0., 0., 0., 0.2))
+            (input.placeholder.clone(), theme.faint.into())
         } else {
             (content, style.color)
         };
@@ -570,9 +570,9 @@ impl Element for TextElement {
                 Some(fill(
                     Bounds::new(
                         point(bounds.left() + cursor_pos, bounds.top()),
-                        size(px(2.), bounds.bottom() - bounds.top()),
+                        size(px(1.5), bounds.bottom() - bounds.top()),
                     ),
-                    gpui::blue(),
+                    theme.accent,
                 )),
             )
         } else {
@@ -588,7 +588,7 @@ impl Element for TextElement {
                             bounds.bottom(),
                         ),
                     ),
-                    rgba(0x3311ff30),
+                    theme.selection,
                 )),
                 None,
             )
@@ -660,17 +660,8 @@ impl Render for TextInput {
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
-            .bg(rgb(0xeeeeee))
-            .line_height(px(30.))
-            .text_size(px(24.))
-            .child(
-                div()
-                    .h(px(30. + 4. * 2.))
-                    .w_full()
-                    .p(px(4.))
-                    .bg(white())
-                    .child(TextElement { input: cx.entity() }),
-            )
+            .w_full()
+            .child(TextElement { input: cx.entity() })
     }
 }
 

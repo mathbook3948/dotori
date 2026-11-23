@@ -1,6 +1,8 @@
 mod chat;
 mod input;
+mod parts;
 mod settings;
+mod theme;
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -11,6 +13,8 @@ use gpui::Application;
 use gpui::Bounds;
 use gpui::Focusable;
 use gpui::KeyBinding;
+use gpui::SharedString;
+use gpui::TitlebarOptions;
 use gpui::WindowBounds;
 use gpui::WindowOptions;
 use gpui::actions;
@@ -43,22 +47,40 @@ pub(crate) fn run(home: Home, which: Which) -> Result<(), String> {
         let failed = failure;
         cx.bind_keys(input::bindings());
         cx.bind_keys([KeyBinding::new("secondary-q", Quit, None)]);
-        let bounds = Bounds::centered(None, size(px(520.), px(640.)), cx);
+        let (title, wide, tall) = match which {
+            Which::Chat => ("dotori", 480., 720.),
+            Which::Settings => ("dotori 설정", 520., 640.),
+        };
+        let bounds = Bounds::centered(None, size(px(wide), px(tall)), cx);
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
+            window_min_size: Some(size(px(360.), px(420.))),
+            titlebar: Some(TitlebarOptions {
+                title: Some(SharedString::new_static(title)),
+                ..TitlebarOptions::default()
+            }),
+            app_id: Some(String::from("dotori")),
             ..WindowOptions::default()
         };
         let opened = match settings {
             None => cx
                 .open_window(options, |window, cx| {
-                    let view = cx.new(|cx| ChatView::new(link::open(home), cx));
+                    let view = cx.new(|cx| {
+                        cx.observe_window_appearance(window, |_, _, cx| cx.notify())
+                            .detach();
+                        ChatView::new(link::open(home), cx)
+                    });
                     window.focus(&view.read(cx).focus_handle(cx));
                     view
                 })
                 .map(|_| ()),
             Some(settings) => cx
                 .open_window(options, |window, cx| {
-                    let view = cx.new(|cx| SettingsView::new(home, settings, cx));
+                    let view = cx.new(|cx| {
+                        cx.observe_window_appearance(window, |_, _, cx| cx.notify())
+                            .detach();
+                        SettingsView::new(home, settings, cx)
+                    });
                     window.focus(&view.read(cx).focus_handle(cx));
                     view
                 })
