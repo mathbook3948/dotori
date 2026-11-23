@@ -13,7 +13,7 @@ core를 먼저 단단하게 만들고, 그 위에 연결과 기능을 붙인다.
 - 3단계: 데몬과 화면. 트레이, 앱 채널, GPUI 채팅창과 설정창.
 - 4단계: Slack 커넥터.
 - 5단계: MCP 서버. webfetch와 브라우저.
-- 6단계: 하위 작업 실행기. LLM API, Claude Code CLI, Codex CLI.
+- 6단계: 서브 세션 실행기. LLM API, Claude Code CLI, Codex CLI.
 - 7단계: 메모리. 그래프 채우기, 검색, 정리 작업.
 - 그래프 DB는 1단계부터 따로 진행하고, 7단계 전에 쓸 수 있게 한다.
 
