@@ -65,7 +65,8 @@ fn the_request_asks_for_adaptive_thinking_auto_tools_and_default_fallbacks() {
 
     assert_eq!(body["model"], "claude-sonnet-5-5");
     assert_eq!(body["max_tokens"], 16000);
-    assert_eq!(body["system"], DEFAULT_SYSTEM);
+    assert_eq!(body["system"][0]["text"], DEFAULT_SYSTEM);
+    assert_eq!(body["system"][0]["cache_control"]["type"], "ephemeral");
     assert_eq!(body["thinking"]["type"], "adaptive");
     assert_eq!(
         body["thinking"]["block_binding"]["prefix_mismatch_behavior"],
@@ -284,7 +285,59 @@ fn the_app_context_follows_the_system_prompt() {
     let body = sent(&config, &asked);
 
     assert_eq!(
-        body["system"],
+        body["system"][0]["text"],
         format!("{DEFAULT_SYSTEM}\n\nThe owner likes tea.")
+    );
+}
+
+#[test]
+fn the_last_two_user_turns_end_where_the_next_request_can_read_the_cache() {
+    let config = AnthropicConfig::new("key");
+    let said = |answered| Entry::Acted {
+        actions: vec![Action::Say {
+            thread: ThreadRef::new(0),
+            text: String::from("ok"),
+            privately: false,
+        }],
+        answered,
+        trace: None,
+    };
+    let conversation = vec![heard("one"), said(1), heard("two"), said(3), heard("three")];
+
+    let body = sent(&config, &request(conversation));
+
+    let marked: Vec<(String, bool)> = body["messages"]
+        .as_array()
+        .expect("messages")
+        .iter()
+        .flat_map(|message| {
+            let role = message["role"].as_str().expect("role").to_owned();
+            message["content"]
+                .as_array()
+                .expect("content")
+                .iter()
+                .map(move |block| (role.clone(), block.get("cache_control").is_some()))
+                .collect::<Vec<_>>()
+        })
+        .filter(|(_, marked)| *marked)
+        .collect();
+    assert_eq!(
+        marked,
+        [(String::from("user"), true), (String::from("user"), true)]
+    );
+    let last = body["messages"].as_array().expect("messages").len() - 1;
+    let last_block = body["messages"][last]["content"]
+        .as_array()
+        .expect("content")
+        .len()
+        - 1;
+    assert_eq!(
+        body["messages"][last]["content"][last_block]["cache_control"]["type"],
+        "ephemeral"
+    );
+    assert!(
+        body["messages"][0]["content"][0]
+            .get("cache_control")
+            .is_none()
     );
 }

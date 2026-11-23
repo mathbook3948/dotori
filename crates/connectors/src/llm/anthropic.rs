@@ -118,14 +118,19 @@ fn body(config: &AnthropicConfig, request: &ModelRequest) -> Result<String, Mode
             "input_schema": schema,
         }));
     }
-    let messages: Vec<Value> = transcript::build(&request.conversation, PROVIDER)
+    let mut messages: Vec<Value> = transcript::build(&request.conversation, PROVIDER)
         .into_iter()
         .map(message)
         .collect();
+    mark_for_cache(&mut messages);
     let mut body = json!({
         "model": config.model,
         "max_tokens": config.max_tokens,
-        "system": reply::system(&config.system, request.context.as_deref()),
+        "system": [{
+            "type": "text",
+            "text": reply::system(&config.system, request.context.as_deref()),
+            "cache_control": { "type": "ephemeral" },
+        }],
         "messages": messages,
         "tools": tools,
         "tool_choice": { "type": "auto" },
@@ -139,6 +144,22 @@ fn body(config: &AnthropicConfig, request: &ModelRequest) -> Result<String, Mode
         body["output_config"] = json!({ "effort": effort });
     }
     Ok(body.to_string())
+}
+
+fn mark_for_cache(messages: &mut [Value]) {
+    for message in messages
+        .iter_mut()
+        .rev()
+        .filter(|message| message["role"] == "user")
+        .take(2)
+    {
+        if let Some(last) = message["content"]
+            .as_array_mut()
+            .and_then(|content| content.last_mut())
+        {
+            last["cache_control"] = json!({ "type": "ephemeral" });
+        }
+    }
 }
 
 fn message(turn: Turn) -> Value {
