@@ -293,3 +293,52 @@ async fn a_line_keeps_the_time_it_was_first_shown_and_an_old_line_has_none() {
         })
     );
 }
+
+#[tokio::test]
+async fn lines_from_before_a_start_come_first_and_stay_on_this_pc() {
+    let (channel, address, _inbox) = start().await;
+    let mut published = channel.published();
+    channel
+        .deliver(Place::new(MAIN), String::from("now"))
+        .await
+        .expect("delivered");
+    channel.show_earlier(&[
+        ToWindow::Owner {
+            text: String::from("yesterday"),
+            at: 1,
+        },
+        ToWindow::Reply {
+            text: String::from("answered"),
+            at: 2,
+        },
+    ]);
+    let mut window = Window::open(address, "secret").await;
+
+    assert_eq!(
+        window.next().await,
+        Some(ToWindow::Owner {
+            text: String::from("yesterday"),
+            at: 1,
+        })
+    );
+    assert_eq!(
+        window.next().await,
+        Some(ToWindow::Reply {
+            text: String::from("answered"),
+            at: 2,
+        })
+    );
+    assert!(matches!(
+        window.next_untimed().await,
+        Some(ToWindow::Reply { text, .. }) if text == "now"
+    ));
+    assert!(
+        published
+            .recv()
+            .await
+            .expect("published")
+            .line
+            .contains("now")
+    );
+    assert!(published.try_recv().is_err());
+}

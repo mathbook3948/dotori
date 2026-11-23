@@ -36,6 +36,7 @@ use crate::browser_route::BrowserRoute;
 use crate::device;
 use crate::door;
 use crate::door::Door;
+use crate::history;
 use crate::home::Home;
 use crate::idle::NoTools;
 use crate::lock::DaemonLock;
@@ -114,6 +115,10 @@ pub(crate) async fn serve(
     let token = door::token()?;
     let (app, address) = AppChannel::bind(token.clone()).map_err(|error| error.to_string())?;
     let app = Arc::new(app);
+    match records.load().await {
+        Ok(earlier) => app.show_earlier(&history::lines(&earlier)),
+        Err(error) => eprintln!("dotori: the earlier conversation cannot be shown: {error}"),
+    }
     let door = Door {
         port: address.port(),
         token,

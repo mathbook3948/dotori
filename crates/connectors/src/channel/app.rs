@@ -194,6 +194,24 @@ impl AppChannel {
         }
     }
 
+    /// Puts lines said before dotori started ahead of everything windows are shown, without
+    /// sending them to the other PCs.
+    pub fn show_earlier(&self, lines: &[ToWindow]) {
+        let mut backlog = self
+            .hub
+            .backlog
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let room = BACKLOG.saturating_sub(backlog.len());
+        let earlier: Vec<String> = lines
+            .iter()
+            .filter_map(|line| serde_json::to_string(line).ok())
+            .collect();
+        for line in earlier.into_iter().rev().take(room) {
+            backlog.push_front(line);
+        }
+    }
+
     /// Words the owner already saw in a window here, ready to hand to the agent.
     pub fn incoming(&self, text: String) -> Option<Incoming> {
         Some(self.hub.incoming(Content::parse(text).ok()?))
