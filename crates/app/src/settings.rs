@@ -268,6 +268,46 @@ impl Settings {
         replace(path, text.as_bytes(), OpenOptions::new())
     }
 
+    /// Writes only the sections named in `parts` from these settings, leaving the rest of the
+    /// file as the owner wrote it, comments included.
+    pub(crate) fn save_parts(&self, path: &Path, parts: &[&str]) -> Result<(), String> {
+        let written = match fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(error) if error.kind() == ErrorKind::NotFound => return self.save(path),
+            Err(error) => return Err(format!("{}: {error}", path.display())),
+        };
+        let mut document = written
+            .parse::<toml_edit::DocumentMut>()
+            .map_err(|error| format!("{}: {error}", path.display()))?;
+        let fresh = toml::to_string(self)
+            .map_err(|error| error.to_string())?
+            .parse::<toml_edit::DocumentMut>()
+            .map_err(|error| error.to_string())?;
+        for part in parts {
+            match fresh.get(part) {
+                Some(item) => {
+                    let decor = document
+                        .get(part)
+                        .and_then(toml_edit::Item::as_table)
+                        .map(|table| table.decor().clone());
+                    document.insert(part, item.clone());
+                    if let (Some(decor), Some(table)) = (
+                        decor,
+                        document
+                            .get_mut(part)
+                            .and_then(toml_edit::Item::as_table_mut),
+                    ) {
+                        *table.decor_mut() = decor;
+                    }
+                }
+                None => {
+                    document.remove(part);
+                }
+            }
+        }
+        replace(path, document.to_string().as_bytes(), OpenOptions::new())
+    }
+
     /// Builds the main session's model, reading keys through `key`.
     pub(crate) fn model(
         &self,
