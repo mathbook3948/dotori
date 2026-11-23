@@ -398,6 +398,7 @@ fn delivery_failure_is_recorded_without_calling_the_model() {
 
     h.feed(Event::DeliveryDone {
         thread,
+        place: Place::new("main"),
         text: String::from("hi"),
         result: Err(ChannelError {
             detail: String::from("window closed"),
@@ -463,6 +464,7 @@ fn app_window_shows_traffic_of_other_channels() {
     h.model_answers(vec![say(general, "sure")]);
     h.feed(Event::DeliveryDone {
         thread: general,
+        place: Place::new("general"),
         text: String::from("sure"),
         result: Ok(()),
     });
@@ -475,6 +477,7 @@ fn app_window_shows_traffic_of_other_channels() {
     let owner = h.thread_of("hello");
     h.feed(Event::DeliveryDone {
         thread: owner,
+        place: Place::new("main"),
         text: String::from("hi"),
         result: Ok(()),
     });
@@ -591,4 +594,28 @@ fn a_private_reply_goes_to_the_owners_own_room_on_that_channel() {
     assert_eq!(deliveries[1].0.channel, slack());
     assert_eq!(deliveries[1].0.place, Place::new("D-owner"));
     assert_eq!(deliveries[1].1, "dentist at 3");
+}
+
+#[test]
+fn a_private_reply_shows_on_the_app_where_it_went() {
+    let mut h = Harness::new();
+    h.owner_says_on_slack("general", "what is on my calendar");
+    let general = h.thread_of("what is on my calendar");
+    h.model_answers(vec![Action::Say {
+        thread: general,
+        text: String::from("dentist at 3"),
+        privately: true,
+    }]);
+
+    h.feed(Event::DeliveryDone {
+        thread: general,
+        place: Place::new("D-owner"),
+        text: String::from("dentist at 3"),
+        result: Ok(()),
+    });
+
+    let shown = h.shown();
+    assert_eq!(shown.len(), 1);
+    assert_eq!(shown[0].address.channel, slack());
+    assert_eq!(shown[0].address.place, Place::new("D-owner"));
 }

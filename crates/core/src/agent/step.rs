@@ -22,6 +22,7 @@ use crate::llm::ModelReply;
 use crate::message::Address;
 use crate::message::Incoming;
 use crate::message::Message;
+use crate::message::Place;
 use crate::message::Role;
 use crate::message::Sender;
 use crate::sub_session::SubSessionOutcome;
@@ -41,9 +42,10 @@ pub(crate) fn step(state: &mut AgentState, event: Event) -> Vec<Effect> {
         } => on_sub_session_done(state, sub_session, outcome),
         Event::DeliveryDone {
             thread,
+            place,
             text,
             result,
-        } => on_delivery_done(state, thread, text, result),
+        } => on_delivery_done(state, thread, place, text, result),
         Event::ChannelEnded { channel, result } => on_channel_ended(state, channel, result),
         Event::Shutdown => on_shutdown(state),
     }
@@ -173,6 +175,7 @@ fn on_sub_session_done(
 fn on_delivery_done(
     state: &mut AgentState,
     thread: ThreadRef,
+    place: Place,
     text: String,
     result: Result<(), ChannelError>,
 ) -> Vec<Effect> {
@@ -180,7 +183,10 @@ fn on_delivery_done(
         Ok(()) => match state.threads.resolve(thread) {
             Some(address) if address.channel != state.wiring.app => {
                 vec![Effect::Show(Traffic {
-                    address: address.clone(),
+                    address: Address {
+                        channel: address.channel.clone(),
+                        place,
+                    },
                     who: String::from("dotori"),
                     text,
                 })]

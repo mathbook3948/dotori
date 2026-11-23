@@ -206,12 +206,13 @@ async fn a_private_room_names_a_few_members_and_counts_everyone_but_the_assistan
     let first = channel.audience("G1", "UBOT").await;
     let again = channel.audience("G1", "UBOT").await;
 
-    let expected = Audience::People {
-        some: vec![String::from("Mina"), String::from("Joon")],
-        total: 3,
+    assert_eq!(first, again);
+    let Audience::People { mut some, total } = first else {
+        panic!("expected people, got {first:?}");
     };
-    assert_eq!(first, expected);
-    assert_eq!(again, expected);
+    some.sort();
+    assert_eq!(some, vec![String::from("Joon"), String::from("Mina")]);
+    assert_eq!(total, 3);
     let mut asked = Vec::new();
     while let Ok(request) = requests.try_recv() {
         asked.push(request.head.lines().next().unwrap_or_default().to_owned());

@@ -236,14 +236,12 @@ impl SlackChannel {
         if total <= 1 {
             return Some(Audience::Owner);
         }
-        let mut some = Vec::new();
-        for member in members
+        let named = members
             .iter()
             .filter(|member| *member != bot && **member != self.owner)
             .take(NAMED)
-        {
-            some.push(self.name(member).await);
-        }
+            .map(|member| self.name(member));
+        let some = futures_util::future::join_all(named).await;
         Some(Audience::People { some, total })
     }
 

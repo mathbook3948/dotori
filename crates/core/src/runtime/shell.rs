@@ -238,11 +238,12 @@ fn spawn_outbox(
     let (outbox, mut deliveries) = mpsc::unbounded_channel::<Delivery>();
     tasks.spawn(async move {
         while let Some(delivery) = deliveries.recv().await {
-            let result = caught(|| channel.deliver(delivery.place, delivery.text.clone()))
+            let result = caught(|| channel.deliver(delivery.place.clone(), delivery.text.clone()))
                 .await
                 .unwrap_or_else(|detail| Err(ChannelError { detail }));
             let event = Event::DeliveryDone {
                 thread: delivery.thread,
+                place: delivery.place,
                 text: delivery.text,
                 result,
             };
