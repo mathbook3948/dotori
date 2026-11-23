@@ -219,7 +219,7 @@ pub struct Keeper {
     wanted: BTreeSet<String>,
     told: Mutex<BTreeSet<String>>,
     stopping: AtomicBool,
-    holders: BTreeMap<String, watch::Sender<Option<String>>>,
+    holders: Mutex<BTreeMap<String, watch::Sender<Option<String>>>>,
 }
 
 impl Keeper {
@@ -235,15 +235,29 @@ impl Keeper {
             wanted: wanted.iter().map(|job| (*job).to_owned()).collect(),
             told: Mutex::new(BTreeSet::new()),
             stopping: AtomicBool::new(false),
-            holders,
+            holders: Mutex::new(holders),
         });
         tokio::spawn(Arc::clone(&keeper).keep());
         keeper
     }
 
-    /// Who holds `job`, now and as it changes.
+    /// Who holds `job`, now and as it changes. Any job can be watched, also one this PC does
+    /// not want.
     pub fn watch(&self, job: &str) -> Option<watch::Receiver<Option<String>>> {
-        self.holders.get(job).map(watch::Sender::subscribe)
+        let now = self
+            .book
+            .lock()
+            .expect("unpoisoned")
+            .holder(job, Moment::now())
+            .map(str::to_owned);
+        Some(
+            self.holders
+                .lock()
+                .expect("unpoisoned")
+                .entry(job.to_owned())
+                .or_insert_with(|| watch::channel(now).0)
+                .subscribe(),
+        )
     }
 
     /// Whether this PC still holds `job`. Ask before acting for the job toward the outside.
@@ -378,7 +392,7 @@ impl Keeper {
     fn tell(&self) {
         let now = Moment::now();
         let book = self.book.lock().expect("unpoisoned");
-        for (job, holders) in &self.holders {
+        for (job, holders) in self.holders.lock().expect("unpoisoned").iter() {
             let holder = book.holder(job, now).map(str::to_owned);
             holders.send_if_modified(|known| {
                 let changed = *known != holder;

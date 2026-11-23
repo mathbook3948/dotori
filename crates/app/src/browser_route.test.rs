@@ -52,3 +52,119 @@ async fn an_answer_from_the_browsers_pc_reaches_the_call_waiting_for_it() {
 
     assert_eq!(rx.await.expect("answered"), Err(String::from("no page")));
 }
+
+mod linked {
+    use std::path::PathBuf;
+
+    use dotori_connectors::peer::Code;
+    use dotori_connectors::peer::Identity;
+    use dotori_connectors::peer::Invite;
+    use dotori_connectors::peer::hub::Hub;
+    use dotori_connectors::peer::hub::HubConfig;
+    use dotori_connectors::peer::hub::join;
+    use dotori_connectors::peer::lease::Keeper;
+    use dotori_connectors::peer::now;
+    use dotori_connectors::peer::wire::Hello;
+
+    use super::*;
+
+    struct Named(&'static str);
+
+    impl Toolbox for Named {
+        fn specs(&self) -> Vec<ToolSpec> {
+            Vec::new()
+        }
+
+        fn run(&self, call: ToolCall) -> BoxFuture<'_, Result<String, ToolError>> {
+            Box::pin(async move { Ok(format!("{} ran {} with {}", self.0, call.name, call.input)) })
+        }
+    }
+
+    fn config(name: &str, listen: bool) -> HubConfig {
+        let folder: PathBuf =
+            std::env::temp_dir().join(format!("dotori-route-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&folder);
+        std::fs::create_dir_all(&folder).expect("folder");
+        HubConfig {
+            identity: Identity::load_or_make(&folder.join("peer.key")).expect("key"),
+            device: name.to_owned(),
+            name: name.to_owned(),
+            address: None,
+            listen: listen.then(|| "127.0.0.1:0".parse().expect("address")),
+            book: folder.join("peers.json"),
+            invite: folder.join("invite.json"),
+            seen: folder.join("peers-seen.json"),
+        }
+    }
+
+    async fn start(
+        config: HubConfig,
+        wanted: &[&str],
+        local: &'static str,
+    ) -> (Arc<BrowserRoute>, Linked) {
+        let (hub, mut heard) = Hub::start(config).await.expect("started");
+        let own = hub.own().to_owned();
+        let keeper = Keeper::start(Arc::clone(&hub), own.clone(), wanted);
+        let linked = Linked { hub, keeper, own };
+        let route = BrowserRoute::new(Arc::new(Named(local)));
+        route.link(linked.clone());
+        {
+            let linked = linked.clone();
+            let route = Arc::clone(&route);
+            tokio::spawn(async move {
+                while let Some(heard) = heard.recv().await {
+                    linked.keeper.hear(&heard);
+                    route.hear(&heard);
+                }
+            });
+        }
+        (route, linked)
+    }
+
+    #[tokio::test]
+    async fn a_browser_call_runs_on_the_pc_with_the_browser_and_other_tools_run_here() {
+        let b_config = config("b", true);
+        let a_config = config("a", false);
+        let (b_route, b) = start(b_config.clone(), &[BROWSER_JOB], "B").await;
+        let (_, secret) = Invite::make(&b_config.invite, now() + 600).expect("invite");
+        let code = Code {
+            key: b_config.identity.public,
+            secret,
+            address: None,
+        };
+        let hello = Hello {
+            device: String::from("a"),
+            name: String::from("a"),
+            address: None,
+        };
+        let address = b.hub.listening().expect("listening").to_string();
+        join(&a_config.identity, &hello, &code, &address, &a_config.book)
+            .await
+            .expect("joined");
+        let (a_route, a) = start(a_config, &["main"], "A").await;
+        let mut holder = a.keeper.watch(BROWSER_JOB).expect("watched");
+        let b_key = b.own.clone();
+        time::timeout(
+            Duration::from_secs(30),
+            holder.wait_for(|holder| holder.as_deref() == Some(b_key.as_str())),
+        )
+        .await
+        .expect("a learns b holds the browser in time")
+        .expect("watched");
+
+        let mut browser = call("browser_run");
+        browser.input = String::from(r#"{"code":"1"}"#);
+        assert_eq!(
+            a_route.run(browser).await.expect("ran"),
+            r#"B ran browser_run with {"code":"1"}"#
+        );
+        assert_eq!(
+            a_route.run(call("webfetch")).await.expect("ran"),
+            "A ran webfetch with {}"
+        );
+        assert_eq!(
+            b_route.run(call("browser_read")).await.expect("ran"),
+            "B ran browser_read with {}"
+        );
+    }
+}
