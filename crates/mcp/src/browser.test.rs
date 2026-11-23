@@ -363,3 +363,172 @@ async fn asking_the_owner_shows_on_the_screen_and_returns_at_once() {
         "Log in to the bank"
     );
 }
+
+const PICKS: &str = "data:text/html,<html><body style=\"margin:0\">\
+<select id=s style=\"position:absolute;left:10px;top:10px;width:200px;height:30px\"><option>Apple</option><option>Banana</option></select>\
+<input id=d type=date style=\"position:absolute;left:10px;top:60px;width:200px;height:30px\">\
+<p id=said style=\"position:absolute;left:10px;top:120px\">none</p>\
+<script>for (const id of ['s','d']) document.getElementById(id).addEventListener('change', (e) => { document.getElementById('said').textContent = id + '=' + e.target.value; });</script>\
+</body></html>";
+
+#[tokio::test]
+#[ignore = "starts a real Chrome; set DOTORI_TEST_CHROME or let it download one"]
+async fn a_select_or_date_under_the_owners_click_becomes_a_picker() {
+    let browser = browser();
+    let running = browser.page().await.expect("started");
+    Page { running: &running }.go(PICKS).await.expect("opened");
+    let (cdp, session) = (Arc::clone(&running.cdp), running.session.clone());
+    drop(running);
+
+    let select = in_world(&cdp, &session, &format!("({PICKABLE})(50, 25)"))
+        .await
+        .expect("probed");
+    assert_eq!(select["kind"], "select");
+    assert_eq!(select["options"][1]["label"], "Banana");
+    let date = in_world(&cdp, &session, &format!("({PICKABLE})(50, 75)"))
+        .await
+        .expect("probed");
+    assert_eq!(date["kind"], "value");
+    assert_eq!(date["type"], "date");
+    assert_eq!(
+        in_world(&cdp, &session, &format!("({PICKABLE})(400, 400)"))
+            .await
+            .expect("probed"),
+        Value::Null
+    );
+
+    in_world(&cdp, &session, &format!("({CHOOSE})(50, 25, 1)"))
+        .await
+        .expect("chosen");
+    in_world(&cdp, &session, &format!("({CHOOSE})(50, 75, '2026-11-23')"))
+        .await
+        .expect("chosen");
+    let said = in_world(
+        &cdp,
+        &session,
+        "document.getElementById('said').textContent",
+    )
+    .await
+    .expect("read");
+    assert_eq!(said, "d=2026-11-23");
+    let fruit = in_world(&cdp, &session, "document.getElementById('s').value")
+        .await
+        .expect("read");
+    assert_eq!(fruit, "Banana");
+    let _ = std::fs::remove_dir_all(&browser.config.profile);
+}
+
+#[tokio::test]
+#[ignore = "starts a real Chrome; set DOTORI_TEST_CHROME or let it download one"]
+async fn a_window_the_page_opens_is_followed_until_it_closes() {
+    let browser = browser();
+    let running = browser.page().await.expect("started");
+    let (cdp, session) = (Arc::clone(&running.cdp), running.session.clone());
+    drop(running);
+    let popup = || {
+        browser
+            .shown
+            .lock()
+            .expect("unpoisoned")
+            .as_ref()
+            .and_then(|shown| shown.popup.clone())
+    };
+
+    Page { running: &browser.page().await.expect("running") }
+        .go("data:text/html,<a href=\"about:blank\" target=\"_blank\" style=\"position:absolute;left:0;top:0;width:200px;height:50px;display:block\">log in</a>")
+        .await
+        .expect("opened");
+    for kind in ["mousePressed", "mouseReleased"] {
+        cdp.send(
+            "Input.dispatchMouseEvent",
+            json!({ "type": kind, "x": 20, "y": 20, "button": "left", "clickCount": 1 }),
+            Some(&session),
+        )
+        .await
+        .expect("clicked");
+    }
+    let mut followed = None;
+    for _ in 0..50 {
+        followed = popup();
+        if followed.is_some() {
+            break;
+        }
+        time::sleep(Duration::from_millis(100)).await;
+    }
+    let (target, _) = followed.expect("the popup is shown");
+    assert_eq!(
+        browser.screen.state.lock().expect("unpoisoned")["popup"],
+        true
+    );
+
+    cdp.send("Target.closeTarget", json!({ "targetId": target }), None)
+        .await
+        .expect("closed");
+    for _ in 0..50 {
+        if popup().is_none() {
+            break;
+        }
+        time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(popup().is_none(), "back on the page");
+    assert_eq!(
+        browser.screen.state.lock().expect("unpoisoned")["popup"],
+        false
+    );
+    let _ = std::fs::remove_dir_all(&browser.config.profile);
+}
+
+#[tokio::test]
+#[ignore = "starts a real Chrome; set DOTORI_TEST_CHROME or let it download one"]
+async fn a_popup_to_a_refused_address_never_loads_it() {
+    let browser = browser();
+    let running = browser.page().await.expect("started");
+    let (cdp, session) = (Arc::clone(&running.cdp), running.session.clone());
+    Page { running: &running }
+        .go("data:text/html,<a href=\"http://127.0.0.1:9/secret\" target=\"_blank\" style=\"position:absolute;left:0;top:0;width:200px;height:50px;display:block\">open</a>")
+        .await
+        .expect("opened");
+    drop(running);
+    for kind in ["mousePressed", "mouseReleased"] {
+        cdp.send(
+            "Input.dispatchMouseEvent",
+            json!({ "type": kind, "x": 20, "y": 20, "button": "left", "clickCount": 1 }),
+            Some(&session),
+        )
+        .await
+        .expect("clicked");
+    }
+    let mut popup = None;
+    for _ in 0..50 {
+        popup = browser
+            .shown
+            .lock()
+            .expect("unpoisoned")
+            .as_ref()
+            .and_then(|shown| shown.popup.clone());
+        if popup.is_some() {
+            break;
+        }
+        time::sleep(Duration::from_millis(100)).await;
+    }
+    let state = browser.screen.state.lock().expect("unpoisoned").clone();
+    let (_, popup_session) = popup.unwrap_or_else(|| panic!("the popup is followed: {state}"));
+    time::sleep(Duration::from_millis(800)).await;
+
+    let at = in_world(&cdp, &popup_session, "location.href")
+        .await
+        .expect("read");
+    let text = in_world(
+        &cdp,
+        &popup_session,
+        "document.body ? document.body.innerText : ''",
+    )
+    .await
+    .expect("read");
+    assert!(
+        !text.as_str().unwrap_or_default().contains("secret"),
+        "{text}"
+    );
+    assert_ne!(at, "http://127.0.0.1:9/secret", "{at}");
+    let _ = std::fs::remove_dir_all(&browser.config.profile);
+}

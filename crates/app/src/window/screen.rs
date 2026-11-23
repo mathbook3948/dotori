@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
+use gpui::AnyElement;
 use gpui::App;
 use gpui::Bounds;
 use gpui::ClickEvent;
@@ -26,6 +27,7 @@ use gpui::MouseButton;
 use gpui::MouseDownEvent;
 use gpui::MouseMoveEvent;
 use gpui::MouseUpEvent;
+use gpui::PathPromptOptions;
 use gpui::Pixels;
 use gpui::Point;
 use gpui::RenderImage;
@@ -48,6 +50,7 @@ use tokio::sync::mpsc;
 use crate::screen_link::Picture;
 use crate::screen_link::ScreenLink;
 use crate::screen_link::Seen;
+use crate::window::input::TextInput;
 use crate::window::parts::prose;
 use crate::window::theme::Theme;
 
@@ -69,6 +72,10 @@ pub(crate) struct ScreenView {
     url: Option<SharedString>,
     asked: Option<SharedString>,
     error: Option<SharedString>,
+    popup: bool,
+    picker: Option<Value>,
+    prompted: bool,
+    typed: Option<Entity<TextInput>>,
     down: bool,
     pointer: Option<(f64, f64, Instant)>,
     composing: bool,
@@ -97,6 +104,10 @@ impl ScreenView {
             url: None,
             asked: None,
             error: None,
+            popup: false,
+            picker: None,
+            prompted: false,
+            typed: None,
             down: true,
             pointer: None,
             composing: false,
@@ -137,6 +148,21 @@ impl ScreenView {
                 self.url = text("url").or(self.url.take());
                 self.asked = text("asked");
                 self.error = text("error");
+                self.popup = state.get("popup").and_then(Value::as_bool).unwrap_or(false);
+                let picker = state
+                    .get("picker")
+                    .filter(|picker| picker.is_object())
+                    .cloned();
+                let files = picker
+                    .as_ref()
+                    .and_then(|picker| picker.get("kind"))
+                    .and_then(Value::as_str)
+                    == Some("files");
+                if picker != self.picker || (files && self.mode == Mode::Owner && !self.prompted) {
+                    self.prompted = false;
+                    self.open_picker(picker.as_ref(), cx);
+                }
+                self.picker = picker;
             }
             Seen::Frame(Picture {
                 width,
@@ -171,6 +197,233 @@ impl ScreenView {
             }
         }
         cx.notify();
+    }
+
+    fn open_picker(&mut self, picker: Option<&Value>, cx: &mut Context<Self>) {
+        self.typed = None;
+        let Some(picker) = picker else {
+            return;
+        };
+        match picker.get("kind").and_then(Value::as_str) {
+            Some("value") => {
+                let now = picker
+                    .get("value")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned();
+                let hint = match picker.get("type").and_then(Value::as_str) {
+                    Some("date") => "2026-11-23",
+                    Some("time") => "14:30",
+                    Some("datetime-local") => "2026-11-23T14:30",
+                    Some("month") => "2026-11",
+                    Some("week") => "2026-W48",
+                    _ => "#8b5a2b",
+                };
+                self.typed = Some(cx.new(|cx| {
+                    let mut input = TextInput::new(hint, cx);
+                    input.set_text(&now, cx);
+                    input
+                }));
+            }
+            Some("files") if self.mode == Mode::Owner => {
+                self.prompted = true;
+                let multiple = picker
+                    .get("multiple")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                let chosen = cx.prompt_for_paths(PathPromptOptions {
+                    files: true,
+                    directories: false,
+                    multiple,
+                    prompt: Some(SharedString::new_static("브라우저에 올릴 파일")),
+                });
+                cx.spawn(async move |view, cx| {
+                    let files: Vec<String> = match chosen.await {
+                        Ok(Ok(Some(paths))) => paths
+                            .iter()
+                            .map(|path| path.display().to_string())
+                            .collect(),
+                        _ => Vec::new(),
+                    };
+                    let _ = view.update(cx, |view, _| {
+                        if files.is_empty() {
+                            view.say(json!({ "kind": "pick", "cancel": true }));
+                        } else {
+                            view.say(json!({ "kind": "pick", "files": files }));
+                        }
+                    });
+                })
+                .detach();
+            }
+            _ => {}
+        }
+    }
+
+    fn pick(&mut self, chosen: Value, cx: &mut Context<Self>) {
+        self.say(json!({ "kind": "pick", "value": chosen }));
+        self.picker = None;
+        self.typed = None;
+        cx.notify();
+    }
+
+    fn picker_card(&self, theme: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let picker = self.picker.as_ref()?;
+        let kind = picker.get("kind").and_then(Value::as_str)?;
+        let title = match kind {
+            "select" => "고르기",
+            "value" => "값 넣기",
+            _ => "파일 고르는 중",
+        };
+        let body = match kind {
+            "select" => {
+                let selected = picker.get("selected").and_then(Value::as_i64).unwrap_or(-1);
+                let options = picker
+                    .get("options")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                div()
+                    .id("options")
+                    .flex()
+                    .flex_col()
+                    .max_h(px(260.))
+                    .overflow_y_scroll()
+                    .children(options.into_iter().enumerate().map(|(index, option)| {
+                        let label = option
+                            .get("label")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_owned();
+                        let disabled = option
+                            .get("disabled")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false);
+                        let chosen = index as i64 == selected;
+                        div()
+                            .id(("option", index))
+                            .px_3()
+                            .py_1p5()
+                            .rounded_md()
+                            .when(chosen, |row| {
+                                row.bg(theme.canvas).font_weight(FontWeight::SEMIBOLD)
+                            })
+                            .when(disabled, |row| row.text_color(theme.faint))
+                            .when(!disabled, |row| {
+                                row.cursor_pointer()
+                                    .hover(|row| row.bg(theme.canvas))
+                                    .on_click(cx.listener(move |view, _, _, cx| {
+                                        view.pick(json!(index), cx)
+                                    }))
+                            })
+                            .child(SharedString::from(label))
+                    }))
+                    .into_any_element()
+            }
+            "value" => div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(
+                    div()
+                        .id("typed")
+                        .flex_1()
+                        .px_3()
+                        .py_1p5()
+                        .rounded_lg()
+                        .bg(theme.canvas)
+                        .border_1()
+                        .border_color(theme.accent)
+                        .cursor_text()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|view, _, window, cx| {
+                                if let Some(typed) = &view.typed {
+                                    window.focus(&typed.focus_handle(cx));
+                                }
+                                cx.stop_propagation();
+                            }),
+                        )
+                        .children(self.typed.clone()),
+                )
+                .child(
+                    div()
+                        .id("put")
+                        .px_3()
+                        .py_1p5()
+                        .rounded_lg()
+                        .cursor_pointer()
+                        .bg(theme.accent)
+                        .text_color(theme.accent_text)
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child("넣기")
+                        .on_click(cx.listener(|view, _, _, cx| {
+                            let text = view
+                                .typed
+                                .as_ref()
+                                .map(|typed| typed.read(cx).text().to_owned())
+                                .unwrap_or_default();
+                            view.pick(json!(text), cx);
+                        })),
+                )
+                .into_any_element(),
+            _ => div()
+                .text_color(theme.muted)
+                .child(if self.mode == Mode::Owner {
+                    "파일 대화상자에서 고르면 브라우저에 올라가요."
+                } else {
+                    "페이지가 파일을 달라고 해요. 넘겨받으면 파일을 고를 수 있어요."
+                })
+                .into_any_element(),
+        };
+        Some(
+            div()
+                .id("picker")
+                .occlude()
+                .absolute()
+                .top(px(16.))
+                .left(px(16.))
+                .right(px(16.))
+                .flex()
+                .flex_col()
+                .gap_2()
+                .p_3()
+                .rounded_xl()
+                .bg(theme.surface)
+                .border_1()
+                .border_color(theme.line)
+                .shadow_lg()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .child(
+                            div()
+                                .flex_1()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(title),
+                        )
+                        .child(
+                            div()
+                                .id("cancel-pick")
+                                .px_2()
+                                .py_0p5()
+                                .rounded_md()
+                                .cursor_pointer()
+                                .text_xs()
+                                .text_color(theme.muted)
+                                .hover(|cancel| cancel.bg(theme.canvas))
+                                .child("닫기")
+                                .on_click(cx.listener(|view, _, _, cx| {
+                                    view.say(json!({ "kind": "pick", "cancel": true }));
+                                    view.picker = None;
+                                    view.typed = None;
+                                    cx.notify();
+                                })),
+                        ),
+                )
+                .child(body)
+                .into_any_element(),
+        )
     }
 
     fn say(&self, value: Value) {
@@ -332,6 +585,19 @@ impl ScreenView {
                     .child(div().size(px(7.)).rounded_full().bg(color))
                     .child(words),
             )
+            .when(self.popup, |bar| {
+                bar.child(
+                    div()
+                        .flex_none()
+                        .px_2()
+                        .py_0p5()
+                        .rounded_full()
+                        .bg(theme.warn)
+                        .text_color(theme.accent_text)
+                        .text_xs()
+                        .child("새 창"),
+                )
+            })
             .child(
                 div()
                     .flex_1()
@@ -504,6 +770,7 @@ impl Render for ScreenView {
         let entity: Entity<Self> = cx.entity();
         let focus = self.focus.clone();
         let owner = self.mode == Mode::Owner;
+        let picker = self.picker_card(&theme, cx);
         self.painted |= self.picture.is_some();
         let screen = match &self.picture {
             Some(picture) => img(ImageSource::Render(Arc::clone(picture)))
@@ -667,7 +934,8 @@ impl Render for ScreenView {
                         .size_full(),
                     )
                     .child(screen)
-                    .children(marker),
+                    .children(marker)
+                    .children(picker),
             )
     }
 }
