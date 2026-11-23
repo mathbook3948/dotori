@@ -308,9 +308,16 @@ impl VectorCopies {
     }
 }
 
-/// Tells the MCP server here whether this PC makes vectors now.
-pub(crate) fn write_jobs(jobs: &Path, makes_vectors: bool) {
-    let text = json!({ "vectors": makes_vectors }).to_string();
+/// Tells the MCP server here whether this PC holds `job` now.
+pub(crate) fn write_job(jobs: &Path, job: &str, holds: bool) {
+    static WRITING: Mutex<()> = Mutex::new(());
+    let _writing = WRITING.lock().expect("unpoisoned");
+    let mut all = std::fs::read_to_string(jobs)
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Map<String, Value>>(&text).ok())
+        .unwrap_or_default();
+    all.insert(job.to_owned(), Value::Bool(holds));
+    let text = Value::Object(all).to_string();
     let draft = jobs.with_extension("json.new");
     let written = std::fs::write(&draft, text).and_then(|()| std::fs::rename(&draft, jobs));
     if let Err(error) = written {

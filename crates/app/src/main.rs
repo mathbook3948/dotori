@@ -7,6 +7,7 @@ mod home;
 mod idle;
 mod link;
 mod lock;
+mod logins;
 mod main_session;
 mod notes;
 mod peers;

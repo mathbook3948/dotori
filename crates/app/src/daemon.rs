@@ -39,6 +39,8 @@ use crate::door::Door;
 use crate::home::Home;
 use crate::idle::NoTools;
 use crate::lock::DaemonLock;
+use crate::logins;
+use crate::logins::LoginFiles;
 use crate::main_session;
 use crate::main_session::AgentApp;
 use crate::main_session::Fenced;
@@ -119,7 +121,29 @@ pub(crate) async fn serve(
     if let Some(linked) = &linked {
         browser.link(linked.clone());
     }
-    vector_copies::write_jobs(&home.jobs(), linked.is_none());
+    for job in [VECTORS_JOB, BROWSER_JOB] {
+        vector_copies::write_job(&home.jobs(), job, linked.is_none());
+    }
+    let login_files = LoginFiles {
+        out: home.logins_out(),
+        into: home.logins_in(),
+    };
+    if let Some(linked) = linked.clone() {
+        tokio::spawn(logins::share(linked.clone(), login_files.clone()));
+        let jobs = home.jobs();
+        tokio::spawn(async move {
+            let Some(mut holder) = linked.keeper.watch(BROWSER_JOB) else {
+                return;
+            };
+            loop {
+                let holds = holder.borrow_and_update().as_deref() == Some(linked.own.as_str());
+                vector_copies::write_job(&jobs, BROWSER_JOB, holds);
+                if holder.changed().await.is_err() {
+                    return;
+                }
+            }
+        });
+    }
     let vectors = linked
         .clone()
         .map(|linked| VectorCopies::new(linked, home.search_index()));
@@ -133,7 +157,7 @@ pub(crate) async fn serve(
             };
             loop {
                 let makes = holder.borrow_and_update().as_deref() == Some(linked.own.as_str());
-                vector_copies::write_jobs(&jobs, makes);
+                vector_copies::write_job(&jobs, VECTORS_JOB, makes);
                 if holder.changed().await.is_err() {
                     return;
                 }
@@ -181,6 +205,9 @@ pub(crate) async fn serve(
                     continue;
                 }
                 if browser.hear(&heard) {
+                    continue;
+                }
+                if logins::hear(&linked, &login_files, &heard) {
                     continue;
                 }
                 if notes::hear(&notes, &linked.hub, &heard) {

@@ -5,6 +5,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use reqwest::Url;
+use serde::Deserialize;
+use serde::Serialize;
 use serde_json::Value;
 use serde_json::json;
 use tokio::io::AsyncBufReadExt;
@@ -37,6 +39,7 @@ const RUN_WAIT: Duration = Duration::from_secs(100);
 const WIDTH: u32 = 1280;
 const HEIGHT: u32 = 800;
 const WORLD: &str = "dotori";
+const LOGINS_EVERY: Duration = Duration::from_secs(60);
 
 /// How the browser runs. The profile folder keeps logins between runs. Without an executable,
 /// dotori's own Chrome for Testing in `downloads` is used, fetched there on first use. The
@@ -46,6 +49,24 @@ pub struct BrowserConfig {
     pub executable: Option<PathBuf>,
     pub downloads: PathBuf,
     pub profile: PathBuf,
+    /// Where the browser's logins go out to the owner's other PCs, and where theirs come in.
+    pub logins: Option<Logins>,
+}
+
+/// Files that carry the browser's cookies between the owner's PCs. Only the user can read them.
+/// `out` is written while this PC's browser is open; `into` is what another PC's browser had,
+/// taken in when this browser starts if it is newer than what this browser last wrote.
+#[derive(Clone, Debug)]
+pub struct Logins {
+    pub out: PathBuf,
+    pub into: PathBuf,
+}
+
+/// A copy of a browser's cookies and when it was made, in milliseconds since the Unix epoch.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct LoginCopy {
+    pub at: i64,
+    pub cookies: Vec<Value>,
 }
 
 /// One browser shared by every browser tool. It starts on first use and starts again if it died.
@@ -291,6 +312,45 @@ impl Browser {
         }
     }
 
+    /// Writes the open browser's cookies for the owner's other PCs every so often, while this
+    /// PC holds the browser. A browser that is not open is not started for it.
+    pub async fn share_logins(self: Arc<Self>, holds: impl Fn() -> bool) {
+        let Some(logins) = self.config.logins.clone() else {
+            return;
+        };
+        let mut every = time::interval(LOGINS_EVERY);
+        let mut written: Option<Vec<Value>> = None;
+        loop {
+            every.tick().await;
+            if !holds() {
+                continue;
+            }
+            let cdp = match self.running.lock().await.as_ref() {
+                Some(running) if running.cdp.open() => Arc::clone(&running.cdp),
+                _ => continue,
+            };
+            let Ok(reply) = cdp.send("Storage.getCookies", json!({}), None).await else {
+                continue;
+            };
+            let cookies = reply
+                .get("cookies")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            if written.as_ref() == Some(&cookies) {
+                continue;
+            }
+            let copy = LoginCopy {
+                at: now_ms(),
+                cookies: cookies.clone(),
+            };
+            match write_privately(&logins.out, &copy) {
+                Ok(()) => written = Some(cookies),
+                Err(error) => eprintln!("dotori: the browser's logins were not kept: {error}"),
+            }
+        }
+    }
+
     /// The tools that drive this browser.
     pub fn tools(self: &Arc<Self>) -> Vec<Box<dyn Tool>> {
         [Action::Run, Action::Read, Action::Ask]
@@ -489,6 +549,9 @@ impl Browser {
         if self.screen.watched() {
             page("Page.startScreencast", screencast()).await?;
         }
+        if let Some(logins) = &self.config.logins {
+            take_logins(&cdp, logins).await;
+        }
         Ok(Running {
             child,
             cdp,
@@ -499,6 +562,81 @@ impl Browser {
             screen: Arc::clone(&self.screen),
         })
     }
+}
+
+async fn take_logins(cdp: &Cdp, logins: &Logins) {
+    let Some(theirs) = read_copy(&logins.into) else {
+        return;
+    };
+    let ours = read_copy(&logins.out).map_or(0, |ours| ours.at);
+    if theirs.at <= ours {
+        return;
+    }
+    let cookies: Vec<Value> = theirs.cookies.iter().map(settable).collect();
+    match cdp
+        .send("Storage.setCookies", json!({ "cookies": cookies }), None)
+        .await
+    {
+        Ok(_) => {
+            let _ = std::fs::remove_file(&logins.into);
+        }
+        Err(error) => eprintln!("dotori: the logins from another PC were not taken: {error}"),
+    }
+}
+
+/// A cookie as `Storage.getCookies` gives it, cut to what `Storage.setCookies` takes.
+pub(crate) fn settable(cookie: &Value) -> Value {
+    const KEPT: [&str; 11] = [
+        "name",
+        "value",
+        "domain",
+        "path",
+        "secure",
+        "httpOnly",
+        "sameSite",
+        "expires",
+        "priority",
+        "sourceScheme",
+        "partitionKey",
+    ];
+    let mut kept = serde_json::Map::new();
+    for key in KEPT {
+        if let Some(value) = cookie.get(key) {
+            kept.insert(key.to_owned(), value.clone());
+        }
+    }
+    if cookie.get("session").and_then(Value::as_bool) == Some(true) {
+        kept.remove("expires");
+    }
+    Value::Object(kept)
+}
+
+fn read_copy(path: &std::path::Path) -> Option<LoginCopy> {
+    serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
+}
+
+fn write_privately(path: &std::path::Path, copy: &LoginCopy) -> Result<(), String> {
+    use std::io::Write;
+    let text = serde_json::to_vec(copy).map_err(|error| error.to_string())?;
+    let draft = path.with_extension("json.new");
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&draft).map_err(|error| error.to_string())?;
+    file.write_all(&text).map_err(|error| error.to_string())?;
+    file.sync_all().map_err(|error| error.to_string())?;
+    std::fs::rename(&draft, path).map_err(|error| error.to_string())
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|since| i64::try_from(since.as_millis()).unwrap_or(i64::MAX))
+        .unwrap_or(0)
 }
 
 fn fetch(install: Arc<std::sync::Mutex<Install>>, downloads: PathBuf) {

@@ -11,6 +11,7 @@ fn browser() -> Arc<Browser> {
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let base = std::env::temp_dir().join(format!("dotori-browser-test-{}-{n}", std::process::id()));
     Browser::new(BrowserConfig {
+        logins: None,
         executable: std::env::var_os("DOTORI_TEST_CHROME").map(PathBuf::from),
         downloads: base.join("chrome"),
         profile: base.join("profile"),
@@ -531,4 +532,77 @@ async fn a_popup_to_a_refused_address_never_loads_it() {
     );
     assert_ne!(at, "http://127.0.0.1:9/secret", "{at}");
     let _ = std::fs::remove_dir_all(&browser.config.profile);
+}
+
+#[tokio::test]
+#[ignore = "starts a real Chrome; set DOTORI_TEST_CHROME or let it download one"]
+async fn logins_from_one_browser_are_taken_when_another_starts() {
+    let base = std::env::temp_dir().join(format!("dotori-logins-real-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let made = |name: &str, logins: Logins| {
+        Browser::new(BrowserConfig {
+            executable: std::env::var_os("DOTORI_TEST_CHROME").map(PathBuf::from),
+            downloads: base.join("chrome"),
+            profile: base.join(name).join("profile"),
+            logins: Some(logins),
+        })
+    };
+    std::fs::create_dir_all(base.join("a")).expect("folder");
+    std::fs::create_dir_all(base.join("b")).expect("folder");
+    let a = made(
+        "a",
+        Logins {
+            out: base.join("a").join("logins-out.json"),
+            into: base.join("a").join("logins-in.json"),
+        },
+    );
+    {
+        let running = a.page().await.expect("a started");
+        running
+            .cdp
+            .send(
+                "Storage.setCookies",
+                json!({ "cookies": [{
+                    "name": "sid", "value": "도토리-login", "domain": "example.com", "path": "/",
+                    "secure": true, "httpOnly": true, "expires": 4_102_444_800_i64
+                }] }),
+                None,
+            )
+            .await
+            .expect("cookie set");
+    }
+    tokio::spawn(Arc::clone(&a).share_logins(|| true));
+    let out = base.join("a").join("logins-out.json");
+    for _ in 0..100 {
+        if out.exists() {
+            break;
+        }
+        time::sleep(Duration::from_millis(100)).await;
+    }
+    let copied = read_copy(&out).expect("a wrote its logins");
+    assert!(copied.cookies.iter().any(|cookie| cookie["name"] == "sid"));
+
+    let into = base.join("b").join("logins-in.json");
+    std::fs::copy(&out, &into).expect("carried");
+    let b = made(
+        "b",
+        Logins {
+            out: base.join("b").join("logins-out.json"),
+            into: into.clone(),
+        },
+    );
+    let running = b.page().await.expect("b started");
+    let cookies = running
+        .cdp
+        .send("Storage.getCookies", json!({}), None)
+        .await
+        .expect("cookies");
+    let sid = cookies["cookies"]
+        .as_array()
+        .and_then(|cookies| cookies.iter().find(|cookie| cookie["name"] == "sid"))
+        .cloned()
+        .expect("b has the login");
+    assert_eq!(sid["value"], "도토리-login");
+    assert_eq!(sid["httpOnly"], true);
+    assert!(!into.exists(), "a copy is taken once");
 }

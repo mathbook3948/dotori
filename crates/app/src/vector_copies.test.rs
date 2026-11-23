@@ -92,10 +92,10 @@ fn an_index_not_made_yet_has_nothing_to_give() {
 fn jobs_are_written_whole() {
     let folder = index("jobs");
     let jobs = folder.with_file_name("jobs.json");
-    write_jobs(&jobs, false);
-    assert_eq!(
-        std::fs::read_to_string(&jobs).expect("read"),
-        r#"{"vectors":false}"#
-    );
+    write_job(&jobs, "vectors", false);
+    write_job(&jobs, "browser", true);
+    let written: Value =
+        serde_json::from_str(&std::fs::read_to_string(&jobs).expect("read")).expect("json");
+    assert_eq!(written, json!({ "browser": true, "vectors": false }));
     assert!(!jobs.with_extension("json.new").exists());
 }
