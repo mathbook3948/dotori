@@ -7,6 +7,7 @@ use std::time::UNIX_EPOCH;
 
 use dotori_connectors::channel::app::APP;
 use dotori_connectors::channel::app::ToWindow;
+use dotori_connectors::channel::slack::OWNER_DIRECT;
 use dotori_core::conversation::Action;
 use dotori_core::conversation::Entry;
 use dotori_core::conversation::ThreadRef;
@@ -16,39 +17,29 @@ use dotori_core::record::Record;
 /// How many of the last lines windows are shown after a start.
 pub(crate) const SHOWN: usize = 200;
 
-const OWNER_ONLY: &str = "@owner";
-
 /// The last `SHOWN` lines a window would have shown for `records`.
 pub(crate) fn lines(records: &[Record]) -> Vec<ToWindow> {
     let mut threads: HashMap<ThreadRef, Address> = HashMap::new();
-    let mut failed: HashMap<(ThreadRef, &str), usize> = HashMap::new();
-    for record in records {
-        match &record.entry {
-            Entry::Heard { thread, message } => {
-                threads.entry(*thread).or_insert(message.address.clone());
-            }
-            Entry::DeliveryFailed { thread, text, .. } => {
-                *failed.entry((*thread, text.as_str())).or_default() += 1;
-            }
-            _ => {}
-        }
-    }
-    let mut lines = Vec::new();
+    let mut lines: Vec<Option<ToWindow>> = Vec::new();
+    let mut said: Vec<(ThreadRef, &str, usize)> = Vec::new();
     for record in records {
         let at = millis(record);
         match &record.entry {
-            Entry::Heard { message, .. } => {
+            Entry::Heard { thread, message } => {
+                threads
+                    .entry(*thread)
+                    .or_insert_with(|| message.address.clone());
                 let text = message.content.as_str().to_owned();
                 if message.address.channel.as_str() == APP {
-                    lines.push(ToWindow::Owner { text, at });
+                    lines.push(Some(ToWindow::Owner { text, at }));
                 } else {
-                    lines.push(ToWindow::Traffic {
+                    lines.push(Some(ToWindow::Traffic {
                         channel: message.address.channel.as_str().to_owned(),
                         place: message.address.place.as_str().to_owned(),
                         who: message.sender.name.clone(),
                         text,
                         at,
-                    });
+                    }));
                 }
             }
             Entry::Acted { actions, .. } => {
@@ -61,38 +52,43 @@ pub(crate) fn lines(records: &[Record]) -> Vec<ToWindow> {
                     else {
                         continue;
                     };
-                    if let Some(left) = failed.get_mut(&(*thread, text.as_str()))
-                        && *left > 0
-                    {
-                        *left -= 1;
-                        continue;
-                    }
                     let Some(address) = threads.get(thread) else {
                         continue;
                     };
+                    said.push((*thread, text.as_str(), lines.len()));
                     if address.channel.as_str() == APP {
-                        lines.push(ToWindow::Reply {
+                        lines.push(Some(ToWindow::Reply {
                             text: text.clone(),
                             at,
-                        });
+                        }));
                     } else {
-                        lines.push(ToWindow::Traffic {
+                        lines.push(Some(ToWindow::Traffic {
                             channel: address.channel.as_str().to_owned(),
                             place: if *privately {
-                                String::from(OWNER_ONLY)
+                                String::from(OWNER_DIRECT)
                             } else {
                                 address.place.as_str().to_owned()
                             },
                             who: String::from("dotori"),
                             text: text.clone(),
                             at,
-                        });
+                        }));
                     }
+                }
+            }
+            Entry::DeliveryFailed { thread, text, .. } => {
+                if let Some(n) = said
+                    .iter()
+                    .rposition(|(to, words, _)| to == thread && *words == text.as_str())
+                {
+                    let (_, _, line) = said.remove(n);
+                    lines[line] = None;
                 }
             }
             _ => {}
         }
     }
+    let mut lines: Vec<ToWindow> = lines.into_iter().flatten().collect();
     let skip = lines.len().saturating_sub(SHOWN);
     lines.split_off(skip)
 }

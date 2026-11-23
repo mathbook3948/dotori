@@ -103,31 +103,53 @@ fn the_window_gets_back_what_was_said_here_and_elsewhere_with_its_time() {
     );
 }
 
-#[test]
-fn a_reply_that_never_went_out_is_left_out_once() {
-    let records = [
-        heard(10, 0, "app", "main", "owner", "안녕"),
-        said(11, &[(0, "같은 말", false)]),
-        said(12, &[(0, "같은 말", false)]),
-        Record {
-            at: at(13),
-            entry: Entry::DeliveryFailed {
-                thread: ThreadRef::new(0),
-                text: String::from("같은 말"),
-                detail: String::from("gone"),
-            },
+fn failed(seconds: u64, thread: u32, text: &str) -> Record {
+    Record {
+        at: at(seconds),
+        entry: Entry::DeliveryFailed {
+            thread: ThreadRef::new(thread),
+            text: text.to_owned(),
+            detail: String::from("gone"),
         },
-        said(14, &[(7, "모르는 곳", false)]),
-    ];
+    }
+}
 
-    let replies: Vec<i64> = lines(&records)
+fn replies(records: &[Record]) -> Vec<i64> {
+    lines(records)
         .into_iter()
         .filter_map(|line| match line {
             ToWindow::Reply { at, .. } => Some(at),
             _ => None,
         })
-        .collect();
-    assert_eq!(replies, [12_000]);
+        .collect()
+}
+
+#[test]
+fn a_reply_that_never_went_out_is_the_last_one_like_it_before_the_failure() {
+    let records = [
+        heard(10, 0, "app", "main", "owner", "안녕"),
+        said(11, &[(0, "ok", false)]),
+        said(12, &[(0, "ok", false)]),
+        failed(13, 0, "ok"),
+        said(14, &[(0, "ok", false)]),
+        said(15, &[(7, "모르는 곳", false)]),
+    ];
+
+    assert_eq!(replies(&records), [11_000, 14_000]);
+}
+
+#[test]
+fn each_failure_takes_out_one_reply() {
+    let records = [
+        heard(10, 0, "app", "main", "owner", "안녕"),
+        said(11, &[(0, "ok", false)]),
+        said(12, &[(0, "ok", false)]),
+        failed(13, 0, "ok"),
+        failed(14, 0, "ok"),
+        failed(15, 0, "ok"),
+    ];
+
+    assert!(replies(&records).is_empty());
 }
 
 #[test]
