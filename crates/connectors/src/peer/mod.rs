@@ -3,6 +3,7 @@
 
 pub mod copies;
 pub mod hub;
+pub mod lease;
 pub mod wire;
 
 use std::fs;

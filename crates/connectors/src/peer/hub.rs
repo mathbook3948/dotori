@@ -161,6 +161,21 @@ impl Hub {
         }
     }
 
+    /// This PC's key, as the others know it.
+    pub fn own(&self) -> &str {
+        &self.own
+    }
+
+    /// The keys of every PC the owner approved, linked now or not.
+    pub fn approved(&self) -> Vec<String> {
+        self.book()
+            .peers
+            .into_iter()
+            .map(|peer| peer.key)
+            .filter(|key| *key != self.own)
+            .collect()
+    }
+
     /// Where this PC listens for the others, if it does.
     pub fn listening(&self) -> Option<SocketAddr> {
         self.listening
