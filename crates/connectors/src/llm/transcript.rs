@@ -4,7 +4,7 @@ use dotori_core::conversation::Action;
 use dotori_core::conversation::Entry;
 use dotori_core::llm::ModelTrace;
 use dotori_core::message::Role;
-use dotori_core::sub_task::SubTaskOutcome;
+use dotori_core::sub_session::SubSessionOutcome;
 use serde_json::value::RawValue;
 
 use crate::llm::reply::DELEGATE;
@@ -253,13 +253,13 @@ fn note(entry: &Entry) -> String {
                 message.content.as_str(),
             )
         }
-        Entry::SubTaskReturned { spec, outcome } => {
+        Entry::SubSessionReturned { spec, outcome } => {
             let (status, text) = match outcome {
-                SubTaskOutcome::Finished(text) => ("finished", text),
-                SubTaskOutcome::Failed(text) => ("failed", text),
+                SubSessionOutcome::Finished(text) => ("finished", text),
+                SubSessionOutcome::Failed(text) => ("failed", text),
             };
             tagged(
-                "sub_task",
+                "sub_session",
                 &[("title", &spec.title), ("status", status)],
                 text,
             )

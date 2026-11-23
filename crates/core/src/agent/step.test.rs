@@ -7,7 +7,7 @@ use crate::id::ExternalMessageId;
 use crate::id::ExternalUserId;
 use crate::message::Content;
 use crate::message::Place;
-use crate::sub_task::SubTaskSpec;
+use crate::sub_session::SubSessionSpec;
 use crate::tool::ToolCall;
 
 struct Harness {
@@ -458,27 +458,27 @@ fn reply_to_an_unknown_thread_is_refused() {
 }
 
 #[test]
-fn sub_task_outcome_joins_the_next_call() {
+fn sub_session_outcome_joins_the_next_call() {
     let mut h = Harness::new();
     h.owner_says("book a table");
-    h.model_answers(vec![Action::Delegate(SubTaskSpec {
+    h.model_answers(vec![Action::Delegate(SubSessionSpec {
         title: String::from("booking"),
         brief: String::from("book a table for two"),
     })]);
-    let sub_task = h
+    let sub_session = h
         .effects
         .iter()
         .find_map(|effect| match effect {
-            Effect::SpawnSubTask { sub_task, .. } => Some(*sub_task),
+            Effect::SpawnSubSession { sub_session, .. } => Some(*sub_session),
             _ => None,
         })
-        .expect("sub-task spawned");
+        .expect("sub-session spawned");
     assert!(h.model_calls().is_empty());
 
     h.owner_says("and remind me at six");
-    h.feed(Event::SubTaskDone {
-        sub_task,
-        outcome: SubTaskOutcome::Finished(String::from("booked")),
+    h.feed(Event::SubSessionDone {
+        sub_session,
+        outcome: SubSessionOutcome::Finished(String::from("booked")),
     });
 
     assert!(h.cancelled().is_empty());
@@ -489,7 +489,7 @@ fn sub_task_outcome_joins_the_next_call() {
     let conversation = h.the_model_call();
     assert!(conversation.iter().any(|entry| matches!(
         entry,
-        Entry::SubTaskReturned { outcome: SubTaskOutcome::Finished(text), .. } if text == "booked"
+        Entry::SubSessionReturned { outcome: SubSessionOutcome::Finished(text), .. } if text == "booked"
     )));
 }
 

@@ -1,7 +1,7 @@
-id: sub-task-spelling
+id: sub-session-spelling
 language: rust
 severity: error
-message: Write `sub_task` or `SubTask`, never `subtask`.
+message: Write `sub_session` or `SubSession`, never `sub_task` or `subsession`.
 files:
   - crates/*/src/**/*.rs
 rule:
@@ -9,7 +9,7 @@ rule:
     - kind: identifier
     - kind: type_identifier
     - kind: field_identifier
-  regex: "[Ss]ubtask"
+  regex: "[Ss]ub_?[Tt]ask|SUB_?TASK|[Ss]ubsession|SUBSESSION"
 ---
 id: error-type-name
 language: rust

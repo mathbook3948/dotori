@@ -187,16 +187,25 @@ fn the_browser_section_names_a_path_and_whether_to_hide_it() {
 }
 
 #[test]
-fn the_sub_task_section_names_a_runner() {
-    let settings = parse("[sub_tasks]\nrunner = \"claude-code\"").expect("parsed");
+fn the_sub_session_section_names_a_runner() {
+    let settings = parse("[sub_sessions]\nrunner = \"claude-code\"").expect("parsed");
     assert_eq!(
-        settings.sub_tasks,
-        Some(SubTaskSettings {
+        settings.sub_sessions,
+        Some(SubSessionSettings {
             runner: Some(RunnerChoice::ClaudeCode),
             path: None,
         })
     );
-    assert!(parse("[sub_tasks]\nrunner = \"cursor\"").is_err());
+    assert!(parse("[sub_sessions]\nrunner = \"cursor\"").is_err());
+}
+
+#[test]
+fn a_file_written_before_the_rename_still_names_the_runner() {
+    let settings = parse("[sub_tasks]\nrunner = \"codex\"").expect("parsed");
+    assert_eq!(
+        settings.sub_sessions.and_then(|chosen| chosen.runner),
+        Some(RunnerChoice::Codex)
+    );
 }
 
 #[test]

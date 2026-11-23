@@ -63,8 +63,8 @@ fn runner(mut replies: Vec<Vec<Action>>, max_turns: usize) -> (LlmRunner, Arc<Sc
     (runner, model)
 }
 
-fn spec() -> SubTaskSpec {
-    SubTaskSpec {
+fn spec() -> SubSessionSpec {
+    SubSessionSpec {
         title: String::from("Look up"),
         brief: String::from("Find the answer."),
     }
@@ -89,7 +89,7 @@ fn say(thread: u32, text: &str) -> Action {
 async fn tools_run_until_the_model_answers_on_the_brief_thread() {
     let (runner, model) = runner(vec![vec![tool("a")], vec![say(0, "42")]], 5);
     let outcome = runner.run(spec()).await;
-    assert!(matches!(outcome, SubTaskOutcome::Finished(text) if text == "42"));
+    assert!(matches!(outcome, SubSessionOutcome::Finished(text) if text == "42"));
     assert_eq!(*model.seen.lock().expect("unpoisoned"), [1, 3]);
 }
 
@@ -98,21 +98,23 @@ async fn an_answer_on_another_thread_or_a_delegation_is_not_a_result() {
     let delegate = Action::Delegate(spec());
     let (runner, _) = runner(vec![vec![say(3, "hi"), delegate]], 5);
     let outcome = runner.run(spec()).await;
-    assert!(matches!(outcome, SubTaskOutcome::Failed(text) if text.contains("without a result")));
+    assert!(
+        matches!(outcome, SubSessionOutcome::Failed(text) if text.contains("without a result"))
+    );
 }
 
 #[tokio::test]
-async fn a_sub_task_stops_after_its_turns_run_out() {
+async fn a_sub_session_stops_after_its_turns_run_out() {
     let (runner, _) = runner(vec![vec![tool("a")], vec![tool("b")]], 2);
     let outcome = runner.run(spec()).await;
-    assert!(matches!(outcome, SubTaskOutcome::Failed(text) if text.contains("2 model turns")));
+    assert!(matches!(outcome, SubSessionOutcome::Failed(text) if text.contains("2 model turns")));
 }
 
 #[tokio::test]
-async fn a_model_failure_fails_the_sub_task() {
+async fn a_model_failure_fails_the_sub_session() {
     let (runner, _) = runner(Vec::new(), 2);
     let outcome = runner.run(spec()).await;
-    assert!(matches!(outcome, SubTaskOutcome::Failed(text) if text.contains("no more replies")));
+    assert!(matches!(outcome, SubSessionOutcome::Failed(text) if text.contains("no more replies")));
 }
 
 #[tokio::test]
@@ -122,5 +124,7 @@ async fn an_answer_given_alongside_tools_is_not_the_final_result() {
         5,
     );
     let outcome = runner.run(spec()).await;
-    assert!(matches!(outcome, SubTaskOutcome::Failed(text) if text.contains("without a result")));
+    assert!(
+        matches!(outcome, SubSessionOutcome::Failed(text) if text.contains("without a result"))
+    );
 }

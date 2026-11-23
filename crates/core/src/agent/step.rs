@@ -4,7 +4,7 @@ use std::mem;
 use crate::agent::effect::Effect;
 use crate::agent::event::Event;
 use crate::agent::ids::CallId;
-use crate::agent::ids::SubTaskId;
+use crate::agent::ids::SubSessionId;
 use crate::agent::ids::ToolRunId;
 use crate::agent::state::AfterReply;
 use crate::agent::state::AgentState;
@@ -25,7 +25,7 @@ use crate::message::Incoming;
 use crate::message::Message;
 use crate::message::Role;
 use crate::message::Sender;
-use crate::sub_task::SubTaskOutcome;
+use crate::sub_session::SubSessionOutcome;
 use crate::tool::ToolCallId;
 use crate::tool::ToolError;
 
@@ -36,7 +36,10 @@ pub(crate) fn step(state: &mut AgentState, event: Event) -> Vec<Effect> {
         Event::Received { channel, incoming } => on_received(state, channel, incoming),
         Event::ModelDone { call, result } => on_model_done(state, call, result),
         Event::ToolDone { run, result } => on_tool_done(state, run, result),
-        Event::SubTaskDone { sub_task, outcome } => on_sub_task_done(state, sub_task, outcome),
+        Event::SubSessionDone {
+            sub_session,
+            outcome,
+        } => on_sub_session_done(state, sub_session, outcome),
         Event::DeliveryDone {
             thread,
             text,
@@ -161,17 +164,17 @@ fn on_tool_done(
     }
 }
 
-fn on_sub_task_done(
+fn on_sub_session_done(
     state: &mut AgentState,
-    sub_task: SubTaskId,
-    outcome: SubTaskOutcome,
+    sub_session: SubSessionId,
+    outcome: SubSessionOutcome,
 ) -> Vec<Effect> {
-    let Some(spec) = state.sub_tasks.remove(&sub_task) else {
+    let Some(spec) = state.sub_sessions.remove(&sub_session) else {
         return Vec::new();
     };
     state
         .conversation
-        .push(Entry::SubTaskReturned { spec, outcome });
+        .push(Entry::SubSessionReturned { spec, outcome });
     absorb(state, Arrival::Joins)
 }
 
@@ -275,9 +278,9 @@ fn run_actions(
                 effects.push(Effect::RunTool { run, call });
             }
             Action::Delegate(spec) => {
-                let sub_task = state.ids.next_sub_task();
-                state.sub_tasks.insert(sub_task, spec.clone());
-                effects.push(Effect::SpawnSubTask { sub_task, spec });
+                let sub_session = state.ids.next_sub_session();
+                state.sub_sessions.insert(sub_session, spec.clone());
+                effects.push(Effect::SpawnSubSession { sub_session, spec });
             }
         }
     }

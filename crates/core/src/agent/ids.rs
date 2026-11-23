@@ -5,7 +5,7 @@ pub(crate) struct CallId(u64);
 pub(crate) struct ToolRunId(u64);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct SubTaskId(u64);
+pub(crate) struct SubSessionId(u64);
 
 /// The only source of internal ids. Lives in agent state, so ids follow queue order.
 #[derive(Debug, Default)]
@@ -22,8 +22,8 @@ impl Ids {
         ToolRunId(self.bump())
     }
 
-    pub(crate) fn next_sub_task(&mut self) -> SubTaskId {
-        SubTaskId(self.bump())
+    pub(crate) fn next_sub_session(&mut self) -> SubSessionId {
+        SubSessionId(self.bump())
     }
 
     fn bump(&mut self) -> u64 {

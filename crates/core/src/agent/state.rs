@@ -5,7 +5,7 @@ use std::num::NonZeroUsize;
 
 use crate::agent::ids::CallId;
 use crate::agent::ids::Ids;
-use crate::agent::ids::SubTaskId;
+use crate::agent::ids::SubSessionId;
 use crate::agent::ids::ToolRunId;
 use crate::agent::roster::Roster;
 use crate::agent::threads::Threads;
@@ -13,8 +13,8 @@ use crate::conversation::Action;
 use crate::conversation::Entry;
 use crate::id::ChannelId;
 use crate::id::ExternalMessageId;
-use crate::sub_task::SubTaskOutcome;
-use crate::sub_task::SubTaskSpec;
+use crate::sub_session::SubSessionOutcome;
+use crate::sub_session::SubSessionSpec;
 use crate::tool::ToolCallId;
 use crate::tool::ToolError;
 
@@ -24,7 +24,7 @@ pub(crate) struct AgentState {
     pub(crate) phase: Phase,
     pub(crate) roster: Roster,
     pub(crate) threads: Threads,
-    pub(crate) sub_tasks: HashMap<SubTaskId, SubTaskSpec>,
+    pub(crate) sub_sessions: HashMap<SubSessionId, SubSessionSpec>,
     pub(crate) seen: Seen,
     pub(crate) ids: Ids,
 }
@@ -61,7 +61,7 @@ impl AgentState {
                     }
                 }
                 Entry::ToolReturned { call, .. } => tools.retain(|running| running != call),
-                Entry::SubTaskReturned { spec, .. } => {
+                Entry::SubSessionReturned { spec, .. } => {
                     if let Some(index) = delegated.iter().position(|running| running == spec) {
                         delegated.remove(index);
                     }
@@ -80,9 +80,9 @@ impl AgentState {
             });
         }
         for spec in delegated {
-            state.conversation.push(Entry::SubTaskReturned {
+            state.conversation.push(Entry::SubSessionReturned {
                 spec,
-                outcome: SubTaskOutcome::Failed(stopped.clone()),
+                outcome: SubSessionOutcome::Failed(stopped.clone()),
             });
         }
         state
@@ -94,7 +94,7 @@ impl AgentState {
             phase: Phase::Idle,
             roster,
             threads: Threads::default(),
-            sub_tasks: HashMap::new(),
+            sub_sessions: HashMap::new(),
             seen: Seen::new(seen_capacity),
             ids: Ids::default(),
         }

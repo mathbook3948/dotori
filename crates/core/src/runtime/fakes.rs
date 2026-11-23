@@ -28,9 +28,9 @@ use crate::record::Record;
 use crate::record::RecordError;
 use crate::record::RecordStore;
 use crate::runtime::Ports;
-use crate::sub_task::SubTaskOutcome;
-use crate::sub_task::SubTaskRunner;
-use crate::sub_task::SubTaskSpec;
+use crate::sub_session::SubSessionOutcome;
+use crate::sub_session::SubSessionRunner;
+use crate::sub_session::SubSessionSpec;
 use crate::tool::ToolCall;
 use crate::tool::ToolError;
 use crate::tool::ToolSpec;
@@ -167,12 +167,12 @@ impl Toolbox for FnToolbox {
     }
 }
 
-pub(crate) struct FnSubTasks(
-    pub(crate) Box<dyn Fn(SubTaskSpec) -> Reply<SubTaskOutcome> + Send + Sync>,
+pub(crate) struct FnSubSessions(
+    pub(crate) Box<dyn Fn(SubSessionSpec) -> Reply<SubSessionOutcome> + Send + Sync>,
 );
 
-impl SubTaskRunner for FnSubTasks {
-    fn run(&self, spec: SubTaskSpec) -> BoxFuture<'_, SubTaskOutcome> {
+impl SubSessionRunner for FnSubSessions {
+    fn run(&self, spec: SubSessionSpec) -> BoxFuture<'_, SubSessionOutcome> {
         (self.0)(spec)
     }
 }
@@ -185,8 +185,8 @@ pub(crate) fn idle_toolbox() -> Arc<dyn Toolbox> {
     Arc::new(FnToolbox(Box::new(|_| Box::pin(future::pending()))))
 }
 
-pub(crate) fn idle_sub_tasks() -> Arc<dyn SubTaskRunner> {
-    Arc::new(FnSubTasks(Box::new(|_| Box::pin(future::pending()))))
+pub(crate) fn idle_sub_sessions() -> Arc<dyn SubSessionRunner> {
+    Arc::new(FnSubSessions(Box::new(|_| Box::pin(future::pending()))))
 }
 
 pub(crate) fn ports(app: Arc<FakeChannel>, channels: Vec<Arc<dyn Channel>>) -> Ports {
@@ -195,7 +195,7 @@ pub(crate) fn ports(app: Arc<FakeChannel>, channels: Vec<Arc<dyn Channel>>) -> P
         channels,
         model: idle_model(),
         toolbox: idle_toolbox(),
-        sub_tasks: idle_sub_tasks(),
+        sub_sessions: idle_sub_sessions(),
         records: Arc::new(MemoryStore::default()),
     }
 }

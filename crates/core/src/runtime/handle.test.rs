@@ -34,15 +34,15 @@ use crate::record::Record;
 use crate::runtime::fakes::FakeChannel;
 use crate::runtime::fakes::FakeChannelProbe;
 use crate::runtime::fakes::FnModel;
-use crate::runtime::fakes::FnSubTasks;
+use crate::runtime::fakes::FnSubSessions;
 use crate::runtime::fakes::FnToolbox;
 use crate::runtime::fakes::MemoryStore;
 use crate::runtime::fakes::channel_id;
 use crate::runtime::fakes::incoming;
 use crate::runtime::fakes::next;
 use crate::runtime::fakes::ports;
-use crate::sub_task::SubTaskOutcome;
-use crate::sub_task::SubTaskSpec;
+use crate::sub_session::SubSessionOutcome;
+use crate::sub_session::SubSessionSpec;
 use crate::tool::ToolCall;
 use crate::tool::ToolCallId;
 use crate::tool::ToolError;
@@ -111,9 +111,9 @@ fn tool_result(request: &ModelRequest) -> Option<Result<String, ToolError>> {
     })
 }
 
-fn sub_task_outcome(request: &ModelRequest) -> Option<SubTaskOutcome> {
+fn sub_session_outcome(request: &ModelRequest) -> Option<SubSessionOutcome> {
     request.conversation.iter().find_map(|entry| match entry {
-        Entry::SubTaskReturned { outcome, .. } => Some(outcome.clone()),
+        Entry::SubSessionReturned { outcome, .. } => Some(outcome.clone()),
         _ => None,
     })
 }
@@ -302,25 +302,25 @@ fn model_panicking_before_it_starts_does_not_stop_the_agent() {
 }
 
 #[test]
-fn panicking_sub_task_is_reported_as_failed() {
+fn panicking_sub_session_is_reported_as_failed() {
     block_on(async {
         let (app, probe) = FakeChannel::new("app");
         let (outcome_tx, mut outcome) = mpsc::unbounded_channel();
         let mut ports = ports(app, Vec::new());
-        ports.model = Arc::new(model(move |request| match sub_task_outcome(&request) {
+        ports.model = Arc::new(model(move |request| match sub_session_outcome(&request) {
             Some(result) => {
                 let _ = outcome_tx.send(result);
                 silence()
             }
             None => ModelReply {
-                actions: vec![Action::Delegate(SubTaskSpec {
+                actions: vec![Action::Delegate(SubSessionSpec {
                     title: String::from("research"),
                     brief: String::from("look into it"),
                 })],
                 trace: None,
             },
         }));
-        ports.sub_tasks = Arc::new(FnSubTasks(Box::new(|_| panic!("runner crashed"))));
+        ports.sub_sessions = Arc::new(FnSubSessions(Box::new(|_| panic!("runner crashed"))));
         let agent = Agent::spawn(config(Duration::from_secs(1)), ports)
             .await
             .expect("valid");
@@ -328,10 +328,10 @@ fn panicking_sub_task_is_reported_as_failed() {
         owner_says(&probe, "m1", "research this");
 
         match next(&mut outcome).await {
-            SubTaskOutcome::Failed(detail) => {
+            SubSessionOutcome::Failed(detail) => {
                 assert!(detail.contains("runner crashed"), "{detail}")
             }
-            SubTaskOutcome::Finished(text) => panic!("expected a failure, got {text}"),
+            SubSessionOutcome::Finished(text) => panic!("expected a failure, got {text}"),
         }
         agent.shutdown().await;
     });
@@ -382,7 +382,7 @@ fn interrupted_model_call_is_dropped() {
 }
 
 #[test]
-fn shutdown_returns_while_a_model_call_and_a_sub_task_hang() {
+fn shutdown_returns_while_a_model_call_and_a_sub_session_hang() {
     block_on(async {
         let (app, probe) = FakeChannel::new("app");
         let (started_tx, mut started) = mpsc::unbounded_channel();
@@ -396,7 +396,7 @@ fn shutdown_returns_while_a_model_call_and_a_sub_task_hang() {
             }
             Box::pin(async {
                 Ok(ModelReply {
-                    actions: vec![Action::Delegate(SubTaskSpec {
+                    actions: vec![Action::Delegate(SubSessionSpec {
                         title: String::from("research"),
                         brief: String::from("look into it"),
                     })],
@@ -405,8 +405,8 @@ fn shutdown_returns_while_a_model_call_and_a_sub_task_hang() {
             })
         });
         ports.model = Arc::new(FnModel(answer));
-        ports.sub_tasks = Arc::new(FnSubTasks(Box::new(move |_| {
-            let _ = started_tx.send("sub-task");
+        ports.sub_sessions = Arc::new(FnSubSessions(Box::new(move |_| {
+            let _ = started_tx.send("sub-session");
             Box::pin(future::pending())
         })));
         let agent = Agent::spawn(config(Duration::from_secs(1)), ports)
@@ -414,7 +414,7 @@ fn shutdown_returns_while_a_model_call_and_a_sub_task_hang() {
             .expect("valid");
 
         owner_says(&probe, "m1", "research this");
-        assert_eq!(next(&mut started).await, "sub-task");
+        assert_eq!(next(&mut started).await, "sub-session");
         owner_says(&probe, "m2", "and that");
         assert_eq!(next(&mut started).await, "model");
 
@@ -728,7 +728,7 @@ fn record(entry: Entry) -> Record {
 #[test]
 fn work_cut_off_by_a_restart_is_reported_as_stopped() {
     block_on(async {
-        let research = SubTaskSpec {
+        let research = SubSessionSpec {
             title: String::from("research"),
             brief: String::from("look into it"),
         };
@@ -775,9 +775,11 @@ fn work_cut_off_by_a_restart_is_reported_as_stopped() {
             .expect("tool result")
             .expect_err("stopped");
         assert!(error.detail.contains("restart"), "{}", error.detail);
-        match sub_task_outcome(&request) {
-            Some(SubTaskOutcome::Failed(detail)) => assert!(detail.contains("restart"), "{detail}"),
-            other => panic!("expected a stopped sub-task, got {other:?}"),
+        match sub_session_outcome(&request) {
+            Some(SubSessionOutcome::Failed(detail)) => {
+                assert!(detail.contains("restart"), "{detail}")
+            }
+            other => panic!("expected a stopped sub-session, got {other:?}"),
         }
         agent.shutdown().await;
         assert!(

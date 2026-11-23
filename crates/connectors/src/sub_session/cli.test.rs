@@ -51,11 +51,11 @@ fn no_server_means_no_server_arguments() {
 #[test]
 fn claude_output_becomes_an_outcome() {
     let finished = claude_result(r#"{"type":"result","is_error":false,"result":" done "}"#);
-    assert!(matches!(finished, SubTaskOutcome::Finished(text) if text == "done"));
+    assert!(matches!(finished, SubSessionOutcome::Finished(text) if text == "done"));
     let failed = claude_result(r#"{"type":"result","is_error":true,"result":"out of credit"}"#);
-    assert!(matches!(failed, SubTaskOutcome::Failed(text) if text.contains("out of credit")));
+    assert!(matches!(failed, SubSessionOutcome::Failed(text) if text.contains("out of credit")));
     let garbled = claude_result("not json");
-    assert!(matches!(garbled, SubTaskOutcome::Failed(text) if text.contains("not json")));
+    assert!(matches!(garbled, SubSessionOutcome::Failed(text) if text.contains("not json")));
 }
 
 #[test]
@@ -94,18 +94,18 @@ async fn a_run_returns_the_agent_answer_and_its_failures() {
         mcp: Some(Arc::new(Fixed)),
         limit: Duration::from_secs(10),
     };
-    let spec = |title: &str| SubTaskSpec {
+    let spec = |title: &str| SubSessionSpec {
         title: String::from(title),
         brief: String::from("Do it."),
     };
     let done = runner.run(spec("hi")).await;
     assert!(
-        matches!(&done, SubTaskOutcome::Finished(text) if text == "# hi from secret"),
+        matches!(&done, SubSessionOutcome::Finished(text) if text == "# hi from secret"),
         "{done:?}"
     );
     let failed = runner.run(spec("fail")).await;
     assert!(
-        matches!(&failed, SubTaskOutcome::Failed(text) if text.contains("broken")),
+        matches!(&failed, SubSessionOutcome::Failed(text) if text.contains("broken")),
         "{failed:?}"
     );
     let _ = std::fs::remove_dir_all(&folder);
@@ -136,13 +136,13 @@ async fn a_run_past_its_limit_ends_with_everything_it_started() {
         limit: Duration::from_secs(1),
     };
     let outcome = runner
-        .run(SubTaskSpec {
+        .run(SubSessionSpec {
             title: String::from("slow"),
             brief: String::from("Wait."),
         })
         .await;
     assert!(
-        matches!(&outcome, SubTaskOutcome::Failed(text) if text.contains("did not finish")),
+        matches!(&outcome, SubSessionOutcome::Failed(text) if text.contains("did not finish")),
         "{outcome:?}"
     );
     let child = std::fs::read_to_string(&marker).expect("the child started");
@@ -171,13 +171,13 @@ async fn a_server_that_is_down_fails_the_run_before_it_starts() {
         limit: Duration::from_secs(1),
     };
     let outcome = runner
-        .run(SubTaskSpec {
+        .run(SubSessionSpec {
             title: String::from("t"),
             brief: String::from("b"),
         })
         .await;
     assert!(
-        matches!(&outcome, SubTaskOutcome::Failed(text) if text.contains("it crashed")),
+        matches!(&outcome, SubSessionOutcome::Failed(text) if text.contains("it crashed")),
         "{outcome:?}"
     );
 }

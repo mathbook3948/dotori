@@ -7,8 +7,8 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
-use dotori_connectors::sub_task::cli::McpAddress;
-use dotori_connectors::sub_task::cli::McpServer;
+use dotori_connectors::sub_session::cli::McpAddress;
+use dotori_connectors::sub_session::cli::McpServer;
 use dotori_connectors::tool::mcp::McpTools;
 use dotori_core::BoxFuture;
 use dotori_core::tool::ToolCall;

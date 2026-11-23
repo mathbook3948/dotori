@@ -1,11 +1,11 @@
 use crate::agent::ids::CallId;
-use crate::agent::ids::SubTaskId;
+use crate::agent::ids::SubSessionId;
 use crate::agent::ids::ToolRunId;
 use crate::channel::Traffic;
 use crate::conversation::Entry;
 use crate::conversation::ThreadRef;
 use crate::message::Address;
-use crate::sub_task::SubTaskSpec;
+use crate::sub_session::SubSessionSpec;
 use crate::tool::ToolCall;
 
 /// The closed set of things the agent asks the world to do.
@@ -27,9 +27,9 @@ pub(crate) enum Effect {
         run: ToolRunId,
         call: ToolCall,
     },
-    SpawnSubTask {
-        sub_task: SubTaskId,
-        spec: SubTaskSpec,
+    SpawnSubSession {
+        sub_session: SubSessionId,
+        spec: SubSessionSpec,
     },
     Stop,
 }

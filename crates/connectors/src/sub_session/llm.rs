@@ -1,4 +1,4 @@
-//! The runner that works a sub-task in dotori's own loop, with the same tools as the main
+//! The runner that works a sub-session in dotori's own loop, with the same tools as the main
 //! conversation.
 
 use std::sync::Arc;
@@ -19,19 +19,19 @@ use dotori_core::message::Message;
 use dotori_core::message::Place;
 use dotori_core::message::Role;
 use dotori_core::message::Sender;
-use dotori_core::sub_task::SubTaskOutcome;
-use dotori_core::sub_task::SubTaskRunner;
-use dotori_core::sub_task::SubTaskSpec;
+use dotori_core::sub_session::SubSessionOutcome;
+use dotori_core::sub_session::SubSessionRunner;
+use dotori_core::sub_session::SubSessionSpec;
 use dotori_core::tool::ToolError;
 use dotori_core::tool::Toolbox;
 use tokio::time;
 
-/// What the model of an LLM sub-task is told, to be appended to its system prompt.
-pub const LLM_SUB_TASK_SYSTEM: &str = "\
+/// What the model of an LLM sub-session is told, to be appended to its system prompt.
+pub const LLM_SUB_SESSION_SYSTEM: &str = "\
 Your brief arrives as a message on thread 0. Call `say` on thread 0 with your whole result when you are done.
 Do not use `delegate`.";
 
-/// Runs each sub-task as its own conversation with the model, until the model answers on the
+/// Runs each sub-session as its own conversation with the model, until the model answers on the
 /// brief's thread and calls no more tools.
 pub struct LlmRunner {
     pub model: Arc<dyn Model>,
@@ -49,14 +49,14 @@ impl std::fmt::Debug for LlmRunner {
 }
 
 impl LlmRunner {
-    async fn work(&self, spec: SubTaskSpec) -> SubTaskOutcome {
+    async fn work(&self, spec: SubSessionSpec) -> SubSessionOutcome {
         let content = match Content::parse(spec.brief.clone()) {
             Ok(content) => content,
-            Err(error) => return SubTaskOutcome::Failed(error.to_string()),
+            Err(error) => return SubSessionOutcome::Failed(error.to_string()),
         };
-        let channel = match ChannelId::parse("sub-task") {
+        let channel = match ChannelId::parse("sub-session") {
             Ok(channel) => channel,
-            Err(error) => return SubTaskOutcome::Failed(error.to_string()),
+            Err(error) => return SubSessionOutcome::Failed(error.to_string()),
         };
         let mut conversation = vec![Entry::Heard {
             thread: brief_thread(),
@@ -82,7 +82,7 @@ impl LlmRunner {
             };
             let reply = match self.model.complete(request).await {
                 Ok(reply) => reply,
-                Err(error) => return SubTaskOutcome::Failed(error.to_string()),
+                Err(error) => return SubSessionOutcome::Failed(error.to_string()),
             };
             let answered = conversation.len();
             let actions = reply.actions.clone();
@@ -116,15 +116,15 @@ impl LlmRunner {
             }
             if !used_tools {
                 return match result {
-                    Some(text) => SubTaskOutcome::Finished(text),
-                    None => {
-                        SubTaskOutcome::Failed(String::from("the sub-task ended without a result"))
-                    }
+                    Some(text) => SubSessionOutcome::Finished(text),
+                    None => SubSessionOutcome::Failed(String::from(
+                        "the sub-session ended without a result",
+                    )),
                 };
             }
         }
-        SubTaskOutcome::Failed(format!(
-            "the sub-task did not finish in {} model turns",
+        SubSessionOutcome::Failed(format!(
+            "the sub-session did not finish in {} model turns",
             self.max_turns
         ))
     }
@@ -134,8 +134,8 @@ fn brief_thread() -> ThreadRef {
     ThreadRef::new(0)
 }
 
-impl SubTaskRunner for LlmRunner {
-    fn run(&self, spec: SubTaskSpec) -> BoxFuture<'_, SubTaskOutcome> {
+impl SubSessionRunner for LlmRunner {
+    fn run(&self, spec: SubSessionSpec) -> BoxFuture<'_, SubSessionOutcome> {
         Box::pin(self.work(spec))
     }
 }

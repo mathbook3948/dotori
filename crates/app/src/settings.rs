@@ -12,8 +12,8 @@ use dotori_connectors::llm::anthropic::Anthropic;
 use dotori_connectors::llm::anthropic::AnthropicConfig;
 use dotori_connectors::llm::openai::OpenAi;
 use dotori_connectors::llm::openai::OpenAiConfig;
-use dotori_connectors::sub_task::SUB_TASK_SYSTEM;
-use dotori_connectors::sub_task::llm::LLM_SUB_TASK_SYSTEM;
+use dotori_connectors::sub_session::SUB_SESSION_SYSTEM;
+use dotori_connectors::sub_session::llm::LLM_SUB_SESSION_SYSTEM;
 use dotori_core::channel::Channel;
 use dotori_core::id::ChannelUser;
 use dotori_core::id::ExternalUserId;
@@ -39,8 +39,8 @@ pub(crate) struct Settings {
     pub(crate) slack: Option<SlackSettings>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) browser: Option<BrowserSettings>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) sub_tasks: Option<SubTaskSettings>,
+    #[serde(default, alias = "sub_tasks", skip_serializing_if = "Option::is_none")]
+    pub(crate) sub_sessions: Option<SubSessionSettings>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) memory: Option<MemorySettings>,
 }
@@ -66,11 +66,11 @@ pub(crate) struct EmbeddingSettings {
     pub(crate) dimensions: Option<u32>,
 }
 
-/// What runs sub-tasks. Without a runner the main conversation's model runs them in dotori's
+/// What runs sub-sessions. Without a runner the main session's model runs them in dotori's
 /// loop. Without a path a coding agent is found through `PATH`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct SubTaskSettings {
+pub(crate) struct SubSessionSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) runner: Option<RunnerChoice>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -151,10 +151,6 @@ impl Default for ModelSettings {
 
 /// What the settings window holds, each field already trimmed. A blank field means the default.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-#[cfg_attr(
-    all(not(feature = "window"), not(test)),
-    expect(dead_code, reason = "only the settings window reads a form")
-)]
 pub(crate) struct Form {
     pub(crate) openai_compatible: bool,
     pub(crate) model: Option<String>,
@@ -163,10 +159,6 @@ pub(crate) struct Form {
     pub(crate) effort: Option<String>,
 }
 
-#[cfg_attr(
-    all(not(feature = "window"), not(test)),
-    expect(dead_code, reason = "only the settings window reads a form")
-)]
 impl Form {
     pub(crate) fn of(settings: &ModelSettings) -> Self {
         match settings.clone() {
@@ -236,17 +228,13 @@ impl Settings {
         }
     }
 
-    #[cfg_attr(
-        all(not(feature = "window"), not(test)),
-        expect(dead_code, reason = "only the settings window writes settings")
-    )]
     /// Writes the whole file anew. A file left half written by a crash is never read.
     pub(crate) fn save(&self, path: &Path) -> Result<(), String> {
         let text = toml::to_string(self).map_err(|error| error.to_string())?;
         replace(path, text.as_bytes(), OpenOptions::new())
     }
 
-    /// Builds the main conversation's model, reading keys through `key`.
+    /// Builds the main session's model, reading keys through `key`.
     pub(crate) fn model(
         &self,
         key: impl Fn(&str) -> Option<String>,
@@ -254,13 +242,13 @@ impl Settings {
         self.model_told(None, key)
     }
 
-    /// Builds the model that runs sub-tasks in dotori's loop, told about the sub-task.
-    pub(crate) fn sub_task_model(
+    /// Builds the model that runs sub-sessions in dotori's loop, told about the sub-session.
+    pub(crate) fn sub_session_model(
         &self,
         key: impl Fn(&str) -> Option<String>,
     ) -> Result<Arc<dyn Model>, String> {
         self.model_told(
-            Some(format!("{SUB_TASK_SYSTEM}\n{LLM_SUB_TASK_SYSTEM}")),
+            Some(format!("{SUB_SESSION_SYSTEM}\n{LLM_SUB_SESSION_SYSTEM}")),
             key,
         )
     }

@@ -62,7 +62,7 @@ impl fmt::Debug for OpenAiConfig {
     }
 }
 
-/// The main conversation's model on an OpenAI-compatible server.
+/// The main session's model on an OpenAI-compatible server.
 #[derive(Debug)]
 pub struct OpenAi {
     config: OpenAiConfig,

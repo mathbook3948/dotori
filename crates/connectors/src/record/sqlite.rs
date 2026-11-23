@@ -9,7 +9,7 @@ use dotori_core::message::Role;
 use dotori_core::record::Record;
 use dotori_core::record::RecordError;
 use dotori_core::record::RecordStore;
-use dotori_core::sub_task::SubTaskOutcome;
+use dotori_core::sub_session::SubSessionOutcome;
 use rusqlite::Connection;
 use rusqlite::params;
 
@@ -228,10 +228,10 @@ impl Columns {
                 kind: "tool_returned",
                 ..Self::default()
             },
-            Entry::SubTaskReturned { spec, outcome } => Self {
+            Entry::SubSessionReturned { spec, outcome } => Self {
                 kind: "sub_task_returned",
                 text: Some(match outcome {
-                    SubTaskOutcome::Finished(text) | SubTaskOutcome::Failed(text) => {
+                    SubSessionOutcome::Finished(text) | SubSessionOutcome::Failed(text) => {
                         format!("{}\n{text}", spec.title)
                     }
                 }),

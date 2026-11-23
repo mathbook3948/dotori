@@ -15,8 +15,8 @@ use dotori_core::message::Place;
 use dotori_core::message::Role;
 use dotori_core::message::Sender;
 use dotori_core::record::Record;
-use dotori_core::sub_task::SubTaskOutcome;
-use dotori_core::sub_task::SubTaskSpec;
+use dotori_core::sub_session::SubSessionOutcome;
+use dotori_core::sub_session::SubSessionSpec;
 use dotori_core::tool::ToolCall;
 use dotori_core::tool::ToolCallId;
 use dotori_core::tool::ToolError;
@@ -46,7 +46,8 @@ enum EntryForm {
         call: String,
         result: OutcomeForm,
     },
-    SubTaskReturned {
+    #[serde(rename = "sub_task_returned")]
+    SubSessionReturned {
         spec: SpecForm,
         result: OutcomeForm,
     },
@@ -170,11 +171,11 @@ fn entry_form(entry: &Entry) -> EntryForm {
                 Err(error) => OutcomeForm::Failed(error.detail.clone()),
             },
         },
-        Entry::SubTaskReturned { spec, outcome } => EntryForm::SubTaskReturned {
+        Entry::SubSessionReturned { spec, outcome } => EntryForm::SubSessionReturned {
             spec: spec_form(spec),
             result: match outcome {
-                SubTaskOutcome::Finished(text) => OutcomeForm::Ok(text.clone()),
-                SubTaskOutcome::Failed(text) => OutcomeForm::Failed(text.clone()),
+                SubSessionOutcome::Finished(text) => OutcomeForm::Ok(text.clone()),
+                SubSessionOutcome::Failed(text) => OutcomeForm::Failed(text.clone()),
             },
         },
         Entry::Refused(action) => EntryForm::Refused {
@@ -214,7 +215,7 @@ fn action_form(action: &Action) -> ActionForm {
     }
 }
 
-fn spec_form(spec: &SubTaskSpec) -> SpecForm {
+fn spec_form(spec: &SubSessionSpec) -> SpecForm {
     SpecForm {
         title: spec.title.clone(),
         brief: spec.brief.clone(),
@@ -262,11 +263,11 @@ fn entry(form: EntryForm) -> Result<Entry, String> {
                 OutcomeForm::Failed(detail) => Err(ToolError { detail }),
             },
         },
-        EntryForm::SubTaskReturned { spec, result } => Entry::SubTaskReturned {
+        EntryForm::SubSessionReturned { spec, result } => Entry::SubSessionReturned {
             spec: spec_of(spec),
             outcome: match result {
-                OutcomeForm::Ok(text) => SubTaskOutcome::Finished(text),
-                OutcomeForm::Failed(text) => SubTaskOutcome::Failed(text),
+                OutcomeForm::Ok(text) => SubSessionOutcome::Finished(text),
+                OutcomeForm::Failed(text) => SubSessionOutcome::Failed(text),
             },
         },
         EntryForm::Refused { action: form } => Entry::Refused(action(form)),
@@ -305,8 +306,8 @@ fn action(form: ActionForm) -> Action {
     }
 }
 
-fn spec_of(form: SpecForm) -> SubTaskSpec {
-    SubTaskSpec {
+fn spec_of(form: SpecForm) -> SubSessionSpec {
+    SubSessionSpec {
         title: form.title,
         brief: form.brief,
     }

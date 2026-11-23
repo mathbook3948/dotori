@@ -1,8 +1,8 @@
 use crate::id::ChannelId;
 use crate::llm::ModelTrace;
 use crate::message::Message;
-use crate::sub_task::SubTaskOutcome;
-use crate::sub_task::SubTaskSpec;
+use crate::sub_session::SubSessionOutcome;
+use crate::sub_session::SubSessionSpec;
 use crate::tool::ToolCall;
 use crate::tool::ToolCallId;
 use crate::tool::ToolError;
@@ -24,7 +24,7 @@ impl ThreadRef {
     }
 }
 
-/// One line of the main conversation, in arrival order. The model reads this.
+/// One line of the main session, in arrival order. The model reads this.
 #[derive(Clone, Debug)]
 pub enum Entry {
     Heard {
@@ -43,9 +43,9 @@ pub enum Entry {
         call: ToolCallId,
         result: Result<String, ToolError>,
     },
-    SubTaskReturned {
-        spec: SubTaskSpec,
-        outcome: SubTaskOutcome,
+    SubSessionReturned {
+        spec: SubSessionSpec,
+        outcome: SubSessionOutcome,
     },
     /// An action core could not carry out, such as a reply to a thread it never heard from.
     Refused(Action),
@@ -67,5 +67,5 @@ pub enum Entry {
 pub enum Action {
     Say { thread: ThreadRef, text: String },
     UseTool(ToolCall),
-    Delegate(SubTaskSpec),
+    Delegate(SubSessionSpec),
 }
