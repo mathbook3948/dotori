@@ -1,6 +1,10 @@
+use std::time::Duration;
+
 use dotori_connectors::channel::app::ToWindow;
+use gpui::AnyElement;
 use gpui::App;
 use gpui::ClickEvent;
+use gpui::ClipboardItem;
 use gpui::Context;
 use gpui::Entity;
 use gpui::FocusHandle;
@@ -15,6 +19,7 @@ use gpui::div;
 use gpui::prelude::*;
 use gpui::px;
 use gpui::relative;
+use jiff::tz::TimeZone;
 use tokio::sync::mpsc;
 
 use crate::link::Link;
@@ -28,6 +33,11 @@ use crate::window::parts::prose;
 use crate::window::parts::status;
 use crate::window::screen::ScreenView;
 use crate::window::theme::Theme;
+use crate::window::when::Mark;
+use crate::window::when::marks;
+use crate::window::when::today;
+
+const COPIED_FOR: Duration = Duration::from_millis(1500);
 
 /// The chat window: the conversation with dotori and the traffic of every other channel.
 pub(crate) struct ChatView {
@@ -40,6 +50,9 @@ pub(crate) struct ChatView {
     input: Entity<TextInput>,
     say: mpsc::UnboundedSender<String>,
     scroll: ScrollHandle,
+    zone: TimeZone,
+    copied: Option<usize>,
+    _uncopy: Option<Task<()>>,
     _pump: Task<()>,
 }
 
@@ -78,9 +91,12 @@ impl ChatView {
             link: LinkState::Connecting,
             answering: None,
             browser_at: None,
-            input: cx.new(|cx| TextInput::new("dotori에게 말하기", cx)),
+            input: cx.new(|cx| TextInput::multiline("dotori에게 말하기", cx)),
             say,
             scroll: ScrollHandle::new(),
+            zone: TimeZone::system(),
+            copied: None,
+            _uncopy: None,
             _pump: pump,
         }
     }
@@ -89,12 +105,17 @@ impl ChatView {
         match update {
             Update::Connected => {
                 self.lines.clear();
+                self.copied = None;
                 self.answering = None;
                 self.browser_at = None;
                 self.link = LinkState::Connected;
             }
             Update::Event(ToWindow::Answering { pc, here }) => {
                 self.answering = Some((pc, here));
+                return;
+            }
+            Update::Event(ToWindow::Alone) => {
+                self.answering = None;
                 return;
             }
             Update::Event(ToWindow::BrowserAt { pc, here }) => {
@@ -125,6 +146,203 @@ impl ChatView {
         if let Some(text) = text {
             let _ = self.say.send(text);
         }
+    }
+
+    fn copy(&mut self, n: usize, text: String, cx: &mut Context<Self>) {
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
+        self.copied = Some(n);
+        self._uncopy = Some(cx.spawn(async move |view, cx| {
+            cx.background_executor().timer(COPIED_FOR).await;
+            let _ = view.update(cx, |view, cx| {
+                if view.copied == Some(n) {
+                    view.copied = None;
+                    cx.notify();
+                }
+            });
+        }));
+        cx.notify();
+    }
+
+    fn conversation(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        if self.lines.is_empty() && matches!(self.link, LinkState::Connected) {
+            return empty(theme).into_any_element();
+        }
+        let marks = marks(&self.lines, &self.zone, today(&self.zone));
+        let mut rows = Vec::with_capacity(self.lines.len());
+        let mut spaced = false;
+        for (n, (event, mark)) in self.lines.iter().zip(&marks).enumerate() {
+            if let Some(day) = &mark.day {
+                rows.push(day_line(theme, day).into_any_element());
+                spaced = false;
+            }
+            let Some(row) = self.line(theme, n, event, mark, cx) else {
+                continue;
+            };
+            rows.push(
+                div()
+                    .when(spaced, |row| row.pt_3())
+                    .when(!spaced && n > 0, |row| row.pt_1())
+                    .child(row)
+                    .into_any_element(),
+            );
+            spaced = mark.time.is_some();
+        }
+        div().flex().flex_col().children(rows).into_any_element()
+    }
+
+    fn meta(
+        &self,
+        theme: &Theme,
+        n: usize,
+        text: &str,
+        mark: &Mark,
+        copy_first: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let copied = self.copied == Some(n);
+        let text = text.to_owned();
+        let copy = div()
+            .id(("copy", n))
+            .px_1p5()
+            .rounded_md()
+            .text_size(px(11.))
+            .line_height(px(16.))
+            .cursor_pointer()
+            .when(copied, |copy| copy.text_color(theme.accent))
+            .when(!copied, |copy| {
+                copy.opacity(0.)
+                    .text_color(theme.muted)
+                    .group_hover("line", |copy| copy.opacity(1.))
+                    .hover(|copy| copy.bg(theme.line).text_color(theme.text))
+            })
+            .child(if copied { "복사했어요" } else { "복사" })
+            .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                view.copy(n, text.clone(), cx);
+            }));
+        let time = mark.time.clone().map(|time| {
+            div()
+                .text_size(px(11.))
+                .line_height(px(16.))
+                .text_color(theme.faint)
+                .child(time)
+        });
+        let (before, after) = if copy_first {
+            (Some(copy), None)
+        } else {
+            (None, Some(copy))
+        };
+        div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap_0p5()
+            .children(before)
+            .children(time)
+            .children(after)
+    }
+
+    fn line(
+        &self,
+        theme: &Theme,
+        n: usize,
+        event: &ToWindow,
+        mark: &Mark,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let row = match event {
+            ToWindow::Answering { .. } | ToWindow::Alone | ToWindow::BrowserAt { .. } => {
+                return None;
+            }
+            ToWindow::Owner { text, .. } => div()
+                .flex()
+                .justify_end()
+                .items_end()
+                .gap_1()
+                .child(self.meta(theme, n, text, mark, true, cx))
+                .child(
+                    div()
+                        .max_w(relative(0.8))
+                        .px_3p5()
+                        .py_2()
+                        .rounded_2xl()
+                        .rounded_br_md()
+                        .bg(theme.accent)
+                        .text_color(theme.accent_text)
+                        .child(prose(text)),
+                ),
+            ToWindow::Reply { text, .. } => div()
+                .flex()
+                .items_start()
+                .gap_2()
+                .child(logo(theme, 26.))
+                .child(
+                    div()
+                        .flex()
+                        .flex_1()
+                        .min_w_0()
+                        .items_end()
+                        .gap_1()
+                        .child(
+                            div()
+                                .max_w(relative(0.8))
+                                .px_3p5()
+                                .py_2()
+                                .rounded_2xl()
+                                .rounded_tl_md()
+                                .bg(theme.surface)
+                                .border_1()
+                                .border_color(theme.line)
+                                .shadow_xs()
+                                .child(prose(text)),
+                        )
+                        .child(self.meta(theme, n, text, mark, false, cx)),
+                ),
+            ToWindow::Traffic {
+                channel,
+                place,
+                who,
+                text,
+                ..
+            } => div().flex().child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .w_full()
+                    .px_3()
+                    .py_2()
+                    .rounded_xl()
+                    .bg(theme.other)
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .text_xs()
+                            .text_color(theme.other_text)
+                            .child(
+                                div()
+                                    .px_1p5()
+                                    .rounded_sm()
+                                    .border_1()
+                                    .border_color(theme.other_text)
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(SharedString::from(channel_name(channel))),
+                            )
+                            .child(SharedString::from(room_name(place)))
+                            .child(div().size(px(3.)).rounded_full().bg(theme.other_text))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child(SharedString::from(who.clone())),
+                            )
+                            .child(self.meta(theme, n, text, mark, true, cx)),
+                    )
+                    .child(prose(text)),
+            ),
+        };
+        Some(row.id(("line", n)).group("line").into_any_element())
     }
 
     fn tabs(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
@@ -239,7 +457,7 @@ impl ChatView {
                 div()
                     .id("composer")
                     .flex()
-                    .items_center()
+                    .items_end()
                     .gap_2()
                     .pl_4()
                     .pr_1p5()
@@ -256,6 +474,8 @@ impl ChatView {
                     .child(
                         div()
                             .flex_1()
+                            .min_w_0()
+                            .py(px(6.))
                             .text_size(px(15.))
                             .line_height(px(22.))
                             .child(self.input.clone()),
@@ -294,7 +514,7 @@ impl ChatView {
                         LinkState::Down(reason) => {
                             SharedString::from(format!("다시 연결하는 중이에요. {reason}"))
                         }
-                        _ => SharedString::new_static("Enter로 보내요"),
+                        _ => SharedString::new_static("Enter로 보내고, Shift+Enter로 줄을 바꿔요"),
                     }),
             )
     }
@@ -309,16 +529,7 @@ impl Focusable for ChatView {
 impl Render for ChatView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(window);
-        let conversation = if self.lines.is_empty() && matches!(self.link, LinkState::Connected) {
-            empty(&theme).into_any_element()
-        } else {
-            div()
-                .flex()
-                .flex_col()
-                .gap_3()
-                .children(self.lines.iter().map(|event| line(&theme, event)))
-                .into_any_element()
-        };
+        let conversation = self.conversation(&theme, cx);
         div()
             .flex()
             .flex_col()
@@ -417,80 +628,27 @@ fn empty(theme: &Theme) -> impl IntoElement {
         )
 }
 
-fn line(theme: &Theme, event: &ToWindow) -> impl IntoElement {
-    match event {
-        ToWindow::Answering { .. } | ToWindow::BrowserAt { .. } => div(),
-        ToWindow::Owner { text } => div().flex().justify_end().child(
+fn day_line(theme: &Theme, day: &str) -> impl IntoElement {
+    div()
+        .flex()
+        .items_center()
+        .gap_3()
+        .py_3()
+        .child(div().flex_1().h(px(1.)).bg(theme.line))
+        .child(
             div()
-                .max_w(relative(0.8))
-                .px_3p5()
-                .py_2()
-                .rounded_2xl()
-                .rounded_br_md()
-                .bg(theme.accent)
-                .text_color(theme.accent_text)
-                .child(prose(text)),
-        ),
-        ToWindow::Reply { text } => div()
-            .flex()
-            .items_start()
-            .gap_2()
-            .child(logo(theme, 26.))
-            .child(
-                div()
-                    .max_w(relative(0.8))
-                    .px_3p5()
-                    .py_2()
-                    .rounded_2xl()
-                    .rounded_tl_md()
-                    .bg(theme.surface)
-                    .border_1()
-                    .border_color(theme.line)
-                    .shadow_xs()
-                    .child(prose(text)),
-            ),
-        ToWindow::Traffic {
-            channel,
-            place,
-            who,
-            text,
-        } => div().flex().child(
-            div()
-                .flex()
-                .flex_col()
-                .gap_1()
-                .w_full()
-                .px_3()
-                .py_2()
-                .rounded_xl()
-                .bg(theme.other)
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .text_xs()
-                        .text_color(theme.other_text)
-                        .child(
-                            div()
-                                .px_1p5()
-                                .rounded_sm()
-                                .border_1()
-                                .border_color(theme.other_text)
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child(SharedString::from(channel_name(channel))),
-                        )
-                        .child(SharedString::from(room_name(place)))
-                        .child(div().size(px(3.)).rounded_full().bg(theme.other_text))
-                        .child(
-                            div()
-                                .font_weight(FontWeight::MEDIUM)
-                                .child(SharedString::from(who.clone())),
-                        ),
-                )
-                .child(prose(text)),
-        ),
-    }
+                .px_2p5()
+                .py_0p5()
+                .rounded_full()
+                .bg(theme.raised)
+                .border_1()
+                .border_color(theme.line)
+                .text_size(px(11.))
+                .text_color(theme.muted)
+                .font_weight(FontWeight::MEDIUM)
+                .child(SharedString::from(day.to_owned())),
+        )
+        .child(div().flex_1().h(px(1.)).bg(theme.line))
 }
 
 fn channel_name(channel: &str) -> String {

@@ -5,6 +5,7 @@ mod pcs;
 mod screen;
 mod settings;
 mod theme;
+mod when;
 
 use std::cell::RefCell;
 use std::rc::Rc;

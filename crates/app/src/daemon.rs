@@ -71,6 +71,7 @@ const SUB_SESSION_LIMIT: Duration = Duration::from_secs(60 * 60);
 const SETTLE: Duration = Duration::from_secs(1);
 const RELEASE_SENT: Duration = Duration::from_millis(300);
 const FLUSH_EVERY: Duration = Duration::from_secs(2);
+const LOOK_FOR_PCS: Duration = Duration::from_secs(2);
 
 /// Runs the agent until Ctrl-C or a terminate signal, with the app channel open for windows.
 pub(crate) async fn run(home: Home) -> Result<(), String> {
@@ -230,20 +231,33 @@ pub(crate) async fn serve(
             }
         });
     }
-    if let Some(linked) = linked.clone() {
+    if let Some(linked) = linked.clone()
+        && let Some(mut holder) = linked.keeper.watch(MAIN_JOB)
+    {
         let route = Arc::clone(&route);
         let app = Arc::clone(&app);
-        let mut holder = linked.keeper.watch(MAIN_JOB);
         tokio::spawn(async move {
-            while let Some(holder) = holder.as_mut() {
-                if holder.changed().await.is_err() {
-                    return;
+            let mut shown = None;
+            let mut every = time::interval(LOOK_FOR_PCS);
+            loop {
+                tokio::select! {
+                    changed = holder.changed() => {
+                        if changed.is_err() {
+                            return;
+                        }
+                        route.flush();
+                    }
+                    _ = every.tick() => {}
                 }
-                let now = holder.borrow_and_update().clone();
-                if let Some(key) = now {
-                    app.answering(linked.hub.name_of(&key), key == linked.own);
+                let now = holder
+                    .borrow_and_update()
+                    .clone()
+                    .filter(|_| !linked.hub.approved().is_empty())
+                    .map(|key| (linked.hub.name_of(&key), key == linked.own));
+                if now != shown {
+                    app.answering(now.clone());
+                    shown = now;
                 }
-                route.flush();
             }
         });
     }

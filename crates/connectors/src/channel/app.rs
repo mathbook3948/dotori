@@ -64,23 +64,37 @@ pub enum FromWindow {
 /// What the daemon sends to every window, one JSON object per line.
 /// A window that connects first gets the recent backlog, then everything live.
 /// A window that falls too far behind is hung up on, so it reconnects and reads the backlog.
+/// The lines of the conversation carry `at`, when the first PC showed them, in milliseconds since
+/// the Unix epoch, or 0 from a dotori that did not say.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ToWindow {
     /// What the owner wrote in some window.
-    Owner { text: String },
+    Owner {
+        text: String,
+        #[serde(default)]
+        at: i64,
+    },
     /// What dotori answered in the app.
-    Reply { text: String },
+    Reply {
+        text: String,
+        #[serde(default)]
+        at: i64,
+    },
     /// A message or reply on another channel, such as Slack.
     Traffic {
         channel: String,
         place: String,
         who: String,
         text: String,
+        #[serde(default)]
+        at: i64,
     },
     /// Which of the owner's PCs answers now. Sent only while PCs are linked, and never kept in
     /// the conversation.
     Answering { pc: String, here: bool },
+    /// No other PC is linked any more, so there is no PC to name.
+    Alone,
     /// Which of the owner's PCs holds the browser now. Sent only while PCs are linked, and never
     /// kept in the conversation.
     BrowserAt { pc: String, here: bool },
@@ -149,9 +163,13 @@ impl AppChannel {
         self.hub.live.subscribe()
     }
 
-    /// Tells every window which PC answers now.
-    pub fn answering(&self, pc: String, here: bool) {
-        if let Ok(line) = serde_json::to_string(&ToWindow::Answering { pc, here }) {
+    /// Tells every window which PC answers now, or that no other PC is linked.
+    pub fn answering(&self, answering: Option<(String, bool)>) {
+        let event = match answering {
+            Some((pc, here)) => ToWindow::Answering { pc, here },
+            None => ToWindow::Alone,
+        };
+        if let Ok(line) = serde_json::to_string(&event) {
             self.hub.answering.send_replace(Some(line));
         }
     }
@@ -169,7 +187,7 @@ impl AppChannel {
         if serde_json::from_str::<ToWindow>(line).is_ok_and(|shown| {
             !matches!(
                 shown,
-                ToWindow::Answering { .. } | ToWindow::BrowserAt { .. }
+                ToWindow::Answering { .. } | ToWindow::Alone | ToWindow::BrowserAt { .. }
             )
         }) {
             self.hub.publish_line(line.to_owned(), None);
@@ -185,7 +203,7 @@ impl AppChannel {
     /// here, and ready to hand to the agent.
     pub fn heard_elsewhere(&self, text: String, origin: String) -> Option<Incoming> {
         let content = Content::parse(text.clone()).ok()?;
-        let Ok(line) = serde_json::to_string(&ToWindow::Owner { text }) else {
+        let Ok(line) = serde_json::to_string(&ToWindow::Owner { text, at: now_ms() }) else {
             return None;
         };
         self.hub.publish_line(line, Some(origin));
@@ -233,10 +251,7 @@ impl Hub {
     }
 
     fn message_id(&self) -> ExternalMessageId {
-        let millis = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|since| since.as_millis())
-            .unwrap_or(0);
+        let millis = now_ms();
         let n = self.next_id.fetch_add(1, Ordering::Relaxed);
         ExternalMessageId::new(format!("{millis}-{n}"))
     }
@@ -279,7 +294,7 @@ impl Channel for AppChannel {
     }
 
     fn deliver(&self, _place: Place, text: String) -> BoxFuture<'_, Result<(), ChannelError>> {
-        self.hub.publish(&ToWindow::Reply { text });
+        self.hub.publish(&ToWindow::Reply { text, at: now_ms() });
         Box::pin(async { Ok(()) })
     }
 }
@@ -291,6 +306,7 @@ impl AppWindow for AppChannel {
             place: traffic.address.place.as_str().to_owned(),
             who: traffic.who,
             text: traffic.text,
+            at: now_ms(),
         });
         Box::pin(async { Ok(()) })
     }
@@ -360,7 +376,7 @@ async fn serve(stream: TcpStream, token: String, hub: Arc<Hub>, inbox: Arc<dyn I
             let Ok(content) = Content::parse(text.clone()) else {
                 continue;
             };
-            hub.publish(&ToWindow::Owner { text });
+            hub.publish(&ToWindow::Owner { text, at: now_ms() });
             if inbox.push(hub.incoming(content)).await.is_err() {
                 return;
             }
@@ -390,6 +406,13 @@ async fn next_line(reader: &mut BufReader<OwnedReadHalf>, line: &mut Vec<u8>) ->
 async fn send(write: &mut tokio::net::tcp::OwnedWriteHalf, line: &str) -> io::Result<()> {
     write.write_all(line.as_bytes()).await?;
     write.write_all(b"\n").await
+}
+
+fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|since| i64::try_from(since.as_millis()).unwrap_or(i64::MAX))
+        .unwrap_or(0)
 }
 
 fn failed(error: io::Error) -> ChannelError {

@@ -72,6 +72,31 @@ impl Window {
             .ok()??;
         Some(serde_json::from_str(&line).expect("event"))
     }
+
+    async fn next_untimed(&mut self) -> Option<ToWindow> {
+        self.next().await.map(untimed)
+    }
+}
+
+fn untimed(line: ToWindow) -> ToWindow {
+    match line {
+        ToWindow::Owner { text, .. } => ToWindow::Owner { text, at: 0 },
+        ToWindow::Reply { text, .. } => ToWindow::Reply { text, at: 0 },
+        ToWindow::Traffic {
+            channel,
+            place,
+            who,
+            text,
+            ..
+        } => ToWindow::Traffic {
+            channel,
+            place,
+            who,
+            text,
+            at: 0,
+        },
+        other => other,
+    }
 }
 
 #[tokio::test]
@@ -92,9 +117,10 @@ async fn what_the_owner_writes_reaches_the_inbox_and_every_window() {
     assert_eq!(incoming.sender_id.as_str(), OWNER);
     let echo = ToWindow::Owner {
         text: String::from("hello"),
+        at: 0,
     };
-    assert_eq!(first.next().await, Some(echo.clone()));
-    assert_eq!(second.next().await, Some(echo));
+    assert_eq!(first.next_untimed().await, Some(echo.clone()));
+    assert_eq!(second.next_untimed().await, Some(echo));
 }
 
 #[tokio::test]
@@ -119,18 +145,20 @@ async fn replies_and_traffic_reach_windows_and_a_late_window_gets_the_backlog() 
     let mut late = Window::open(address, "secret").await;
 
     assert_eq!(
-        late.next().await,
+        late.next_untimed().await,
         Some(ToWindow::Reply {
-            text: String::from("hi there")
+            text: String::from("hi there"),
+            at: 0,
         })
     );
     assert_eq!(
-        late.next().await,
+        late.next_untimed().await,
         Some(ToWindow::Traffic {
             channel: String::from("slack"),
             place: String::from("C1"),
             who: String::from("Alice"),
             text: String::from("ping"),
+            at: 0,
         })
     );
 }
@@ -186,7 +214,7 @@ fn the_token_never_shows_in_debug_output() {
 #[tokio::test]
 async fn windows_learn_which_pc_answers_but_it_stays_out_of_the_conversation() {
     let (channel, address, _inbox) = start().await;
-    channel.answering(String::from("맥북"), false);
+    channel.answering(Some((String::from("맥북"), false)));
     let mut early = Window::open(address, "secret").await;
     assert_eq!(
         early.next().await,
@@ -196,7 +224,7 @@ async fn windows_learn_which_pc_answers_but_it_stays_out_of_the_conversation() {
         })
     );
 
-    channel.answering(String::from("데스크톱"), true);
+    channel.answering(Some((String::from("데스크톱"), true)));
     assert_eq!(
         early.next().await,
         Some(ToWindow::Answering {
@@ -210,19 +238,58 @@ async fn windows_learn_which_pc_answers_but_it_stays_out_of_the_conversation() {
         .deliver(Place::new(MAIN), String::from("hi"))
         .await
         .expect("delivered");
+    let line = published.recv().await.expect("published").line;
     assert_eq!(
-        published.recv().await.expect("published").line,
-        r#"{"kind":"reply","text":"hi"}"#
+        serde_json::from_str::<ToWindow>(&line)
+            .map(untimed)
+            .expect("line"),
+        ToWindow::Reply {
+            text: String::from("hi"),
+            at: 0,
+        }
     );
     let mut late = Window::open(address, "secret").await;
     assert_eq!(
-        late.next().await,
+        late.next_untimed().await,
         Some(ToWindow::Reply {
-            text: String::from("hi")
+            text: String::from("hi"),
+            at: 0,
         })
     );
     assert!(matches!(
         late.next().await,
         Some(ToWindow::Answering { here: true, .. })
     ));
+}
+
+#[tokio::test]
+async fn a_line_keeps_the_time_it_was_first_shown_and_an_old_line_has_none() {
+    let (channel, address, _inbox) = start().await;
+    let before = now_ms();
+    channel
+        .deliver(Place::new(MAIN), String::from("now"))
+        .await
+        .expect("delivered");
+    channel.show_line(r#"{"kind":"reply","text":"elsewhere","at":1700000000000}"#);
+    channel.show_line(r#"{"kind":"owner","text":"from an older dotori"}"#);
+    let mut window = Window::open(address, "secret").await;
+
+    let Some(ToWindow::Reply { at, .. }) = window.next().await else {
+        panic!("a reply first");
+    };
+    assert!((before..=now_ms()).contains(&at));
+    assert_eq!(
+        window.next().await,
+        Some(ToWindow::Reply {
+            text: String::from("elsewhere"),
+            at: 1_700_000_000_000,
+        })
+    );
+    assert_eq!(
+        window.next().await,
+        Some(ToWindow::Owner {
+            text: String::from("from an older dotori"),
+            at: 0,
+        })
+    );
 }
