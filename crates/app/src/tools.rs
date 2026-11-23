@@ -44,7 +44,7 @@ use crate::home::Home;
 use crate::settings;
 use crate::settings::Settings;
 
-const START_WAIT: Duration = Duration::from_secs(20);
+const START_WAIT: Duration = Duration::from_secs(30);
 
 /// Where the MCP server listens, as its first line of output.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
