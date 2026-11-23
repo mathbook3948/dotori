@@ -57,6 +57,11 @@ pub struct RelayConfig {
 pub async fn relay(configs: Vec<RelayConfig>) -> (Vec<Box<dyn Tool>>, Vec<String>) {
     let tried = futures_util::future::join_all(configs.into_iter().map(|config| async move {
         let name = config.name.clone();
+        if relayed_name(&name, "x").is_none() {
+            return Err(format!(
+                "{name}: a server's name uses only letters, digits, _ and -"
+            ));
+        }
         match time::timeout(CONNECT_WAIT, Remote::connect(config)).await {
             Ok(Ok(remote)) => Ok(remote),
             Ok(Err(error)) => Err(format!("{name}: {error}")),
@@ -326,9 +331,11 @@ impl Remote {
                     if let Some(token) = token {
                         request = request.bearer_auth(token);
                     }
+                    let had_session = session.is_some();
                     if let Some(session) = session.as_ref() {
                         request = request.header(SESSION, session.as_str());
                     }
+                    drop(link);
                     let response = request.send().await.map_err(|error| {
                         if error.is_connect() {
                             format!("{UNSENT_SO_SAFE_TO_RESEND}: {error}")
@@ -341,6 +348,7 @@ impl Remote {
                         .headers()
                         .get(SESSION)
                         .and_then(|value| value.to_str().ok())
+                        && let Some(Link::Http { session, .. }) = self.link.lock().await.as_mut()
                     {
                         *session = Some(given.to_owned());
                     }
@@ -351,7 +359,7 @@ impl Remote {
                         .unwrap_or_default()
                         .to_owned();
                     let text = response.text().await.map_err(|error| error.to_string())?;
-                    if status == reqwest::StatusCode::NOT_FOUND && session.is_some() {
+                    if status == reqwest::StatusCode::NOT_FOUND && had_session {
                         return Err(format!(
                             "{UNSENT_SO_SAFE_TO_RESEND}: the server forgot this session"
                         ));

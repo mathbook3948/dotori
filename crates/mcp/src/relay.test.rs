@@ -252,3 +252,19 @@ fn relayed_names_stay_within_what_mcp_allows() {
     assert_eq!(relayed_name("", "x"), None);
     assert_eq!(relayed_name("a", &"x".repeat(70)), None);
 }
+
+#[tokio::test]
+async fn a_server_named_outside_what_tool_names_allow_is_refused_at_once() {
+    let (tools, failed) = relay(vec![RelayConfig {
+        name: String::from("my notes"),
+        reach: Reach::Command {
+            program: String::from("/nonexistent/dotori-mcp-ghost"),
+            args: Vec::new(),
+        },
+        tools: None,
+    }])
+    .await;
+
+    assert!(tools.is_empty());
+    assert!(failed[0].contains("only letters"), "{failed:?}");
+}
