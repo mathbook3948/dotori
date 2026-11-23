@@ -6,6 +6,8 @@ mod cdp;
 mod chrome;
 pub mod fetch;
 pub mod memory;
+mod playwright;
+mod script;
 pub mod server;
 
 use std::future::Future;

@@ -19,6 +19,9 @@ use crate::ToolFuture;
 use crate::cdp::Cdp;
 use crate::chrome;
 use crate::fetch;
+use crate::playwright::Driver;
+use crate::script;
+use crate::script::run::Native;
 
 const START_WAIT: Duration = Duration::from_secs(20);
 const LOAD_WAIT: Duration = Duration::from_secs(20);
@@ -27,7 +30,7 @@ const POLL: Duration = Duration::from_millis(200);
 const SNAPSHOT: &str = include_str!("snapshot.js");
 const SHOWN: usize = 20_000;
 const CLOSE_WAIT: Duration = Duration::from_secs(10);
-const FIND: &str = "globalThis.__refs && globalThis.__refs.get(";
+const RUN_WAIT: Duration = Duration::from_secs(100);
 const WORLD: &str = "dotori";
 
 /// How the browser runs. The profile folder keeps logins between runs. Without an executable,
@@ -56,7 +59,7 @@ enum Install {
     Failed(String),
 }
 
-struct Running {
+pub(crate) struct Running {
     child: Child,
     cdp: Arc<Cdp>,
     session: String,
@@ -79,10 +82,8 @@ impl std::fmt::Debug for Running {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Action {
-    Open,
+    Run,
     Read,
-    Click,
-    Type,
 }
 
 /// One of the browser tools, all driving the same browser.
@@ -119,7 +120,7 @@ impl Browser {
 
     /// The tools that drive this browser.
     pub fn tools(self: &Arc<Self>) -> Vec<Box<dyn Tool>> {
-        [Action::Open, Action::Read, Action::Click, Action::Type]
+        [Action::Run, Action::Read]
             .into_iter()
             .map(|action| {
                 Box::new(BrowserTool {
@@ -416,7 +417,6 @@ pub(crate) fn document_allowed(url: &str) -> Result<(), String> {
 
 impl BrowserTool {
     async fn act(&self, arguments: Value) -> Result<String, String> {
-        let step = Step::read(self.action, &arguments)?;
         let start = match arguments.get("start_index") {
             None => 0,
             Some(start) => start
@@ -424,24 +424,44 @@ impl BrowserTool {
                 .and_then(|start| usize::try_from(start).ok())
                 .ok_or("`start_index` must be a whole number from 0")?,
         };
+        let script = match self.action {
+            Action::Read => None,
+            Action::Run => {
+                let code = arguments
+                    .get("code")
+                    .and_then(Value::as_str)
+                    .ok_or("`code` is required")?;
+                Some(
+                    script::parse::parse(code)
+                        .map_err(|error| format!("the code does not parse: {error}"))?,
+                )
+            }
+        };
         let _acting = self.browser.acting.lock().await;
         let running = self.browser.page().await?;
         let page = Page { running: &running };
-        let done = match step {
-            Step::Open(url) => page.go(url.as_str()).await,
-            Step::Read => Ok(()),
-            Step::Click(element) => page.click(element).await,
-            Step::Type {
-                element,
-                text,
-                submit,
-            } => page.type_into(element, &text, submit).await,
+        let said = match &script {
+            None => Ok(String::new()),
+            Some(body) => {
+                let driver = Driver {
+                    page: Page { running: &running },
+                };
+                let home = Native {
+                    kind: "page",
+                    data: Value::Null,
+                };
+                match time::timeout(RUN_WAIT, script::run::run(body, &driver, home)).await {
+                    Ok(Ok(outcome)) => Ok(said(&outcome)),
+                    Ok(Err(error)) => Err(error),
+                    Err(_) => Err(format!(
+                        "the code did not finish within {} seconds",
+                        RUN_WAIT.as_secs()
+                    )),
+                }
+            }
         };
-        let shown = match done {
-            Ok(()) => match page.guard().await {
-                Ok(()) => page.snapshot().await,
-                Err(error) => Err(error),
-            },
+        let shown = match page.guard().await {
+            Ok(()) => page.snapshot().await,
             Err(error) => Err(error),
         };
         let broken = !running.cdp.open();
@@ -451,57 +471,39 @@ impl BrowserTool {
         {
             self.browser.forget().await;
         }
-        Ok(fetch::window(&shown?, start, SHOWN))
+        let shown = shown.map(|shown| fetch::window(&shown, start, SHOWN));
+        match (said, shown) {
+            (Ok(said), Ok(shown)) => Ok(format!("{said}{shown}")),
+            (Err(error), Ok(shown)) => Err(format!("{error}\n\nThe page now:\n{shown}")),
+            (_, Err(error)) => Err(error),
+        }
     }
 }
 
-enum Step {
-    Open(Url),
-    Read,
-    Click(u64),
-    Type {
-        element: u64,
-        text: String,
-        submit: bool,
-    },
-}
-
-impl Step {
-    fn read(action: Action, arguments: &Value) -> Result<Self, String> {
-        Ok(match action {
-            Action::Open => {
-                let url = arguments
-                    .get("url")
-                    .and_then(Value::as_str)
-                    .ok_or("`url` is required")?;
-                let url = Url::parse(url).map_err(|error| format!("not a URL: {error}"))?;
-                fetch::allowed(&url)?;
-                Self::Open(url)
-            }
-            Action::Read => Self::Read,
-            Action::Click => Self::Click(element(arguments)?),
-            Action::Type => Self::Type {
-                element: element(arguments)?,
-                text: arguments
-                    .get("text")
-                    .and_then(Value::as_str)
-                    .ok_or("`text` is required")?
-                    .to_owned(),
-                submit: arguments
-                    .get("submit")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false),
-            },
-        })
+fn said(outcome: &script::run::Outcome) -> String {
+    let mut said = String::new();
+    for line in &outcome.logs {
+        said.push_str(line);
+        said.push('\n');
     }
+    if let Some(value) = &outcome.value {
+        said.push_str("Returned: ");
+        said.push_str(value);
+        said.push('\n');
+    }
+    if !said.is_empty() {
+        said.push_str("\n---\n");
+    }
+    said
 }
 
-struct Page<'a> {
-    running: &'a Running,
+/// One page of the browser, for the tools and for scripts.
+pub(crate) struct Page<'a> {
+    pub(crate) running: &'a Running,
 }
 
 impl Page<'_> {
-    async fn send(&self, method: &str, params: Value) -> Result<Value, String> {
+    pub(crate) async fn send(&self, method: &str, params: Value) -> Result<Value, String> {
         self.running
             .cdp
             .send(method, params, Some(&self.running.session))
@@ -529,7 +531,7 @@ impl Page<'_> {
         Ok(context)
     }
 
-    async fn evaluate(&self, expression: &str) -> Result<Value, String> {
+    pub(crate) async fn evaluate(&self, expression: &str) -> Result<Value, String> {
         let mut fresh = false;
         let reply = loop {
             let context = self.world(fresh).await?;
@@ -563,7 +565,7 @@ impl Page<'_> {
             .unwrap_or(Value::Null))
     }
 
-    async fn go(&self, url: &str) -> Result<(), String> {
+    pub(crate) async fn go(&self, url: &str) -> Result<(), String> {
         let reply = self.send("Page.navigate", json!({ "url": url })).await?;
         if let Some(error) = reply.get("errorText").and_then(Value::as_str) {
             return Err(format!("could not open {url}: {error}"));
@@ -571,7 +573,7 @@ impl Page<'_> {
         self.settle().await
     }
 
-    async fn settle(&self) -> Result<(), String> {
+    pub(crate) async fn settle(&self) -> Result<(), String> {
         time::sleep(SETTLE).await;
         let ready = async {
             loop {
@@ -592,7 +594,7 @@ impl Page<'_> {
         Ok(())
     }
 
-    async fn guard(&self) -> Result<(), String> {
+    pub(crate) async fn guard(&self) -> Result<(), String> {
         let at = self.evaluate("location.href").await?;
         let at = at.as_str().unwrap_or_default();
         if at == "about:blank" || at.starts_with("data:") {
@@ -613,79 +615,7 @@ impl Page<'_> {
         ))
     }
 
-    async fn center(&self, element: u64) -> Result<(f64, f64), String> {
-        let found = self
-            .evaluate(&format!(
-                "(() => {{ const el = {FIND}{element}); \
-                 if (!el || !el.isConnected) return null; \
-                 el.scrollIntoView({{block: 'center', inline: 'center', behavior: 'instant'}}); \
-                 const r = el.getClientRects()[0] || el.getBoundingClientRect(); \
-                 return [r.left + r.width / 2, r.top + r.height / 2]; }})()"
-            ))
-            .await?;
-        let point = found
-            .as_array()
-            .and_then(|point| Some((point.first()?.as_f64()?, point.get(1)?.as_f64()?)))
-            .ok_or_else(|| format!("there is no element [{element}]; read the page again"))?;
-        Ok(point)
-    }
-
-    async fn click(&self, element: u64) -> Result<(), String> {
-        let (x, y) = self.center(element).await?;
-        for kind in ["mouseMoved", "mousePressed", "mouseReleased"] {
-            self.send(
-                "Input.dispatchMouseEvent",
-                json!({ "type": kind, "x": x, "y": y, "button": "left", "clickCount": 1 }),
-            )
-            .await?;
-        }
-        self.settle().await
-    }
-
-    async fn type_into(&self, element: u64, text: &str, submit: bool) -> Result<(), String> {
-        let ready = self
-            .evaluate(&format!(
-                "(() => {{ const el = {FIND}{element}); \
-                 if (!el || !el.isConnected) return 'gone'; \
-                 const tag = el.tagName.toLowerCase(); \
-                 const text = tag === 'textarea' || el.isContentEditable || (tag === 'input' && \
-                   ['text', 'search', 'email', 'url', 'tel', 'password', 'number', ''].includes(el.type)); \
-                 if (!text) return 'not text'; \
-                 el.scrollIntoView({{block: 'center', behavior: 'instant'}}); el.focus(); \
-                 if (el.isContentEditable) {{ document.execCommand('selectAll'); }} \
-                 else {{ el.value = ''; el.dispatchEvent(new Event('input', {{bubbles: true}})); }} \
-                 return 'ready'; }})()"
-            ))
-            .await?;
-        match ready.as_str() {
-            Some("ready") => {}
-            Some("not text") => {
-                return Err(format!(
-                    "element [{element}] does not take text; use browser_click"
-                ));
-            }
-            _ => {
-                return Err(format!(
-                    "there is no element [{element}]; read the page again"
-                ));
-            }
-        }
-        self.send("Input.insertText", json!({ "text": text }))
-            .await?;
-        if submit {
-            for kind in ["keyDown", "keyUp"] {
-                self.send(
-                    "Input.dispatchKeyEvent",
-                    json!({ "type": kind, "key": "Enter", "code": "Enter", "windowsVirtualKeyCode": 13, "text": "\r" }),
-                )
-                .await?;
-            }
-            self.settle().await?;
-        }
-        Ok(())
-    }
-
-    async fn snapshot(&self) -> Result<String, String> {
+    pub(crate) async fn snapshot(&self) -> Result<String, String> {
         let mut tries = 0;
         loop {
             match self.evaluate(SNAPSHOT).await {
@@ -704,69 +634,49 @@ impl Page<'_> {
 impl Tool for BrowserTool {
     fn name(&self) -> &str {
         match self.action {
-            Action::Open => "browser_open",
+            Action::Run => "browser_run",
             Action::Read => "browser_read",
-            Action::Click => "browser_click",
-            Action::Type => "browser_type",
         }
     }
 
     fn description(&self) -> &str {
         match self.action {
-            Action::Open => {
-                "Opens a URL in dotori's browser, which keeps the owner's logins, and returns the page. \
-                 Interactive elements are shown as [n]; use n with browser_click and browser_type."
+            Action::Run => {
+                "Runs Playwright-style JavaScript in dotori's browser, which keeps the owner's logins. \
+                 `page` is ready to use: page.goto(url); locators from page.getByRole(role, { name }), \
+                 getByText, getByLabel, getByPlaceholder, getByTestId, or page.locator(css), where \
+                 `ref=N` picks element [N] of the last page read; locator.click(), fill(text), \
+                 press(key), check(), selectOption(value), textContent(), innerText(), inputValue(), \
+                 count(), all(), first(), nth(i), filter({ hasText }), waitFor(); page.keyboard.press(key); \
+                 page.waitForURL(url); page.evaluate(fn, arg) runs fn inside the page. Each action waits \
+                 for its element, and a locator that matches several elements is refused. Use await as in \
+                 Playwright. What console.log prints and what the code returns come first in the result, \
+                 then the page as browser_read shows it."
             }
             Action::Read => {
                 "Returns the page now open in the browser, with interactive elements as [n]."
-            }
-            Action::Click => "Clicks element [n] of the last page read, then returns the page.",
-            Action::Type => {
-                "Types text into element [n], replacing what it held, and presses Enter if `submit` is true. \
-                 Returns the page."
             }
         }
     }
 
     fn input_schema(&self) -> Value {
         let start = json!({ "type": "integer", "minimum": 0, "description": "Character of the page to start from." });
-        let element =
-            json!({ "type": "integer", "minimum": 1, "description": "The [n] of the element." });
         match self.action {
-            Action::Open => json!({
-                "type": "object",
-                "properties": { "url": { "type": "string" }, "start_index": start },
-                "required": ["url"]
-            }),
-            Action::Read => json!({ "type": "object", "properties": { "start_index": start } }),
-            Action::Click => json!({
-                "type": "object",
-                "properties": { "element": element, "start_index": start },
-                "required": ["element"]
-            }),
-            Action::Type => json!({
+            Action::Run => json!({
                 "type": "object",
                 "properties": {
-                    "element": element,
-                    "text": { "type": "string" },
-                    "submit": { "type": "boolean" },
+                    "code": { "type": "string", "description": "The JavaScript to run, such as `await page.goto('https://example.com'); return await page.title();`." },
                     "start_index": start
                 },
-                "required": ["element", "text"]
+                "required": ["code"]
             }),
+            Action::Read => json!({ "type": "object", "properties": { "start_index": start } }),
         }
     }
 
     fn call(&self, arguments: Value) -> ToolFuture<'_> {
         Box::pin(self.act(arguments))
     }
-}
-
-fn element(arguments: &Value) -> Result<u64, String> {
-    arguments
-        .get("element")
-        .and_then(Value::as_u64)
-        .ok_or_else(|| String::from("`element` is required"))
 }
 
 fn text_at(value: &Value, key: &str) -> Result<String, String> {
