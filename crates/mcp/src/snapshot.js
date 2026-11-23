@@ -2,7 +2,7 @@
   const seen = new Set();
   let next = 1;
   const refs = new Map();
-  window.__dotoriRefs = refs;
+  globalThis.__refs = refs;
   const interactive = 'a[href],button,input,select,textarea,summary,[role=button],[role=link],[role=checkbox],[role=tab],[role=menuitem],[contenteditable=true]';
   const hidden = (el) => {
     const style = getComputedStyle(el);

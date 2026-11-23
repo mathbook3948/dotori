@@ -3,6 +3,7 @@
 
 pub mod browser;
 mod cdp;
+mod chrome;
 pub mod fetch;
 pub mod memory;
 pub mod server;

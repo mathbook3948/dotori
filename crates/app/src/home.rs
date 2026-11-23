@@ -64,6 +64,11 @@ impl Home {
         self.root.join("dictionaries")
     }
 
+    /// dotori's own Chrome for Testing, downloaded on first use.
+    pub(crate) fn chrome(&self) -> PathBuf {
+        self.root.join("chrome")
+    }
+
     /// The browser profile, which keeps the owner's logins.
     pub(crate) fn browser(&self) -> PathBuf {
         self.root.join("browser")

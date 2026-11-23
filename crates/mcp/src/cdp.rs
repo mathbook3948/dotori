@@ -11,6 +11,7 @@ use futures_util::stream::SplitSink;
 use serde_json::Value;
 use serde_json::json;
 use tokio::net::TcpStream;
+use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tokio::time;
@@ -24,10 +25,12 @@ type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 type Waiting = Arc<Mutex<Option<HashMap<u64, oneshot::Sender<Result<Value, String>>>>>>;
 
 /// A Chrome DevTools Protocol connection to the browser. Commands for a page carry its session.
+/// Events the browser sends on its own wait in one queue, none dropped, for whoever takes it.
 pub(crate) struct Cdp {
     sink: tokio::sync::Mutex<SplitSink<Socket, Message>>,
     waiting: Waiting,
     next: AtomicU64,
+    events: Mutex<Option<mpsc::UnboundedReceiver<Value>>>,
     reader: JoinHandle<()>,
 }
 
@@ -39,6 +42,7 @@ impl Cdp {
         let (sink, mut stream) = socket.split();
         let waiting: Waiting = Arc::new(Mutex::new(Some(HashMap::new())));
         let answers = Arc::clone(&waiting);
+        let (told, events) = mpsc::unbounded_channel();
         let reader = tokio::spawn(async move {
             while let Some(Ok(frame)) = stream.next().await {
                 let Message::Text(text) = frame else {
@@ -48,6 +52,9 @@ impl Cdp {
                     continue;
                 };
                 let Some(id) = message.get("id").and_then(Value::as_u64) else {
+                    if message.get("method").is_some() {
+                        let _ = told.send(message);
+                    }
                     continue;
                 };
                 let Some(waiter) = answers
@@ -74,8 +81,15 @@ impl Cdp {
             sink: tokio::sync::Mutex::new(sink),
             waiting,
             next: AtomicU64::new(1),
+            events: Mutex::new(Some(events)),
             reader,
         })
+    }
+
+    /// The events the browser sends, such as a dialog opening or a request waiting to go out.
+    /// Only the first caller gets them.
+    pub(crate) fn events(&self) -> Option<mpsc::UnboundedReceiver<Value>> {
+        self.events.lock().expect("unpoisoned").take()
     }
 
     /// Whether the connection to the browser still stands.
