@@ -21,6 +21,7 @@ use dotori_mcp::browser::BrowserConfig;
 use dotori_mcp::fetch::WebFetch;
 use dotori_mcp::memory::Memory;
 use dotori_mcp::memory::MemoryConfig;
+use dotori_mcp::screen::Screen;
 use dotori_mcp::server::PATH;
 use dotori_mcp::server::Server;
 use serde::Deserialize;
@@ -36,7 +37,7 @@ use tokio::sync::Mutex;
 use tokio::time;
 
 use crate::door;
-use crate::home;
+use crate::door::Door;
 use crate::home::Home;
 use crate::settings;
 use crate::settings::Settings;
@@ -54,12 +55,28 @@ pub(crate) struct Listening {
 pub(crate) async fn serve(home: Home) -> Result<(), String> {
     let settings = Settings::load(&home.settings())?;
     let chosen = settings.browser.clone().unwrap_or_default();
-    let browser = Browser::new(BrowserConfig {
-        executable: chosen.path,
-        downloads: home.chrome(),
-        profile: home.browser(),
-        headless: chosen.headless.unwrap_or(!home::desktop()),
-    });
+    let (screen, asks) = Screen::new();
+    let browser = Browser::with_screen(
+        BrowserConfig {
+            executable: chosen.path,
+            downloads: home.chrome(),
+            profile: home.browser(),
+        },
+        Arc::clone(&screen),
+        asks,
+    );
+    let shown = TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .map_err(|error| error.to_string())?;
+    let screen_door = Door {
+        port: shown
+            .local_addr()
+            .map_err(|error| error.to_string())?
+            .port(),
+        token: door::token()?,
+    };
+    screen_door.write(&home.screen())?;
+    tokio::spawn(screen.serve(shown, screen_door.token));
     let mut tools: Vec<Box<dyn Tool>> = vec![Box::new(WebFetch::new()?)];
     tools.extend(browser.tools());
     let embedding = settings

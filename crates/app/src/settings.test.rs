@@ -180,13 +180,18 @@ fn slack_settings_survive_a_save() {
 }
 
 #[test]
-fn the_browser_section_names_a_path_and_whether_to_hide_it() {
+fn a_browser_section_from_before_still_loads_and_forgets_headless() {
     let settings = parse("[browser]\npath = \"/opt/chrome\"\nheadless = true").expect("parsed");
+    assert!(
+        !toml::to_string(&settings)
+            .expect("written")
+            .contains("headless")
+    );
     assert_eq!(
         settings.browser,
         Some(BrowserSettings {
             path: Some(PathBuf::from("/opt/chrome")),
-            headless: Some(true),
+            old_headless: Some(true),
         })
     );
     assert!(parse("[browser]\nprofile = \"x\"").is_err());
