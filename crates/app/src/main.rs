@@ -3,6 +3,7 @@ mod chat;
 mod daemon;
 mod device;
 mod door;
+mod history;
 mod home;
 mod idle;
 mod link;

@@ -46,7 +46,8 @@ const ROOM_WAIT: Duration = Duration::from_secs(5);
 const ROOM_FRESH: Duration = Duration::from_secs(10 * 60);
 const ROOMS_KEPT: usize = 256;
 const NAMED: usize = 5;
-const OWNER_DIRECT: &str = "@owner";
+/// The place in Slack that only the owner reads: the owner's direct messages with dotori.
+pub const OWNER_DIRECT: &str = "@owner";
 const WORKSPACE: &str = "the Slack workspace";
 const UNLISTED: &str = "this Slack conversation, whose members could not be listed";
 
