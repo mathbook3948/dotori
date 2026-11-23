@@ -11,6 +11,7 @@ use serde_json::json;
 
 const TIMEOUT: Duration = Duration::from_secs(30);
 const ATTEMPTS: u32 = 3;
+const MEMBERS_PAGE: usize = 200;
 const FIRST_WAIT: Duration = Duration::from_secs(1);
 const MAX_WAIT: Duration = Duration::from_secs(60);
 const FATAL: [&str; 7] = [
@@ -44,6 +45,13 @@ pub(crate) struct Api {
     base: String,
     app_token: String,
     bot_token: String,
+}
+
+/// What a Slack conversation's info says about who can read it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Room {
+    pub(crate) public: bool,
+    pub(crate) members: Option<usize>,
 }
 
 #[derive(Deserialize)]
@@ -111,6 +119,70 @@ impl Api {
         })
         .map(str::to_owned)
         .ok_or_else(|| ApiError::Passing(String::from("users.info gave no name")))
+    }
+
+    /// Whether anyone in the workspace can read `channel`, and how many members it has.
+    pub(crate) async fn room(&self, channel: &str) -> Result<Room, ApiError> {
+        let url = format!(
+            "{}/conversations.info?channel={channel}&include_num_members=true",
+            self.base
+        );
+        let reply = self
+            .call("conversations.info", || {
+                self.client.get(&url).bearer_auth(&self.bot_token)
+            })
+            .await?;
+        let flag = |name: &str| {
+            reply
+                .pointer(&format!("/channel/{name}"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        };
+        Ok(Room {
+            public: flag("is_channel") && !flag("is_private"),
+            members: reply
+                .pointer("/channel/num_members")
+                .and_then(Value::as_u64)
+                .and_then(|count| usize::try_from(count).ok()),
+        })
+    }
+
+    /// The first page of `channel`'s member ids.
+    pub(crate) async fn members(&self, channel: &str) -> Result<Vec<String>, ApiError> {
+        let url = format!(
+            "{}/conversations.members?channel={channel}&limit={MEMBERS_PAGE}",
+            self.base
+        );
+        let reply = self
+            .call("conversations.members", || {
+                self.client.get(&url).bearer_auth(&self.bot_token)
+            })
+            .await?;
+        Ok(reply
+            .pointer("/members")
+            .and_then(Value::as_array)
+            .map(|members| {
+                members
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
+    /// The direct message conversation between the assistant and `user`.
+    pub(crate) async fn direct(&self, user: &str) -> Result<String, ApiError> {
+        let body = json!({ "users": user }).to_string();
+        let reply = self
+            .call("conversations.open", || {
+                self.post("conversations.open")
+                    .bearer_auth(&self.bot_token)
+                    .header(CONTENT_TYPE, "application/json; charset=utf-8")
+                    .body(body.clone())
+            })
+            .await?;
+        text_at(&reply, "/channel/id", "conversations.open")
     }
 
     pub(crate) async fn say(

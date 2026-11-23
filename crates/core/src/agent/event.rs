@@ -7,6 +7,7 @@ use crate::id::ChannelId;
 use crate::llm::ModelError;
 use crate::llm::ModelReply;
 use crate::message::Incoming;
+use crate::message::Place;
 use crate::sub_session::SubSessionOutcome;
 use crate::tool::ToolError;
 
@@ -32,6 +33,7 @@ pub(crate) enum Event {
     },
     DeliveryDone {
         thread: ThreadRef,
+        place: Place,
         text: String,
         result: Result<(), ChannelError>,
     },

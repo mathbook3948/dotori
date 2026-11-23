@@ -40,6 +40,7 @@ fn heard(role: Role) -> Entry {
                 role,
             },
             content: Content::parse("hi").expect("non-empty"),
+            audience: None,
         },
     }
 }

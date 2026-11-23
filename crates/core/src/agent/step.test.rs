@@ -1,10 +1,13 @@
+use std::collections::HashMap;
 use std::num::NonZeroUsize;
 
 use super::*;
 use crate::id::ExternalMessageId;
 use crate::id::ExternalUserId;
+use crate::message::Audience;
 use crate::message::Content;
 use crate::message::Place;
+use crate::runtime::Wiring;
 use crate::sub_session::SubSessionSpec;
 use crate::tool::ToolCall;
 
@@ -18,7 +21,16 @@ impl Harness {
     fn new() -> Self {
         let capacity = NonZeroUsize::new(16).expect("non-zero");
         Self {
-            state: AgentState::new(app(), capacity),
+            state: AgentState::new(
+                Wiring {
+                    app: app(),
+                    private: HashMap::from([
+                        (app(), Place::new("main")),
+                        (slack(), Place::new("D-owner")),
+                    ]),
+                },
+                capacity,
+            ),
             effects: Vec::new(),
             sent: 0,
         }
@@ -33,7 +45,11 @@ impl Harness {
     }
 
     fn owner_says_on_slack(&mut self, place: &str, text: &str) {
-        let incoming = self.incoming(place, "me", text);
+        let mut incoming = self.incoming(place, "me", text);
+        incoming.audience = Audience::People {
+            some: vec![String::from("Mina")],
+            total: 2,
+        };
         self.feed(Event::Received {
             channel: slack(),
             incoming,
@@ -98,6 +114,7 @@ impl Harness {
             sender_id: ExternalUserId::new(sender),
             sender_name: sender.to_owned(),
             content: Content::parse(text).expect("non-empty"),
+            audience: Audience::Owner,
         }
     }
 
@@ -205,6 +222,7 @@ fn say(thread: ThreadRef, text: &str) -> Action {
     Action::Say {
         thread,
         text: text.to_owned(),
+        privately: false,
     }
 }
 
@@ -380,6 +398,7 @@ fn delivery_failure_is_recorded_without_calling_the_model() {
 
     h.feed(Event::DeliveryDone {
         thread,
+        place: Place::new("main"),
         text: String::from("hi"),
         result: Err(ChannelError {
             detail: String::from("window closed"),
@@ -445,6 +464,7 @@ fn app_window_shows_traffic_of_other_channels() {
     h.model_answers(vec![say(general, "sure")]);
     h.feed(Event::DeliveryDone {
         thread: general,
+        place: Place::new("general"),
         text: String::from("sure"),
         result: Ok(()),
     });
@@ -457,6 +477,7 @@ fn app_window_shows_traffic_of_other_channels() {
     let owner = h.thread_of("hello");
     h.feed(Event::DeliveryDone {
         thread: owner,
+        place: Place::new("main"),
         text: String::from("hi"),
         result: Ok(()),
     });
@@ -532,4 +553,69 @@ fn reply_records_how_much_of_the_conversation_it_answered() {
         })
         .collect();
     assert_eq!(answered, vec![1, 3]);
+}
+
+#[test]
+fn a_heard_message_keeps_who_could_read_its_room() {
+    let mut h = Harness::new();
+    h.owner_says_on_slack("general", "what is on my calendar");
+
+    let audience = h.state.conversation.iter().find_map(|entry| match entry {
+        Entry::Heard { message, .. } => message.audience.clone(),
+        _ => None,
+    });
+    assert_eq!(
+        audience,
+        Some(Audience::People {
+            some: vec![String::from("Mina")],
+            total: 2,
+        })
+    );
+}
+
+#[test]
+fn a_private_reply_goes_to_the_owners_own_room_on_that_channel() {
+    let mut h = Harness::new();
+    h.owner_says_on_slack("general", "what is on my calendar");
+    let general = h.thread_of("what is on my calendar");
+
+    h.model_answers(vec![
+        say(general, "I sent it to you directly"),
+        Action::Say {
+            thread: general,
+            text: String::from("dentist at 3"),
+            privately: true,
+        },
+    ]);
+
+    let deliveries = h.deliveries();
+    assert_eq!(deliveries.len(), 2);
+    assert_eq!(deliveries[0].0.place, Place::new("general"));
+    assert_eq!(deliveries[1].0.channel, slack());
+    assert_eq!(deliveries[1].0.place, Place::new("D-owner"));
+    assert_eq!(deliveries[1].1, "dentist at 3");
+}
+
+#[test]
+fn a_private_reply_shows_on_the_app_where_it_went() {
+    let mut h = Harness::new();
+    h.owner_says_on_slack("general", "what is on my calendar");
+    let general = h.thread_of("what is on my calendar");
+    h.model_answers(vec![Action::Say {
+        thread: general,
+        text: String::from("dentist at 3"),
+        privately: true,
+    }]);
+
+    h.feed(Event::DeliveryDone {
+        thread: general,
+        place: Place::new("D-owner"),
+        text: String::from("dentist at 3"),
+        result: Ok(()),
+    });
+
+    let shown = h.shown();
+    assert_eq!(shown.len(), 1);
+    assert_eq!(shown[0].address.channel, slack());
+    assert_eq!(shown[0].address.place, Place::new("D-owner"));
 }

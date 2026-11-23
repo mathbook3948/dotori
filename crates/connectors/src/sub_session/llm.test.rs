@@ -82,6 +82,7 @@ fn say(thread: u32, text: &str) -> Action {
     Action::Say {
         thread: ThreadRef::new(thread),
         text: String::from(text),
+        privately: false,
     }
 }
 

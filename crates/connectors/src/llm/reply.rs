@@ -46,6 +46,8 @@ pub(crate) struct Decided {
 struct SayInput {
     thread: u32,
     text: String,
+    #[serde(default)]
+    privately: bool,
 }
 
 #[derive(Deserialize)]
@@ -81,6 +83,7 @@ fn action_of(call: &Use) -> Result<Action, String> {
             Ok(Action::Say {
                 thread: ThreadRef::new(input.thread),
                 text: input.text,
+                privately: input.privately,
             })
         }
         DELEGATE => {
@@ -120,10 +123,13 @@ pub(crate) fn tools(toolbox: &[ToolSpec]) -> Vec<ToolSpec> {
         ToolSpec {
             name: String::from(SAY),
             description: String::from(
-                "Send a message to a thread. This is the only way anyone sees what you write.",
+                "Send a message to a thread. This is the only way anyone sees what you write. \
+                 When others can read the thread, keep the owner's private matters out of it and \
+                 send them with `privately`, which goes to a room on the same channel that only \
+                 the owner reads.",
             ),
             input_schema: String::from(
-                r#"{"type":"object","properties":{"thread":{"type":"integer","description":"The thread number from the message you answer."},"text":{"type":"string","description":"What to send."}},"required":["thread","text"],"additionalProperties":false}"#,
+                r#"{"type":"object","properties":{"thread":{"type":"integer","description":"The thread number from the message you answer."},"text":{"type":"string","description":"What to send."},"privately":{"type":"boolean","description":"Send it to the owner alone on the thread's channel instead of to the thread."}},"required":["thread","text"],"additionalProperties":false}"#,
             ),
         },
         ToolSpec {

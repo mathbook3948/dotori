@@ -19,6 +19,9 @@ pub trait Channel: Send + Sync + 'static {
 
     /// Core calls this one delivery at a time per channel, so replies keep their order.
     fn deliver(&self, place: Place, text: String) -> BoxFuture<'_, Result<(), ChannelError>>;
+
+    /// Where a delivery goes so that only the owner reads it, such as a direct message.
+    fn private_place(&self) -> Place;
 }
 
 /// The app chat window. Besides its own conversation it shows the traffic of every other channel.

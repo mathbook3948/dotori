@@ -61,6 +61,10 @@ async fn the_owners_mention_reaches_the_inbox_with_their_name_and_is_acknowledge
         (200, leaked(format!(r#"{{"ok":true,"url":"{socket_url}"}}"#))),
         (
             200,
+            r#"{"ok":true,"channel":{"id":"C1","is_channel":true,"is_private":false,"num_members":40}}"#,
+        ),
+        (
+            200,
             r#"{"ok":true,"user":{"name":"yuno","real_name":"Yuno","profile":{"display_name":""}}}"#,
         ),
     ])
@@ -83,6 +87,10 @@ async fn the_owners_mention_reaches_the_inbox_with_their_name_and_is_acknowledge
     assert_eq!(incoming.sender_id.as_str(), "U1");
     assert_eq!(incoming.sender_name, "Yuno");
     assert_eq!(incoming.content.as_str(), "안녕");
+    assert_eq!(
+        incoming.audience,
+        Audience::Anyone(String::from("the Slack workspace"))
+    );
     for envelope in ["e0", "e1"] {
         let ack = time::timeout(WAIT, heard.recv()).await.expect("in time");
         assert_eq!(
@@ -104,6 +112,12 @@ async fn the_owners_mention_reaches_the_inbox_with_their_name_and_is_acknowledge
         open.head
             .to_lowercase()
             .contains("authorization: bearer xapp-1")
+    );
+    let room = requests.recv().await.expect("conversations.info");
+    assert!(
+        room.head.starts_with("GET /conversations.info?channel=C1"),
+        "{}",
+        room.head
     );
     let info = requests.recv().await.expect("users.info");
     assert!(
@@ -167,4 +181,97 @@ async fn a_revoked_token_ends_the_channel() {
 fn the_config_hides_its_tokens() {
     let shown = format!("{:?}", SlackConfig::new("xapp-secret", "xoxb-secret", "U1"));
     assert!(!shown.contains("secret"), "{shown}");
+}
+
+fn channel_at(base: String) -> SlackChannel {
+    let mut config = SlackConfig::new("xapp-1", "xoxb-1", "U1");
+    config.api_base = base;
+    SlackChannel::new(config).expect("built")
+}
+
+#[tokio::test]
+async fn a_private_room_names_a_few_members_and_counts_everyone_but_the_assistant() {
+    let (base, mut requests) = mock::serve(vec![
+        (
+            200,
+            r#"{"ok":true,"channel":{"id":"G1","is_group":true,"is_private":true,"num_members":4}}"#,
+        ),
+        (200, r#"{"ok":true,"members":["UBOT","U1","U2","U3"]}"#),
+        (200, r#"{"ok":true,"user":{"name":"mina","real_name":"Mina"}}"#),
+        (200, r#"{"ok":true,"user":{"name":"joon","real_name":"Joon"}}"#),
+    ])
+    .await;
+    let channel = channel_at(base);
+
+    let first = channel.audience("G1", "UBOT").await;
+    let again = channel.audience("G1", "UBOT").await;
+
+    assert_eq!(first, again);
+    let Audience::People { mut some, total } = first else {
+        panic!("expected people, got {first:?}");
+    };
+    some.sort();
+    assert_eq!(some, vec![String::from("Joon"), String::from("Mina")]);
+    assert_eq!(total, 3);
+    let mut asked = Vec::new();
+    while let Ok(request) = requests.try_recv() {
+        asked.push(request.head.lines().next().unwrap_or_default().to_owned());
+    }
+    assert_eq!(asked.len(), 4, "{asked:?}");
+}
+
+#[tokio::test]
+async fn a_private_room_with_only_the_owner_is_the_owners_alone() {
+    let (base, _requests) = mock::serve(vec![
+        (
+            200,
+            r#"{"ok":true,"channel":{"id":"G2","is_private":true,"num_members":2}}"#,
+        ),
+        (200, r#"{"ok":true,"members":["U1","UBOT"]}"#),
+    ])
+    .await;
+
+    assert_eq!(
+        channel_at(base).audience("G2", "UBOT").await,
+        Audience::Owner
+    );
+}
+
+#[tokio::test]
+async fn a_room_that_cannot_be_looked_up_counts_as_seen_by_others() {
+    let (base, _requests) =
+        mock::serve(vec![(200, r#"{"ok":false,"error":"missing_scope"}"#)]).await;
+
+    assert!(matches!(
+        channel_at(base).audience("C9", "UBOT").await,
+        Audience::Anyone(_)
+    ));
+}
+
+#[tokio::test]
+async fn a_private_reply_opens_the_owners_direct_messages_once() {
+    let (base, mut requests) = mock::serve(vec![
+        (200, r#"{"ok":true,"channel":{"id":"D9"}}"#),
+        (200, r#"{"ok":true}"#),
+        (200, r#"{"ok":true}"#),
+    ])
+    .await;
+    let channel = channel_at(base);
+
+    for text in ["one", "two"] {
+        channel
+            .deliver(channel.private_place(), String::from(text))
+            .await
+            .expect("delivered");
+    }
+
+    let open = requests.recv().await.expect("conversations.open");
+    assert!(open.head.starts_with("POST /conversations.open"));
+    let body: serde_json::Value = serde_json::from_str(&open.body).expect("json");
+    assert_eq!(body, serde_json::json!({ "users": "U1" }));
+    for text in ["one", "two"] {
+        let post = requests.recv().await.expect("chat.postMessage");
+        let body: serde_json::Value = serde_json::from_str(&post.body).expect("json");
+        assert_eq!(body, serde_json::json!({ "channel": "D9", "text": text }));
+    }
 }

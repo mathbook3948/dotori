@@ -14,6 +14,7 @@ use dotori_core::id::ExternalUserId;
 use dotori_core::llm::Model;
 use dotori_core::llm::ModelRequest;
 use dotori_core::message::Address;
+use dotori_core::message::Audience;
 use dotori_core::message::Content;
 use dotori_core::message::Message;
 use dotori_core::message::Place;
@@ -72,6 +73,7 @@ impl LlmRunner {
                     role: Role::Owner,
                 },
                 content,
+                audience: Some(Audience::Owner),
             },
         }];
         for _ in 0..self.max_turns {
@@ -95,7 +97,9 @@ impl LlmRunner {
             let mut result = None;
             for action in actions {
                 match action {
-                    Action::Say { thread, text } if thread == brief_thread() => result = Some(text),
+                    Action::Say { thread, text, .. } if thread == brief_thread() => {
+                        result = Some(text)
+                    }
                     Action::UseTool(call) => {
                         used_tools = true;
                         let id = call.id.clone();

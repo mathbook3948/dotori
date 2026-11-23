@@ -24,6 +24,7 @@ use crate::llm::ModelError;
 use crate::llm::ModelReply;
 use crate::llm::ModelRequest;
 use crate::message::Address;
+use crate::message::Audience;
 use crate::message::Content;
 use crate::message::Message;
 use crate::message::Place;
@@ -82,6 +83,7 @@ fn say(thread: ThreadRef, text: &str) -> ModelReply {
         actions: vec![Action::Say {
             thread,
             text: text.to_owned(),
+            privately: false,
         }],
         trace: None,
     }
@@ -491,6 +493,7 @@ fn queued_reply_is_delivered_before_shutdown_returns() {
                     Action::Say {
                         thread: last_heard(&request),
                         text: String::from("on it"),
+                        privately: false,
                     },
                     tool_call(),
                 ],
@@ -758,6 +761,7 @@ fn work_cut_off_by_a_restart_is_reported_as_stopped() {
                         role: Role::Owner,
                     },
                     content: Content::parse("read it and research").expect("non-empty"),
+                    audience: Some(Audience::Owner),
                 },
             }),
             record(Entry::Acted {

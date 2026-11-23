@@ -65,7 +65,13 @@ pub enum Entry {
 
 #[derive(Clone, Debug)]
 pub enum Action {
-    Say { thread: ThreadRef, text: String },
+    /// `privately` sends the text to the room on the thread's channel that only the owner reads,
+    /// instead of to the thread itself.
+    Say {
+        thread: ThreadRef,
+        text: String,
+        privately: bool,
+    },
     UseTool(ToolCall),
     Delegate(SubSessionSpec),
 }

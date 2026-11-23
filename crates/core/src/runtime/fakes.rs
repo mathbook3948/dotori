@@ -21,6 +21,7 @@ use crate::llm::Model;
 use crate::llm::ModelError;
 use crate::llm::ModelReply;
 use crate::llm::ModelRequest;
+use crate::message::Audience;
 use crate::message::Content;
 use crate::message::Incoming;
 use crate::message::Place;
@@ -49,6 +50,7 @@ pub(crate) fn incoming(id: &str, place: &str, sender: &str, text: &str) -> Incom
         sender_id: ExternalUserId::new(sender),
         sender_name: sender.to_owned(),
         content: Content::parse(text).expect("non-empty"),
+        audience: Audience::Owner,
     }
 }
 
@@ -118,6 +120,10 @@ impl Channel for FakeChannel {
             }
             future::pending().await
         })
+    }
+
+    fn private_place(&self) -> Place {
+        Place::new("private")
     }
 
     fn deliver(&self, place: Place, text: String) -> BoxFuture<'_, Result<(), ChannelError>> {

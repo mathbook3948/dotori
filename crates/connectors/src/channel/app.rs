@@ -19,6 +19,7 @@ use dotori_core::channel::Traffic;
 use dotori_core::id::ChannelId;
 use dotori_core::id::ExternalMessageId;
 use dotori_core::id::ExternalUserId;
+use dotori_core::message::Audience;
 use dotori_core::message::Content;
 use dotori_core::message::Incoming;
 use dotori_core::message::Place;
@@ -190,6 +191,10 @@ impl Channel for AppChannel {
         })
     }
 
+    fn private_place(&self) -> Place {
+        Place::new(MAIN)
+    }
+
     fn deliver(&self, _place: Place, text: String) -> BoxFuture<'_, Result<(), ChannelError>> {
         self.hub.publish(&ToWindow::Reply { text });
         Box::pin(async { Ok(()) })
@@ -247,6 +252,7 @@ async fn serve(stream: TcpStream, token: String, hub: Arc<Hub>, inbox: Arc<dyn I
                 sender_id: ExternalUserId::new(OWNER),
                 sender_name: String::from(OWNER),
                 content,
+                audience: Audience::Owner,
             };
             if inbox.push(incoming).await.is_err() {
                 return;

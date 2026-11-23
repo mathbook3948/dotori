@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use dotori_core::conversation::Action;
 use dotori_core::conversation::Entry;
 use dotori_core::llm::ModelTrace;
+use dotori_core::message::Audience;
 use dotori_core::message::Role;
 use dotori_core::sub_session::SubSessionOutcome;
 use serde_json::value::RawValue;
@@ -145,16 +146,21 @@ impl Builder {
                 (None, _) => format!("call_{index}_{k}"),
             };
             let (name, input) = match action {
-                Action::Say { thread, text } => {
+                Action::Say {
+                    thread,
+                    text,
+                    privately,
+                } => {
                     done.push(Outcome {
                         id: id.clone(),
                         text: String::from(SAID),
                         failed: false,
                     });
-                    (
-                        String::from(SAY),
-                        serde_json::json!({ "thread": thread.get(), "text": text }).to_string(),
-                    )
+                    let mut input = serde_json::json!({ "thread": thread.get(), "text": text });
+                    if *privately {
+                        input["privately"] = serde_json::json!(true);
+                    }
+                    (String::from(SAY), input.to_string())
                 }
                 Action::Delegate(spec) => {
                     done.push(Outcome {
@@ -241,17 +247,19 @@ fn note(entry: &Entry) -> String {
                 Role::Owner => "owner",
                 Role::Other => "other",
             };
-            tagged(
-                "message",
-                &[
-                    ("thread", &thread.get().to_string()),
-                    ("channel", message.address.channel.as_str()),
-                    ("place", message.address.place.as_str()),
-                    ("from", &message.sender.name),
-                    ("role", role),
-                ],
-                message.content.as_str(),
-            )
+            let thread = thread.get().to_string();
+            let mut attributes = vec![
+                ("thread", thread.as_str()),
+                ("channel", message.address.channel.as_str()),
+                ("place", message.address.place.as_str()),
+                ("from", message.sender.name.as_str()),
+                ("role", role),
+            ];
+            let readers = message.audience.as_ref().map(readers);
+            if let Some(readers) = &readers {
+                attributes.push(("readers", readers));
+            }
+            tagged("message", &attributes, message.content.as_str())
         }
         Entry::SubSessionReturned { spec, outcome } => {
             let (status, text) = match outcome {
@@ -264,7 +272,7 @@ fn note(entry: &Entry) -> String {
                 text,
             )
         }
-        Entry::Refused(Action::Say { thread, text }) => tagged(
+        Entry::Refused(Action::Say { thread, text, .. }) => tagged(
             "not_sent",
             &[
                 ("thread", &thread.get().to_string()),
@@ -294,6 +302,25 @@ fn note(entry: &Entry) -> String {
             detail.as_deref().unwrap_or("It stopped without an error."),
         ),
         Entry::Acted { .. } | Entry::ToolReturned { .. } => String::new(),
+    }
+}
+
+fn readers(audience: &Audience) -> String {
+    match audience {
+        Audience::Owner => String::from("only the owner"),
+        Audience::People { some, total } => {
+            let others = total.saturating_sub(1);
+            let person = if others == 1 { "person" } else { "people" };
+            if some.is_empty() {
+                format!("the owner and {others} other {person}")
+            } else {
+                format!(
+                    "the owner and {others} other {person}, such as {}",
+                    some.join(", ")
+                )
+            }
+        }
+        Audience::Anyone(scope) => format!("anyone in {scope}"),
     }
 }
 

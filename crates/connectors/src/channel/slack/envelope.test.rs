@@ -29,6 +29,8 @@ fn a_mention_in_a_channel_is_answered_in_its_thread() {
         &Arrived {
             id: String::from("C1/10.5"),
             place: String::from("C1/10.5"),
+            room: String::from("C1"),
+            direct: false,
             user: String::from("U1"),
             text: String::from("hi & bye"),
         }
@@ -58,6 +60,8 @@ fn a_direct_message_is_answered_in_the_conversation() {
         OWNER,
     );
     assert_eq!(message(&frame).place, "D1");
+    assert_eq!(message(&frame).room, "D1");
+    assert!(message(&frame).direct);
     assert_eq!(message(&frame).text, "안녕");
 }
 

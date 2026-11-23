@@ -34,6 +34,7 @@ fn heard(text: &str) -> Entry {
                 role: Role::Owner,
             },
             content: Content::parse(text).expect("non-empty"),
+            audience: None,
         },
     }
 }
@@ -119,7 +120,7 @@ fn a_reply_becomes_actions_and_is_replayed_unchanged() {
     let reply = parse(TOOL_REPLY).expect("parsed");
 
     match reply.actions.as_slice() {
-        [Action::Say { thread, text }, Action::UseTool(call)] => {
+        [Action::Say { thread, text, .. }, Action::UseTool(call)] => {
             assert_eq!(thread.get(), 0);
             assert_eq!(text, "hello");
             assert_eq!(call.id.as_str(), "toolu_2");
