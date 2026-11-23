@@ -475,7 +475,8 @@ impl BrowserTool {
         match (said, shown) {
             (Ok(said), Ok(shown)) => Ok(format!("{said}{shown}")),
             (Err(error), Ok(shown)) => Err(format!("{error}\n\nThe page now:\n{shown}")),
-            (_, Err(error)) => Err(error),
+            (Err(error), Err(page)) => Err(format!("{error}\n\nThe page cannot be shown: {page}")),
+            (Ok(said), Err(page)) => Err(format!("{said}{page}")),
         }
     }
 }

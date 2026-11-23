@@ -37,3 +37,23 @@ fn get_by_calls_become_locator_steps() {
     );
     assert_eq!(get_by("click", &[]), None);
 }
+
+#[test]
+fn url_globs_match_the_whole_address() {
+    assert!(glob(
+        "https://mail.example.com/inbox",
+        "https://mail.example.com/inbox"
+    ));
+    assert!(glob("**/inbox/**", "https://mail.example.com/inbox/42"));
+    assert!(!glob("**/inbox/**", "https://mail.example.com/login"));
+    assert!(glob(
+        "https://mail.example.com/*",
+        "https://mail.example.com/login"
+    ));
+    assert!(!glob(
+        "https://mail.example.com/*",
+        "https://mail.example.com/a/b"
+    ));
+    assert!(glob("**", "https://anything.example/"));
+    assert!(!glob("https://a.example/", "https://a.example/x"));
+}

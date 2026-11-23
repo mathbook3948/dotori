@@ -596,10 +596,7 @@ impl Driver<'_> {
                                 ))
                                 .await?,
                         )),
-                        other => {
-                            let wanted = string(other);
-                            href == wanted || href.contains(wanted.trim_matches('*'))
-                        }
+                        other => glob(&string(other), &href),
                     };
                     if reached {
                         break;
@@ -709,6 +706,24 @@ impl Host for Driver<'_> {
             _ => None,
         }
     }
+}
+
+/// Whether `url` matches `pattern` as Playwright reads a URL glob: `**` stands for anything,
+/// `*` for anything but a slash, and the rest must match exactly.
+pub(crate) fn glob(pattern: &str, url: &str) -> bool {
+    fn from(pattern: &[char], url: &[char]) -> bool {
+        match pattern {
+            [] => url.is_empty(),
+            ['*', '*', rest @ ..] => (0..=url.len()).any(|skip| from(rest, &url[skip..])),
+            ['*', rest @ ..] => (0..=url.len())
+                .take_while(|skip| *skip == 0 || url[skip - 1] != '/')
+                .any(|skip| from(rest, &url[skip..])),
+            [first, rest @ ..] => url.first() == Some(first) && from(rest, &url[1..]),
+        }
+    }
+    let pattern: Vec<char> = pattern.chars().collect();
+    let url: Vec<char> = url.chars().collect();
+    from(&pattern, &url)
 }
 
 /// The key events for a key such as `Enter`, `a` or `Control+A`, down then up.
