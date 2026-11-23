@@ -91,6 +91,7 @@ pub(crate) async fn serve(home: Home) -> Result<(), String> {
         index: home.search_index(),
         dictionaries: home.dictionaries(),
         embedding,
+        jobs: Some(home.jobs()),
     });
     tools.extend(memory.tools());
     let (relays, wrong) = settings.relays(settings::environment);

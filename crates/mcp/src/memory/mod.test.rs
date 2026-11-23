@@ -15,6 +15,7 @@ fn config() -> MemoryConfig {
         index: folder.join("search.sqlite3"),
         dictionaries: folder.join("dictionaries"),
         embedding: None,
+        jobs: None,
     }
 }
 
@@ -459,4 +460,58 @@ fn a_record_copied_in_later_with_a_smaller_number_is_still_found() {
     let found = memory.search("회의", 10, None).expect("searched");
 
     assert!(found.contains("[record a0001]"), "{found}");
+}
+
+#[test]
+fn a_vector_from_another_pc_waits_for_its_record_and_is_not_made_again() {
+    let config = config();
+    record(&config, &[("heard", Some("민지"), Some("회의"))]);
+    let mut index = open_index(&config.index).expect("index");
+    index
+        .execute(
+            "INSERT INTO copied_vectors (record, model, vector) VALUES \
+             ('r0001', 'm', x'0000803f'), ('r0002', 'm', x'0000803f')",
+            [],
+        )
+        .expect("copied");
+
+    copy_records(&mut index, &config.record).expect("copied records");
+    assert!(vectors::merge_copied(&mut index).expect("merged"));
+
+    let held: Vec<i64> = index
+        .prepare("SELECT seq FROM vectors")
+        .expect("prepared")
+        .query_map([], |row| row.get(0))
+        .expect("queried")
+        .collect::<rusqlite::Result<_>>()
+        .expect("read");
+    assert_eq!(held, [1]);
+    let waiting: i64 = index
+        .query_row("SELECT count(*) FROM copied_vectors", [], |row| row.get(0))
+        .expect("counted");
+    assert_eq!(waiting, 1, "r0002 waits for its record");
+    let logged: i64 = index
+        .query_row("SELECT count(*) FROM vector_log", [], |row| row.get(0))
+        .expect("counted");
+    assert_eq!(logged, 1);
+    let (texts, last) = vectors::pending(&mut index, "m", 10).expect("pending");
+    assert!(texts.is_empty(), "a record with a vector is not sent again");
+    assert_eq!(last, Some(1));
+}
+
+#[test]
+fn only_the_pc_holding_the_job_makes_vectors() {
+    let folder = std::env::temp_dir().join(format!("dotori-jobs-{}", std::process::id()));
+    std::fs::create_dir_all(&folder).expect("folder");
+    let jobs = folder.join("jobs.json");
+
+    assert!(makes_vectors(None));
+    assert!(
+        makes_vectors(Some(&jobs)),
+        "no file yet means this PC alone"
+    );
+    std::fs::write(&jobs, r#"{"vectors":false}"#).expect("written");
+    assert!(!makes_vectors(Some(&jobs)));
+    std::fs::write(&jobs, r#"{"vectors":true}"#).expect("written");
+    assert!(makes_vectors(Some(&jobs)));
 }

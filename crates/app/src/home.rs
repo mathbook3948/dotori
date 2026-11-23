@@ -65,6 +65,12 @@ impl Home {
         self.root.join("peers-seen.json")
     }
 
+    /// Which jobs that one PC at a time does this PC holds now, for the MCP server. The daemon
+    /// writes it.
+    pub(crate) fn jobs(&self) -> PathBuf {
+        self.root.join("jobs.json")
+    }
+
     pub(crate) fn lock(&self) -> PathBuf {
         self.root.join("daemon.lock")
     }

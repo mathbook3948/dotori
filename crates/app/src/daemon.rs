@@ -54,6 +54,8 @@ use crate::settings::RunnerChoice;
 use crate::settings::Settings;
 use crate::settings::environment;
 use crate::tools;
+use crate::vector_copies;
+use crate::vector_copies::VECTORS_JOB;
 
 const QUEUE: NonZeroUsize = NonZeroUsize::new(256).expect("non-zero");
 const SEEN: NonZeroUsize = NonZeroUsize::new(4096).expect("non-zero");
@@ -109,6 +111,24 @@ pub(crate) async fn serve(
         token,
     };
     let (records, linked, heard) = link(&home, &settings, records, &app).await;
+    vector_copies::write_jobs(&home.jobs(), linked.is_none());
+    if let Some(linked) = linked.clone() {
+        let jobs = home.jobs();
+        let index = home.search_index();
+        tokio::spawn(vector_copies::keep_asking(linked.clone(), index));
+        tokio::spawn(async move {
+            let Some(mut holder) = linked.keeper.watch(VECTORS_JOB) else {
+                return;
+            };
+            loop {
+                let makes = holder.borrow_and_update().as_deref() == Some(linked.own.as_str());
+                vector_copies::write_jobs(&jobs, makes);
+                if holder.changed().await.is_err() {
+                    return;
+                }
+            }
+        });
+    }
     let route = Route::new(linked.clone());
     if let (Some(linked), Some((mut heard, copies))) = (linked.clone(), heard) {
         let app = Arc::clone(&app);
@@ -134,9 +154,21 @@ pub(crate) async fn serve(
                 }
             });
         }
+        let index = home.search_index();
         tokio::spawn(async move {
             while let Some(heard) = heard.recv().await {
                 linked.keeper.hear(&heard);
+                if heard
+                    .message
+                    .get("kind")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("linked")
+                {
+                    vector_copies::ask(&linked, &index);
+                }
+                if vector_copies::hear(&linked, &index, &heard) {
+                    continue;
+                }
                 if notes::hear(&notes, &linked.hub, &heard) {
                     continue;
                 }
@@ -265,7 +297,7 @@ async fn link(
     };
     let own = hub.own().to_owned();
     let copies = Copies::start(Arc::clone(&hub), records.clone());
-    let keeper = Keeper::start(Arc::clone(&hub), own.clone(), &[MAIN_JOB]);
+    let keeper = Keeper::start(Arc::clone(&hub), own.clone(), &[MAIN_JOB, VECTORS_JOB]);
     let linked = Linked {
         hub,
         keeper: Arc::clone(&keeper),

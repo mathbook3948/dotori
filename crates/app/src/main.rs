@@ -14,6 +14,7 @@ mod screen_link;
 mod settings;
 mod tools;
 mod tray;
+mod vector_copies;
 mod window;
 
 use std::env;

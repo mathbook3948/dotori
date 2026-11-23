@@ -14,6 +14,7 @@ pub(crate) const LONGEST: usize = 2000;
 #[derive(Default)]
 pub(crate) struct Vectors {
     model: String,
+    merged: Option<String>,
     upto: i64,
     width: usize,
     seqs: Vec<i64>,
@@ -23,9 +24,11 @@ pub(crate) struct Vectors {
 impl Vectors {
     /// Reads the vectors stored since the last load. Another model's vectors are never read.
     pub(crate) fn load(&mut self, index: &Connection, model: &str) -> rusqlite::Result<()> {
-        if self.model != model {
+        let merged = meta(index, "vectors_merged")?;
+        if self.model != model || self.merged != merged {
             *self = Self {
                 model: model.to_owned(),
+                merged,
                 ..Self::default()
             };
         }
@@ -108,16 +111,21 @@ pub(crate) fn pending(
         .and_then(|done| done.parse().ok())
         .unwrap_or(0);
     start.commit()?;
-    let rows: Vec<(i64, Option<String>, Option<String>)> = index
-        .prepare("SELECT seq, sender, text FROM docs WHERE seq > ?1 ORDER BY seq LIMIT ?2")?
-        .query_map(params![done, count], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+    let rows: Vec<(i64, Option<String>, Option<String>, bool)> = index
+        .prepare(
+            "SELECT d.seq, d.sender, d.text, \
+             EXISTS (SELECT 1 FROM vectors v WHERE v.seq = d.seq AND v.model = ?3) \
+             FROM docs d WHERE d.seq > ?1 ORDER BY d.seq LIMIT ?2",
+        )?
+        .query_map(params![done, count, model], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
         })?
         .collect::<rusqlite::Result<_>>()?;
     let last = rows.last().map(|row| row.0);
     let texts = rows
         .into_iter()
-        .filter_map(|(seq, sender, text)| {
+        .filter(|(_, _, _, held)| !held)
+        .filter_map(|(seq, sender, text, _)| {
             let text = text.filter(|text| !text.trim().is_empty())?;
             let text = match sender {
                 Some(sender) => format!("{sender}: {text}"),
@@ -173,6 +181,9 @@ pub(crate) fn store(
                 params![seq, model, to_bytes(vector)],
             )
             .map_err(fail)?;
+        batch
+            .execute("INSERT INTO vector_log (seq) VALUES (?1)", [seq])
+            .map_err(fail)?;
     }
     batch
         .execute(
@@ -181,6 +192,45 @@ pub(crate) fn store(
         )
         .map_err(fail)?;
     batch.commit().map_err(fail)
+}
+
+/// Moves vectors another PC made into place once their records are in the index here. Says
+/// whether any moved, and if so the vectors held in memory are read again.
+pub(crate) fn merge_copied(index: &mut Connection) -> rusqlite::Result<bool> {
+    let merge = index.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let ready: Vec<(i64, String, String, Vec<u8>)> = merge
+        .prepare(
+            "SELECT d.seq, c.record, c.model, c.vector FROM copied_vectors c \
+             JOIN docs d ON d.record = c.record",
+        )?
+        .query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    for (seq, record, model, vector) in &ready {
+        let added = merge.execute(
+            "INSERT OR IGNORE INTO vectors (seq, model, vector) VALUES (?1, ?2, ?3)",
+            params![seq, model, vector],
+        )?;
+        if added > 0 {
+            merge.execute("INSERT INTO vector_log (seq) VALUES (?1)", [seq])?;
+        }
+        merge.execute(
+            "DELETE FROM copied_vectors WHERE record = ?1 AND model = ?2",
+            params![record, model],
+        )?;
+    }
+    if !ready.is_empty() {
+        let merged: i64 = meta(&merge, "vectors_merged")?
+            .and_then(|merged| merged.parse().ok())
+            .unwrap_or(0);
+        merge.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('vectors_merged', ?1)",
+            [(merged + 1).to_string()],
+        )?;
+    }
+    merge.commit()?;
+    Ok(!ready.is_empty())
 }
 
 /// Whether any vector from `model` is kept, so a search is worth embedding its query for.

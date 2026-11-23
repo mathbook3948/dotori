@@ -318,7 +318,7 @@ pub fn unhex(text: &str) -> Option<Vec<u8>> {
 
 const URL_SAFE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
-fn base64url(bytes: &[u8]) -> String {
+pub fn base64url(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
         let joined = chunk.iter().enumerate().fold(0u32, |joined, (at, byte)| {
@@ -333,7 +333,7 @@ fn base64url(bytes: &[u8]) -> String {
     out
 }
 
-fn unbase64url(text: &str) -> Option<Vec<u8>> {
+pub fn unbase64url(text: &str) -> Option<Vec<u8>> {
     let mut out = Vec::with_capacity(text.len() * 3 / 4);
     let mut bits = 0u32;
     let mut held = 0;
