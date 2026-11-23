@@ -49,8 +49,8 @@ fn merging_books_spreads_approvals_and_removals_but_not_ones_own_key() {
     there.approve(peer("c", 2));
     there.remove("b", 5);
 
-    assert!(here.merge(&there, "me"));
-    assert!(!here.merge(&there, "me"));
+    assert!(here.merge(&there, "me", 100));
+    assert!(!here.merge(&there, "me", 100));
 
     let keys: Vec<&str> = here.peers.iter().map(|peer| peer.key.as_str()).collect();
     assert_eq!(keys, ["c"]);
@@ -116,4 +116,33 @@ fn hex_reads_back() {
     assert_eq!(unhex(&hex(&[0, 1, 254, 255])), Some(vec![0, 1, 254, 255]));
     assert_eq!(unhex("abc"), None);
     assert_eq!(unhex("zz"), None);
+}
+
+#[test]
+fn a_time_from_the_future_is_taken_as_now_so_a_removal_still_works() {
+    let mut here = Book::default();
+    let mut there = Book::default();
+    there.approve(peer("x", u64::MAX));
+
+    here.merge(&there, "me", 100);
+
+    assert_eq!(here.find("x").map(|peer| peer.since), Some(100));
+    assert!(here.remove("x", 101));
+}
+
+#[test]
+fn an_older_or_equal_copy_does_not_change_a_known_pc() {
+    let mut book = Book::default();
+    book.approve(Peer {
+        address: Some(String::from("new:1")),
+        ..peer("a", 5)
+    });
+    assert!(!book.approve(Peer {
+        address: Some(String::from("old:1")),
+        ..peer("a", 5)
+    }));
+    assert_eq!(
+        book.find("a").and_then(|peer| peer.address.as_deref()),
+        Some("new:1")
+    );
 }

@@ -25,12 +25,21 @@ const BATCH_BYTES: usize = 4 * 1024 * 1024;
 
 type Marks = BTreeMap<String, String>;
 
-/// Keeps this PC's raw record and the other PCs' copies the same.
+#[derive(Debug, Default)]
+struct Other {
+    marks: Marks,
+    waiting: bool,
+    stuck: bool,
+}
+
+/// Keeps this PC's raw record and the other PCs' copies the same. One batch at a time goes to
+/// each PC, and the next waits for that PC to say how far it holds the record now, so a batch
+/// it could not store is not passed over and a large record is not read into memory at once.
 #[derive(Debug)]
 pub struct Copies {
     hub: Arc<Hub>,
     store: SqliteStore,
-    held: Mutex<HashMap<String, Marks>>,
+    others: Mutex<HashMap<String, Other>>,
     wake: Notify,
 }
 
@@ -40,7 +49,7 @@ impl Copies {
         let copies = Arc::new(Self {
             hub,
             store,
-            held: Mutex::new(HashMap::new()),
+            others: Mutex::new(HashMap::new()),
             wake: Notify::new(),
         });
         tokio::spawn(Arc::clone(&copies).send_all());
@@ -51,13 +60,7 @@ impl Copies {
     pub async fn hear(&self, heard: &Heard) -> bool {
         match heard.message.get("kind").and_then(Value::as_str) {
             Some("linked") => {
-                match self.store.marks().await {
-                    Ok(marks) => {
-                        self.hub
-                            .send(&heard.key, json!({ "kind": "marks", "marks": marks }));
-                    }
-                    Err(error) => eprintln!("dotori: cannot read the record to copy it: {error}"),
-                }
+                self.tell_marks(&heard.key, false).await;
                 true
             }
             Some("marks") => {
@@ -66,34 +69,49 @@ impl Copies {
                     .get("marks")
                     .and_then(|marks| serde_json::from_value(marks.clone()).ok())
                     .unwrap_or_default();
-                self.held
-                    .lock()
-                    .expect("unpoisoned")
-                    .insert(heard.key.clone(), marks);
+                let stuck = heard.message.get("stuck").and_then(Value::as_bool) == Some(true);
+                if stuck {
+                    eprintln!(
+                        "dotori: {} could not store records from this PC; trying again when it links again",
+                        heard.device
+                    );
+                }
+                self.others.lock().expect("unpoisoned").insert(
+                    heard.key.clone(),
+                    Other {
+                        marks,
+                        waiting: false,
+                        stuck,
+                    },
+                );
                 self.wake.notify_one();
                 true
             }
             Some("records") => {
-                let Some(rows) = heard
+                let rows = heard
                     .message
                     .get("rows")
-                    .and_then(|rows| serde_json::from_value::<Vec<Copied>>(rows.clone()).ok())
-                else {
-                    return true;
-                };
+                    .and_then(|rows| serde_json::from_value::<Vec<Copied>>(rows.clone()).ok());
                 let mut highest = Marks::new();
-                for row in &rows {
+                for row in rows.iter().flatten() {
                     let mark = highest.entry(row.device.clone()).or_default();
                     if row.id > *mark {
                         mark.clone_from(&row.id);
                     }
                 }
-                match self.store.copy_in(rows).await {
-                    Ok(_) => {
-                        if let Some(theirs) =
-                            self.held.lock().expect("unpoisoned").get_mut(&heard.key)
+                let stored = match rows {
+                    Some(rows) => self.store.copy_in(rows).await.map(|_| ()),
+                    None => Err(RecordError {
+                        detail: String::from("records that do not read"),
+                    }),
+                };
+                let stuck = stored.is_err();
+                match stored {
+                    Ok(()) => {
+                        if let Some(other) =
+                            self.others.lock().expect("unpoisoned").get_mut(&heard.key)
                         {
-                            raise(theirs, highest);
+                            raise(&mut other.marks, highest);
                         }
                         self.wake.notify_one();
                     }
@@ -104,6 +122,7 @@ impl Copies {
                         );
                     }
                 }
+                self.tell_marks(&heard.key, stuck).await;
                 true
             }
             _ => false,
@@ -115,55 +134,65 @@ impl Copies {
         self.wake.notify_one();
     }
 
-    async fn send_all(self: Arc<Self>) {
-        loop {
-            self.wake.notified().await;
-            while self.send_once().await {}
+    async fn tell_marks(&self, key: &str, stuck: bool) {
+        match self.store.marks().await {
+            Ok(marks) => {
+                self.hub.send(
+                    key,
+                    json!({ "kind": "marks", "marks": marks, "stuck": stuck }),
+                );
+            }
+            Err(error) => eprintln!("dotori: cannot read the record to copy it: {error}"),
         }
     }
 
-    async fn send_once(&self) -> bool {
+    async fn send_all(self: Arc<Self>) {
+        loop {
+            self.wake.notified().await;
+            self.send_once().await;
+        }
+    }
+
+    async fn send_once(&self) {
         let Ok(ours) = self.store.marks().await else {
-            return false;
+            return;
         };
-        let peers: Vec<(String, Marks)> = self
-            .held
+        let ready: Vec<(String, Marks)> = self
+            .others
             .lock()
             .expect("unpoisoned")
             .iter()
-            .map(|(key, marks)| (key.clone(), marks.clone()))
+            .filter(|(_, other)| !other.waiting && !other.stuck)
+            .map(|(key, other)| (key.clone(), other.marks.clone()))
             .collect();
-        let mut sent_any = false;
-        for (key, theirs) in peers {
-            for (device, mark) in &ours {
+        for (key, theirs) in ready {
+            let Some((device, from)) = ours.iter().find_map(|(device, mark)| {
                 let from = theirs.get(device).cloned().unwrap_or_default();
-                if *mark <= from {
-                    continue;
+                (*mark > from).then(|| (device.clone(), from))
+            }) else {
+                continue;
+            };
+            let Ok(rows) = self
+                .store
+                .after(&device, &from, BATCH_COUNT, BATCH_BYTES)
+                .await
+            else {
+                continue;
+            };
+            if rows.is_empty() {
+                continue;
+            }
+            if self
+                .hub
+                .send(&key, json!({ "kind": "records", "rows": rows }))
+            {
+                if let Some(other) = self.others.lock().expect("unpoisoned").get_mut(&key) {
+                    other.waiting = true;
                 }
-                let Ok(rows) = self
-                    .store
-                    .after(device, &from, BATCH_COUNT, BATCH_BYTES)
-                    .await
-                else {
-                    continue;
-                };
-                let Some(last) = rows.last().map(|row| row.id.clone()) else {
-                    continue;
-                };
-                if !self
-                    .hub
-                    .send(&key, json!({ "kind": "records", "rows": rows }))
-                {
-                    self.held.lock().expect("unpoisoned").remove(&key);
-                    break;
-                }
-                if let Some(theirs) = self.held.lock().expect("unpoisoned").get_mut(&key) {
-                    raise(theirs, Marks::from([(device.clone(), last)]));
-                }
-                sent_any = true;
+            } else {
+                self.others.lock().expect("unpoisoned").remove(&key);
             }
         }
-        sent_any
     }
 }
 

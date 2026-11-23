@@ -215,8 +215,14 @@ impl SqliteStore {
         self.with(move |book, folder, _| {
             let mut parsed = Vec::with_capacity(copies.len());
             for copied in &copies {
-                Uuid::parse_str(&copied.id)
+                let number = Uuid::parse_str(&copied.id)
                     .map_err(|error| fail(format!("record {}: {error}", copied.id)))?;
+                if number.hyphenated().to_string() != copied.id {
+                    return Err(fail(format!(
+                        "record {} is not written as usual",
+                        copied.id
+                    )));
+                }
                 let line: Line = serde_json::from_str(&copied.line)
                     .map_err(|error| fail(format!("record {}: {error}", copied.id)))?;
                 let at_ms = line.at_ms();

@@ -75,7 +75,12 @@ async fn details(store: &SqliteStore) -> Vec<String> {
 
 async fn until_holds(store: &SqliteStore, expected: &[&str]) {
     for _ in 0..200 {
-        if details(store).await == expected {
+        let held = details(store).await;
+        let kept: Vec<String> = held
+            .into_iter()
+            .filter(|detail| !detail.starts_with("early "))
+            .collect();
+        if kept == expected {
             return;
         }
         time::sleep(Duration::from_millis(50)).await;
@@ -87,6 +92,8 @@ async fn until_holds(store: &SqliteStore, expected: &[&str]) {
 async fn linked_pcs_catch_up_and_then_copy_each_new_record() {
     let a = pc("a", true);
     let b = pc("b", false);
+    let many: Vec<Record> = (0..1200).map(|n| failed(&format!("early {n}"))).collect();
+    a.store.append(many).await.expect("many");
     a.store.append(vec![failed("a1")]).await.expect("a1");
     time::sleep(Duration::from_millis(5)).await;
     b.store.append(vec![failed("b1")]).await.expect("b1");
@@ -121,6 +128,7 @@ async fn linked_pcs_catch_up_and_then_copy_each_new_record() {
     };
     announced.append(vec![failed("a2")]).await.expect("a2");
     until_holds(&b.store, &["a1", "b1", "a2"]).await;
+    assert_eq!(details(&b.store).await.len(), 1203, "every batch arrives");
     let a_marks = a.store.marks().await.expect("marks");
     assert_eq!(b.store.marks().await.expect("marks"), a_marks);
 

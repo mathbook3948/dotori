@@ -8,6 +8,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -93,6 +94,9 @@ pub struct Hub {
     heard: mpsc::UnboundedSender<Heard>,
     next: AtomicU64,
     listening: Option<SocketAddr>,
+    kept: Mutex<Book>,
+    shared: Mutex<Option<Book>>,
+    joining: AtomicBool,
 }
 
 impl Hub {
@@ -129,6 +133,9 @@ impl Hub {
             heard,
             next: AtomicU64::new(1),
             listening,
+            kept: Mutex::new(Book::default()),
+            shared: Mutex::new(None),
+            joining: AtomicBool::new(false),
         });
         let _ = hub.write_seen();
         if let Some(listener) = listener {
@@ -178,10 +185,54 @@ impl Hub {
     }
 
     fn book(&self) -> Book {
-        Book::load(&self.config.book).unwrap_or_else(|error| {
+        let mut kept = self.kept.lock().expect("unpoisoned");
+        match Book::load(&self.config.book) {
+            Ok(book) => {
+                kept.clone_from(&book);
+                book
+            }
+            Err(error) => {
+                eprintln!("dotori: {error}");
+                kept.clone()
+            }
+        }
+    }
+
+    fn edit_book(&self, edit: impl FnOnce(&mut Book) -> bool) -> Option<Book> {
+        let mut kept = self.kept.lock().expect("unpoisoned");
+        let mut book = match Book::load(&self.config.book) {
+            Ok(book) => book,
+            Err(error) => {
+                eprintln!("dotori: the book of PCs is left alone: {error}");
+                return None;
+            }
+        };
+        if !edit(&mut book) {
+            kept.clone_from(&book);
+            return None;
+        }
+        if let Err(error) = book.save(&self.config.book) {
             eprintln!("dotori: {error}");
-            Book::default()
-        })
+            return None;
+        }
+        kept.clone_from(&book);
+        Some(book)
+    }
+
+    fn share_changed(&self, book: &Book, except: Option<&str>) {
+        {
+            let mut shared = self.shared.lock().expect("unpoisoned");
+            if shared.as_ref() == Some(book) {
+                return;
+            }
+            *shared = Some(book.clone());
+        }
+        let message = json!({ "kind": BOOK, "book": book });
+        for (key, line) in self.lines.lock().expect("unpoisoned").iter() {
+            if Some(key.as_str()) != except {
+                let _ = line.send.send(message.clone());
+            }
+        }
     }
 
     async fn listen(self: Arc<Self>, listener: TcpListener) {
@@ -193,7 +244,14 @@ impl Hub {
             let hub = Arc::clone(&self);
             tokio::spawn(async move {
                 let book = hub.book();
-                let invite = || Invite::open(&hub.config.invite, now());
+                let took = AtomicBool::new(false);
+                let invite = || {
+                    if hub.joining.swap(true, Ordering::SeqCst) {
+                        return None;
+                    }
+                    took.store(true, Ordering::SeqCst);
+                    Invite::open(&hub.config.invite, now())
+                };
                 let answered = wire::answer(
                     stream,
                     &hub.config.identity,
@@ -202,8 +260,14 @@ impl Hub {
                     &hub.hello(),
                 )
                 .await;
+                if let Ok((line, Start::Join(_))) = &answered {
+                    hub.welcome(line);
+                }
+                if took.load(Ordering::SeqCst) {
+                    hub.joining.store(false, Ordering::SeqCst);
+                }
                 match answered {
-                    Ok((line, Start::Join(_))) => hub.welcome(&line),
+                    Ok((_, Start::Join(_))) => {}
                     Ok((line, Start::Link)) => {
                         let dialer = line.key;
                         hub.take(line, dialer).await;
@@ -216,7 +280,6 @@ impl Hub {
 
     fn welcome(&self, line: &Line) {
         let _ = std::fs::remove_file(&self.config.invite);
-        let mut book = self.book();
         let peer = Peer {
             device: line.hello.device.clone(),
             name: line.hello.name.clone(),
@@ -224,11 +287,8 @@ impl Hub {
             address: line.hello.address.clone(),
             since: now(),
         };
-        if book.approve(peer) {
-            if let Err(error) = book.save(&self.config.book) {
-                eprintln!("dotori: {error}");
-            }
-            self.share_book(&book);
+        if let Some(book) = self.edit_book(|book| book.approve(peer)) {
+            self.share_changed(&book, None);
         }
     }
 
@@ -238,6 +298,7 @@ impl Hub {
             every.tick().await;
             let book = self.book();
             self.drop_unapproved(&book);
+            self.share_changed(&book, None);
             for peer in &book.peers {
                 let Some(address) = peer.address.clone() else {
                     continue;
@@ -321,12 +382,9 @@ impl Hub {
                 },
             );
         }
-        let mut book = self.book();
-        if book.moved(&key, &line.hello)
-            && let Err(error) = book.save(&self.config.book)
-        {
-            eprintln!("dotori: {error}");
-        }
+        let book = self
+            .edit_book(|book| book.moved(&key, &line.hello))
+            .unwrap_or_else(|| self.book());
         let _ = send.send(json!({ "kind": BOOK, "book": book }));
         drop(send);
         self.mark(&key, true);
@@ -371,25 +429,11 @@ impl Hub {
         else {
             return;
         };
-        let mut book = self.book();
-        if !book.merge(&other, &self.own) {
+        let Some(book) = self.edit_book(|book| book.merge(&other, &self.own, now())) else {
             return;
-        }
-        if let Err(error) = book.save(&self.config.book) {
-            eprintln!("dotori: {error}");
-            return;
-        }
+        };
         self.drop_unapproved(&book);
-        let shared = json!({ "kind": BOOK, "book": book });
-        for (key, line) in self.lines.lock().expect("unpoisoned").iter() {
-            if key != from {
-                let _ = line.send.send(shared.clone());
-            }
-        }
-    }
-
-    fn share_book(&self, book: &Book) {
-        self.broadcast(&json!({ "kind": BOOK, "book": book }));
+        self.share_changed(&book, Some(from));
     }
 
     fn mark(&self, key: &str, linked: bool) {

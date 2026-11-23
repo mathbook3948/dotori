@@ -150,18 +150,16 @@ impl Book {
         }
         match self.peers.iter_mut().find(|known| known.key == peer.key) {
             Some(known) if *known == peer => false,
-            Some(known) => {
+            Some(known) if peer.since > known.since => {
                 let address = peer.address.clone().or_else(|| known.address.clone());
-                let changed = known.device != peer.device
-                    || known.name != peer.name
-                    || known.address != address
-                    || known.since < peer.since;
-                known.device = peer.device;
-                known.name = peer.name;
-                known.address = address;
-                known.since = known.since.max(peer.since);
-                changed
+                *known = Peer { address, ..peer };
+                true
             }
+            Some(known) if known.address.is_none() && peer.address.is_some() => {
+                known.address = peer.address;
+                true
+            }
+            Some(_) => false,
             None => {
                 self.peers.push(peer);
                 true
@@ -194,14 +192,19 @@ impl Book {
 
     /// Takes in what another PC's book says, leaving out this PC's own key. Says whether this
     /// book changed.
-    pub fn merge(&mut self, other: &Book, own: &str) -> bool {
+    /// Times from the future are taken as now, so no PC can make an approval that later
+    /// removals cannot undo.
+    pub fn merge(&mut self, other: &Book, own: &str, now: u64) -> bool {
         let mut changed = false;
         for removed in &other.removed {
-            changed |= self.remove(&removed.key, removed.at);
+            changed |= self.remove(&removed.key, removed.at.min(now));
         }
         for peer in &other.peers {
             if peer.key != own {
-                changed |= self.approve(peer.clone());
+                changed |= self.approve(Peer {
+                    since: peer.since.min(now),
+                    ..peer.clone()
+                });
             }
         }
         changed
@@ -215,9 +218,12 @@ impl Book {
         let address = hello.address.clone().or_else(|| peer.address.clone());
         let changed =
             peer.device != hello.device || peer.name != hello.name || peer.address != address;
-        peer.device = hello.device.clone();
-        peer.name = hello.name.clone();
-        peer.address = address;
+        if changed {
+            peer.device = hello.device.clone();
+            peer.name = hello.name.clone();
+            peer.address = address;
+            peer.since = peer.since.max(now());
+        }
         changed
     }
 }
@@ -348,8 +354,13 @@ pub(crate) fn write_privately(path: &Path, bytes: &[u8]) -> Result<(), String> {
     if let Some(folder) = path.parent() {
         fs::create_dir_all(folder).map_err(fail)?;
     }
+    static DRAFTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let mut draft = path.as_os_str().to_owned();
-    draft.push(".new");
+    draft.push(format!(
+        ".{}-{}.new",
+        std::process::id(),
+        DRAFTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
     let mut options = OpenOptions::new();
     options.write(true).create(true).truncate(true);
     #[cfg(unix)]

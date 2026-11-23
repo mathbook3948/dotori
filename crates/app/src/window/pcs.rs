@@ -203,7 +203,14 @@ impl PcsView {
     }
 
     fn remove(&mut self, key: String, cx: &mut Context<Self>) {
-        let mut book = Book::load(&self.home.peers()).unwrap_or_default();
+        let mut book = match Book::load(&self.home.peers()) {
+            Ok(book) => book,
+            Err(error) => {
+                self.note = Some(Err(SharedString::from(error)));
+                cx.notify();
+                return;
+            }
+        };
         book.remove(&key, now());
         if let Err(error) = book.save(&self.home.peers()) {
             self.note = Some(Err(SharedString::from(error)));

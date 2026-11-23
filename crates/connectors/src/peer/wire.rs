@@ -300,7 +300,7 @@ impl Line {
                 }
                 out = sent.recv() => {
                     let Some(out) = out else { break Ok(()) };
-                    if let Err(error) = send_message(&mut transport, &mut write, &out).await {
+                    if let Err(error) = sent_in_time(&mut transport, &mut write, &out).await {
                         break Err(error);
                     }
                 }
@@ -309,7 +309,7 @@ impl Line {
                         break Err(String::from("the other PC went quiet"));
                     }
                     let ping = serde_json::json!({ "kind": "ping" });
-                    if let Err(error) = send_message(&mut transport, &mut write, &ping).await {
+                    if let Err(error) = sent_in_time(&mut transport, &mut write, &ping).await {
                         break Err(error);
                     }
                 }
@@ -318,6 +318,16 @@ impl Line {
         reader.abort();
         ended
     }
+}
+
+async fn sent_in_time(
+    transport: &mut TransportState,
+    write: &mut OwnedWriteHalf,
+    message: &Value,
+) -> Result<(), String> {
+    time::timeout(SILENCE, send_message(transport, write, message))
+        .await
+        .map_err(|_| String::from("the other PC stopped taking what was sent"))?
 }
 
 async fn send_message(
