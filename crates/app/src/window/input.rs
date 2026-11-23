@@ -1,11 +1,13 @@
-//! A one-line text field, adapted from gpui's `examples/input.rs`
-//! (Apache-2.0, Copyright Zed Industries). Changed: public constructor and text access,
-//! a `Submit` action in place of `Quit`, the project's import style, and colors and size taken
-//! from the theme and the parent instead of fixed ones.
+//! A text field of one line or several, adapted from gpui's `examples/input.rs`
+//! (Apache-2.0, Copyright Zed Industries). Changed: public constructors and text access,
+//! a `Submit` action in place of `Quit`, the project's import style, colors and size taken
+//! from the theme and the parent instead of fixed ones, and wrapped lines with a line break
+//! on Shift+Enter, moving up and down, and scrolling to the cursor.
 
 use std::ops::Range;
 
 use gpui::App;
+use gpui::AvailableSpace;
 use gpui::Bounds;
 use gpui::ClipboardItem;
 use gpui::Context;
@@ -26,13 +28,15 @@ use gpui::MouseUpEvent;
 use gpui::PaintQuad;
 use gpui::Pixels;
 use gpui::Point;
-use gpui::ShapedLine;
+use gpui::ScrollHandle;
 use gpui::SharedString;
 use gpui::Style;
+use gpui::TextAlign;
 use gpui::TextRun;
 use gpui::UTF16Selection;
 use gpui::UnderlineStyle;
 use gpui::Window;
+use gpui::WrappedLine;
 use gpui::actions;
 use gpui::div;
 use gpui::fill;
@@ -52,8 +56,12 @@ actions!(
         Delete,
         Left,
         Right,
+        Up,
+        Down,
         SelectLeft,
         SelectRight,
+        SelectUp,
+        SelectDown,
         SelectAll,
         Home,
         End,
@@ -62,10 +70,13 @@ actions!(
         Cut,
         Copy,
         Submit,
+        Newline,
     ]
 );
 
-/// A one-line text field.
+const MAX_ROWS: f32 = 8.;
+
+/// A text field, of one line or of several.
 pub(crate) struct TextInput {
     focus_handle: FocusHandle,
     content: SharedString,
@@ -73,9 +84,13 @@ pub(crate) struct TextInput {
     selected_range: Range<usize>,
     selection_reversed: bool,
     marked_range: Option<Range<usize>>,
-    last_layout: Option<ShapedLine>,
+    last_layout: Option<Shaped>,
     last_bounds: Option<Bounds<Pixels>>,
     is_selecting: bool,
+    multiline: bool,
+    scroll: ScrollHandle,
+    followed: Option<(SharedString, usize, Pixels)>,
+    column: Option<Pixels>,
 }
 
 impl TextInput {
@@ -95,6 +110,77 @@ impl TextInput {
         }
     }
 
+    fn up(&mut self, _: &Up, _: &mut Window, cx: &mut Context<Self>) {
+        let (to, column) = self.vertical(-1.);
+        self.move_to(to, cx);
+        self.column = column;
+    }
+
+    fn down(&mut self, _: &Down, _: &mut Window, cx: &mut Context<Self>) {
+        let (to, column) = self.vertical(1.);
+        self.move_to(to, cx);
+        self.column = column;
+    }
+
+    fn select_up(&mut self, _: &SelectUp, _: &mut Window, cx: &mut Context<Self>) {
+        let (to, column) = self.vertical(-1.);
+        self.select_to(to, cx);
+        self.column = column;
+    }
+
+    fn select_down(&mut self, _: &SelectDown, _: &mut Window, cx: &mut Context<Self>) {
+        let (to, column) = self.vertical(1.);
+        self.select_to(to, cx);
+        self.column = column;
+    }
+
+    fn newline(&mut self, _: &Newline, window: &mut Window, cx: &mut Context<Self>) {
+        if self.multiline && self.marked_range.is_none() {
+            self.replace_text_in_range(None, "\n", window, cx);
+        }
+    }
+
+    fn vertical(&self, rows: f32) -> (usize, Option<Pixels>) {
+        let Some(shaped) = self.last_layout.as_ref() else {
+            return (self.cursor_offset(), None);
+        };
+        let at = shaped.position(self.cursor_offset());
+        let x = self.column.unwrap_or(at.x);
+        let y = at.y + shaped.line_height * (rows + 0.5);
+        let to = if y < Pixels::ZERO {
+            0
+        } else if y >= shaped.height() {
+            self.content.len()
+        } else {
+            self.within(shaped.index(point(x, y)))
+        };
+        (to, Some(x))
+    }
+
+    fn within(&self, index: usize) -> usize {
+        let mut index = index.min(self.content.len());
+        while !self.content.is_char_boundary(index) {
+            index -= 1;
+        }
+        index
+    }
+
+    fn follow(&self, shaped: &Shaped, bounds: Bounds<Pixels>) -> bool {
+        let view = self.scroll.bounds();
+        if view.size.height <= Pixels::ZERO {
+            return false;
+        }
+        let cursor = bounds.top() + shaped.position(self.cursor_offset()).y;
+        let mut offset = self.scroll.offset();
+        if cursor < view.top() {
+            offset.y += view.top() - cursor;
+        } else if cursor + shaped.line_height > view.bottom() {
+            offset.y -= cursor + shaped.line_height - view.bottom();
+        }
+        self.scroll.set_offset(offset);
+        true
+    }
+
     fn select_left(&mut self, _: &SelectLeft, _: &mut Window, cx: &mut Context<Self>) {
         self.select_to(self.previous_boundary(self.cursor_offset()), cx);
     }
@@ -109,11 +195,17 @@ impl TextInput {
     }
 
     fn home(&mut self, _: &Home, _: &mut Window, cx: &mut Context<Self>) {
-        self.move_to(0, cx);
+        let cursor = self.cursor_offset();
+        let start = self.content[..cursor].rfind('\n').map_or(0, |at| at + 1);
+        self.move_to(start, cx);
     }
 
     fn end(&mut self, _: &End, _: &mut Window, cx: &mut Context<Self>) {
-        self.move_to(self.content.len(), cx);
+        let cursor = self.cursor_offset();
+        let end = self.content[cursor..]
+            .find('\n')
+            .map_or(self.content.len(), |at| cursor + at);
+        self.move_to(end, cx);
     }
 
     fn backspace(&mut self, _: &Backspace, window: &mut Window, cx: &mut Context<Self>) {
@@ -166,7 +258,13 @@ impl TextInput {
 
     fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-            self.replace_text_in_range(None, &text.replace("\n", " "), window, cx);
+            let text = text.replace("\r\n", "\n");
+            let text = if self.multiline {
+                text
+            } else {
+                text.replace('\n', " ")
+            };
+            self.replace_text_in_range(None, &text, window, cx);
         }
     }
 
@@ -187,6 +285,7 @@ impl TextInput {
     }
 
     fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
+        self.column = None;
         self.selected_range = offset..offset;
         cx.notify()
     }
@@ -204,7 +303,7 @@ impl TextInput {
             return 0;
         }
 
-        let (Some(bounds), Some(line)) = (self.last_bounds.as_ref(), self.last_layout.as_ref())
+        let (Some(bounds), Some(shaped)) = (self.last_bounds.as_ref(), self.last_layout.as_ref())
         else {
             return 0;
         };
@@ -214,10 +313,11 @@ impl TextInput {
         if position.y > bounds.bottom() {
             return self.content.len();
         }
-        line.closest_index_for_x(position.x - bounds.left())
+        self.within(shaped.index(position - bounds.origin))
     }
 
     fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
+        self.column = None;
         if self.selection_reversed {
             self.selected_range.start = offset
         } else {
@@ -283,6 +383,7 @@ impl TextInput {
             .unwrap_or(self.content.len())
     }
 
+    /// A field of one line.
     pub(crate) fn new(placeholder: &'static str, cx: &mut Context<Self>) -> Self {
         Self {
             focus_handle: cx.focus_handle(),
@@ -294,6 +395,19 @@ impl TextInput {
             last_layout: None,
             last_bounds: None,
             is_selecting: false,
+            multiline: false,
+            scroll: ScrollHandle::new(),
+            followed: None,
+            column: None,
+        }
+    }
+
+    /// A field that grows to several lines as the text wraps, and takes a line break on
+    /// Shift+Enter.
+    pub(crate) fn multiline(placeholder: &'static str, cx: &mut Context<Self>) -> Self {
+        Self {
+            multiline: true,
+            ..Self::new(placeholder, cx)
         }
     }
 
@@ -383,6 +497,7 @@ impl EntityInputHandler for TextInput {
             .or(self.marked_range.clone())
             .unwrap_or(self.selected_range.clone());
 
+        self.column = None;
         self.content =
             (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
                 .into();
@@ -405,6 +520,7 @@ impl EntityInputHandler for TextInput {
             .or(self.marked_range.clone())
             .unwrap_or(self.selected_range.clone());
 
+        self.column = None;
         self.content =
             (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
                 .into();
@@ -429,17 +545,13 @@ impl EntityInputHandler for TextInput {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
-        let last_layout = self.last_layout.as_ref()?;
+        let shaped = self.last_layout.as_ref()?;
         let range = self.range_from_utf16(&range_utf16);
+        let start = shaped.position(range.start);
+        let end = shaped.position(range.end);
         Some(Bounds::from_corners(
-            point(
-                bounds.left() + last_layout.x_for_index(range.start),
-                bounds.top(),
-            ),
-            point(
-                bounds.left() + last_layout.x_for_index(range.end),
-                bounds.bottom(),
-            ),
+            bounds.origin + start,
+            bounds.origin + point(end.x.max(start.x), start.y + shaped.line_height),
         ))
     }
 
@@ -449,12 +561,9 @@ impl EntityInputHandler for TextInput {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<usize> {
-        let line_point = self.last_bounds?.localize(&point)?;
-        let last_layout = self.last_layout.as_ref()?;
-
-        assert_eq!(last_layout.text, self.content);
-        let utf8_index = last_layout.index_for_x(point.x - line_point.x)?;
-        Some(self.offset_to_utf16(utf8_index))
+        let inside = self.last_bounds?.localize(&point)?;
+        let shaped = self.last_layout.as_ref()?;
+        Some(self.offset_to_utf16(self.within(shaped.index(inside))))
     }
 }
 
@@ -462,10 +571,109 @@ struct TextElement {
     input: Entity<TextInput>,
 }
 
+#[derive(Clone)]
+struct Shaped {
+    lines: Vec<WrappedLine>,
+    starts: Vec<usize>,
+    line_height: Pixels,
+}
+
+impl Shaped {
+    fn new(
+        text: &SharedString,
+        runs: &[TextRun],
+        font_size: Pixels,
+        wrap: Option<Pixels>,
+        line_height: Pixels,
+        window: &Window,
+    ) -> Self {
+        let lines: Vec<WrappedLine> = window
+            .text_system()
+            .shape_text(text.clone(), font_size, runs, wrap, None)
+            .map(|lines| lines.into_vec())
+            .unwrap_or_default();
+        let mut starts = Vec::with_capacity(lines.len());
+        let mut start = 0;
+        for line in &lines {
+            starts.push(start);
+            start += line.len() + 1;
+        }
+        Self {
+            lines,
+            starts,
+            line_height,
+        }
+    }
+
+    fn height(&self) -> Pixels {
+        self.lines
+            .iter()
+            .map(|line| line.size(self.line_height).height)
+            .fold(Pixels::ZERO, |sum, height| sum + height)
+            .max(self.line_height)
+    }
+
+    fn position(&self, index: usize) -> Point<Pixels> {
+        let mut top = Pixels::ZERO;
+        for (n, line) in self.lines.iter().enumerate() {
+            let start = self.starts[n];
+            if index <= start + line.len() {
+                let at = line
+                    .position_for_index(index.saturating_sub(start), self.line_height)
+                    .unwrap_or_else(|| point(line.width(), Pixels::ZERO));
+                return point(at.x, top + at.y);
+            }
+            top += line.size(self.line_height).height;
+        }
+        point(Pixels::ZERO, top)
+    }
+
+    fn index(&self, at: Point<Pixels>) -> usize {
+        let mut top = Pixels::ZERO;
+        let last = self.lines.len().saturating_sub(1);
+        for (n, line) in self.lines.iter().enumerate() {
+            let height = line.size(self.line_height).height;
+            if at.y < top + height || n == last {
+                let inside = point(
+                    at.x.max(Pixels::ZERO),
+                    (at.y - top).clamp(Pixels::ZERO, height - px(1.)),
+                );
+                let found = line
+                    .closest_index_for_position(inside, self.line_height)
+                    .unwrap_or_else(|edge| edge);
+                return self.starts[n] + found;
+            }
+            top += height;
+        }
+        0
+    }
+
+    fn rows(&self, range: &Range<usize>, width: Pixels) -> Vec<Bounds<Pixels>> {
+        let from = self.position(range.start);
+        let to = self.position(range.end);
+        let height = self.line_height;
+        if from.y == to.y {
+            return vec![Bounds::from_corners(from, point(to.x, to.y + height))];
+        }
+        let mut rows = vec![Bounds::from_corners(from, point(width, from.y + height))];
+        if to.y > from.y + height {
+            rows.push(Bounds::from_corners(
+                point(Pixels::ZERO, from.y + height),
+                point(width, to.y),
+            ));
+        }
+        rows.push(Bounds::from_corners(
+            point(Pixels::ZERO, to.y),
+            point(to.x, to.y + height),
+        ));
+        rows
+    }
+}
+
 struct PrepaintState {
-    line: Option<ShapedLine>,
+    shaped: Option<Shaped>,
     cursor: Option<PaintQuad>,
-    selection: Option<PaintQuad>,
+    selection: Vec<PaintQuad>,
 }
 
 impl IntoElement for TextElement {
@@ -473,6 +681,52 @@ impl IntoElement for TextElement {
 
     fn into_element(self) -> Self::Element {
         self
+    }
+}
+
+impl TextInput {
+    fn display(&self, window: &Window) -> (SharedString, Vec<TextRun>, Pixels) {
+        let style = window.text_style();
+        let theme = Theme::of(window);
+        let (text, color) = if self.content.is_empty() {
+            (self.placeholder.clone(), theme.faint.into())
+        } else {
+            (self.content.clone(), style.color)
+        };
+        let run = TextRun {
+            len: text.len(),
+            font: style.font(),
+            color,
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        let runs = match self.marked_range.as_ref() {
+            Some(marked) => [
+                TextRun {
+                    len: marked.start,
+                    ..run.clone()
+                },
+                TextRun {
+                    len: marked.end - marked.start,
+                    underline: Some(UnderlineStyle {
+                        color: Some(run.color),
+                        thickness: px(1.0),
+                        wavy: false,
+                    }),
+                    ..run.clone()
+                },
+                TextRun {
+                    len: text.len() - marked.end,
+                    ..run
+                },
+            ]
+            .into_iter()
+            .filter(|run| run.len > 0)
+            .collect(),
+            None => vec![run],
+        };
+        (text, runs, style.font_size.to_pixels(window.rem_size()))
     }
 }
 
@@ -497,8 +751,22 @@ impl Element for TextElement {
     ) -> (LayoutId, Self::RequestLayoutState) {
         let mut style = Style::default();
         style.size.width = relative(1.).into();
-        style.size.height = window.line_height().into();
-        (window.request_layout(style, [], cx), ())
+        let input = self.input.read(cx);
+        if !input.multiline {
+            style.size.height = window.line_height().into();
+            return (window.request_layout(style, [], cx), ());
+        }
+        let (text, runs, font_size) = input.display(window);
+        let line_height = window.line_height();
+        let layout = window.request_measured_layout(style, move |known, available, window, _| {
+            let width = known.width.or(match available.width {
+                AvailableSpace::Definite(width) => Some(width),
+                _ => None,
+            });
+            let shaped = Shaped::new(&text, &runs, font_size, width, line_height, window);
+            size(width.unwrap_or_default(), shaped.height())
+        });
+        (layout, ())
     }
 
     fn prepaint(
@@ -511,90 +779,41 @@ impl Element for TextElement {
         cx: &mut App,
     ) -> Self::PrepaintState {
         let input = self.input.read(cx);
-        let content = input.content.clone();
-        let selected_range = input.selected_range.clone();
-        let cursor = input.cursor_offset();
-        let style = window.text_style();
-
+        let (text, runs, font_size) = input.display(window);
+        let wrap = input.multiline.then_some(bounds.size.width);
+        let shaped = Shaped::new(&text, &runs, font_size, wrap, window.line_height(), window);
         let theme = Theme::of(window);
-        let (display_text, text_color) = if content.is_empty() {
-            (input.placeholder.clone(), theme.faint.into())
-        } else {
-            (content, style.color)
-        };
-
-        let run = TextRun {
-            len: display_text.len(),
-            font: style.font(),
-            color: text_color,
-            background_color: None,
-            underline: None,
-            strikethrough: None,
-        };
-        let runs = if let Some(marked_range) = input.marked_range.as_ref() {
-            vec![
-                TextRun {
-                    len: marked_range.start,
-                    ..run.clone()
-                },
-                TextRun {
-                    len: marked_range.end - marked_range.start,
-                    underline: Some(UnderlineStyle {
-                        color: Some(run.color),
-                        thickness: px(1.0),
-                        wavy: false,
-                    }),
-                    ..run.clone()
-                },
-                TextRun {
-                    len: display_text.len() - marked_range.end,
-                    ..run
-                },
-            ]
-            .into_iter()
-            .filter(|run| run.len > 0)
-            .collect()
-        } else {
-            vec![run]
-        };
-
-        let font_size = style.font_size.to_pixels(window.rem_size());
-        let line = window
-            .text_system()
-            .shape_line(display_text, font_size, &runs, None);
-
-        let cursor_pos = line.x_for_index(cursor);
-        let (selection, cursor) = if selected_range.is_empty() {
+        let selected = input.selected_range.clone();
+        let (selection, cursor) = if selected.is_empty() || input.content.is_empty() {
+            let at = shaped.position(if input.content.is_empty() {
+                0
+            } else {
+                input.cursor_offset()
+            });
             (
-                None,
+                Vec::new(),
                 Some(fill(
-                    Bounds::new(
-                        point(bounds.left() + cursor_pos, bounds.top()),
-                        size(px(1.5), bounds.bottom() - bounds.top()),
-                    ),
+                    Bounds::new(bounds.origin + at, size(px(1.5), shaped.line_height)),
                     theme.accent,
                 )),
             )
         } else {
             (
-                Some(fill(
-                    Bounds::from_corners(
-                        point(
-                            bounds.left() + line.x_for_index(selected_range.start),
-                            bounds.top(),
-                        ),
-                        point(
-                            bounds.left() + line.x_for_index(selected_range.end),
-                            bounds.bottom(),
-                        ),
-                    ),
-                    theme.selection,
-                )),
+                shaped
+                    .rows(&selected, bounds.size.width)
+                    .into_iter()
+                    .map(|row| {
+                        fill(
+                            Bounds::new(bounds.origin + row.origin, row.size),
+                            theme.selection,
+                        )
+                    })
+                    .collect(),
                 None,
             )
         };
         PrepaintState {
-            line: Some(line),
+            shaped: Some(shaped),
             cursor,
             selection,
         }
@@ -616,12 +835,24 @@ impl Element for TextElement {
             ElementInputHandler::new(bounds, self.input.clone()),
             cx,
         );
-        if let Some(selection) = prepaint.selection.take() {
+        for selection in prepaint.selection.drain(..) {
             window.paint_quad(selection)
         }
-        let line = prepaint.line.take().unwrap();
-        line.paint(bounds.origin, window.line_height(), window, cx)
-            .unwrap();
+        let Some(shaped) = prepaint.shaped.take() else {
+            return;
+        };
+        let mut top = bounds.top();
+        for line in &shaped.lines {
+            let _ = line.paint(
+                point(bounds.left(), top),
+                shaped.line_height,
+                TextAlign::Left,
+                None,
+                window,
+                cx,
+            );
+            top += line.size(shaped.line_height).height;
+        }
 
         if focus_handle.is_focused(window)
             && let Some(cursor) = prepaint.cursor.take()
@@ -629,16 +860,31 @@ impl Element for TextElement {
             window.paint_quad(cursor);
         }
 
-        self.input.update(cx, |input, _cx| {
-            input.last_layout = Some(line);
+        let followed = self.input.update(cx, |input, _cx| {
+            let cursor = (
+                input.content.clone(),
+                input.cursor_offset(),
+                bounds.size.width,
+            );
+            let moved = input.multiline
+                && input.followed.as_ref() != Some(&cursor)
+                && input.follow(&shaped, bounds);
+            if moved {
+                input.followed = Some(cursor);
+            }
+            input.last_layout = Some(shaped);
             input.last_bounds = Some(bounds);
+            moved
         });
+        if followed {
+            window.request_animation_frame();
+        }
     }
 }
 
 impl Render for TextInput {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let field = div()
             .flex()
             .key_context("TextInput")
             .track_focus(&self.focus_handle(cx))
@@ -647,6 +893,11 @@ impl Render for TextInput {
             .on_action(cx.listener(Self::delete))
             .on_action(cx.listener(Self::left))
             .on_action(cx.listener(Self::right))
+            .on_action(cx.listener(Self::up))
+            .on_action(cx.listener(Self::down))
+            .on_action(cx.listener(Self::select_up))
+            .on_action(cx.listener(Self::select_down))
+            .on_action(cx.listener(Self::newline))
             .on_action(cx.listener(Self::select_left))
             .on_action(cx.listener(Self::select_right))
             .on_action(cx.listener(Self::select_all))
@@ -661,7 +912,18 @@ impl Render for TextInput {
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
             .w_full()
-            .child(TextElement { input: cx.entity() })
+            .child(TextElement { input: cx.entity() });
+        if !self.multiline {
+            return field.into_any_element();
+        }
+        div()
+            .id("field")
+            .w_full()
+            .max_h(window.line_height() * MAX_ROWS)
+            .overflow_y_scroll()
+            .track_scroll(&self.scroll)
+            .child(field)
+            .into_any_element()
     }
 }
 
@@ -681,6 +943,10 @@ pub(crate) fn bindings() -> Vec<KeyBinding> {
         KeyBinding::new("right", Right, field),
         KeyBinding::new("shift-left", SelectLeft, field),
         KeyBinding::new("shift-right", SelectRight, field),
+        KeyBinding::new("up", Up, field),
+        KeyBinding::new("down", Down, field),
+        KeyBinding::new("shift-up", SelectUp, field),
+        KeyBinding::new("shift-down", SelectDown, field),
         KeyBinding::new("secondary-a", SelectAll, field),
         KeyBinding::new("secondary-v", Paste, field),
         KeyBinding::new("secondary-c", Copy, field),
@@ -689,5 +955,6 @@ pub(crate) fn bindings() -> Vec<KeyBinding> {
         KeyBinding::new("end", End, field),
         KeyBinding::new("ctrl-cmd-space", ShowCharacterPalette, field),
         KeyBinding::new("enter", Submit, field),
+        KeyBinding::new("shift-enter", Newline, field),
     ]
 }

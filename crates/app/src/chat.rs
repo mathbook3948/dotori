@@ -59,16 +59,18 @@ pub(crate) async fn run(home: Home) -> Result<(), String> {
 
 pub(crate) fn shown(event: &ToWindow) -> String {
     match event {
-        ToWindow::Owner { text } => format!("you: {text}"),
-        ToWindow::Reply { text } => format!("dotori: {text}"),
+        ToWindow::Owner { text, .. } => format!("you: {text}"),
+        ToWindow::Reply { text, .. } => format!("dotori: {text}"),
         ToWindow::Traffic {
             channel,
             place,
             who,
             text,
+            ..
         } => format!("[{channel} {place}] {who}: {text}"),
         ToWindow::Answering { pc, here: true } => format!("(dotori answers on this PC, {pc})"),
         ToWindow::Answering { pc, here: false } => format!("(dotori answers on {pc})"),
+        ToWindow::Alone => String::from("(no other PC is linked)"),
         ToWindow::BrowserAt { pc, here: true } => format!("(the browser is on this PC, {pc})"),
         ToWindow::BrowserAt { pc, here: false } => format!("(the browser is on {pc})"),
     }
