@@ -122,7 +122,7 @@ enum Link {
         version: String,
     },
     Command {
-        _child: Child,
+        _child: Box<Child>,
         input: ChildStdin,
         waiting: Waiting,
     },
@@ -249,7 +249,7 @@ impl Remote {
                     }
                 });
                 Link::Command {
-                    _child: child,
+                    _child: Box::new(child),
                     input,
                     waiting,
                 }
