@@ -5,6 +5,8 @@
 ## architecture
 
 - [에이전트 실행](architecture/agents.md): 메인 대화와 하위 작업을 무엇으로 실행하는지 정한다.
+- [브라우저](architecture/browser.md): 에이전트가 쓰는 브라우저를 어떻게 띄우고, 모델과 사용자가 어떻게 움직이는지 정한다.
+- [여러 PC](architecture/devices.md): 여러 PC에 설치한 dotori를 비서 하나로 묶는 방법을 정한다.
 - [그래프 DB](architecture/graph.md): 메모리의 대상과 관계를 저장하고 질의하는 그래프 DB를 Rust로 직접 만든다.
 - [LLM 연결](architecture/llm.md): 메인 대화가 LLM API와 주고받는 방식을 정한다.
 - [MCP](architecture/mcp.md): 에이전트가 쓰는 도구를 어떻게 제공하는지 정한다.
