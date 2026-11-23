@@ -333,6 +333,17 @@ fn the_owners_input_becomes_devtools_events() {
     assert_eq!(method, "Input.imeSetComposition");
     assert_eq!(compose["selectionEnd"], 2);
     assert!(owner_event(&json!({ "kind": "mouse", "event": "fly" })).is_none());
+    let (_, select) = owner_event(
+        &json!({ "kind": "key", "event": "down", "key": "a", "code": 65, "modifiers": 2 }),
+    )
+    .expect("an event");
+    assert_eq!(select["type"], "rawKeyDown");
+    assert_eq!(select["commands"], json!(["selectAll"]));
+    let (_, plain) = owner_event(
+        &json!({ "kind": "key", "event": "down", "key": "a", "code": 65, "text": "a" }),
+    )
+    .expect("an event");
+    assert!(plain.get("commands").is_none());
 }
 
 #[tokio::test]

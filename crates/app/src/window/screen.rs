@@ -63,6 +63,7 @@ enum Mode {
 
 pub(crate) struct ScreenView {
     picture: Option<Arc<RenderImage>>,
+    painted: bool,
     page: (f64, f64),
     mode: Mode,
     url: Option<SharedString>,
@@ -90,6 +91,7 @@ impl ScreenView {
         });
         Self {
             picture: None,
+            painted: false,
             page: (1280.0, 800.0),
             mode: Mode::Idle,
             url: None,
@@ -148,12 +150,15 @@ impl ScreenView {
                     return;
                 };
                 let frame = image::Frame::new(buffer);
-                if let Some(old) = self
+                let old = self
                     .picture
-                    .replace(Arc::new(RenderImage::new(vec![frame])))
+                    .replace(Arc::new(RenderImage::new(vec![frame])));
+                if let Some(old) = old
+                    && self.painted
                 {
                     self.stale.push(old);
                 }
+                self.painted = false;
                 self.page = (page_width, page_height);
             }
             Seen::Pointer { x, y } => {
@@ -499,6 +504,7 @@ impl Render for ScreenView {
         let entity: Entity<Self> = cx.entity();
         let focus = self.focus.clone();
         let owner = self.mode == Mode::Owner;
+        self.painted |= self.picture.is_some();
         let screen = match &self.picture {
             Some(picture) => img(ImageSource::Render(Arc::clone(picture)))
                 .size_full()

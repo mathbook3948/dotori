@@ -201,7 +201,11 @@ impl Browser {
         }
         self.screen.update(json!({ "mode": "waiting" }));
         let held = Arc::clone(&self.acting).lock_owned().await;
-        drop(self.page().await?);
+        if let Err(error) = self.page().await {
+            drop(held);
+            self.screen.update(json!({ "mode": "idle" }));
+            return Err(error);
+        }
         *self.owner.lock().await = Some(held);
         self.screen
             .update(json!({ "mode": "owner", "asked": null, "error": null }));
@@ -904,6 +908,21 @@ pub(crate) fn owner_event(input: &Value) -> Option<(&'static str, Value)> {
             });
             if kind == "keyDown" {
                 event["text"] = json!(text);
+            }
+            let command = match key.to_ascii_lowercase().as_str() {
+                "a" => Some("selectAll"),
+                "c" => Some("copy"),
+                "x" => Some("cut"),
+                "z" if modifiers & 8 != 0 => Some("redo"),
+                "z" => Some("undo"),
+                "y" => Some("redo"),
+                _ => None,
+            };
+            if kind == "rawKeyDown"
+                && modifiers & (2 | 4) != 0
+                && let Some(command) = command
+            {
+                event["commands"] = json!([command]);
             }
             Some(("Input.dispatchKeyEvent", event))
         }
