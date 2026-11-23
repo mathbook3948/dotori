@@ -198,12 +198,19 @@ impl ChatView {
             .clone()
             .filter(|_| matches!(self.link, LinkState::Connected))
             .map(|(pc, here)| {
+                let ink = if here { theme.ok } else { theme.other_text };
                 div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
                     .px_2()
                     .py_0p5()
                     .rounded_full()
+                    .text_xs()
+                    .font_weight(FontWeight::MEDIUM)
                     .bg(if here { theme.ok_soft } else { theme.other })
-                    .text_color(if here { theme.ok } else { theme.other_text })
+                    .text_color(ink)
+                    .child(div().flex_none().size(px(5.)).rounded_full().bg(ink))
                     .child(if here {
                         format!("이 PC({pc})에서 답해요")
                     } else {
