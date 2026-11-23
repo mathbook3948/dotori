@@ -1,4 +1,4 @@
-//! Sub-task runners. Each one takes a brief and returns one outcome.
+//! Sub-session runners. Each one takes a brief and returns one outcome.
 
 pub mod cli;
 pub mod llm;
