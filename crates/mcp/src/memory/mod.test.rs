@@ -11,7 +11,7 @@ fn config() -> MemoryConfig {
     let _ = std::fs::remove_dir_all(&folder);
     std::fs::create_dir_all(&folder).expect("made");
     MemoryConfig {
-        record: folder.join("record.sqlite3"),
+        record: folder.join("record"),
         index: folder.join("search.sqlite3"),
         dictionaries: folder.join("dictionaries"),
         embedding: None,
@@ -19,20 +19,24 @@ fn config() -> MemoryConfig {
 }
 
 fn record(config: &MemoryConfig, rows: &[(&str, Option<&str>, Option<&str>)]) {
-    let record = Connection::open(&config.record).expect("opened");
+    std::fs::create_dir_all(&config.record).expect("made");
+    let record = Connection::open(config.record.join("2023.sqlite3")).expect("opened");
     record
         .execute_batch(
-            "CREATE TABLE IF NOT EXISTS records (seq INTEGER PRIMARY KEY AUTOINCREMENT, \
+            "CREATE TABLE IF NOT EXISTS records (id TEXT PRIMARY KEY, device TEXT NOT NULL, \
              at_ms INTEGER NOT NULL, kind TEXT NOT NULL, channel TEXT, place TEXT, sender_id TEXT, \
-             sender_name TEXT, role TEXT, text TEXT, line TEXT NOT NULL)",
+             sender_name TEXT, role TEXT, text TEXT, line TEXT NOT NULL) WITHOUT ROWID",
         )
         .expect("made");
     for (kind, sender, text) in rows {
+        let held: i64 = record
+            .query_row("SELECT count(*) FROM records", [], |row| row.get(0))
+            .expect("counted");
         record
             .execute(
-                "INSERT INTO records (at_ms, kind, channel, place, sender_name, role, text, line) \
-                 VALUES (1700000000123, ?1, 'slack', 'C1', ?2, ?3, ?4, '{}')",
-                params![kind, sender, sender.map(|_| "other"), text],
+                "INSERT INTO records (id, device, at_ms, kind, channel, place, sender_name, role, text, line) \
+                 VALUES (?1, 'pc', 1700000000123, ?2, 'slack', 'C1', ?3, ?4, ?5, '{}')",
+                params![format!("r{:04}", held + 1), kind, sender, sender.map(|_| "other"), text],
             )
             .expect("inserted");
     }
@@ -63,7 +67,7 @@ fn a_search_finds_records_by_their_words_and_names_them() {
     let found = memory.search("회의 언제", 10, None).expect("searched");
     assert_eq!(
         found,
-        "[record 1] 2023-11-14 22:13 UTC in slack C1, 민지 (other): 내일 회의는 3시에 해요"
+        "[record r0001] 2023-11-14 22:13 UTC in slack C1, 민지 (other): 내일 회의는 3시에 해요"
     );
     assert_eq!(memory.search("민지가", 10, None).expect("by sender"), found);
     assert_eq!(
@@ -74,10 +78,10 @@ fn a_search_finds_records_by_their_words_and_names_them() {
     record(&config, &[("acted", None, Some("회의 장소는 2층입니다"))]);
     let later = memory.search("회의", 10, None).expect("caught up");
     assert!(
-        later.contains("[record 4]") && later.contains("dotori: 회의 장소"),
+        later.contains("[record r0004]") && later.contains("dotori: 회의 장소"),
         "{later}"
     );
-    let _ = std::fs::remove_dir_all(config.record.parent().expect("a folder"));
+    let _ = std::fs::remove_dir_all(config.index.parent().expect("a folder"));
 }
 
 #[test]
@@ -101,12 +105,11 @@ fn a_change_of_analyzer_rebuilds_the_index() {
     let config = config();
     record(&config, &[("heard", Some("민지"), Some("회의"))]);
     let mut index = open_index(&config.index).expect("index");
-    let source = open_record(&config.record).expect("read").expect("there");
-    catch_up(&mut index, &source, &Analyzer::Plain).expect("caught up");
+    catch_up(&mut index, &config.record, &Analyzer::Plain).expect("caught up");
     index
         .execute("UPDATE meta SET value = 'other' WHERE key = 'analyzer'", [])
         .expect("changed");
-    catch_up(&mut index, &source, &Analyzer::Plain).expect("rebuilt");
+    catch_up(&mut index, &config.record, &Analyzer::Plain).expect("rebuilt");
     let count: i64 = index
         .query_row("SELECT count(*) FROM terms", [], |row| row.get(0))
         .expect("counted");
@@ -138,7 +141,8 @@ fn the_korean_dictionary_finds_inflected_words() {
 #[test]
 fn a_record_file_without_its_table_yet_is_empty() {
     let config = config();
-    Connection::open(&config.record).expect("made");
+    std::fs::create_dir_all(&config.record).expect("made");
+    Connection::open(config.record.join("2026.sqlite3")).expect("made");
     assert_eq!(
         memory(config).search("회의", 10, None).expect("searched"),
         "Nothing is recorded yet."
@@ -258,13 +262,13 @@ async fn records_are_also_found_by_their_meaning() {
         .call(json!({ "query": "meeting", "limit": 1 }))
         .await
         .expect("searched");
-    assert!(found.starts_with("[record 1]"), "{found}");
+    assert!(found.starts_with("[record r0001]"), "{found}");
     let both = search
         .call(json!({ "query": "점심 meeting" }))
         .await
         .expect("searched");
     assert_eq!(both.lines().count(), 2, "{both}");
-    assert!(both.starts_with("[record 3]"), "{both}");
+    assert!(both.starts_with("[record r0003]"), "{both}");
 
     record(&config, &[("acted", None, Some("회의실은 2층입니다"))]);
     while memory.fill_once().await.expect("filled again") {}
@@ -273,7 +277,7 @@ async fn records_are_also_found_by_their_meaning() {
         .await
         .expect("searched");
     assert!(
-        later.contains("[record 1]") && later.contains("[record 4]"),
+        later.contains("[record r0001]") && later.contains("[record r0004]"),
         "{later}"
     );
 }
@@ -303,7 +307,7 @@ async fn a_failing_embedding_api_leaves_word_search_working() {
         .call(json!({ "query": "회의" }))
         .await
         .expect("searched");
-    assert!(found.starts_with("[record 1]"), "{found}");
+    assert!(found.starts_with("[record r0001]"), "{found}");
     assert!(found.contains("Only words were matched"), "{found}");
 }
 
@@ -339,7 +343,7 @@ async fn another_model_makes_every_vector_again() {
         .call(json!({ "query": "meeting" }))
         .await
         .expect("searched");
-    assert!(found.starts_with("[record 1]"), "{found}");
+    assert!(found.starts_with("[record r0001]"), "{found}");
 }
 
 #[tokio::test]
@@ -371,18 +375,55 @@ fn vectors_are_kept_only_for_the_current_model_and_length() {
     let config = config();
     record(&config, &[("heard", Some("민지"), Some("회의"))]);
     let mut index = open_index(&config.index).expect("index");
-    let source = open_record(&config.record).expect("read").expect("there");
+    copy_records(&mut index, &config.record).expect("copied");
 
-    vectors::pending(&mut index, &source, "a", 10).expect("pending");
+    vectors::pending(&mut index, "a", 10).expect("pending");
     vectors::store(&mut index, "a", &[(1, vec![1.0, 0.0])], 1).expect("stored");
     let longer = vectors::store(&mut index, "a", &[(1, vec![1.0, 0.0, 0.0])], 1);
     assert!(longer.expect_err("another length").contains("length"));
 
-    vectors::pending(&mut index, &source, "b", 10).expect("another model");
+    vectors::pending(&mut index, "b", 10).expect("another model");
     assert!(!vectors::any(&index, "a").expect("checked"));
     let late = vectors::store(&mut index, "a", &[(1, vec![1.0, 0.0])], 1);
     assert!(
         late.expect_err("the model changed")
             .contains("another model")
     );
+}
+
+#[test]
+fn records_from_every_year_are_found_and_an_older_index_is_made_again() {
+    let config = config();
+    record(&config, &[("heard", Some("민지"), Some("작년 회의"))]);
+    let newer = Connection::open(config.record.join("2024.sqlite3")).expect("opened");
+    newer
+        .execute_batch(
+            "CREATE TABLE records (id TEXT PRIMARY KEY, device TEXT NOT NULL, at_ms INTEGER NOT NULL, \
+             kind TEXT NOT NULL, channel TEXT, place TEXT, sender_id TEXT, sender_name TEXT, role TEXT, \
+             text TEXT, line TEXT NOT NULL) WITHOUT ROWID; \
+             INSERT INTO records (id, device, at_ms, kind, sender_name, role, text, line) \
+             VALUES ('s0001', 'pc', 1704067200000, 'heard', '유노', 'owner', '올해 회의', '{}');",
+        )
+        .expect("made");
+    let old = Connection::open(&config.index).expect("opened");
+    old.execute_batch(
+        "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL); \
+         INSERT INTO meta VALUES ('done', '7'); \
+         CREATE TABLE vectors (seq INTEGER PRIMARY KEY, model TEXT NOT NULL, vector BLOB NOT NULL); \
+         INSERT INTO vectors VALUES (7, 'm', x'00000000');",
+    )
+    .expect("made");
+    drop(old);
+
+    let found = memory(config.clone())
+        .search("회의", 10, None)
+        .expect("searched");
+
+    assert!(found.contains("[record r0001]"), "{found}");
+    assert!(found.contains("[record s0001]"), "{found}");
+    let index = open_index(&config.index).expect("index");
+    let stale: i64 = index
+        .query_row("SELECT count(*) FROM vectors", [], |row| row.get(0))
+        .expect("counted");
+    assert_eq!(stale, 0);
 }

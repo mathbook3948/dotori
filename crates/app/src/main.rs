@@ -1,5 +1,6 @@
 mod chat;
 mod daemon;
+mod device;
 mod door;
 mod home;
 mod idle;

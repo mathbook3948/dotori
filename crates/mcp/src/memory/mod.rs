@@ -6,6 +6,7 @@ mod dictionary;
 mod embedding;
 mod vectors;
 
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -39,13 +40,32 @@ const QUERY_WAIT: Duration = Duration::from_secs(15);
 const BATCH_PAUSE: Duration = Duration::from_secs(1);
 const FILL_PAUSE: Duration = Duration::from_secs(30);
 const FAILED_PAUSE: Duration = Duration::from_secs(300);
+const FORMAT: &str = "2";
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS docs (
+    seq INTEGER PRIMARY KEY,
+    record TEXT NOT NULL UNIQUE,
+    at_ms INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    channel TEXT,
+    place TEXT,
+    sender TEXT,
+    role TEXT,
+    text TEXT
+);
 CREATE VIRTUAL TABLE IF NOT EXISTS terms USING fts5(words, tokenize = 'unicode61');
 CREATE TABLE IF NOT EXISTS vectors (seq INTEGER PRIMARY KEY, model TEXT NOT NULL, vector BLOB NOT NULL);
 ";
+const DROP: &str = "
+DROP TABLE IF EXISTS meta;
+DROP TABLE IF EXISTS docs;
+DROP TABLE IF EXISTS terms;
+DROP TABLE IF EXISTS vectors;
+";
 
-/// Where memory reads the raw record, keeps its index, and keeps dictionaries.
+/// Where memory reads the raw record, keeps its index, and keeps dictionaries. The record is a
+/// folder with one SQLite file per year.
 #[derive(Clone, Debug)]
 pub struct MemoryConfig {
     pub record: PathBuf,
@@ -140,13 +160,8 @@ impl Memory {
             if vectors::any(index, &wanted).map_err(|error| error.to_string())? {
                 memory.meaning_ready.store(true, Ordering::SeqCst);
             }
-            let Some(record) = open_record(&memory.config.record)? else {
-                return Ok((Vec::new(), None));
-            };
-            match vectors::pending(index, &record, &wanted, EMBED_BATCH) {
-                Err(error) if error.to_string().contains("no such table") => Ok((Vec::new(), None)),
-                found => found.map_err(|error| error.to_string()),
-            }
+            copy_records(index, &memory.config.record).map_err(|error| error.to_string())?;
+            vectors::pending(index, &wanted, EMBED_BATCH).map_err(|error| error.to_string())
         })
         .await
         .map_err(|error| error.to_string())??;
@@ -204,16 +219,13 @@ impl Memory {
             ..
         } = &mut *state;
         let index = index.as_mut().ok_or("no index")?;
-        let record = match open_record(&self.config.record)? {
-            Some(record) => record,
-            None => return Ok(String::from("Nothing is recorded yet.")),
-        };
-        match catch_up(index, &record, analyzer) {
-            Ok(()) => {}
-            Err(error) if error.to_string().contains("no such table") => {
-                return Ok(String::from("Nothing is recorded yet."));
-            }
-            Err(error) => return Err(format!("the search index could not catch up: {error}")),
+        catch_up(index, &self.config.record, analyzer)
+            .map_err(|error| format!("the search index could not catch up: {error}"))?;
+        let indexed: i64 = index
+            .query_row("SELECT count(*) FROM docs", [], |row| row.get(0))
+            .map_err(|error| error.to_string())?;
+        if indexed == 0 {
+            return Ok(String::from("Nothing is recorded yet."));
         }
         let terms = analyzer.terms(query);
         let mut note = None;
@@ -283,20 +295,20 @@ impl Memory {
         }
         let mut shown = Vec::new();
         for seq in seqs {
-            let row = record
+            let row = index
                 .query_row(
-                    "SELECT at_ms, kind, channel, place, sender_name, role, text FROM records WHERE seq = ?1",
+                    "SELECT record, at_ms, kind, channel, place, sender, role, text FROM docs WHERE seq = ?1",
                     [seq],
                     |row| {
                         Ok(Hit {
-                            seq,
-                            at_ms: row.get(0)?,
-                            kind: row.get(1)?,
-                            channel: row.get(2)?,
-                            place: row.get(3)?,
-                            sender: row.get(4)?,
-                            role: row.get(5)?,
-                            text: row.get(6)?,
+                            record: row.get(0)?,
+                            at_ms: row.get(1)?,
+                            kind: row.get(2)?,
+                            channel: row.get(3)?,
+                            place: row.get(4)?,
+                            sender: row.get(5)?,
+                            role: row.get(6)?,
+                            text: row.get(7)?,
                         })
                     },
                 )
@@ -361,7 +373,7 @@ async fn fill(memory: Weak<Memory>) {
 }
 
 struct Hit {
-    seq: i64,
+    record: String,
     at_ms: i64,
     kind: String,
     channel: Option<String>,
@@ -390,7 +402,7 @@ impl Hit {
         }
         format!(
             "[record {}] {}{place}, {who}: {cut}",
-            self.seq,
+            self.record,
             when(self.at_ms)
         )
     }
@@ -401,19 +413,40 @@ fn open_index(path: &PathBuf) -> Result<Connection, String> {
         std::fs::create_dir_all(folder).map_err(|error| error.to_string())?;
     }
     let index = Connection::open(path).map_err(|error| error.to_string())?;
-    index
-        .execute_batch(SCHEMA)
-        .map_err(|error| error.to_string())?;
+    let fail = |error: rusqlite::Error| error.to_string();
+    index.execute_batch(SCHEMA).map_err(fail)?;
+    if meta(&index, "format").map_err(fail)?.as_deref() != Some(FORMAT) {
+        index.execute_batch(DROP).map_err(fail)?;
+        index.execute_batch(SCHEMA).map_err(fail)?;
+        index
+            .execute(
+                "INSERT INTO meta (key, value) VALUES ('format', ?1)",
+                [FORMAT],
+            )
+            .map_err(fail)?;
+    }
     Ok(index)
 }
 
-fn open_record(path: &PathBuf) -> Result<Option<Connection>, String> {
-    if !path.is_file() {
-        return Ok(None);
-    }
-    Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .map(Some)
-        .map_err(|error| format!("cannot read the record: {error}"))
+fn record_years(folder: &Path) -> rusqlite::Result<Vec<Connection>> {
+    let Ok(entries) = std::fs::read_dir(folder) else {
+        return Ok(Vec::new());
+    };
+    let mut years: Vec<PathBuf> = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .and_then(|name| name.strip_suffix(".sqlite3"))
+                .is_some_and(|stem| stem.len() == 4 && stem.bytes().all(|b| b.is_ascii_digit()))
+        })
+        .collect();
+    years.sort();
+    years
+        .iter()
+        .map(|path| Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY))
+        .collect()
 }
 
 fn meta(index: &Connection, key: &str) -> rusqlite::Result<Option<String>> {
@@ -424,11 +457,74 @@ fn meta(index: &Connection, key: &str) -> rusqlite::Result<Option<String>> {
         .optional()
 }
 
-fn catch_up(
-    index: &mut Connection,
-    record: &Connection,
-    analyzer: &Analyzer,
-) -> rusqlite::Result<()> {
+fn copy_records(index: &mut Connection, folder: &Path) -> rusqlite::Result<()> {
+    for year in record_years(folder)? {
+        loop {
+            let batch = index.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let copied = meta(&batch, "copied")?.unwrap_or_default();
+            let rows: Vec<Doc> = match year.prepare(
+                "SELECT id, at_ms, kind, channel, place, sender_name, role, text FROM records \
+                 WHERE id > ?1 ORDER BY id LIMIT ?2",
+            ) {
+                Ok(mut found) => found
+                    .query_map(params![copied, BATCH], |row| {
+                        Ok(Doc {
+                            record: row.get(0)?,
+                            at_ms: row.get(1)?,
+                            kind: row.get(2)?,
+                            channel: row.get(3)?,
+                            place: row.get(4)?,
+                            sender: row.get(5)?,
+                            role: row.get(6)?,
+                            text: row.get(7)?,
+                        })
+                    })?
+                    .collect::<rusqlite::Result<_>>()?,
+                Err(error) if error.to_string().contains("no such table") => Vec::new(),
+                Err(error) => return Err(error),
+            };
+            let Some(last) = rows.last().map(|doc| doc.record.clone()) else {
+                break;
+            };
+            for doc in &rows {
+                batch.execute(
+                    "INSERT OR IGNORE INTO docs (record, at_ms, kind, channel, place, sender, role, text) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                    params![
+                        doc.record,
+                        doc.at_ms,
+                        doc.kind,
+                        doc.channel,
+                        doc.place,
+                        doc.sender,
+                        doc.role,
+                        doc.text
+                    ],
+                )?;
+            }
+            batch.execute(
+                "INSERT OR REPLACE INTO meta (key, value) VALUES ('copied', ?1)",
+                [last],
+            )?;
+            batch.commit()?;
+        }
+    }
+    Ok(())
+}
+
+struct Doc {
+    record: String,
+    at_ms: i64,
+    kind: String,
+    channel: Option<String>,
+    place: Option<String>,
+    sender: Option<String>,
+    role: Option<String>,
+    text: Option<String>,
+}
+
+fn catch_up(index: &mut Connection, folder: &Path, analyzer: &Analyzer) -> rusqlite::Result<()> {
+    copy_records(index, folder)?;
     if meta(index, "analyzer")?.as_deref() != Some(analyzer.name()) {
         let rebuild = index.transaction_with_behavior(TransactionBehavior::Immediate)?;
         rebuild.execute("DELETE FROM terms", [])?;
@@ -443,10 +539,8 @@ fn catch_up(
         let done: i64 = meta(&batch, "done")?
             .and_then(|done| done.parse().ok())
             .unwrap_or(0);
-        let rows: Vec<(i64, Option<String>, Option<String>)> = record
-            .prepare(
-                "SELECT seq, sender_name, text FROM records WHERE seq > ?1 ORDER BY seq LIMIT ?2",
-            )?
+        let rows: Vec<(i64, Option<String>, Option<String>)> = batch
+            .prepare("SELECT seq, sender, text FROM docs WHERE seq > ?1 ORDER BY seq LIMIT ?2")?
             .query_map(params![done, BATCH], |row| {
                 Ok((row.get(0)?, row.get(1)?, row.get(2)?))
             })?

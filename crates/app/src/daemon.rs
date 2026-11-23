@@ -8,6 +8,7 @@ use std::time::Duration;
 use dotori_connectors::channel::app::AppChannel;
 use dotori_connectors::record::jsonl::JsonlStore;
 use dotori_connectors::record::sqlite::SqliteStore;
+use dotori_connectors::record::sqlite::read_legacy;
 use dotori_connectors::sub_session::cli::CliRunner;
 use dotori_connectors::sub_session::cli::CodingAgent;
 use dotori_connectors::sub_session::cli::McpServer;
@@ -21,6 +22,7 @@ use dotori_core::runtime::Ports;
 use dotori_core::sub_session::SubSessionRunner;
 use dotori_core::tool::Toolbox;
 
+use crate::device;
 use crate::door;
 use crate::door::Door;
 use crate::home::Home;
@@ -116,29 +118,57 @@ pub(crate) async fn serve(
 }
 
 async fn open_record(home: &Home) -> Result<SqliteStore, String> {
-    let store = SqliteStore::new(home.record());
-    let old = home.old_record();
-    if !old.exists() {
+    let device = device::name(&home.device())?;
+    let store = SqliteStore::new(home.record(), device.as_str());
+    let [single, lines] = home.old_records();
+    let Some(old) = [single, lines].into_iter().find(|path| path.exists()) else {
         return Ok(store);
-    }
+    };
     let fail = |error: RecordError| error.to_string();
+    let io = |error: std::io::Error| error.to_string();
     if !store.is_empty().await.map_err(fail)? {
         eprintln!(
-            "dotori: {} is left alone because the SQLite record already has records",
+            "dotori: {} is left alone because the record folder already has records",
             old.display()
         );
         return Ok(store);
     }
-    let earlier = JsonlStore::new(old.clone()).load().await.map_err(fail)?;
-    store.append(earlier).await.map_err(fail)?;
-    let mut moved = old.with_extension("jsonl.moved");
+    drop(store);
+    let earlier = match old.extension().and_then(|extension| extension.to_str()) {
+        Some("jsonl") => JsonlStore::new(old.clone()).load().await,
+        _ => {
+            let path = old.clone();
+            tokio::task::spawn_blocking(move || read_legacy(&path))
+                .await
+                .map_err(|error| error.to_string())?
+        }
+    }
+    .map_err(fail)?;
+    let staging = home.record().with_extension("moving");
+    if staging.exists() {
+        fs::remove_dir_all(&staging).map_err(io)?;
+    }
+    SqliteStore::new(staging.clone(), device.as_str())
+        .import(earlier)
+        .await
+        .map_err(fail)?;
+    if home.record().exists() {
+        fs::remove_dir_all(home.record()).map_err(io)?;
+    }
+    fs::rename(&staging, home.record()).map_err(io)?;
+    let extension = old
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or_default()
+        .to_owned();
+    let mut moved = old.with_extension(format!("{extension}.moved"));
     let mut n = 1;
     while moved.exists() {
-        moved = old.with_extension(format!("jsonl.moved.{n}"));
+        moved = old.with_extension(format!("{extension}.moved.{n}"));
         n += 1;
     }
-    fs::rename(&old, moved).map_err(|error| error.to_string())?;
-    Ok(store)
+    fs::rename(&old, moved).map_err(io)?;
+    Ok(SqliteStore::new(home.record(), device))
 }
 
 fn sub_session_runner(
