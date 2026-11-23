@@ -55,7 +55,7 @@ pub struct Browser {
     running: Mutex<Option<Running>>,
     acting: Arc<Mutex<()>>,
     screen: Arc<Screen>,
-    shown: std::sync::Mutex<Option<(Arc<Cdp>, String)>>,
+    shown: Arc<std::sync::Mutex<Option<Shown>>>,
     owner: Mutex<Option<tokio::sync::OwnedMutexGuard<()>>>,
 }
 
@@ -64,6 +64,21 @@ impl std::fmt::Debug for Browser {
         f.debug_struct("Browser")
             .field("config", &self.config)
             .finish_non_exhaustive()
+    }
+}
+
+#[derive(Clone)]
+struct Shown {
+    cdp: Arc<Cdp>,
+    main: String,
+    popup: Option<(String, String)>,
+}
+
+impl Shown {
+    fn session(&self) -> &str {
+        self.popup
+            .as_ref()
+            .map_or(&self.main, |(_, session)| session)
     }
 }
 
@@ -143,7 +158,7 @@ impl Browser {
             running: Mutex::new(None),
             acting: Arc::new(Mutex::new(())),
             screen,
-            shown: std::sync::Mutex::new(None),
+            shown: Arc::new(std::sync::Mutex::new(None)),
             owner: Mutex::new(None),
         });
         if tokio::runtime::Handle::try_current().is_ok() {
@@ -183,9 +198,10 @@ impl Browser {
 
     async fn cast(&self, on: bool) -> Result<(), String> {
         let shown = self.shown.lock().expect("unpoisoned").clone();
-        let Some((cdp, session)) = shown else {
+        let Some(shown) = shown else {
             return Ok(());
         };
+        let (cdp, session) = (shown.cdp.clone(), shown.session().to_owned());
         let (method, params) = if on {
             ("Page.startScreencast", screencast())
         } else {
@@ -214,13 +230,65 @@ impl Browser {
 
     async fn owner_input(&self, input: &Value) -> Result<(), String> {
         let shown = self.shown.lock().expect("unpoisoned").clone();
-        let Some((cdp, session)) = shown else {
+        let Some(shown) = shown else {
             return Ok(());
         };
+        let (cdp, session) = (shown.cdp.clone(), shown.session().to_owned());
+        if input.get("kind").and_then(Value::as_str) == Some("pick") {
+            return self.pick(&cdp, &session, input).await;
+        }
+        if input.get("kind").and_then(Value::as_str) == Some("mouse")
+            && input.get("event").and_then(Value::as_str) == Some("down")
+        {
+            let x = input.get("x").and_then(Value::as_f64).unwrap_or(0.0);
+            let y = input.get("y").and_then(Value::as_f64).unwrap_or(0.0);
+            let found = in_world(&cdp, &session, &format!("({PICKABLE})({x}, {y})")).await?;
+            if let Some(picker) = found.as_object() {
+                let mut picker = picker.clone();
+                picker.insert(String::from("x"), json!(x));
+                picker.insert(String::from("y"), json!(y));
+                self.screen.update(json!({ "picker": picker }));
+                return Ok(());
+            }
+        }
         if let Some((method, params)) = owner_event(input) {
             cdp.send(method, params, Some(&session)).await?;
         }
         Ok(())
+    }
+
+    async fn pick(&self, cdp: &Cdp, session: &str, input: &Value) -> Result<(), String> {
+        let picker = self.screen.state.lock().expect("unpoisoned")["picker"].clone();
+        self.screen.update(json!({ "picker": null }));
+        if input.get("cancel").and_then(Value::as_bool) == Some(true) || picker.is_null() {
+            return Ok(());
+        }
+        match picker.get("kind").and_then(Value::as_str) {
+            Some("files") => {
+                let files = input.get("files").cloned().unwrap_or_else(|| json!([]));
+                let node = picker.get("node").cloned().unwrap_or(Value::Null);
+                let at = picker
+                    .get("session")
+                    .and_then(Value::as_str)
+                    .unwrap_or(session);
+                cdp.send(
+                    "DOM.setFileInputFiles",
+                    json!({ "files": files, "backendNodeId": node }),
+                    Some(at),
+                )
+                .await
+                .map(drop)
+            }
+            Some("select" | "value") => {
+                let x = picker.get("x").and_then(Value::as_f64).unwrap_or(0.0);
+                let y = picker.get("y").and_then(Value::as_f64).unwrap_or(0.0);
+                let chosen = input.get("value").cloned().unwrap_or(Value::Null);
+                in_world(cdp, session, &format!("({CHOOSE})({x}, {y}, {chosen})"))
+                    .await
+                    .map(drop)
+            }
+            _ => Ok(()),
+        }
     }
 
     /// The tools that drive this browser.
@@ -366,7 +434,13 @@ impl Browser {
         let events = cdp
             .events()
             .ok_or("the browser's events are already taken")?;
-        let watcher = tokio::spawn(watch(Arc::clone(&cdp), events, Arc::clone(&self.screen)));
+        let watcher = tokio::spawn(watch(
+            Arc::clone(&cdp),
+            events,
+            Arc::clone(&self.screen),
+            Arc::clone(&self.shown),
+            target.clone(),
+        ));
         let page = |method: &'static str, params: Value| {
             let cdp = Arc::clone(&cdp);
             let session = session.clone();
@@ -390,7 +464,22 @@ impl Browser {
             .and_then(Value::as_str)
             .ok_or("the page has no frame")?
             .to_owned();
-        *self.shown.lock().expect("unpoisoned") = Some((Arc::clone(&cdp), session.clone()));
+        page(
+            "Page.setInterceptFileChooserDialog",
+            json!({ "enabled": true }),
+        )
+        .await?;
+        cdp.send(
+            "Target.setDiscoverTargets",
+            json!({ "discover": true }),
+            None,
+        )
+        .await?;
+        *self.shown.lock().expect("unpoisoned") = Some(Shown {
+            cdp: Arc::clone(&cdp),
+            main: session.clone(),
+            popup: None,
+        });
         if self.screen.watched() {
             page("Page.startScreencast", screencast()).await?;
         }
@@ -489,6 +578,8 @@ async fn watch(
     cdp: Arc<Cdp>,
     mut events: tokio::sync::mpsc::UnboundedReceiver<Value>,
     screen: Arc<Screen>,
+    shown: Arc<std::sync::Mutex<Option<Shown>>>,
+    main_target: String,
 ) {
     while let Some(event) = events.recv().await {
         let session = event.get("sessionId").and_then(Value::as_str);
@@ -500,6 +591,64 @@ async fn watch(
                     Some("alert" | "beforeunload")
                 );
                 Some(("Page.handleJavaScriptDialog", json!({ "accept": accept })))
+            }
+            Some("Target.targetCreated") => {
+                let info = params.get("targetInfo").cloned().unwrap_or(Value::Null);
+                let opened_here = info.get("type").and_then(Value::as_str) == Some("page")
+                    && info.get("openerId").and_then(Value::as_str) == Some(main_target.as_str());
+                if let (true, Some(target)) =
+                    (opened_here, info.get("targetId").and_then(Value::as_str))
+                {
+                    let cdp = Arc::clone(&cdp);
+                    let screen = Arc::clone(&screen);
+                    let shown = Arc::clone(&shown);
+                    let target = target.to_owned();
+                    tokio::spawn(async move {
+                        if let Err(error) = follow_popup(&cdp, &screen, &shown, target).await {
+                            screen.update(json!({ "error": error }));
+                        }
+                    });
+                }
+                None
+            }
+            Some("Target.targetDestroyed") => {
+                let gone = params
+                    .get("targetId")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let back = {
+                    let mut held = shown.lock().expect("unpoisoned");
+                    match held.as_mut() {
+                        Some(current)
+                            if current
+                                .popup
+                                .as_ref()
+                                .is_some_and(|(target, _)| target == gone) =>
+                        {
+                            current.popup = None;
+                            Some(current.main.clone())
+                        }
+                        _ => None,
+                    }
+                };
+                if let Some(main) = back {
+                    screen.update(json!({ "popup": false, "picker": null }));
+                    if screen.watched() {
+                        let _ = cdp
+                            .send("Page.startScreencast", screencast(), Some(&main))
+                            .await;
+                    }
+                }
+                None
+            }
+            Some("Page.fileChooserOpened") => {
+                screen.update(json!({ "picker": {
+                    "kind": "files",
+                    "multiple": params.get("mode").and_then(Value::as_str) == Some("selectMultiple"),
+                    "node": params.get("backendNodeId").cloned().unwrap_or(Value::Null),
+                    "session": session,
+                } }));
+                None
             }
             Some("Page.screencastFrame") => {
                 let meta = |name: &str| {
@@ -844,6 +993,122 @@ impl Tool for BrowserTool {
         Box::pin(self.act(arguments))
     }
 }
+
+async fn in_world(cdp: &Cdp, session: &str, expression: &str) -> Result<Value, String> {
+    let tree = cdp
+        .send("Page.getFrameTree", json!({}), Some(session))
+        .await?;
+    let frame = tree
+        .pointer("/frameTree/frame/id")
+        .and_then(Value::as_str)
+        .ok_or("the page has no frame")?;
+    let world = cdp
+        .send(
+            "Page.createIsolatedWorld",
+            json!({ "frameId": frame, "worldName": WORLD }),
+            Some(session),
+        )
+        .await?;
+    let context = world
+        .get("executionContextId")
+        .and_then(Value::as_i64)
+        .ok_or("the browser made no world for dotori's scripts")?;
+    let reply = cdp
+        .send(
+            "Runtime.evaluate",
+            json!({ "expression": expression, "returnByValue": true, "contextId": context }),
+            Some(session),
+        )
+        .await?;
+    Ok(reply
+        .pointer("/result/value")
+        .cloned()
+        .unwrap_or(Value::Null))
+}
+
+async fn follow_popup(
+    cdp: &Arc<Cdp>,
+    screen: &Screen,
+    shown: &std::sync::Mutex<Option<Shown>>,
+    target: String,
+) -> Result<(), String> {
+    let attached = cdp
+        .send(
+            "Target.attachToTarget",
+            json!({ "targetId": target, "flatten": true }),
+            None,
+        )
+        .await?;
+    let session = text_at(&attached, "sessionId")?;
+    let page = |method: &'static str, params: Value| {
+        let cdp = Arc::clone(cdp);
+        let session = session.clone();
+        async move { cdp.send(method, params, Some(&session)).await }
+    };
+    page(
+        "Fetch.enable",
+        json!({ "patterns": [{ "resourceType": "Document", "requestStage": "Request" }] }),
+    )
+    .await?;
+    page("Page.enable", json!({})).await?;
+    page(
+        "Page.setInterceptFileChooserDialog",
+        json!({ "enabled": true }),
+    )
+    .await?;
+    let version = cdp.send("Browser.getVersion", json!({}), None).await?;
+    if let Some(agent) = version.get("userAgent").and_then(Value::as_str)
+        && agent.contains("HeadlessChrome")
+    {
+        page("Emulation.setUserAgentOverride", plain_agent(agent)).await?;
+    }
+    page("Runtime.runIfWaitingForDebugger", json!({})).await?;
+    let main = {
+        let mut held = shown.lock().expect("unpoisoned");
+        let Some(current) = held.as_mut() else {
+            return Ok(());
+        };
+        current.popup = Some((target, session.clone()));
+        current.main.clone()
+    };
+    screen.update(json!({ "popup": true, "picker": null }));
+    if screen.watched() {
+        let _ = cdp
+            .send("Page.stopScreencast", json!({}), Some(&main))
+            .await;
+        page("Page.startScreencast", screencast()).await?;
+    }
+    Ok(())
+}
+
+const PICKABLE: &str = "(x, y) => {
+  const el = document.elementFromPoint(x, y);
+  const select = el && el.closest('select');
+  if (select && !select.disabled) {
+    select.focus();
+    return { kind: 'select', multiple: select.multiple, selected: select.selectedIndex,
+      options: Array.from(select.options).map((o) => ({ label: o.label || o.text, disabled: o.disabled })) };
+  }
+  const input = el && el.closest('input');
+  if (input && !input.disabled && ['date', 'time', 'datetime-local', 'month', 'week', 'color'].includes(input.type)) {
+    input.focus();
+    return { kind: 'value', type: input.type, value: input.value };
+  }
+  return null;
+}";
+
+const CHOOSE: &str = "(x, y, chosen) => {
+  const el = document.elementFromPoint(x, y);
+  const select = el && el.closest('select');
+  const input = el && el.closest('input');
+  if (select && typeof chosen === 'number') select.selectedIndex = chosen;
+  else if (input && typeof chosen === 'string') input.value = chosen;
+  else return false;
+  const target = select || input;
+  target.dispatchEvent(new Event('input', { bubbles: true }));
+  target.dispatchEvent(new Event('change', { bubbles: true }));
+  return true;
+}";
 
 fn screencast() -> Value {
     json!({ "format": "jpeg", "quality": 70, "maxWidth": WIDTH, "maxHeight": HEIGHT, "everyNthFrame": 1 })

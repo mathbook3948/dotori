@@ -186,7 +186,7 @@ pub(crate) fn ask_of(line: &str) -> Option<Ask> {
     match value.get("kind").and_then(Value::as_str)? {
         "take" => Some(Ask::Take),
         "give" => Some(Ask::Give),
-        "mouse" | "wheel" | "key" | "text" | "compose" => Some(Ask::Input(value)),
+        "mouse" | "wheel" | "key" | "text" | "compose" | "pick" => Some(Ask::Input(value)),
         _ => None,
     }
 }
