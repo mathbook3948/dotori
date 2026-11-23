@@ -5,6 +5,8 @@ use super::*;
 
 const FAKE: &str = r#"
 import json, sys
+sys.stdin.reconfigure(encoding="utf-8")
+sys.stdout.reconfigure(encoding="utf-8")
 for line in sys.stdin:
     message = json.loads(line)
     if "id" not in message:
