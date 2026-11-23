@@ -1,3 +1,4 @@
+mod browser_route;
 mod chat;
 mod daemon;
 mod device;

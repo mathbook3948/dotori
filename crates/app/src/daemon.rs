@@ -31,6 +31,8 @@ use dotori_core::runtime::Ports;
 use dotori_core::sub_session::SubSessionRunner;
 use dotori_core::tool::Toolbox;
 
+use crate::browser_route::BROWSER_JOB;
+use crate::browser_route::BrowserRoute;
 use crate::device;
 use crate::door;
 use crate::door::Door;
@@ -101,9 +103,10 @@ pub(crate) async fn serve(
         model,
         notes: Arc::clone(&notes),
     });
+    let browser = BrowserRoute::new(toolbox);
     let toolbox: Arc<dyn Toolbox> = Arc::new(MainTools {
         notes: Arc::clone(&notes),
-        shared: toolbox,
+        shared: Arc::clone(&browser) as Arc<dyn Toolbox>,
     });
     let token = door::token()?;
     let (app, address) = AppChannel::bind(token.clone()).map_err(|error| error.to_string())?;
@@ -113,6 +116,9 @@ pub(crate) async fn serve(
         token,
     };
     let (records, linked, heard) = link(&home, &settings, records, &app).await;
+    if let Some(linked) = &linked {
+        browser.link(linked.clone());
+    }
     vector_copies::write_jobs(&home.jobs(), linked.is_none());
     let vectors = linked
         .clone()
@@ -174,6 +180,9 @@ pub(crate) async fn serve(
                 if vectors.as_ref().is_some_and(|vectors| vectors.hear(&heard)) {
                     continue;
                 }
+                if browser.hear(&heard) {
+                    continue;
+                }
                 if notes::hear(&notes, &linked.hub, &heard) {
                     continue;
                 }
@@ -207,6 +216,21 @@ pub(crate) async fn serve(
                     app.answering(linked.hub.name_of(&key), key == linked.own);
                 }
                 route.flush();
+            }
+        });
+    }
+    if let Some(linked) = linked.clone() {
+        let app = Arc::clone(&app);
+        let mut holder = linked.keeper.watch(BROWSER_JOB);
+        tokio::spawn(async move {
+            while let Some(holder) = holder.as_mut() {
+                if holder.changed().await.is_err() {
+                    return;
+                }
+                let now = holder.borrow_and_update().clone();
+                if let Some(key) = now {
+                    app.browser_at(linked.hub.name_of(&key), key == linked.own);
+                }
             }
         });
     }
@@ -302,7 +326,11 @@ async fn link(
     };
     let own = hub.own().to_owned();
     let copies = Copies::start(Arc::clone(&hub), records.clone());
-    let keeper = Keeper::start(Arc::clone(&hub), own.clone(), &[MAIN_JOB, VECTORS_JOB]);
+    let keeper = Keeper::start(
+        Arc::clone(&hub),
+        own.clone(),
+        &[MAIN_JOB, VECTORS_JOB, BROWSER_JOB],
+    );
     let linked = Linked {
         hub,
         keeper: Arc::clone(&keeper),

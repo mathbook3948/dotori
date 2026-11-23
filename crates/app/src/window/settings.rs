@@ -119,7 +119,7 @@ impl SettingsView {
         let saved = form.settings(&self.earlier.model).and_then(|model| {
             let settings = Settings {
                 model,
-                ..self.earlier.clone()
+                ..Settings::load(&self.home.settings())?
             };
             settings.save(&self.home.settings())?;
             self.earlier = settings;

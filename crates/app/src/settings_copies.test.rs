@@ -13,13 +13,22 @@ fn save(copies: &SettingsCopies, settings: &Settings) {
     settings.save(&copies.settings).expect("saved");
 }
 
+fn slack(owner: &str) -> SlackSettings {
+    SlackSettings {
+        owner: Some(owner.to_owned()),
+        ..SlackSettings::default()
+    }
+}
+
 #[test]
-fn settings_changed_later_are_taken_but_what_belongs_to_one_pc_stays() {
-    let here = pc("here");
-    let there = pc("there");
+fn a_new_pc_takes_a_configured_pcs_settings_and_one_part_changed_leaves_the_others() {
+    let configured = pc("configured");
+    let fresh = pc("fresh");
     save(
-        &here,
+        &configured,
         &Settings {
+            slack: Some(slack("U1")),
+            memory: Some(MemorySettings::default()),
             peers: Some(PeerSettings {
                 name: Some(String::from("데스크톱")),
                 ..PeerSettings::default()
@@ -27,44 +36,51 @@ fn settings_changed_later_are_taken_but_what_belongs_to_one_pc_stays() {
             ..Settings::default()
         },
     );
-    let mine = here.current().expect("read");
-    assert_eq!(
-        mine.changed_ms, 0,
-        "settings no one changed since they were shared are old"
-    );
-
-    let mut changed = Settings {
-        memory: Some(MemorySettings::default()),
-        ..Settings::default()
-    };
-    save(&there, &changed);
-    there.current().expect("read");
-    std::thread::sleep(Duration::from_millis(5));
-    changed.slack = Some(SlackSettings::default());
-    save(&there, &changed);
-    let theirs = there.current().expect("read");
-    assert!(theirs.changed_ms > 0);
+    save(&fresh, &Settings::default());
+    let set = configured.current().expect("read");
+    let empty = fresh.current().expect("read");
+    assert_eq!((set.times.slack, empty.times.slack), (1, 0));
 
     assert!(
-        here.take(theirs.changed_ms, theirs.shared.clone())
-            .expect("taken")
+        !configured
+            .take(empty.times, empty.shared.clone())
+            .expect("checked")
     );
-    let now = Settings::load(&here.settings).expect("loaded");
-    assert_eq!(now.slack, changed.slack);
-    assert_eq!(now.memory, changed.memory);
+    assert!(fresh.take(set.times, set.shared.clone()).expect("taken"));
+    assert_eq!(
+        Settings::load(&fresh.settings).expect("loaded").slack,
+        Some(slack("U1"))
+    );
+
+    let mut changed = Settings::load(&fresh.settings).expect("loaded");
+    changed.model = ModelSettings::OpenaiCompatible {
+        base_url: String::from("http://x"),
+        model: String::from("m"),
+        api_key_env: None,
+        max_tokens: None,
+    };
+    save(&fresh, &changed);
+    let edited = fresh.current().expect("read");
+    assert!(edited.times.model > 1);
+    assert_eq!(
+        edited.times.slack, set.times.slack,
+        "taking is not a change here"
+    );
+
+    assert!(configured.take(edited.times, edited.shared).expect("taken"));
+    let now = Settings::load(&configured.settings).expect("loaded");
+    assert_eq!(now.model, changed.model);
+    assert_eq!(now.slack, Some(slack("U1")));
+    assert!(now.memory.is_some());
     assert_eq!(
         now.peers.and_then(|peers| peers.name).as_deref(),
         Some("데스크톱")
     );
-    assert!(
-        !here
-            .take(theirs.changed_ms, theirs.shared.clone())
-            .expect("checked")
-    );
-    assert!(!there.take(mine.changed_ms, mine.shared).expect("older"));
-    assert_eq!(
-        here.current().expect("read").changed_ms,
-        theirs.changed_ms,
-        "taking is not a new change"
-    );
+}
+
+#[test]
+fn a_change_here_always_comes_after_the_time_it_replaces() {
+    assert_eq!(next(100, true, 50), 101);
+    assert_eq!(next(100, true, 500), 500);
+    assert_eq!(next(100, false, 500), 100);
 }

@@ -36,6 +36,7 @@ pub(crate) struct ChatView {
     tab: Tab,
     link: LinkState,
     answering: Option<(String, bool)>,
+    browser_at: Option<(String, bool)>,
     input: Entity<TextInput>,
     say: mpsc::UnboundedSender<String>,
     scroll: ScrollHandle,
@@ -76,6 +77,7 @@ impl ChatView {
             tab: Tab::Chat,
             link: LinkState::Connecting,
             answering: None,
+            browser_at: None,
             input: cx.new(|cx| TextInput::new("dotori에게 말하기", cx)),
             say,
             scroll: ScrollHandle::new(),
@@ -88,10 +90,15 @@ impl ChatView {
             Update::Connected => {
                 self.lines.clear();
                 self.answering = None;
+                self.browser_at = None;
                 self.link = LinkState::Connected;
             }
             Update::Event(ToWindow::Answering { pc, here }) => {
                 self.answering = Some((pc, here));
+                return;
+            }
+            Update::Event(ToWindow::BrowserAt { pc, here }) => {
+                self.browser_at = Some((pc, here));
                 return;
             }
             Update::Down(reason) => self.link = LinkState::Down(reason),
@@ -329,9 +336,53 @@ impl Render for ChatView {
                 .child(self.composer(&theme, window, cx))
             })
             .when(self.tab == Tab::Browser, |chat| {
-                chat.child(div().flex_1().min_h_0().child(self.screen.clone()))
+                match self.browser_at.clone().filter(|(_, here)| !here) {
+                    Some((pc, _)) => chat.child(browser_elsewhere(&theme, &pc)),
+                    None => chat.child(div().flex_1().min_h_0().child(self.screen.clone())),
+                }
             })
     }
+}
+
+fn browser_elsewhere(theme: &Theme, pc: &str) -> impl IntoElement {
+    div()
+        .flex_1()
+        .flex()
+        .flex_col()
+        .items_center()
+        .justify_center()
+        .gap_3()
+        .px_8()
+        .bg(theme.canvas)
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_center()
+                .size(px(56.))
+                .rounded_2xl()
+                .bg(theme.other)
+                .text_color(theme.other_text)
+                .text_xl()
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(pc.chars().next().unwrap_or('P').to_uppercase().to_string()),
+        )
+        .child(
+            div()
+                .text_lg()
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(format!("브라우저는 {pc}에 있어요")),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .items_center()
+                .text_color(theme.muted)
+                .text_center()
+                .child("dotori는 로그인을 한곳에 모으려고 브라우저를 한 PC에서만 열어요.")
+                .child(format!("보거나 넘겨받으려면 {pc}의 채팅창을 열어 주세요.")),
+        )
 }
 
 fn empty(theme: &Theme) -> impl IntoElement {
@@ -361,7 +412,7 @@ fn empty(theme: &Theme) -> impl IntoElement {
 
 fn line(theme: &Theme, event: &ToWindow) -> impl IntoElement {
     match event {
-        ToWindow::Answering { .. } => div(),
+        ToWindow::Answering { .. } | ToWindow::BrowserAt { .. } => div(),
         ToWindow::Owner { text } => div().flex().justify_end().child(
             div()
                 .max_w(relative(0.8))

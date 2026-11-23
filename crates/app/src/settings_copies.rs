@@ -1,7 +1,8 @@
 //! Keeps the settings that mean the same on every PC the same on all of them: the model, Slack
 //! and memory search. What belongs to one machine, such as how other PCs reach it, its browser,
-//! its coding agent and its MCP servers, stays with it. The settings changed last win, and
-//! like any setting they take effect when dotori starts again.
+//! its coding agent and its MCP servers, stays with it. Each of the three parts goes by its own
+//! time, the one changed last wins, and like any setting they take effect when dotori starts
+//! again.
 
 use std::path::Path;
 use std::path::PathBuf;
@@ -24,8 +25,9 @@ use crate::settings::Settings;
 use crate::settings::SlackSettings;
 
 const LOOK_EVERY: Duration = Duration::from_secs(5);
+const FUTURE_TAKEN: i64 = 24 * 60 * 60 * 1000;
 
-/// The settings every PC shares, and when they last changed.
+/// The settings every PC shares.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Shared {
     #[serde(default)]
@@ -36,9 +38,20 @@ pub(crate) struct Shared {
     pub(crate) memory: Option<MemorySettings>,
 }
 
+/// When each shared part last changed, in milliseconds since the Unix epoch.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Times {
+    #[serde(default)]
+    pub(crate) model: i64,
+    #[serde(default)]
+    pub(crate) slack: i64,
+    #[serde(default)]
+    pub(crate) memory: i64,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 struct Stamped {
-    changed_ms: i64,
+    times: Times,
     shared: Shared,
 }
 
@@ -79,24 +92,34 @@ impl SettingsCopies {
     }
 
     fn current(&self) -> Option<Stamped> {
-        let shared = Shared::of(&Settings::load(&self.settings).ok()?);
         let mut known = self.known.lock().expect("unpoisoned");
-        let stamped = match known.as_ref() {
-            Some(known) if known.shared == shared => known.clone(),
-            Some(_) => Stamped {
-                changed_ms: now_ms(),
+        self.current_held(&mut known)
+    }
+
+    fn current_held(&self, known: &mut Option<Stamped>) -> Option<Stamped> {
+        let shared = Shared::of(&Settings::load(&self.settings).ok()?);
+        let before = known.clone().or_else(|| read_stamp(&self.stamp));
+        let now = now_ms();
+        let stamped = match before {
+            Some(before) => Stamped {
+                times: Times {
+                    model: next(before.times.model, before.shared.model != shared.model, now),
+                    slack: next(before.times.slack, before.shared.slack != shared.slack, now),
+                    memory: next(
+                        before.times.memory,
+                        before.shared.memory != shared.memory,
+                        now,
+                    ),
+                },
                 shared,
             },
-            None => match read_stamp(&self.stamp) {
-                Some(kept) if kept.shared == shared => kept,
-                Some(kept) => Stamped {
-                    changed_ms: now_ms().max(kept.changed_ms + 1),
-                    shared,
+            None => Stamped {
+                times: Times {
+                    model: i64::from(shared.model != ModelSettings::default()),
+                    slack: i64::from(shared.slack.is_some()),
+                    memory: i64::from(shared.memory.is_some()),
                 },
-                None => Stamped {
-                    changed_ms: 0,
-                    shared,
-                },
+                shared,
             },
         };
         if known.as_ref() != Some(&stamped) {
@@ -106,19 +129,33 @@ impl SettingsCopies {
         Some(stamped)
     }
 
-    /// Takes settings another PC sent, if they changed later than these. Says whether they did.
-    pub(crate) fn take(&self, changed_ms: i64, shared: Shared) -> Result<bool, String> {
-        let Some(here) = self.current() else {
+    /// Takes the parts of another PC's settings that changed later than these. Says whether any
+    /// did.
+    pub(crate) fn take(&self, times: Times, shared: Shared) -> Result<bool, String> {
+        let mut known = self.known.lock().expect("unpoisoned");
+        let Some(here) = self.current_held(&mut known) else {
             return Err(String::from("the settings here cannot be read"));
         };
-        if changed_ms <= here.changed_ms || shared == here.shared {
+        let mut taken = here.clone();
+        if times.model > here.times.model && shared.model != here.shared.model {
+            taken.times.model = times.model;
+            taken.shared.model = shared.model;
+        }
+        if times.slack > here.times.slack && shared.slack != here.shared.slack {
+            taken.times.slack = times.slack;
+            taken.shared.slack = shared.slack;
+        }
+        if times.memory > here.times.memory && shared.memory != here.shared.memory {
+            taken.times.memory = times.memory;
+            taken.shared.memory = shared.memory;
+        }
+        if taken == here {
             return Ok(false);
         }
-        let settings = shared.clone().into(Settings::load(&self.settings)?);
+        let settings = taken.shared.clone().into(Settings::load(&self.settings)?);
         settings.save(&self.settings)?;
-        let stamped = Stamped { changed_ms, shared };
-        write_stamp(&self.stamp, &stamped);
-        *self.known.lock().expect("unpoisoned") = Some(stamped);
+        write_stamp(&self.stamp, &taken);
+        *known = Some(taken);
         Ok(true)
     }
 
@@ -126,7 +163,7 @@ impl SettingsCopies {
         let stamped = self.current()?;
         Some(json!({
             "kind": "settings",
-            "changed_ms": stamped.changed_ms,
+            "times": stamped.times,
             "shared": stamped.shared,
         }))
     }
@@ -141,26 +178,42 @@ impl SettingsCopies {
                 false
             }
             Some("settings") => {
-                let changed_ms = heard
+                let times = heard
                     .message
-                    .get("changed_ms")
-                    .and_then(Value::as_i64)
-                    .unwrap_or(0)
-                    .min(now_ms());
+                    .get("times")
+                    .and_then(|times| serde_json::from_value::<Times>(times.clone()).ok());
                 let shared = heard
                     .message
                     .get("shared")
                     .and_then(|shared| serde_json::from_value::<Shared>(shared.clone()).ok());
-                match shared.map(|shared| self.take(changed_ms, shared)) {
-                    Some(Ok(true)) => eprintln!(
+                let (Some(times), Some(shared)) = (times, shared) else {
+                    eprintln!(
+                        "dotori: settings from {} do not read here; is it a newer dotori?",
+                        heard.device
+                    );
+                    return true;
+                };
+                let latest = now_ms().saturating_add(FUTURE_TAKEN);
+                if [times.model, times.slack, times.memory]
+                    .iter()
+                    .any(|time| *time > latest)
+                {
+                    eprintln!(
+                        "dotori: settings from {} are dated too far ahead",
+                        heard.device
+                    );
+                    return true;
+                }
+                match self.take(times, shared) {
+                    Ok(true) => eprintln!(
                         "dotori: took newer settings from {}; they take effect when dotori starts again",
                         heard.device
                     ),
-                    Some(Err(error)) => eprintln!(
+                    Ok(false) => {}
+                    Err(error) => eprintln!(
                         "dotori: settings from {} were not taken: {error}",
                         heard.device
                     ),
-                    _ => {}
                 }
                 true
             }
@@ -170,20 +223,28 @@ impl SettingsCopies {
 
     /// Looks at the settings every few seconds and sends them out when they changed here.
     pub(crate) async fn share(&self, linked: Linked) {
-        let mut sent = self.current().map(|stamped| stamped.changed_ms);
+        let mut sent = self.current().map(|stamped| stamped.times);
         let mut every = time::interval(LOOK_EVERY);
         loop {
             every.tick().await;
             let Some(stamped) = self.current() else {
                 continue;
             };
-            if sent != Some(stamped.changed_ms)
+            if sent != Some(stamped.times)
                 && let Some(message) = self.message()
             {
                 linked.hub.broadcast(&message);
-                sent = Some(stamped.changed_ms);
+                sent = Some(stamped.times);
             }
         }
+    }
+}
+
+fn next(before: i64, changed: bool, now: i64) -> i64 {
+    if changed {
+        now.max(before.saturating_add(1))
+    } else {
+        before
     }
 }
 
@@ -192,9 +253,11 @@ fn read_stamp(path: &Path) -> Option<Stamped> {
 }
 
 fn write_stamp(path: &Path, stamped: &Stamped) {
-    if let Ok(text) = serde_json::to_string(stamped)
-        && let Err(error) = std::fs::write(path, text)
-    {
+    let Ok(text) = serde_json::to_string(stamped) else {
+        return;
+    };
+    let draft = path.with_extension("stamp.new");
+    if let Err(error) = std::fs::write(&draft, text).and_then(|()| std::fs::rename(&draft, path)) {
         eprintln!("dotori: {}: {error}", path.display());
     }
 }
