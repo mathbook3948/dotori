@@ -53,6 +53,7 @@ use crate::peers;
 use crate::settings::RunnerChoice;
 use crate::settings::Settings;
 use crate::settings::environment;
+use crate::settings_copies::SettingsCopies;
 use crate::tools;
 use crate::vector_copies;
 use crate::vector_copies::VECTORS_JOB;
@@ -155,9 +156,18 @@ pub(crate) async fn serve(
             });
         }
         let index = home.search_index();
+        let settings_copies = Arc::new(SettingsCopies::new(home.settings(), home.settings_stamp()));
+        {
+            let settings_copies = Arc::clone(&settings_copies);
+            let linked = linked.clone();
+            tokio::spawn(async move { settings_copies.share(linked).await });
+        }
         tokio::spawn(async move {
             while let Some(heard) = heard.recv().await {
                 linked.keeper.hear(&heard);
+                if settings_copies.hear(&linked, &heard) {
+                    continue;
+                }
                 if heard
                     .message
                     .get("kind")

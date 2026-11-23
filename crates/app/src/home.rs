@@ -71,6 +71,11 @@ impl Home {
         self.root.join("jobs.json")
     }
 
+    /// When the settings every PC shares last changed.
+    pub(crate) fn settings_stamp(&self) -> PathBuf {
+        self.root.join("settings.stamp")
+    }
+
     pub(crate) fn lock(&self) -> PathBuf {
         self.root.join("daemon.lock")
     }

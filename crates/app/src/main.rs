@@ -12,6 +12,7 @@ mod peers;
 mod replace;
 mod screen_link;
 mod settings;
+mod settings_copies;
 mod tools;
 mod tray;
 mod vector_copies;
