@@ -124,6 +124,7 @@ pub(crate) async fn serve(
     for job in [VECTORS_JOB, BROWSER_JOB] {
         vector_copies::write_job(&home.jobs(), job, linked.is_none());
     }
+    vector_copies::write_job(&home.jobs(), "linked", linked.is_some());
     let login_files = LoginFiles {
         out: home.logins_out(),
         into: home.logins_in(),

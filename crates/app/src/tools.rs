@@ -83,7 +83,10 @@ pub(crate) async fn serve(home: Home) -> Result<(), String> {
     );
     {
         let jobs = home.jobs();
-        tokio::spawn(Arc::clone(&browser).share_logins(move || holds_job(&jobs, "browser")));
+        tokio::spawn(
+            Arc::clone(&browser)
+                .share_logins(move || holds_job(&jobs, "browser") && holds_job(&jobs, "linked")),
+        );
     }
     let shown = TcpListener::bind(("127.0.0.1", 0))
         .await

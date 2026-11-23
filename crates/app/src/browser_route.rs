@@ -27,7 +27,13 @@ pub(crate) const BROWSER_JOB: &str = "browser";
 const BROWSER_TOOLS: &str = "browser_";
 const ANSWER_WAIT: Duration = Duration::from_secs(150);
 
-type Waiting = HashMap<u64, oneshot::Sender<Result<String, String>>>;
+type Waiting = HashMap<u64, (String, oneshot::Sender<Result<String, String>>)>;
+
+enum Where<'a> {
+    Here,
+    Elsewhere(&'a Linked, String),
+    Nowhere,
+}
 
 /// The shared tools as the main session sees them, with browser calls sent where the browser is.
 pub(crate) struct BrowserRoute {
@@ -52,16 +58,22 @@ impl BrowserRoute {
         let _ = self.linked.set(linked);
     }
 
-    fn browser_pc(&self, name: &str) -> Option<(&Linked, String)> {
+    fn browser_pc(&self, name: &str) -> Where<'_> {
         if !name.starts_with(BROWSER_TOOLS) {
-            return None;
+            return Where::Here;
         }
-        let linked = self.linked.get()?;
-        let holder = linked
+        let Some(linked) = self.linked.get() else {
+            return Where::Here;
+        };
+        match linked
             .keeper
             .watch(BROWSER_JOB)
-            .and_then(|holder| holder.borrow().clone())?;
-        (holder != linked.own).then_some((linked, holder))
+            .and_then(|holder| holder.borrow().clone())
+        {
+            Some(holder) if holder == linked.own => Where::Here,
+            Some(holder) => Where::Elsewhere(linked, holder),
+            None => Where::Nowhere,
+        }
     }
 
     async fn elsewhere(
@@ -72,7 +84,10 @@ impl BrowserRoute {
     ) -> Result<String, ToolError> {
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
-        self.waiting.lock().expect("unpoisoned").insert(id, tx);
+        self.waiting
+            .lock()
+            .expect("unpoisoned")
+            .insert(id, (pc.to_owned(), tx));
         let sent = linked.hub.send(
             pc,
             json!({ "kind": "tool_call", "id": id, "name": call.name, "input": call.input }),
@@ -85,15 +100,26 @@ impl BrowserRoute {
                 linked.hub.name_of(pc)
             )));
         }
-        let answer = time::timeout(ANSWER_WAIT, rx).await;
-        self.waiting.lock().expect("unpoisoned").remove(&id);
-        match answer {
-            Ok(Ok(result)) => result.map_err(failed),
-            Ok(Err(_)) => Err(failed(String::from("the browser's PC stopped answering"))),
-            Err(_) => Err(failed(String::from(
-                "the browser's PC did not answer in time",
+        let moved = async {
+            let Some(mut holder) = linked.keeper.watch(BROWSER_JOB) else {
+                return std::future::pending().await;
+            };
+            let _ = holder
+                .wait_for(|holder| holder.as_deref() != Some(pc))
+                .await;
+        };
+        let answer = tokio::select! {
+            answer = time::timeout(ANSWER_WAIT, rx) => match answer {
+                Ok(Ok(result)) => result.map_err(failed),
+                Ok(Err(_)) => Err(failed(String::from("the browser's PC stopped answering"))),
+                Err(_) => Err(failed(String::from("the browser's PC did not answer in time"))),
+            },
+            () = moved => Err(failed(String::from(
+                "the browser moved to another PC before it answered; check the page and try again",
             ))),
-        }
+        };
+        self.waiting.lock().expect("unpoisoned").remove(&id);
+        answer
     }
 
     /// Takes a browser call or its answer from another PC. Says whether it was one.
@@ -118,7 +144,10 @@ impl BrowserRoute {
                         .unwrap_or_default()
                         .to_owned()),
                 };
-                if let Some(waiter) = self.waiting.lock().expect("unpoisoned").remove(&id) {
+                let mut waiting = self.waiting.lock().expect("unpoisoned");
+                if waiting.get(&id).is_some_and(|(pc, _)| *pc == heard.key)
+                    && let Some((_, waiter)) = waiting.remove(&id)
+                {
                     let _ = waiter.send(result);
                 }
                 true
@@ -171,8 +200,13 @@ impl Toolbox for BrowserRoute {
     fn run(&self, call: ToolCall) -> BoxFuture<'_, Result<String, ToolError>> {
         Box::pin(async move {
             match self.browser_pc(&call.name) {
-                Some((linked, pc)) => self.elsewhere(linked, &pc, call).await,
-                None => self.local.run(call).await,
+                Where::Here => self.local.run(call).await,
+                Where::Elsewhere(linked, pc) => self.elsewhere(linked, &pc, call).await,
+                Where::Nowhere => Err(ToolError {
+                    detail: String::from(
+                        "no PC holds the browser right now; try again in a few seconds",
+                    ),
+                }),
             }
         })
     }

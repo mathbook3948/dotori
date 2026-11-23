@@ -38,13 +38,22 @@ async fn alone_every_tool_runs_here() {
 async fn an_answer_from_the_browsers_pc_reaches_the_call_waiting_for_it() {
     let route = BrowserRoute::new(Arc::new(Echo));
     let (tx, rx) = oneshot::channel();
-    route.waiting.lock().expect("unpoisoned").insert(7, tx);
-    let heard = |message: Value| Heard {
-        key: String::from("b"),
-        device: String::from("b"),
+    route
+        .waiting
+        .lock()
+        .expect("unpoisoned")
+        .insert(7, (String::from("b"), tx));
+    let from = |key: &str, message: Value| Heard {
+        key: key.to_owned(),
+        device: key.to_owned(),
         message,
     };
+    let heard = |message: Value| from("b", message);
 
+    assert!(route.hear(&from(
+        "c",
+        json!({ "kind": "tool_result", "id": 7, "result": "forged" })
+    )));
     assert!(route.hear(&heard(
         json!({ "kind": "tool_result", "id": 7, "error": "no page" })
     )));

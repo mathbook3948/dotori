@@ -605,4 +605,45 @@ async fn logins_from_one_browser_are_taken_when_another_starts() {
     assert_eq!(sid["value"], "도토리-login");
     assert_eq!(sid["httpOnly"], true);
     assert!(!into.exists(), "a copy is taken once");
+
+    running
+        .cdp
+        .send(
+            "Storage.setCookies",
+            json!({ "cookies": [{ "name": "stale", "value": "x", "domain": "example.org", "path": "/" }] }),
+            None,
+        )
+        .await
+        .expect("stale set");
+    let newer = LoginCopy {
+        at: copied.at + 1,
+        cookies: vec![json!({ "name": "fresh", "value": "y", "domain": "example.net", "path": "/", "partitionKey": "broken" })]
+            .into_iter()
+            .chain(copied.cookies.clone())
+            .collect(),
+    };
+    write_privately(&into, &newer).expect("carried");
+    let logins = Logins {
+        out: base.join("b").join("logins-out.json"),
+        into: into.clone(),
+    };
+    take_logins(&running.cdp, &logins).await;
+    let names: Vec<String> = running
+        .cdp
+        .send("Storage.getCookies", json!({}), None)
+        .await
+        .expect("cookies")["cookies"]
+        .as_array()
+        .expect("list")
+        .iter()
+        .filter_map(|cookie| cookie["name"].as_str().map(str::to_owned))
+        .collect();
+    assert!(names.contains(&String::from("sid")), "{names:?}");
+    assert!(
+        !names.contains(&String::from("stale")),
+        "a login the other PC no longer has is gone: {names:?}"
+    );
+    write_privately(&into, &newer).expect("carried again");
+    take_logins(&running.cdp, &logins).await;
+    assert!(into.exists(), "a copy already taken is not taken twice");
 }

@@ -329,6 +329,7 @@ impl Browser {
                 Some(running) if running.cdp.open() => Arc::clone(&running.cdp),
                 _ => continue,
             };
+            take_logins(&cdp, &logins).await;
             let Ok(reply) = cdp.send("Storage.getCookies", json!({}), None).await else {
                 continue;
             };
@@ -568,19 +569,37 @@ async fn take_logins(cdp: &Cdp, logins: &Logins) {
     let Some(theirs) = read_copy(&logins.into) else {
         return;
     };
+    let taken_mark = logins.into.with_extension("taken");
+    let taken: i64 = std::fs::read_to_string(&taken_mark)
+        .ok()
+        .and_then(|text| text.trim().parse().ok())
+        .unwrap_or(0);
     let ours = read_copy(&logins.out).map_or(0, |ours| ours.at);
-    if theirs.at <= ours {
+    if theirs.at <= ours.max(taken) {
         return;
     }
-    let cookies: Vec<Value> = theirs.cookies.iter().map(settable).collect();
-    match cdp
-        .send("Storage.setCookies", json!({ "cookies": cookies }), None)
-        .await
-    {
-        Ok(_) => {
-            let _ = std::fs::remove_file(&logins.into);
+    if let Err(error) = cdp.send("Storage.clearCookies", json!({}), None).await {
+        eprintln!("dotori: the logins from another PC were not taken: {error}");
+        return;
+    }
+    let mut refused = 0;
+    for cookie in theirs.cookies.iter().map(settable) {
+        if cdp
+            .send("Storage.setCookies", json!({ "cookies": [cookie] }), None)
+            .await
+            .is_err()
+        {
+            refused += 1;
         }
-        Err(error) => eprintln!("dotori: the logins from another PC were not taken: {error}"),
+    }
+    if refused > 0 {
+        eprintln!("dotori: {refused} cookies from another PC did not fit this browser");
+    }
+    if let Err(error) = std::fs::write(&taken_mark, theirs.at.to_string()) {
+        eprintln!("dotori: {}: {error}", taken_mark.display());
+    }
+    if read_copy(&logins.into).is_some_and(|now| now.at == theirs.at) {
+        let _ = std::fs::remove_file(&logins.into);
     }
 }
 
