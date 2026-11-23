@@ -1,0 +1,19 @@
+name: pr-title
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  pr-title:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          printf '%s\n' "$TITLE" > "$RUNNER_TEMP/title"
+          sh .githooks/commit-msg "$RUNNER_TEMP/title"

@@ -6,6 +6,7 @@ mod idle;
 mod link;
 mod lock;
 mod notes;
+mod replace;
 mod settings;
 mod tools;
 #[cfg(feature = "window")]

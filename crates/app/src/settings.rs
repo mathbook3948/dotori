@@ -1,7 +1,7 @@
 use std::env;
 use std::fs;
+use std::fs::OpenOptions;
 use std::io::ErrorKind;
-use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -21,6 +21,8 @@ use dotori_core::llm::Model;
 use dotori_mcp::memory::EmbeddingConfig;
 use serde::Deserialize;
 use serde::Serialize;
+
+use crate::replace::replace;
 
 const ANTHROPIC_KEY: &str = "ANTHROPIC_API_KEY";
 const SLACK_APP_KEY: &str = "SLACK_APP_TOKEN";
@@ -240,16 +242,8 @@ impl Settings {
     )]
     /// Writes the whole file anew. A file left half written by a crash is never read.
     pub(crate) fn save(&self, path: &Path) -> Result<(), String> {
-        let fail = |error: std::io::Error| format!("{}: {error}", path.display());
         let text = toml::to_string(self).map_err(|error| error.to_string())?;
-        if let Some(folder) = path.parent() {
-            fs::create_dir_all(folder).map_err(fail)?;
-        }
-        let draft = path.with_extension("toml.new");
-        let mut file = fs::File::create(&draft).map_err(fail)?;
-        file.write_all(text.as_bytes()).map_err(fail)?;
-        file.sync_all().map_err(fail)?;
-        fs::rename(&draft, path).map_err(fail)
+        replace(path, text.as_bytes(), OpenOptions::new())
     }
 
     /// Builds the main conversation's model, reading keys through `key`.
