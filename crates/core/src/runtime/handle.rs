@@ -26,14 +26,14 @@ impl Agent {
     /// Validates the wiring, resumes the conversation from the raw record, then starts the
     /// agent loop and every channel on the current tokio runtime.
     pub async fn spawn(config: AgentConfig, ports: Ports) -> Result<Self, SpawnError> {
-        let app = validate(&ports).map_err(SpawnError::Config)?;
+        let wiring = validate(&ports).map_err(SpawnError::Config)?;
         let records = caught(|| ports.records.load())
             .await
             .unwrap_or_else(|detail| Err(RecordError { detail }))
             .map_err(SpawnError::Load)?;
         let loaded = records.len();
         let conversation = records.into_iter().map(|record| record.entry).collect();
-        let state = AgentState::resume(app, config.seen_capacity, conversation);
+        let state = AgentState::resume(wiring, config.seen_capacity, conversation);
         let (tx, rx) = mpsc::channel(config.queue_capacity.get());
         let shell = Shell::start(rx, tx.clone(), ports, config.tool_timeout);
         shell.record(&state.conversation[loaded..]);

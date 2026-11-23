@@ -68,6 +68,7 @@ async fn what_was_heard_is_kept_in_columns_for_search() {
                 role: Role::Other,
             },
             content: Content::parse("내일 회의는 3시").expect("non-empty"),
+            audience: None,
         },
     };
     store.append(vec![record(heard)]).await.expect("appended");

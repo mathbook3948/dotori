@@ -18,7 +18,7 @@ fn say_becomes_a_reply_to_its_thread() {
     assert_eq!(decided.ids, vec![String::from("a")]);
     assert!(decided.rejected.is_empty());
     match decided.actions.as_slice() {
-        [Action::Say { thread, text }] => {
+        [Action::Say { thread, text, .. }] => {
             assert_eq!(thread.get(), 3);
             assert_eq!(text, "hi");
         }
@@ -87,4 +87,22 @@ fn a_blank_context_leaves_the_system_prompt_alone() {
     assert_eq!(system("base", None), "base");
     assert_eq!(system("base", Some("  ")), "base");
     assert_eq!(system("base", Some("more")), "base\n\nmore");
+}
+
+#[test]
+fn say_can_be_sent_privately_and_is_public_by_default() {
+    let decided = decide(vec![
+        call("a", SAY, r#"{"thread":1,"text":"psst","privately":true}"#),
+        call("b", SAY, r#"{"thread":1,"text":"hello"}"#),
+    ]);
+
+    let private: Vec<bool> = decided
+        .actions
+        .iter()
+        .map(|action| match action {
+            Action::Say { privately, .. } => *privately,
+            other => panic!("expected say, got {other:?}"),
+        })
+        .collect();
+    assert_eq!(private, vec![true, false]);
 }

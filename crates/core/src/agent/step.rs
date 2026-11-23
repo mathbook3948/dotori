@@ -66,7 +66,7 @@ fn on_received(state: &mut AgentState, channel: ChannelId, incoming: Incoming) -
     };
     let thread = state.threads.intern(address.clone());
     let mut effects = Vec::new();
-    if address.channel != state.app {
+    if address.channel != state.wiring.app {
         effects.push(Effect::Show(Traffic {
             address: address.clone(),
             who: incoming.sender_name.clone(),
@@ -84,6 +84,7 @@ fn on_received(state: &mut AgentState, channel: ChannelId, incoming: Incoming) -
                 role: Role::Owner,
             },
             content: incoming.content,
+            audience: Some(incoming.audience),
         },
     });
     effects.extend(absorb(state, Arrival::Interrupts));
@@ -177,7 +178,7 @@ fn on_delivery_done(
 ) -> Vec<Effect> {
     match result {
         Ok(()) => match state.threads.resolve(thread) {
-            Some(address) if address.channel != state.app => {
+            Some(address) if address.channel != state.wiring.app => {
                 vec![Effect::Show(Traffic {
                     address: address.clone(),
                     who: String::from("dotori"),
@@ -245,6 +246,18 @@ fn absorb(state: &mut AgentState, arrival: Arrival) -> Vec<Effect> {
     }
 }
 
+fn destination(state: &AgentState, thread: ThreadRef, privately: bool) -> Option<Address> {
+    let address = state.threads.resolve(thread)?;
+    if !privately {
+        return Some(address.clone());
+    }
+    let place = state.wiring.private.get(&address.channel)?;
+    Some(Address {
+        channel: address.channel.clone(),
+        place: place.clone(),
+    })
+}
+
 fn run_actions(
     state: &mut AgentState,
     actions: Vec<Action>,
@@ -253,15 +266,17 @@ fn run_actions(
     let mut waiting = HashMap::new();
     for action in actions {
         match action {
-            Action::Say { thread, text } => match state.threads.resolve(thread) {
-                Some(address) => effects.push(Effect::Deliver {
+            Action::Say {
+                thread,
+                text,
+                privately,
+            } => match destination(state, thread, privately) {
+                Some(to) => effects.push(Effect::Deliver { thread, to, text }),
+                None => state.conversation.push(Entry::Refused(Action::Say {
                     thread,
-                    to: address.clone(),
                     text,
-                }),
-                None => state
-                    .conversation
-                    .push(Entry::Refused(Action::Say { thread, text })),
+                    privately,
+                })),
             },
             Action::UseTool(call) => {
                 let run = state.ids.next_tool_run();

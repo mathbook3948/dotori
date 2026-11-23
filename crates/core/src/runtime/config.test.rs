@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use super::*;
 use crate::channel::Channel;
+use crate::message::Place;
 use crate::runtime::fakes::FakeChannel;
 use crate::runtime::fakes::channel_id;
 use crate::runtime::fakes::ports;
@@ -41,5 +42,15 @@ fn two_channels_with_one_id_are_rejected() {
 fn valid_wiring_names_the_app_window() {
     let ports = ports(FakeChannel::new("app").0, vec![channel("slack")]);
 
-    assert_eq!(validate(&ports), Ok(channel_id("app")));
+    let wiring = validate(&ports).expect("valid");
+
+    assert_eq!(wiring.app, channel_id("app"));
+    assert_eq!(
+        wiring.private.get(&channel_id("slack")),
+        Some(&Place::new("private"))
+    );
+    assert_eq!(
+        wiring.private.get(&channel_id("app")),
+        Some(&Place::new("private"))
+    );
 }

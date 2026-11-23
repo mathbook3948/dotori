@@ -9,6 +9,7 @@ use dotori_core::id::ExternalMessageId;
 use dotori_core::id::ExternalUserId;
 use dotori_core::llm::ModelTrace;
 use dotori_core::message::Address;
+use dotori_core::message::Audience;
 use dotori_core::message::Content;
 use dotori_core::message::Message;
 use dotori_core::message::Place;
@@ -51,6 +52,10 @@ pub(crate) fn every_entry() -> Vec<Entry> {
                     role: Role::Owner,
                 },
                 content: Content::parse("안녕\n둘째 줄").expect("non-empty"),
+                audience: Some(Audience::People {
+                    some: vec![String::from("민아")],
+                    total: 3,
+                }),
             },
         },
         Entry::Acted {
@@ -58,6 +63,12 @@ pub(crate) fn every_entry() -> Vec<Entry> {
                 Action::Say {
                     thread: ThreadRef::new(4),
                     text: String::from("hi"),
+                    privately: false,
+                },
+                Action::Say {
+                    thread: ThreadRef::new(4),
+                    text: String::from("just for you"),
+                    privately: true,
                 },
                 Action::UseTool(ToolCall {
                     id: ToolCallId::new("toolu_1"),
@@ -93,6 +104,7 @@ pub(crate) fn every_entry() -> Vec<Entry> {
         Entry::Refused(Action::Say {
             thread: ThreadRef::new(9),
             text: String::from("lost"),
+            privately: false,
         }),
         Entry::DeliveryFailed {
             thread: ThreadRef::new(4),

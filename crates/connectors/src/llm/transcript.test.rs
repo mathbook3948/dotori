@@ -6,6 +6,7 @@ use dotori_core::id::ExternalMessageId;
 use dotori_core::id::ExternalUserId;
 use dotori_core::llm::ModelTrace;
 use dotori_core::message::Address;
+use dotori_core::message::Audience;
 use dotori_core::message::Content;
 use dotori_core::message::Message;
 use dotori_core::message::Place;
@@ -34,6 +35,7 @@ fn heard(thread: u32, text: &str) -> Entry {
                 role: Role::Owner,
             },
             content: Content::parse(text).expect("non-empty"),
+            audience: None,
         },
     }
 }
@@ -50,6 +52,7 @@ fn say(thread: u32, text: &str) -> Action {
     Action::Say {
         thread: ThreadRef::new(thread),
         text: text.to_owned(),
+        privately: false,
     }
 }
 
@@ -278,4 +281,75 @@ fn a_trace_that_does_not_match_its_actions_is_ignored() {
 
     let ids: Vec<&str> = calls(&turns[1]).into_iter().map(|call| call.0).collect();
     assert_eq!(ids, vec!["call_1_0", "call_1_1"]);
+}
+
+fn heard_by(audience: Audience) -> Entry {
+    let Entry::Heard {
+        thread,
+        mut message,
+    } = heard(1, "what is on today")
+    else {
+        panic!("heard is a message");
+    };
+    message.audience = Some(audience);
+    Entry::Heard { thread, message }
+}
+
+#[test]
+fn a_message_says_who_can_read_its_room() {
+    let rooms = [
+        (Audience::Owner, "only the owner"),
+        (
+            Audience::People {
+                some: vec![String::from("Mina"), String::from("Joon")],
+                total: 4,
+            },
+            "the owner and 3 other people, such as Mina, Joon",
+        ),
+        (
+            Audience::People {
+                some: Vec::new(),
+                total: 2,
+            },
+            "the owner and 1 other person",
+        ),
+        (
+            Audience::Anyone(String::from("the Slack workspace")),
+            "anyone in the Slack workspace",
+        ),
+    ];
+    for (audience, readers) in rooms {
+        let turns = build(&[heard_by(audience)], "anthropic");
+        let note = notes(&turns[0])[0];
+        assert!(note.contains(&format!("readers=\"{readers}\"")), "{note}");
+    }
+    let unknown = build(&[heard(1, "old")], "anthropic");
+    assert!(!notes(&unknown[0])[0].contains("readers="));
+}
+
+#[test]
+fn a_private_reply_is_replayed_with_its_flag() {
+    let conversation = vec![
+        heard(1, "hi"),
+        acted(
+            1,
+            vec![Action::Say {
+                thread: ThreadRef::new(1),
+                text: String::from("psst"),
+                privately: true,
+            }],
+            None,
+        ),
+        heard(1, "thanks"),
+    ];
+
+    let turns = build(&conversation, "openai");
+
+    let (_, name, input) = calls(&turns[1])[0];
+    assert_eq!(name, "say");
+    let input: serde_json::Value = serde_json::from_str(input).expect("json");
+    assert_eq!(
+        input,
+        serde_json::json!({ "thread": 1, "text": "psst", "privately": true })
+    );
 }

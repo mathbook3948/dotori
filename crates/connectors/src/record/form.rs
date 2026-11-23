@@ -9,6 +9,7 @@ use dotori_core::id::ExternalMessageId;
 use dotori_core::id::ExternalUserId;
 use dotori_core::llm::ModelTrace;
 use dotori_core::message::Address;
+use dotori_core::message::Audience;
 use dotori_core::message::Content;
 use dotori_core::message::Message;
 use dotori_core::message::Place;
@@ -77,6 +78,16 @@ struct MessageForm {
     sender_name: String,
     owner: bool,
     content: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    audience: Option<AudienceForm>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum AudienceForm {
+    Owner,
+    People { some: Vec<String>, total: usize },
+    Anyone { scope: String },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -85,6 +96,8 @@ enum ActionForm {
     Say {
         thread: u32,
         text: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        privately: bool,
     },
     UseTool {
         id: String,
@@ -150,6 +163,16 @@ fn entry_form(entry: &Entry) -> EntryForm {
                 sender_name: message.sender.name.clone(),
                 owner: message.sender.role == Role::Owner,
                 content: message.content.as_str().to_owned(),
+                audience: message.audience.as_ref().map(|audience| match audience {
+                    Audience::Owner => AudienceForm::Owner,
+                    Audience::People { some, total } => AudienceForm::People {
+                        some: some.clone(),
+                        total: *total,
+                    },
+                    Audience::Anyone(scope) => AudienceForm::Anyone {
+                        scope: scope.clone(),
+                    },
+                }),
             },
         },
         Entry::Acted {
@@ -202,9 +225,14 @@ fn entry_form(entry: &Entry) -> EntryForm {
 
 fn action_form(action: &Action) -> ActionForm {
     match action {
-        Action::Say { thread, text } => ActionForm::Say {
+        Action::Say {
+            thread,
+            text,
+            privately,
+        } => ActionForm::Say {
             thread: thread.get(),
             text: text.clone(),
+            privately: *privately,
         },
         Action::UseTool(call) => ActionForm::UseTool {
             id: call.id.as_str().to_owned(),
@@ -242,6 +270,11 @@ fn entry(form: EntryForm) -> Result<Entry, String> {
                     },
                 },
                 content: Content::parse(message.content).map_err(|error| error.to_string())?,
+                audience: message.audience.map(|audience| match audience {
+                    AudienceForm::Owner => Audience::Owner,
+                    AudienceForm::People { some, total } => Audience::People { some, total },
+                    AudienceForm::Anyone { scope } => Audience::Anyone(scope),
+                }),
             },
         },
         EntryForm::Acted {
@@ -293,9 +326,14 @@ fn entry(form: EntryForm) -> Result<Entry, String> {
 
 fn action(form: ActionForm) -> Action {
     match form {
-        ActionForm::Say { thread, text } => Action::Say {
+        ActionForm::Say {
+            thread,
+            text,
+            privately,
+        } => Action::Say {
             thread: ThreadRef::new(thread),
             text,
+            privately,
         },
         ActionForm::UseTool { id, name, input } => Action::UseTool(ToolCall {
             id: ToolCallId::new(id),

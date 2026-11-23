@@ -18,6 +18,7 @@ use dotori_core::channel::Inbox;
 use dotori_core::id::ChannelId;
 use dotori_core::id::ExternalMessageId;
 use dotori_core::id::ExternalUserId;
+use dotori_core::message::Audience;
 use dotori_core::message::Content;
 use dotori_core::message::Incoming;
 use dotori_core::message::Place;
@@ -41,6 +42,13 @@ const CONNECT_WAIT: Duration = Duration::from_secs(30);
 const QUIET: Duration = Duration::from_secs(75);
 const NAME_WAIT: Duration = Duration::from_secs(2);
 const NAMES_KEPT: usize = 4096;
+const ROOM_WAIT: Duration = Duration::from_secs(5);
+const ROOM_FRESH: Duration = Duration::from_secs(10 * 60);
+const ROOMS_KEPT: usize = 256;
+const NAMED: usize = 5;
+const OWNER_DIRECT: &str = "@owner";
+const WORKSPACE: &str = "the Slack workspace";
+const UNLISTED: &str = "this Slack conversation, whose members could not be listed";
 
 /// What the Slack channel needs. The app token opens Socket Mode and the bot token speaks.
 /// The owner is the one Slack user id whose messages are heard.
@@ -82,6 +90,8 @@ pub struct SlackChannel {
     owner: String,
     api: Api,
     names: Mutex<HashMap<String, String>>,
+    rooms: Mutex<HashMap<String, (Instant, Audience)>>,
+    direct: tokio::sync::Mutex<Option<String>>,
 }
 
 impl fmt::Debug for SlackChannel {
@@ -106,6 +116,8 @@ impl SlackChannel {
             owner: config.owner,
             api,
             names: Mutex::new(HashMap::new()),
+            rooms: Mutex::new(HashMap::new()),
+            direct: tokio::sync::Mutex::new(None),
         })
     }
 
@@ -165,12 +177,18 @@ impl SlackChannel {
                     let Ok(content) = Content::parse(arrived.text) else {
                         continue;
                     };
+                    let audience = if arrived.direct {
+                        Audience::Owner
+                    } else {
+                        self.audience(&arrived.room, bot).await
+                    };
                     let incoming = Incoming {
                         id: ExternalMessageId::new(arrived.id),
                         place: Place::new(arrived.place),
                         sender_name: self.name(&arrived.user).await,
                         sender_id: ExternalUserId::new(arrived.user),
                         content,
+                        audience,
                     };
                     if inbox.push(incoming).await.is_err() {
                         return Ok(Ended::InboxClosed);
@@ -178,6 +196,71 @@ impl SlackChannel {
                 }
             }
         }
+    }
+
+    async fn audience(&self, room: &str, bot: &str) -> Audience {
+        let cached = self
+            .rooms
+            .lock()
+            .expect("unpoisoned")
+            .get(room)
+            .filter(|(at, _)| at.elapsed() < ROOM_FRESH)
+            .map(|(_, audience)| audience.clone());
+        if let Some(audience) = cached {
+            return audience;
+        }
+        let audience = match time::timeout(ROOM_WAIT, self.look_up(room, bot)).await {
+            Ok(Some(audience)) => audience,
+            Ok(None) | Err(_) => return Audience::Anyone(String::from(UNLISTED)),
+        };
+        let mut rooms = self.rooms.lock().expect("unpoisoned");
+        if rooms.len() >= ROOMS_KEPT {
+            rooms.clear();
+        }
+        rooms.insert(room.to_owned(), (Instant::now(), audience.clone()));
+        audience
+    }
+
+    async fn look_up(&self, room: &str, bot: &str) -> Option<Audience> {
+        let info = self.api.room(room).await.ok()?;
+        if info.public {
+            return Some(Audience::Anyone(String::from(WORKSPACE)));
+        }
+        let members = self.api.members(room).await.ok()?;
+        let with_bot = usize::from(members.iter().any(|member| member == bot));
+        let total = info
+            .members
+            .unwrap_or(members.len())
+            .max(members.len())
+            .saturating_sub(with_bot);
+        if total <= 1 {
+            return Some(Audience::Owner);
+        }
+        let mut some = Vec::new();
+        for member in members
+            .iter()
+            .filter(|member| *member != bot && **member != self.owner)
+            .take(NAMED)
+        {
+            some.push(self.name(member).await);
+        }
+        Some(Audience::People { some, total })
+    }
+
+    async fn owner_direct(&self) -> Result<String, ChannelError> {
+        let mut direct = self.direct.lock().await;
+        if let Some(channel) = direct.as_ref() {
+            return Ok(channel.clone());
+        }
+        let channel = self
+            .api
+            .direct(&self.owner)
+            .await
+            .map_err(|error| ChannelError {
+                detail: error.detail(),
+            })?;
+        *direct = Some(channel.clone());
+        Ok(channel)
     }
 
     async fn name(&self, user: &str) -> String {
@@ -211,9 +294,21 @@ impl Channel for SlackChannel {
         Box::pin(self.listen(inbox))
     }
 
+    fn private_place(&self) -> Place {
+        Place::new(OWNER_DIRECT)
+    }
+
     fn deliver(&self, place: Place, text: String) -> BoxFuture<'_, Result<(), ChannelError>> {
         Box::pin(async move {
-            let (channel, thread) = envelope::target(place.as_str());
+            let direct = if place.as_str() == OWNER_DIRECT {
+                Some(self.owner_direct().await?)
+            } else {
+                None
+            };
+            let (channel, thread) = match &direct {
+                Some(channel) => (channel.as_str(), None),
+                None => envelope::target(place.as_str()),
+            };
             for piece in envelope::pieces(&text) {
                 self.api
                     .say(channel, thread, &envelope::escaped(piece))

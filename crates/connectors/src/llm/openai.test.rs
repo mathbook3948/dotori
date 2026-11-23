@@ -37,6 +37,7 @@ fn heard(text: &str) -> Entry {
                 role: Role::Owner,
             },
             content: Content::parse(text).expect("non-empty"),
+            audience: None,
         },
     }
 }
@@ -126,6 +127,7 @@ fn a_reply_from_another_provider_is_written_as_tool_calls() {
             actions: vec![Action::Say {
                 thread: ThreadRef::new(0),
                 text: String::from("hello"),
+                privately: false,
             }],
             answered: 1,
             trace: None,

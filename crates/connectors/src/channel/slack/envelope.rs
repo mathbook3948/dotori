@@ -24,6 +24,10 @@ pub(crate) enum Kind {
 pub(crate) struct Arrived {
     pub(crate) id: String,
     pub(crate) place: String,
+    /// The Slack conversation id, whose members can read the message.
+    pub(crate) room: String,
+    /// A direct message, which only the owner and the assistant read.
+    pub(crate) direct: bool,
     pub(crate) user: String,
     pub(crate) text: String,
 }
@@ -110,6 +114,8 @@ fn arrived(event: Event, bot: &str, owner: &str) -> Option<Arrived> {
     Some(Arrived {
         id: format!("{channel}/{ts}"),
         place,
+        room: channel,
+        direct,
         user,
         text,
     })

@@ -65,6 +65,19 @@ pub struct Incoming {
     pub sender_id: ExternalUserId,
     pub sender_name: String,
     pub content: Content,
+    pub audience: Audience,
+}
+
+/// Who can read the room a message came from, as its channel saw it when the message arrived.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Audience {
+    /// Only the owner and dotori, such as the app window or a direct message.
+    Owner,
+    /// The owner and other people. `some` names a few of the others and `total` counts everyone
+    /// but dotori, the owner included.
+    People { some: Vec<String>, total: usize },
+    /// Anyone in a wider group can read it, such as everyone in a Slack workspace.
+    Anyone(String),
 }
 
 /// Everything heard now is the owner's. `Other` survives only in records from before dotori
@@ -89,6 +102,8 @@ pub struct Message {
     pub address: Address,
     pub sender: Sender,
     pub content: Content,
+    /// `None` only in records from before rooms were described.
+    pub audience: Option<Audience>,
 }
 
 #[cfg(test)]
