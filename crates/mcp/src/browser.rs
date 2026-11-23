@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -16,6 +17,7 @@ use tokio::time;
 use crate::Tool;
 use crate::ToolFuture;
 use crate::cdp::Cdp;
+use crate::chrome;
 use crate::fetch;
 
 const START_WAIT: Duration = Duration::from_secs(20);
@@ -25,14 +27,15 @@ const POLL: Duration = Duration::from_millis(200);
 const SNAPSHOT: &str = include_str!("snapshot.js");
 const SHOWN: usize = 20_000;
 const CLOSE_WAIT: Duration = Duration::from_secs(10);
-const QUIET_DIALOGS: &str =
-    "window.alert = () => {}; window.confirm = () => false; window.prompt = () => null;";
-const FIND: &str = "window.__dotoriRefs && window.__dotoriRefs.get(";
+const FIND: &str = "globalThis.__refs && globalThis.__refs.get(";
+const WORLD: &str = "dotori";
 
-/// How the browser runs. The profile folder keeps logins between runs.
+/// How the browser runs. The profile folder keeps logins between runs. Without an executable,
+/// dotori's own Chrome for Testing in `downloads` is used, fetched there on first use.
 #[derive(Clone, Debug)]
 pub struct BrowserConfig {
     pub executable: Option<PathBuf>,
+    pub downloads: PathBuf,
     pub profile: PathBuf,
     pub headless: bool,
 }
@@ -41,14 +44,31 @@ pub struct BrowserConfig {
 #[derive(Debug)]
 pub struct Browser {
     config: BrowserConfig,
+    install: Arc<std::sync::Mutex<Install>>,
     running: Mutex<Option<Running>>,
     acting: Mutex<()>,
+}
+
+#[derive(Debug)]
+enum Install {
+    Fetching,
+    Ready(PathBuf),
+    Failed(String),
 }
 
 struct Running {
     child: Child,
     cdp: Arc<Cdp>,
     session: String,
+    frame: String,
+    world: Mutex<Option<i64>>,
+    watcher: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        self.watcher.abort();
+    }
 }
 
 impl std::fmt::Debug for Running {
@@ -73,9 +93,25 @@ pub struct BrowserTool {
 }
 
 impl Browser {
+    /// Starts fetching dotori's own browser in the background unless it is there or another one
+    /// is set, so the first page does not wait for the download.
     pub fn new(config: BrowserConfig) -> Arc<Self> {
+        let install = match config
+            .executable
+            .clone()
+            .or_else(|| chrome::installed(&config.downloads))
+        {
+            Some(executable) => Install::Ready(executable),
+            None => Install::Fetching,
+        };
+        let fetching = matches!(install, Install::Fetching);
+        let install = Arc::new(std::sync::Mutex::new(install));
+        if fetching {
+            fetch(Arc::clone(&install), config.downloads.clone());
+        }
         Arc::new(Self {
             config,
+            install,
             running: Mutex::new(None),
             acting: Mutex::new(()),
         })
@@ -94,20 +130,34 @@ impl Browser {
             .collect()
     }
 
-    async fn page(&self) -> Result<(Arc<Cdp>, String), String> {
+    fn executable(&self) -> Result<PathBuf, String> {
+        let mut install = self.install.lock().expect("unpoisoned");
+        match &*install {
+            Install::Ready(executable) => Ok(executable.clone()),
+            Install::Fetching => Err(String::from(
+                "dotori is downloading its own browser for the first time; try again in a few minutes",
+            )),
+            Install::Failed(error) => {
+                let error =
+                    format!("dotori's browser could not be downloaded, trying again: {error}");
+                *install = Install::Fetching;
+                fetch(Arc::clone(&self.install), self.config.downloads.clone());
+                Err(error)
+            }
+        }
+    }
+
+    async fn page(&self) -> Result<tokio::sync::MappedMutexGuard<'_, Running>, String> {
         let mut running = self.running.lock().await;
-        if let Some(current) = running.as_ref()
-            && current.cdp.open()
-        {
-            return Ok((Arc::clone(&current.cdp), current.session.clone()));
+        let alive = running.as_ref().is_some_and(|current| current.cdp.open());
+        if !alive {
+            if let Some(mut ended) = running.take() {
+                let _ = ended.child.kill().await;
+            }
+            *running = Some(self.launch().await?);
         }
-        if let Some(mut ended) = running.take() {
-            let _ = ended.child.kill().await;
-        }
-        let started = self.launch().await?;
-        let page = (Arc::clone(&started.cdp), started.session.clone());
-        *running = Some(started);
-        Ok(page)
+        tokio::sync::MutexGuard::try_map(running, Option::as_mut)
+            .map_err(|_| String::from("the browser is not running"))
     }
 
     async fn forget(&self) {
@@ -140,19 +190,17 @@ impl Browser {
     }
 
     async fn launch(&self) -> Result<Running, String> {
-        let executable = match &self.config.executable {
-            Some(path) => path.clone(),
-            None => find()
-                .ok_or("no Chrome, Chromium or Edge was found; set its path in the settings")?,
-        };
+        let executable = self.executable()?;
         std::fs::create_dir_all(&self.config.profile).map_err(|error| error.to_string())?;
         self.close_left_over().await;
+        forget_passwords(&self.config.profile)?;
         let mut command = Command::new(&executable);
         command
             .arg(format!("--user-data-dir={}", self.config.profile.display()))
             .arg("--remote-debugging-port=0")
             .arg("--no-first-run")
             .arg("--no-default-browser-check")
+            .arg("--disable-blink-features=AutomationControlled")
             .arg("about:blank")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -209,18 +257,163 @@ impl Browser {
             )
             .await?;
         let session = text_at(&attached, "sessionId")?;
-        cdp.send(
-            "Page.addScriptToEvaluateOnNewDocument",
-            json!({ "source": QUIET_DIALOGS }),
-            Some(&session),
+        let watcher = tokio::spawn(watch(Arc::clone(&cdp), cdp.events()));
+        let page = |method: &'static str, params: Value| {
+            let cdp = Arc::clone(&cdp);
+            let session = session.clone();
+            async move { cdp.send(method, params, Some(&session)).await }
+        };
+        page("Page.enable", json!({})).await?;
+        page(
+            "Fetch.enable",
+            json!({ "patterns": [{ "resourceType": "Document", "requestStage": "Request" }] }),
         )
         .await?;
+        let version = cdp.send("Browser.getVersion", json!({}), None).await?;
+        if let Some(agent) = version.get("userAgent").and_then(Value::as_str)
+            && agent.contains("HeadlessChrome")
+        {
+            page("Emulation.setUserAgentOverride", plain_agent(agent)).await?;
+        }
+        let tree = page("Page.getFrameTree", json!({})).await?;
+        let frame = tree
+            .pointer("/frameTree/frame/id")
+            .and_then(Value::as_str)
+            .ok_or("the page has no frame")?
+            .to_owned();
         Ok(Running {
             child,
             cdp,
             session,
+            frame,
+            world: Mutex::new(None),
+            watcher,
         })
     }
+}
+
+fn fetch(install: Arc<std::sync::Mutex<Install>>, downloads: PathBuf) {
+    if tokio::runtime::Handle::try_current().is_err() {
+        *install.lock().expect("unpoisoned") =
+            Install::Failed(String::from("no runtime to download the browser on"));
+        return;
+    }
+    tokio::spawn(async move {
+        let done = match chrome::ensure(&downloads).await {
+            Ok(executable) => Install::Ready(executable),
+            Err(error) => {
+                eprintln!("dotori: the browser could not be downloaded: {error}");
+                Install::Failed(error)
+            }
+        };
+        *install.lock().expect("unpoisoned") = done;
+    });
+}
+
+fn forget_passwords(profile: &Path) -> Result<(), String> {
+    let path = profile.join("Default").join("Preferences");
+    let mut preferences = match std::fs::read_to_string(&path) {
+        Ok(text) => serde_json::from_str::<Value>(&text).unwrap_or_else(|_| json!({})),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => json!({}),
+        Err(error) => return Err(format!("{}: {error}", path.display())),
+    };
+    if !preferences.is_object() {
+        preferences = json!({});
+    }
+    preferences["credentials_enable_service"] = json!(false);
+    preferences["credentials_enable_autosignin"] = json!(false);
+    if !preferences["profile"].is_object() {
+        preferences["profile"] = json!({});
+    }
+    preferences["profile"]["password_manager_enabled"] = json!(false);
+    if let Some(folder) = path.parent() {
+        std::fs::create_dir_all(folder).map_err(|error| error.to_string())?;
+    }
+    let draft = path.with_extension("dotori-new");
+    std::fs::write(&draft, preferences.to_string()).map_err(|error| error.to_string())?;
+    std::fs::rename(&draft, &path).map_err(|error| error.to_string())
+}
+
+/// The user agent a windowed Chrome of the same version sends, and its client hints.
+pub(crate) fn plain_agent(agent: &str) -> Value {
+    let agent = agent.replace("HeadlessChrome", "Chrome");
+    let version = agent
+        .split("Chrome/")
+        .nth(1)
+        .and_then(|rest| rest.split_whitespace().next())
+        .unwrap_or("0");
+    let major = version.split('.').next().unwrap_or("0");
+    let platform = if cfg!(target_os = "macos") {
+        "macOS"
+    } else if cfg!(windows) {
+        "Windows"
+    } else {
+        "Linux"
+    };
+    json!({
+        "userAgent": agent,
+        "userAgentMetadata": {
+            "brands": [
+                { "brand": "Chromium", "version": major },
+                { "brand": "Not_A Brand", "version": "24" }
+            ],
+            "fullVersionList": [
+                { "brand": "Chromium", "version": version },
+                { "brand": "Not_A Brand", "version": "24.0.0.0" }
+            ],
+            "fullVersion": version,
+            "platform": platform,
+            "platformVersion": "",
+            "architecture": if cfg!(target_arch = "aarch64") { "arm" } else { "x86" },
+            "model": "",
+            "mobile": false
+        }
+    })
+}
+
+async fn watch(cdp: Arc<Cdp>, mut events: tokio::sync::broadcast::Receiver<Value>) {
+    loop {
+        let event = match events.recv().await {
+            Ok(event) => event,
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+        };
+        let session = event.get("sessionId").and_then(Value::as_str);
+        let params = event.get("params").cloned().unwrap_or(Value::Null);
+        let reply = match event.get("method").and_then(Value::as_str) {
+            Some("Page.javascriptDialogOpening") => {
+                let accept = matches!(
+                    params.get("type").and_then(Value::as_str),
+                    Some("alert" | "beforeunload")
+                );
+                Some(("Page.handleJavaScriptDialog", json!({ "accept": accept })))
+            }
+            Some("Fetch.requestPaused") => {
+                let id = params.get("requestId").cloned().unwrap_or(Value::Null);
+                let url = params
+                    .pointer("/request/url")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                Some(match document_allowed(url) {
+                    Ok(()) => ("Fetch.continueRequest", json!({ "requestId": id })),
+                    Err(_) => (
+                        "Fetch.failRequest",
+                        json!({ "requestId": id, "errorReason": "BlockedByClient" }),
+                    ),
+                })
+            }
+            _ => None,
+        };
+        if let Some((method, params)) = reply {
+            let _ = cdp.send(method, params, session).await;
+        }
+    }
+}
+
+/// Whether a page may be loaded from `url`, by the same rule as webfetch.
+pub(crate) fn document_allowed(url: &str) -> Result<(), String> {
+    let url = Url::parse(url).map_err(|error| error.to_string())?;
+    fetch::allowed(&url)
 }
 
 impl BrowserTool {
@@ -234,11 +427,8 @@ impl BrowserTool {
                 .ok_or("`start_index` must be a whole number from 0")?,
         };
         let _acting = self.browser.acting.lock().await;
-        let (cdp, session) = self.browser.page().await?;
-        let page = Page {
-            cdp: &cdp,
-            session: &session,
-        };
+        let running = self.browser.page().await?;
+        let page = Page { running: &running };
         let done = match step {
             Step::Open(url) => page.go(url.as_str()).await,
             Step::Read => Ok(()),
@@ -256,8 +446,10 @@ impl BrowserTool {
             },
             Err(error) => Err(error),
         };
+        let broken = !running.cdp.open();
+        drop(running);
         if let Err(error) = &shown
-            && (!cdp.open() || error.contains("not found"))
+            && (broken || error.contains("not found"))
         {
             self.browser.forget().await;
         }
@@ -307,22 +499,58 @@ impl Step {
 }
 
 struct Page<'a> {
-    cdp: &'a Cdp,
-    session: &'a str,
+    running: &'a Running,
 }
 
 impl Page<'_> {
     async fn send(&self, method: &str, params: Value) -> Result<Value, String> {
-        self.cdp.send(method, params, Some(self.session)).await
+        self.running
+            .cdp
+            .send(method, params, Some(&self.running.session))
+            .await
+    }
+
+    async fn world(&self, fresh: bool) -> Result<i64, String> {
+        let mut world = self.running.world.lock().await;
+        if let Some(context) = *world
+            && !fresh
+        {
+            return Ok(context);
+        }
+        let made = self
+            .send(
+                "Page.createIsolatedWorld",
+                json!({ "frameId": self.running.frame, "worldName": WORLD }),
+            )
+            .await?;
+        let context = made
+            .get("executionContextId")
+            .and_then(Value::as_i64)
+            .ok_or("the browser made no world for dotori's scripts")?;
+        *world = Some(context);
+        Ok(context)
     }
 
     async fn evaluate(&self, expression: &str) -> Result<Value, String> {
-        let reply = self
-            .send(
-                "Runtime.evaluate",
-                json!({ "expression": expression, "returnByValue": true, "awaitPromise": true }),
-            )
-            .await?;
+        let mut fresh = false;
+        let reply = loop {
+            let context = self.world(fresh).await?;
+            let sent = self
+                .send(
+                    "Runtime.evaluate",
+                    json!({
+                        "expression": expression,
+                        "returnByValue": true,
+                        "awaitPromise": true,
+                        "contextId": context
+                    }),
+                )
+                .await;
+            match sent {
+                Err(error) if !fresh && error.contains("context") => fresh = true,
+                sent => break sent?,
+            }
+        };
         if let Some(details) = reply.get("exceptionDetails") {
             let shown = details
                 .pointer("/exception/description")
@@ -549,68 +777,6 @@ fn text_at(value: &Value, key: &str) -> Result<String, String> {
         .and_then(Value::as_str)
         .map(str::to_owned)
         .ok_or_else(|| format!("the browser gave no {key}"))
-}
-
-/// The first Chrome, Chromium or Edge found in the usual places.
-pub fn find() -> Option<PathBuf> {
-    candidates().into_iter().find_map(|path| {
-        if path.is_absolute() {
-            return path.is_file().then_some(path);
-        }
-        std::env::var_os("PATH").and_then(|paths| {
-            std::env::split_paths(&paths)
-                .map(|folder| folder.join(&path))
-                .find(|candidate| candidate.is_file())
-        })
-    })
-}
-
-fn candidates() -> Vec<PathBuf> {
-    let under = |variable: &str, paths: &[&str]| -> Vec<PathBuf> {
-        std::env::var_os(variable)
-            .map(|base| {
-                paths
-                    .iter()
-                    .map(|path| PathBuf::from(&base).join(path))
-                    .collect()
-            })
-            .unwrap_or_default()
-    };
-    if cfg!(target_os = "macos") {
-        let apps = [
-            "Google Chrome.app/Contents/MacOS/Google Chrome",
-            "Chromium.app/Contents/MacOS/Chromium",
-            "Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-        ];
-        let home = std::env::var_os("HOME").map(|home| PathBuf::from(home).join("Applications"));
-        [Some(PathBuf::from("/Applications")), home]
-            .into_iter()
-            .flatten()
-            .flat_map(|folder| apps.map(|app| folder.join(app)))
-            .collect()
-    } else if cfg!(windows) {
-        let chrome = r"Google\Chrome\Application\chrome.exe";
-        let edge = r"Microsoft\Edge\Application\msedge.exe";
-        let mut found = Vec::new();
-        for variable in ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"] {
-            found.extend(under(variable, &[chrome]));
-        }
-        for variable in ["ProgramFiles(x86)", "ProgramFiles"] {
-            found.extend(under(variable, &[edge]));
-        }
-        found
-    } else {
-        [
-            "google-chrome",
-            "google-chrome-stable",
-            "chromium",
-            "chromium-browser",
-            "chrome",
-            "microsoft-edge",
-        ]
-        .map(PathBuf::from)
-        .into()
-    }
 }
 
 fn root() -> bool {

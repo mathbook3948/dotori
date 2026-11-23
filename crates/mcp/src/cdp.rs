@@ -11,6 +11,7 @@ use futures_util::stream::SplitSink;
 use serde_json::Value;
 use serde_json::json;
 use tokio::net::TcpStream;
+use tokio::sync::broadcast;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tokio::time;
@@ -19,15 +20,18 @@ use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::Message;
 
 const ANSWER_WAIT: Duration = Duration::from_secs(30);
+const EVENTS_KEPT: usize = 256;
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 type Waiting = Arc<Mutex<Option<HashMap<u64, oneshot::Sender<Result<Value, String>>>>>>;
 
 /// A Chrome DevTools Protocol connection to the browser. Commands for a page carry its session.
+/// Events the browser sends on its own reach every subscriber.
 pub(crate) struct Cdp {
     sink: tokio::sync::Mutex<SplitSink<Socket, Message>>,
     waiting: Waiting,
     next: AtomicU64,
+    events: broadcast::Sender<Value>,
     reader: JoinHandle<()>,
 }
 
@@ -39,6 +43,8 @@ impl Cdp {
         let (sink, mut stream) = socket.split();
         let waiting: Waiting = Arc::new(Mutex::new(Some(HashMap::new())));
         let answers = Arc::clone(&waiting);
+        let (events, _) = broadcast::channel(EVENTS_KEPT);
+        let told = events.clone();
         let reader = tokio::spawn(async move {
             while let Some(Ok(frame)) = stream.next().await {
                 let Message::Text(text) = frame else {
@@ -48,6 +54,9 @@ impl Cdp {
                     continue;
                 };
                 let Some(id) = message.get("id").and_then(Value::as_u64) else {
+                    if message.get("method").is_some() {
+                        let _ = told.send(message);
+                    }
                     continue;
                 };
                 let Some(waiter) = answers
@@ -74,8 +83,14 @@ impl Cdp {
             sink: tokio::sync::Mutex::new(sink),
             waiting,
             next: AtomicU64::new(1),
+            events,
             reader,
         })
+    }
+
+    /// Every event from now on, such as a dialog opening or a request waiting to go out.
+    pub(crate) fn events(&self) -> broadcast::Receiver<Value> {
+        self.events.subscribe()
     }
 
     /// Whether the connection to the browser still stands.

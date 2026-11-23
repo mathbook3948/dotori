@@ -84,7 +84,8 @@ pub(crate) enum RunnerChoice {
     Codex,
 }
 
-/// Which browser the browser tools drive. Without a path dotori looks for Chrome, Chromium or Edge.
+/// Which browser the browser tools drive. Without a path dotori downloads and uses its own
+/// Chrome for Testing, never the browser the owner uses.
 /// Without `headless` the browser shows its window when there is a screen, so the owner can log in.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

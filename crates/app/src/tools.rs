@@ -56,6 +56,7 @@ pub(crate) async fn serve(home: Home) -> Result<(), String> {
     let chosen = settings.browser.clone().unwrap_or_default();
     let browser = Browser::new(BrowserConfig {
         executable: chosen.path,
+        downloads: home.chrome(),
         profile: home.browser(),
         headless: chosen.headless.unwrap_or(!home::desktop()),
     });
