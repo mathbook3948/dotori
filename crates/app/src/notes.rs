@@ -1,5 +1,5 @@
-//! What the owner asks dotori to keep in mind. The notes go into every main-conversation request,
-//! and only the main conversation can change them, only right after the owner spoke.
+//! What the owner asks dotori to keep in mind. The notes go into every main-session request,
+//! and only the main session can change them, only right after the owner spoke.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -187,7 +187,7 @@ impl Notes {
         } else {
             Err(String::from(
                 "only the owner can change notes, right after they ask and before any tool or \
-                 sub-task result; ask the owner to say it again",
+                 sub-session result; ask the owner to say it again",
             ))
         }
     }
@@ -228,7 +228,7 @@ fn owner_asked(conversation: &[Entry]) -> bool {
         .collect();
     since.iter().all(|entry| match entry {
         Entry::ToolReturned { call, .. } => own.contains(&call.as_str()),
-        Entry::SubTaskReturned { .. } => false,
+        Entry::SubSessionReturned { .. } => false,
         _ => true,
     })
 }
@@ -247,7 +247,7 @@ fn one_line(text: &str) -> String {
         .to_owned()
 }
 
-/// The main conversation's model, given the owner's notes with every request.
+/// The main session's model, given the owner's notes with every request.
 pub(crate) struct Noted {
     pub(crate) model: Arc<dyn Model>,
     pub(crate) notes: Arc<Notes>,
@@ -261,7 +261,7 @@ impl Model for Noted {
     }
 }
 
-/// The main conversation's tools: the notes tools, then the shared ones.
+/// The main session's tools: the notes tools, then the shared ones.
 pub(crate) struct MainTools {
     pub(crate) notes: Arc<Notes>,
     pub(crate) shared: Arc<dyn Toolbox>,

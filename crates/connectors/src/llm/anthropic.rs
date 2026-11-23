@@ -64,7 +64,7 @@ impl fmt::Debug for AnthropicConfig {
     }
 }
 
-/// The main conversation's model on the Claude API.
+/// The main session's model on the Claude API.
 /// A refused request is re-run server-side on Anthropic's recommended fallback model.
 #[derive(Debug)]
 pub struct Anthropic {

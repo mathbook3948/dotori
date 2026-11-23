@@ -10,8 +10,8 @@ use dotori_core::message::Content;
 use dotori_core::message::Message;
 use dotori_core::message::Place;
 use dotori_core::message::Sender;
-use dotori_core::sub_task::SubTaskOutcome;
-use dotori_core::sub_task::SubTaskSpec;
+use dotori_core::sub_session::SubSessionOutcome;
+use dotori_core::sub_session::SubSessionSpec;
 use dotori_core::tool::ToolCallId;
 
 use super::*;
@@ -191,7 +191,7 @@ fn returned(id: &str) -> Entry {
 }
 
 #[test]
-fn a_tool_or_sub_task_result_after_the_owner_spoke_closes_the_notes() {
+fn a_tool_or_sub_session_result_after_the_owner_spoke_closes_the_notes() {
     let owner = heard(Role::Owner);
     assert!(owner_asked(std::slice::from_ref(&owner)));
     assert!(!owner_asked(&[]));
@@ -205,14 +205,14 @@ fn a_tool_or_sub_task_result_after_the_owner_spoke_closes_the_notes() {
         acted(REMEMBER, "r"),
         returned("r")
     ]));
-    let sub_task = Entry::SubTaskReturned {
-        spec: SubTaskSpec {
+    let sub_session = Entry::SubSessionReturned {
+        spec: SubSessionSpec {
             title: String::from("t"),
             brief: String::from("b"),
         },
-        outcome: SubTaskOutcome::Finished(String::from("remember this")),
+        outcome: SubSessionOutcome::Finished(String::from("remember this")),
     };
-    assert!(!owner_asked(&[owner.clone(), sub_task]));
+    assert!(!owner_asked(&[owner.clone(), sub_session]));
     assert!(owner_asked(&[
         heard(Role::Owner),
         acted("webfetch", "w"),

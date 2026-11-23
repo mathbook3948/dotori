@@ -15,8 +15,8 @@ use dotori_core::message::Place;
 use dotori_core::message::Role;
 use dotori_core::message::Sender;
 use dotori_core::record::Record;
-use dotori_core::sub_task::SubTaskOutcome;
-use dotori_core::sub_task::SubTaskSpec;
+use dotori_core::sub_session::SubSessionOutcome;
+use dotori_core::sub_session::SubSessionSpec;
 use dotori_core::tool::ToolCall;
 use dotori_core::tool::ToolCallId;
 use dotori_core::tool::ToolError;
@@ -28,8 +28,8 @@ pub(crate) fn record(entry: Entry) -> Record {
     }
 }
 
-fn spec() -> SubTaskSpec {
-    SubTaskSpec {
+fn spec() -> SubSessionSpec {
+    SubSessionSpec {
         title: String::from("Build"),
         brief: String::from("Build \"it\"\nnow."),
     }
@@ -82,13 +82,13 @@ pub(crate) fn every_entry() -> Vec<Entry> {
                 detail: String::from("denied"),
             }),
         },
-        Entry::SubTaskReturned {
+        Entry::SubSessionReturned {
             spec: spec(),
-            outcome: SubTaskOutcome::Finished(String::from("done")),
+            outcome: SubSessionOutcome::Finished(String::from("done")),
         },
-        Entry::SubTaskReturned {
+        Entry::SubSessionReturned {
             spec: spec(),
-            outcome: SubTaskOutcome::Failed(String::from("broke")),
+            outcome: SubSessionOutcome::Failed(String::from("broke")),
         },
         Entry::Refused(Action::Say {
             thread: ThreadRef::new(9),

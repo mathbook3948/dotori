@@ -88,3 +88,27 @@ async fn a_damaged_whole_line_fails_the_load_and_names_it() {
 
     assert!(error.detail.starts_with("line 2 of "), "{}", error.detail);
 }
+
+#[tokio::test]
+async fn a_sub_session_result_keeps_the_kind_it_was_stored_under() {
+    let path = scratch();
+    std::fs::create_dir_all(path.parent().expect("has a folder")).expect("created");
+    std::fs::write(
+        &path,
+        "[{\"at_ms\":1,\"entry\":{\"kind\":\"sub_task_returned\",\"spec\":{\"title\":\"t\",\"brief\":\"b\"},\"result\":{\"ok\":\"done\"}}}]\n",
+    )
+    .expect("written");
+    let store = JsonlStore::new(&path);
+
+    let loaded = store.load().await.expect("loaded");
+    assert!(matches!(
+        loaded.as_slice(),
+        [Record {
+            entry: Entry::SubSessionReturned { .. },
+            ..
+        }]
+    ));
+    store.append(loaded).await.expect("appended");
+    let written = std::fs::read_to_string(&path).expect("read");
+    assert_eq!(written.matches("\"kind\":\"sub_task_returned\"").count(), 2);
+}

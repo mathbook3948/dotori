@@ -5,7 +5,7 @@ use std::time::SystemTime;
 use crate::BoxFuture;
 use crate::conversation::Entry;
 
-/// One line of the main conversation with the time core recorded it.
+/// One line of the main session with the time core recorded it.
 /// The entry carries the channel, place, sender, and role of what was heard.
 #[derive(Clone, Debug)]
 pub struct Record {
@@ -26,7 +26,7 @@ impl fmt::Display for RecordError {
 
 impl Error for RecordError {}
 
-/// The append-only raw record. It is also where the main conversation resumes after a restart.
+/// The append-only raw record. It is also where the main session resumes after a restart.
 pub trait RecordStore: Send + Sync + 'static {
     /// Every record in the order it was appended.
     fn load(&self) -> BoxFuture<'_, Result<Vec<Record>, RecordError>>;

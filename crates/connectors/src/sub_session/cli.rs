@@ -1,4 +1,4 @@
-//! The runners that hand a sub-task to a coding agent's command line, connected to dotori's
+//! The runners that hand a sub-session to a coding agent's command line, connected to dotori's
 //! MCP server.
 
 use std::path::Path;
@@ -10,16 +10,16 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use dotori_core::BoxFuture;
-use dotori_core::sub_task::SubTaskOutcome;
-use dotori_core::sub_task::SubTaskRunner;
-use dotori_core::sub_task::SubTaskSpec;
+use dotori_core::sub_session::SubSessionOutcome;
+use dotori_core::sub_session::SubSessionRunner;
+use dotori_core::sub_session::SubSessionSpec;
 use serde_json::Value;
 use serde_json::json;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tokio::time;
 
-use super::SUB_TASK_SYSTEM;
+use super::SUB_SESSION_SYSTEM;
 
 const TOKEN_VARIABLE: &str = "DOTORI_MCP_TOKEN";
 const SHOWN_ERROR: usize = 2000;
@@ -104,7 +104,7 @@ impl Drop for Removed {
     }
 }
 
-/// Runs each sub-task as one non-interactive run of a coding agent in `folder`.
+/// Runs each sub-session as one non-interactive run of a coding agent in `folder`.
 pub struct CliRunner {
     pub agent: CodingAgent,
     pub program: PathBuf,
@@ -124,14 +124,14 @@ impl std::fmt::Debug for CliRunner {
 }
 
 impl CliRunner {
-    async fn work(&self, spec: SubTaskSpec) -> SubTaskOutcome {
+    async fn work(&self, spec: SubSessionSpec) -> SubSessionOutcome {
         match self.attempt(spec).await {
             Ok(outcome) => outcome,
-            Err(error) => SubTaskOutcome::Failed(error),
+            Err(error) => SubSessionOutcome::Failed(error),
         }
     }
 
-    async fn attempt(&self, spec: SubTaskSpec) -> Result<SubTaskOutcome, String> {
+    async fn attempt(&self, spec: SubSessionSpec) -> Result<SubSessionOutcome, String> {
         std::fs::create_dir_all(&self.folder)
             .map_err(|error| format!("cannot make {}: {error}", self.folder.display()))?;
         let address = match &self.mcp {
@@ -143,7 +143,7 @@ impl CliRunner {
             None => None,
         };
         let last = std::env::temp_dir().join(format!(
-            "dotori-sub-task-{}-{}.txt",
+            "dotori-sub-session-{}-{}.txt",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
@@ -177,7 +177,7 @@ impl CliRunner {
         });
         let output = time::timeout(self.limit, child.wait_with_output())
             .await
-            .map_err(|_| format!("the sub-task did not finish in {:?}", self.limit))?
+            .map_err(|_| format!("the sub-session did not finish in {:?}", self.limit))?
             .map_err(|error| error.to_string())?;
         tree.0 = None;
         let written = std::fs::read_to_string(&last.0).ok();
@@ -189,7 +189,7 @@ impl CliRunner {
             } else {
                 stderr
             };
-            return Ok(SubTaskOutcome::Failed(format!(
+            return Ok(SubSessionOutcome::Failed(format!(
                 "{} ended with {}: {}",
                 self.agent.program(),
                 output.status,
@@ -199,15 +199,15 @@ impl CliRunner {
         Ok(match self.agent {
             CodingAgent::ClaudeCode => claude_result(&String::from_utf8_lossy(&output.stdout)),
             CodingAgent::Codex => match written.filter(|text| !text.trim().is_empty()) {
-                Some(text) => SubTaskOutcome::Finished(text.trim().to_owned()),
-                None => SubTaskOutcome::Failed(String::from("codex gave no final answer")),
+                Some(text) => SubSessionOutcome::Finished(text.trim().to_owned()),
+                None => SubSessionOutcome::Failed(String::from("codex gave no final answer")),
             },
         })
     }
 }
 
-impl SubTaskRunner for CliRunner {
-    fn run(&self, spec: SubTaskSpec) -> BoxFuture<'_, SubTaskOutcome> {
+impl SubSessionRunner for CliRunner {
+    fn run(&self, spec: SubSessionSpec) -> BoxFuture<'_, SubSessionOutcome> {
         Box::pin(self.work(spec))
     }
 }
@@ -226,7 +226,7 @@ fn arguments(agent: CodingAgent, address: Option<&McpAddress>, last: &Path) -> V
                     "--disallowedTools",
                     "WebFetch",
                     "--append-system-prompt",
-                    SUB_TASK_SYSTEM,
+                    SUB_SESSION_SYSTEM,
                 ]
                 .map(String::from),
             );
@@ -270,16 +270,16 @@ fn arguments(agent: CodingAgent, address: Option<&McpAddress>, last: &Path) -> V
     arguments
 }
 
-fn prompt(agent: CodingAgent, spec: &SubTaskSpec) -> String {
+fn prompt(agent: CodingAgent, spec: &SubSessionSpec) -> String {
     match agent {
         CodingAgent::ClaudeCode => format!("# {}\n\n{}", spec.title, spec.brief),
-        CodingAgent::Codex => format!("{SUB_TASK_SYSTEM}\n\n# {}\n\n{}", spec.title, spec.brief),
+        CodingAgent::Codex => format!("{SUB_SESSION_SYSTEM}\n\n# {}\n\n{}", spec.title, spec.brief),
     }
 }
 
-fn claude_result(stdout: &str) -> SubTaskOutcome {
+fn claude_result(stdout: &str) -> SubSessionOutcome {
     let Ok(answer) = serde_json::from_str::<Value>(stdout.trim()) else {
-        return SubTaskOutcome::Failed(format!("claude said: {}", tail(stdout.trim())));
+        return SubSessionOutcome::Failed(format!("claude said: {}", tail(stdout.trim())));
     };
     let text = answer
         .get("result")
@@ -293,12 +293,12 @@ fn claude_result(stdout: &str) -> SubTaskOutcome {
         } else {
             tail(&text)
         };
-        return SubTaskOutcome::Failed(format!("claude failed: {detail}"));
+        return SubSessionOutcome::Failed(format!("claude failed: {detail}"));
     }
     if text.is_empty() {
-        return SubTaskOutcome::Failed(String::from("claude gave no final answer"));
+        return SubSessionOutcome::Failed(String::from("claude gave no final answer"));
     }
-    SubTaskOutcome::Finished(text)
+    SubSessionOutcome::Finished(text)
 }
 
 fn tail(text: &str) -> &str {

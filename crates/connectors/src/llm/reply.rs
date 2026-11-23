@@ -1,6 +1,6 @@
 use dotori_core::conversation::Action;
 use dotori_core::conversation::ThreadRef;
-use dotori_core::sub_task::SubTaskSpec;
+use dotori_core::sub_session::SubSessionSpec;
 use dotori_core::tool::ToolCall;
 use dotori_core::tool::ToolCallId;
 use dotori_core::tool::ToolSpec;
@@ -88,7 +88,7 @@ fn action_of(call: &Use) -> Result<Action, String> {
             if input.brief.trim().is_empty() {
                 return Err(String::from("`brief` is empty"));
             }
-            Ok(Action::Delegate(SubTaskSpec {
+            Ok(Action::Delegate(SubSessionSpec {
                 title: input.title,
                 brief: input.brief,
             }))
@@ -129,10 +129,10 @@ pub(crate) fn tools(toolbox: &[ToolSpec]) -> Vec<ToolSpec> {
         ToolSpec {
             name: String::from(DELEGATE),
             description: String::from(
-                "Hand a large job to a sub-task that works on its own. The brief is all it knows.",
+                "Hand a large job to a sub-session that works on its own. The brief is all it knows.",
             ),
             input_schema: String::from(
-                r#"{"type":"object","properties":{"title":{"type":"string","description":"A few words naming the job."},"brief":{"type":"string","description":"Everything the sub-task needs to know to do the job."}},"required":["title","brief"],"additionalProperties":false}"#,
+                r#"{"type":"object","properties":{"title":{"type":"string","description":"A few words naming the job."},"brief":{"type":"string","description":"Everything the sub-session needs to know to do the job."}},"required":["title","brief"],"additionalProperties":false}"#,
             ),
         },
     ];

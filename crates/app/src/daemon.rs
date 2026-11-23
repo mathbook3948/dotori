@@ -8,17 +8,17 @@ use std::time::Duration;
 use dotori_connectors::channel::app::AppChannel;
 use dotori_connectors::record::jsonl::JsonlStore;
 use dotori_connectors::record::sqlite::SqliteStore;
-use dotori_connectors::sub_task::cli::CliRunner;
-use dotori_connectors::sub_task::cli::CodingAgent;
-use dotori_connectors::sub_task::cli::McpServer;
-use dotori_connectors::sub_task::llm::LlmRunner;
+use dotori_connectors::sub_session::cli::CliRunner;
+use dotori_connectors::sub_session::cli::CodingAgent;
+use dotori_connectors::sub_session::cli::McpServer;
+use dotori_connectors::sub_session::llm::LlmRunner;
 use dotori_core::llm::Model;
 use dotori_core::record::RecordError;
 use dotori_core::record::RecordStore;
 use dotori_core::runtime::Agent;
 use dotori_core::runtime::AgentConfig;
 use dotori_core::runtime::Ports;
-use dotori_core::sub_task::SubTaskRunner;
+use dotori_core::sub_session::SubSessionRunner;
 use dotori_core::tool::Toolbox;
 
 use crate::door;
@@ -37,8 +37,8 @@ use crate::tools;
 const QUEUE: NonZeroUsize = NonZeroUsize::new(256).expect("non-zero");
 const SEEN: NonZeroUsize = NonZeroUsize::new(4096).expect("non-zero");
 const TOOL_TIMEOUT: Duration = Duration::from_secs(120);
-const SUB_TASK_TURNS: usize = 50;
-const SUB_TASK_LIMIT: Duration = Duration::from_secs(60 * 60);
+const SUB_SESSION_TURNS: usize = 50;
+const SUB_SESSION_LIMIT: Duration = Duration::from_secs(60 * 60);
 
 /// Runs the agent until Ctrl-C or a terminate signal, with the app channel open for windows.
 pub(crate) async fn run(home: Home) -> Result<(), String> {
@@ -71,7 +71,7 @@ pub(crate) async fn serve(
         Some(tools) => Arc::clone(tools) as Arc<dyn Toolbox>,
         None => Arc::new(NoTools),
     };
-    let sub_tasks = sub_task_runner(&home, &settings, &toolbox, shared)?;
+    let sub_sessions = sub_session_runner(&home, &settings, &toolbox, shared)?;
     let records = open_record(&home).await?;
     let notes = Notes::new(home.notes());
     let model: Arc<dyn Model> = Arc::new(Noted {
@@ -93,7 +93,7 @@ pub(crate) async fn serve(
         channels,
         model,
         toolbox,
-        sub_tasks,
+        sub_sessions,
         records: Arc::new(records),
     };
     let config = AgentConfig {
@@ -143,19 +143,19 @@ async fn open_record(home: &Home) -> Result<SqliteStore, String> {
     Ok(store)
 }
 
-fn sub_task_runner(
+fn sub_session_runner(
     home: &Home,
     settings: &Settings,
     toolbox: &Arc<dyn Toolbox>,
     shared: Option<Arc<tools::SharedTools>>,
-) -> Result<Arc<dyn SubTaskRunner>, String> {
-    let chosen = settings.sub_tasks.clone().unwrap_or_default();
+) -> Result<Arc<dyn SubSessionRunner>, String> {
+    let chosen = settings.sub_sessions.clone().unwrap_or_default();
     let agent = match chosen.runner.unwrap_or_default() {
         RunnerChoice::Llm => {
             return Ok(Arc::new(LlmRunner {
-                model: settings.sub_task_model(environment)?,
+                model: settings.sub_session_model(environment)?,
                 toolbox: Arc::clone(toolbox),
-                max_turns: SUB_TASK_TURNS,
+                max_turns: SUB_SESSION_TURNS,
                 tool_timeout: TOOL_TIMEOUT,
             }));
         }
@@ -170,7 +170,7 @@ fn sub_task_runner(
             .unwrap_or_else(|| PathBuf::from(agent.program())),
         folder: home.work(),
         mcp: shared.map(|shared| shared as Arc<dyn McpServer>),
-        limit: SUB_TASK_LIMIT,
+        limit: SUB_SESSION_LIMIT,
     }))
 }
 

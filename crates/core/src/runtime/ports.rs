@@ -5,7 +5,7 @@ use crate::channel::AppWindow;
 use crate::channel::Channel;
 use crate::llm::Model;
 use crate::record::RecordStore;
-use crate::sub_task::SubTaskRunner;
+use crate::sub_session::SubSessionRunner;
 use crate::tool::Toolbox;
 
 /// Everything the agent talks to. The app crate builds it from concrete connectors.
@@ -14,7 +14,7 @@ pub struct Ports {
     pub channels: Vec<Arc<dyn Channel>>,
     pub model: Arc<dyn Model>,
     pub toolbox: Arc<dyn Toolbox>,
-    pub sub_tasks: Arc<dyn SubTaskRunner>,
+    pub sub_sessions: Arc<dyn SubSessionRunner>,
     pub records: Arc<dyn RecordStore>,
 }
 

@@ -41,7 +41,7 @@ impl Agent {
         Ok(Self { tx, done })
     }
 
-    /// Stops taking input, waits for running tools, aborts sub-tasks and channels,
+    /// Stops taking input, waits for running tools, aborts sub-sessions and channels,
     /// gives queued replies up to the tool timeout to go out, then returns.
     /// A panic in the agent loop resumes here.
     pub async fn shutdown(mut self) {

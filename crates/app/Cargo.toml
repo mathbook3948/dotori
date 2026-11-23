@@ -9,18 +9,14 @@ dotori-connectors = { path = "../connectors" }
 dotori-core = { path = "../core" }
 dotori-mcp = { path = "../mcp" }
 getrandom = "0.4"
-gpui = { version = "0.2.2", optional = true }
+gpui = "0.2.2"
 serde = { version = "1", features = ["derive"] }
 rusqlite = { version = "0.43.0", features = ["bundled"] }
 serde_json = "1"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "signal", "time", "io-std", "io-util", "net", "process"] }
 toml = "0.9"
-tray-icon = { version = "0.26.1", default-features = false, features = ["ksni"], optional = true }
-unicode-segmentation = { version = "1", optional = true }
-
-[features]
-default = ["window"]
-window = ["dep:gpui", "dep:tray-icon", "dep:unicode-segmentation"]
+tray-icon = { version = "0.26.1", default-features = false, features = ["ksni"] }
+unicode-segmentation = "1"
 
 [lints]
 workspace = true

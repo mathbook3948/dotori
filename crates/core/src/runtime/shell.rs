@@ -30,8 +30,8 @@ use crate::record::RecordStore;
 use crate::runtime::Ports;
 use crate::runtime::caught::caught;
 use crate::runtime::inbox::ChannelInbox;
-use crate::sub_task::SubTaskOutcome;
-use crate::sub_task::SubTaskRunner;
+use crate::sub_session::SubSessionOutcome;
+use crate::sub_session::SubSessionRunner;
 use crate::tool::ToolError;
 use crate::tool::Toolbox;
 
@@ -48,7 +48,7 @@ pub(crate) struct Shell {
     outboxes: HashMap<ChannelId, mpsc::UnboundedSender<Delivery>>,
     model: Arc<dyn Model>,
     toolbox: Arc<dyn Toolbox>,
-    sub_tasks: Arc<dyn SubTaskRunner>,
+    sub_sessions: Arc<dyn SubSessionRunner>,
     tool_timeout: Duration,
     tasks: JoinSet<()>,
     senders: JoinSet<()>,
@@ -89,7 +89,7 @@ impl Shell {
             outboxes,
             model: ports.model,
             toolbox: ports.toolbox,
-            sub_tasks: ports.sub_tasks,
+            sub_sessions: ports.sub_sessions,
             tool_timeout,
             tasks,
             senders,
@@ -183,14 +183,19 @@ impl Shell {
                     let _ = tx.send(Event::ToolDone { run, result }).await;
                 });
             }
-            Effect::SpawnSubTask { sub_task, spec } => {
-                let runner = Arc::clone(&self.sub_tasks);
+            Effect::SpawnSubSession { sub_session, spec } => {
+                let runner = Arc::clone(&self.sub_sessions);
                 let tx = self.tx.clone();
                 self.tasks.spawn(async move {
                     let outcome = caught(|| runner.run(spec))
                         .await
-                        .unwrap_or_else(SubTaskOutcome::Failed);
-                    let _ = tx.send(Event::SubTaskDone { sub_task, outcome }).await;
+                        .unwrap_or_else(SubSessionOutcome::Failed);
+                    let _ = tx
+                        .send(Event::SubSessionDone {
+                            sub_session,
+                            outcome,
+                        })
+                        .await;
                 });
             }
             Effect::Stop => {}
