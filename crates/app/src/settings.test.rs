@@ -279,3 +279,17 @@ fn relayed_servers_come_by_address_or_command_and_take_tokens_from_variables() {
 fn a_relayed_token_written_into_the_file_is_refused() {
     assert!(parse("[[mcp]]\nname = \"n\"\nurl = \"https://a\"\ntoken = \"t\"").is_err());
 }
+
+#[test]
+fn the_peers_section_says_how_other_pcs_reach_this_one_and_survives_a_save() {
+    let settings = parse(
+        "[peers]\nlisten = \"0.0.0.0:47820\"\naddress = \"desk.ts.net:47820\"\nname = \"데스크톱\"",
+    )
+    .expect("parsed");
+    let peers = settings.peers.clone().expect("peers");
+    assert_eq!(peers.address.as_deref(), Some("desk.ts.net:47820"));
+    assert_eq!(crate::peers::name(&settings), "데스크톱");
+    let text = toml::to_string(&settings).expect("written");
+    assert_eq!(parse(&text).expect("read back"), settings);
+    assert!(parse("[peers]\nsecret = \"x\"").is_err());
+}

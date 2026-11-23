@@ -333,3 +333,106 @@ async fn a_year_file_without_records_still_counts_as_empty() {
         .expect("appended");
     assert!(!store.is_empty().await.expect("checked"));
 }
+
+#[tokio::test]
+async fn records_copied_from_another_pc_keep_their_numbers_and_count_once() {
+    let here_folder = scratch();
+    let there_folder = scratch();
+    let here = SqliteStore::new(here_folder.clone(), "here");
+    let there = SqliteStore::new(there_folder, "there");
+    there
+        .append(vec![
+            failed_at(DEC_31_2025, "a"),
+            failed_at(DEC_31_2025 + 1, "b"),
+        ])
+        .await
+        .expect("appended there");
+    here.append(vec![failed_at(DEC_31_2025 + 5, "c")])
+        .await
+        .expect("appended here");
+
+    let marks = there.marks().await.expect("marks");
+    let sent = there.after("there", "", 100, 1 << 20).await.expect("after");
+    assert_eq!(sent.len(), 2);
+    assert_eq!(here.copy_in(sent.clone()).await.expect("copied"), 2);
+    assert_eq!(here.copy_in(sent.clone()).await.expect("copied again"), 0);
+
+    let loaded = here.load().await.expect("loaded");
+    assert_eq!(details(&loaded), ["a", "b", "c"]);
+    let here_marks = here.marks().await.expect("marks");
+    assert_eq!(here_marks["there"], marks["there"]);
+    assert!(here_marks.contains_key("here"));
+    assert!(
+        there
+            .after("there", &marks["there"], 100, 1 << 20)
+            .await
+            .expect("after")
+            .is_empty()
+    );
+    let one = there.after("there", "", 100, 1).await.expect("after");
+    assert_eq!(
+        one.len(),
+        1,
+        "the first record goes even when it is longer than asked"
+    );
+    let arrived: Vec<String> = {
+        let connection = Connection::open(here_folder.join("2025.sqlite3")).expect("opened");
+        let mut query = connection
+            .prepare("SELECT id FROM arrived ORDER BY seq")
+            .expect("prepared");
+        query
+            .query_map([], |row| row.get(0))
+            .expect("queried")
+            .map(|id| id.expect("read"))
+            .collect()
+    };
+    assert_eq!(arrived.len(), 3);
+    assert_eq!(arrived[1..], [sent[0].id.clone(), sent[1].id.clone()]);
+}
+
+#[tokio::test]
+async fn a_damaged_copy_is_refused_whole() {
+    let store = SqliteStore::new(scratch(), "here");
+    let good = Copied {
+        id: Uuid::now_v7().to_string(),
+        device: String::from("there"),
+        line: String::from("{}"),
+    };
+    assert!(store.copy_in(vec![good]).await.is_err());
+    assert!(store.is_empty().await.expect("checked"));
+}
+
+#[tokio::test]
+async fn a_format_2_file_gains_arrivals_in_number_order() {
+    let folder = scratch();
+    let store = SqliteStore::new(folder.clone(), "here");
+    store
+        .append(vec![
+            failed_at(DEC_31_2025, "a"),
+            failed_at(DEC_31_2025 + 1, "b"),
+        ])
+        .await
+        .expect("appended");
+    drop(store);
+    let path = folder.join("2025.sqlite3");
+    {
+        let connection = Connection::open(&path).expect("opened");
+        connection
+            .execute_batch("DROP TABLE arrived; PRAGMA user_version = 2;")
+            .expect("made older");
+    }
+
+    let reopened = SqliteStore::new(folder.clone(), "here");
+    reopened.load().await.expect("loaded");
+
+    let connection = Connection::open(&path).expect("opened");
+    let arrived: i64 = connection
+        .query_row("SELECT count(*) FROM arrived", [], |row| row.get(0))
+        .expect("counted");
+    let version: i64 = connection
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .expect("version");
+    assert_eq!(arrived, 2);
+    assert_eq!(version, 3);
+    assert_eq!(ids(&folder, 2025).len(), 2);
+}
