@@ -12,6 +12,7 @@ run = [
   "ast-grep scan --no-ignore hidden",
   "cargo run --quiet --package xtask -- forbidden-chars",
   "cargo run --quiet --package xtask -- core-deps",
+  "cargo run --quiet --package xtask -- root-entries",
   "cargo run --quiet --package xtask -- docs",
   "cargo deny check licenses",
 ]

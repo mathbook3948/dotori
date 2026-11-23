@@ -1,6 +1,7 @@
 mod core_deps;
 mod docs;
 mod forbidden_chars;
+mod root_entries;
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -12,10 +13,11 @@ fn main() -> ExitCode {
     let violations = match guard.as_str() {
         "forbidden-chars" => forbidden_chars::run(&workspace_root),
         "core-deps" => core_deps::run(&workspace_root),
+        "root-entries" => root_entries::run(&workspace_root),
         "docs" => docs::check(&workspace_root),
         "docs-write" => docs::write(&workspace_root),
         _ => {
-            eprintln!("usage: xtask <forbidden-chars|core-deps|docs|docs-write>");
+            eprintln!("usage: xtask <forbidden-chars|core-deps|root-entries|docs|docs-write>");
             return ExitCode::from(2);
         }
     };
