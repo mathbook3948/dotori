@@ -15,6 +15,10 @@
 - [세션](architecture/sessions.md): 주인이 어디서 비서와 말하고, 대화를 어떤 세션으로 나누는지 정한다.
 - [Slack 연결](architecture/slack.md): Slack을 채널과 연동으로 어떻게 쓰는지 정한다.
 
+## engineering
+
+- [견고함](engineering/robustness.md): 외부 입력, 파일, 자식 프로세스, 실패를 다루는 코드가 처음부터 지킬 것을 정한다.
+
 ## product
 
 - [제품 방향](product/direction.md): dotori가 어떤 제품인지 정의한다.
