@@ -89,7 +89,8 @@ pub(crate) struct TextInput {
     is_selecting: bool,
     multiline: bool,
     scroll: ScrollHandle,
-    followed: Option<(SharedString, usize)>,
+    followed: Option<(SharedString, usize, Pixels)>,
+    column: Option<Pixels>,
 }
 
 impl TextInput {
@@ -110,19 +111,27 @@ impl TextInput {
     }
 
     fn up(&mut self, _: &Up, _: &mut Window, cx: &mut Context<Self>) {
-        self.move_to(self.vertical(-1.), cx);
+        let (to, column) = self.vertical(-1.);
+        self.move_to(to, cx);
+        self.column = column;
     }
 
     fn down(&mut self, _: &Down, _: &mut Window, cx: &mut Context<Self>) {
-        self.move_to(self.vertical(1.), cx);
+        let (to, column) = self.vertical(1.);
+        self.move_to(to, cx);
+        self.column = column;
     }
 
     fn select_up(&mut self, _: &SelectUp, _: &mut Window, cx: &mut Context<Self>) {
-        self.select_to(self.vertical(-1.), cx);
+        let (to, column) = self.vertical(-1.);
+        self.select_to(to, cx);
+        self.column = column;
     }
 
     fn select_down(&mut self, _: &SelectDown, _: &mut Window, cx: &mut Context<Self>) {
-        self.select_to(self.vertical(1.), cx);
+        let (to, column) = self.vertical(1.);
+        self.select_to(to, cx);
+        self.column = column;
     }
 
     fn newline(&mut self, _: &Newline, window: &mut Window, cx: &mut Context<Self>) {
@@ -131,25 +140,35 @@ impl TextInput {
         }
     }
 
-    fn vertical(&self, rows: f32) -> usize {
+    fn vertical(&self, rows: f32) -> (usize, Option<Pixels>) {
         let Some(shaped) = self.last_layout.as_ref() else {
-            return self.cursor_offset();
+            return (self.cursor_offset(), None);
         };
         let at = shaped.position(self.cursor_offset());
+        let x = self.column.unwrap_or(at.x);
         let y = at.y + shaped.line_height * (rows + 0.5);
-        if y < Pixels::ZERO {
+        let to = if y < Pixels::ZERO {
             0
         } else if y >= shaped.height() {
             self.content.len()
         } else {
-            shaped.index(point(at.x, y))
-        }
+            self.within(shaped.index(point(x, y)))
+        };
+        (to, Some(x))
     }
 
-    fn follow(&self, shaped: &Shaped, bounds: Bounds<Pixels>) {
+    fn within(&self, index: usize) -> usize {
+        let mut index = index.min(self.content.len());
+        while !self.content.is_char_boundary(index) {
+            index -= 1;
+        }
+        index
+    }
+
+    fn follow(&self, shaped: &Shaped, bounds: Bounds<Pixels>) -> bool {
         let view = self.scroll.bounds();
         if view.size.height <= Pixels::ZERO {
-            return;
+            return false;
         }
         let cursor = bounds.top() + shaped.position(self.cursor_offset()).y;
         let mut offset = self.scroll.offset();
@@ -159,6 +178,7 @@ impl TextInput {
             offset.y -= cursor + shaped.line_height - view.bottom();
         }
         self.scroll.set_offset(offset);
+        true
     }
 
     fn select_left(&mut self, _: &SelectLeft, _: &mut Window, cx: &mut Context<Self>) {
@@ -265,6 +285,7 @@ impl TextInput {
     }
 
     fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
+        self.column = None;
         self.selected_range = offset..offset;
         cx.notify()
     }
@@ -292,10 +313,11 @@ impl TextInput {
         if position.y > bounds.bottom() {
             return self.content.len();
         }
-        shaped.index(position - bounds.origin)
+        self.within(shaped.index(position - bounds.origin))
     }
 
     fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
+        self.column = None;
         if self.selection_reversed {
             self.selected_range.start = offset
         } else {
@@ -376,6 +398,7 @@ impl TextInput {
             multiline: false,
             scroll: ScrollHandle::new(),
             followed: None,
+            column: None,
         }
     }
 
@@ -474,6 +497,7 @@ impl EntityInputHandler for TextInput {
             .or(self.marked_range.clone())
             .unwrap_or(self.selected_range.clone());
 
+        self.column = None;
         self.content =
             (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
                 .into();
@@ -496,6 +520,7 @@ impl EntityInputHandler for TextInput {
             .or(self.marked_range.clone())
             .unwrap_or(self.selected_range.clone());
 
+        self.column = None;
         self.content =
             (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
                 .into();
@@ -538,7 +563,7 @@ impl EntityInputHandler for TextInput {
     ) -> Option<usize> {
         let inside = self.last_bounds?.localize(&point)?;
         let shaped = self.last_layout.as_ref()?;
-        Some(self.offset_to_utf16(shaped.index(inside)))
+        Some(self.offset_to_utf16(self.within(shaped.index(inside))))
     }
 }
 
@@ -836,10 +861,15 @@ impl Element for TextElement {
         }
 
         let followed = self.input.update(cx, |input, _cx| {
-            let cursor = (input.content.clone(), input.cursor_offset());
-            let moved = input.multiline && input.followed.as_ref() != Some(&cursor);
+            let cursor = (
+                input.content.clone(),
+                input.cursor_offset(),
+                bounds.size.width,
+            );
+            let moved = input.multiline
+                && input.followed.as_ref() != Some(&cursor)
+                && input.follow(&shaped, bounds);
             if moved {
-                input.follow(&shaped, bounds);
                 input.followed = Some(cursor);
             }
             input.last_layout = Some(shaped);

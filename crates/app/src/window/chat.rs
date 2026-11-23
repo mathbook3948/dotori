@@ -52,6 +52,7 @@ pub(crate) struct ChatView {
     scroll: ScrollHandle,
     zone: TimeZone,
     copied: Option<usize>,
+    hovered: Option<usize>,
     _uncopy: Option<Task<()>>,
     _pump: Task<()>,
 }
@@ -96,6 +97,7 @@ impl ChatView {
             scroll: ScrollHandle::new(),
             zone: TimeZone::system(),
             copied: None,
+            hovered: None,
             _uncopy: None,
             _pump: pump,
         }
@@ -106,6 +108,7 @@ impl ChatView {
             Update::Connected => {
                 self.lines.clear();
                 self.copied = None;
+                self.hovered = None;
                 self.answering = None;
                 self.browser_at = None;
                 self.link = LinkState::Connected;
@@ -201,24 +204,24 @@ impl ChatView {
     ) -> impl IntoElement + use<> {
         let copied = self.copied == Some(n);
         let text = text.to_owned();
-        let copy = div()
-            .id(("copy", n))
-            .px_1p5()
-            .rounded_md()
-            .text_size(px(11.))
-            .line_height(px(16.))
-            .cursor_pointer()
-            .when(copied, |copy| copy.text_color(theme.accent))
-            .when(!copied, |copy| {
-                copy.opacity(0.)
-                    .text_color(theme.muted)
-                    .group_hover("line", |copy| copy.opacity(1.))
-                    .hover(|copy| copy.bg(theme.line).text_color(theme.text))
-            })
-            .child(if copied { "복사했어요" } else { "복사" })
-            .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
-                view.copy(n, text.clone(), cx);
-            }));
+        let copy = (copied || self.hovered == Some(n)).then(|| {
+            div()
+                .id(("copy", n))
+                .px_1p5()
+                .rounded_md()
+                .text_size(px(11.))
+                .line_height(px(16.))
+                .cursor_pointer()
+                .when(copied, |copy| copy.text_color(theme.accent))
+                .when(!copied, |copy| {
+                    copy.text_color(theme.muted)
+                        .hover(|copy| copy.bg(theme.line).text_color(theme.text))
+                })
+                .child(if copied { "복사했어요" } else { "복사" })
+                .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                    view.copy(n, text.clone(), cx);
+                }))
+        });
         let time = mark.time.clone().map(|time| {
             div()
                 .text_size(px(11.))
@@ -227,9 +230,9 @@ impl ChatView {
                 .child(time)
         });
         let (before, after) = if copy_first {
-            (Some(copy), None)
+            (copy, None)
         } else {
-            (None, Some(copy))
+            (None, copy)
         };
         div()
             .flex()
@@ -342,7 +345,18 @@ impl ChatView {
                     .child(prose(text)),
             ),
         };
-        Some(row.id(("line", n)).group("line").into_any_element())
+        Some(
+            row.id(("line", n))
+                .on_hover(cx.listener(move |view, hovered: &bool, _, cx| {
+                    if *hovered {
+                        view.hovered = Some(n);
+                    } else if view.hovered == Some(n) {
+                        view.hovered = None;
+                    }
+                    cx.notify();
+                }))
+                .into_any_element(),
+        )
     }
 
     fn tabs(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
