@@ -361,7 +361,7 @@ fn long(count: u32) -> Vec<Entry> {
 }
 
 fn talk(conversation: &mut Vec<Entry>, count: u32) {
-    let words = "가".repeat(3_000);
+    let words = "가".repeat(9_000);
     for n in 0..count {
         conversation.push(heard(0, &format!("{n} {words}")));
         conversation.push(acted(conversation.len(), vec![say(0, "ok")], None));
@@ -416,5 +416,30 @@ fn a_reply_to_something_left_out_comes_first() {
 
     let turns = build(&conversation, "anthropic");
 
+    assert!(notes(&turns[0])[0].starts_with("<earlier_conversation_left_out>"));
     assert!(matches!(turns[1], Turn::Assistant(_)));
+}
+
+#[test]
+fn the_newest_message_is_carried_however_long_it_is() {
+    let mut conversation = long(3);
+    let huge = "나".repeat(KEPT + STEP);
+    conversation.push(heard(0, &huge));
+
+    let from = start(&conversation);
+
+    assert_eq!(from, conversation.len() - 1);
+    let turns = build(&conversation, "anthropic");
+    assert!(notes(&turns[0])[1].contains(&huge));
+}
+
+#[test]
+fn without_a_message_after_the_cut_the_last_message_starts_it() {
+    let mut conversation = long(40);
+    let last = conversation.len();
+    conversation.push(heard(0, "마지막 말"));
+    conversation.push(acted(last + 1, vec![tool("t1")], None));
+    conversation.push(returned("t1", Ok(&"다".repeat(KEPT + STEP))));
+
+    assert_eq!(start(&conversation), last);
 }

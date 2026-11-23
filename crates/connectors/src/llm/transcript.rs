@@ -82,44 +82,48 @@ fn start(conversation: &[Entry]) -> usize {
     }
     let cut = (total - KEPT).div_ceil(STEP) * STEP;
     let mut before = 0;
-    let mut reached = None;
+    let mut last_heard = 0;
     for (index, entry) in conversation.iter().enumerate() {
-        if before >= cut {
-            reached.get_or_insert(index);
-            if matches!(entry, Entry::Heard { .. }) {
+        if matches!(entry, Entry::Heard { .. }) {
+            if before >= cut {
                 return index;
             }
+            last_heard = index;
         }
         before += weight(entry);
     }
-    reached.unwrap_or(conversation.len())
+    last_heard
 }
 
 fn weight(entry: &Entry) -> usize {
     SMALL
         + match entry {
-            Entry::Heard { message, .. } => message.content.as_str().len(),
+            Entry::Heard { message, .. } => chars(message.content.as_str()),
             Entry::Acted { actions, trace, .. } => match trace {
-                Some(trace) => trace.data.len(),
+                Some(trace) => chars(&trace.data),
                 None => actions
                     .iter()
                     .map(|action| match action {
-                        Action::Say { text, .. } => text.len(),
-                        Action::UseTool(call) => call.input.len(),
-                        Action::Delegate(spec) => spec.brief.len(),
+                        Action::Say { text, .. } => chars(text),
+                        Action::UseTool(call) => chars(&call.input),
+                        Action::Delegate(spec) => chars(&spec.brief),
                     })
                     .sum(),
             },
             Entry::ToolReturned { result, .. } => match result {
-                Ok(output) => output.len(),
-                Err(error) => error.detail.len(),
+                Ok(output) => chars(output),
+                Err(error) => chars(&error.detail),
             },
             Entry::SubSessionReturned { outcome, .. } => match outcome {
-                SubSessionOutcome::Finished(text) | SubSessionOutcome::Failed(text) => text.len(),
+                SubSessionOutcome::Finished(text) | SubSessionOutcome::Failed(text) => chars(text),
             },
-            Entry::DeliveryFailed { text, .. } => text.len(),
+            Entry::DeliveryFailed { text, .. } => chars(text),
             _ => 0,
         }
+}
+
+fn chars(text: &str) -> usize {
+    text.chars().count()
 }
 
 fn order(conversation: &[Entry], start: usize) -> Vec<usize> {

@@ -12,6 +12,8 @@ use dotori_core::message::Message;
 use dotori_core::message::Place;
 use dotori_core::message::Role;
 use dotori_core::message::Sender;
+use dotori_core::tool::ToolCall;
+use dotori_core::tool::ToolCallId;
 use dotori_core::tool::ToolSpec;
 
 use super::*;
@@ -339,5 +341,36 @@ fn the_last_two_user_turns_end_where_the_next_request_can_read_the_cache() {
         body["messages"][0]["content"][0]
             .get("cache_control")
             .is_none()
+    );
+}
+
+#[test]
+fn a_user_turn_that_ends_in_a_tool_result_is_marked_on_the_result() {
+    let config = AnthropicConfig::new("key");
+    let conversation = vec![
+        heard("read it"),
+        Entry::Acted {
+            actions: vec![Action::UseTool(ToolCall {
+                id: ToolCallId::new("toolu_1"),
+                name: String::from("read_file"),
+                input: String::from(r#"{"path":"a.txt"}"#),
+            })],
+            answered: 1,
+            trace: None,
+        },
+        Entry::ToolReturned {
+            call: ToolCallId::new("toolu_1"),
+            result: Ok(String::from("contents")),
+        },
+    ];
+
+    let body = sent(&config, &request(conversation));
+
+    let last = &body["messages"][2]["content"][0];
+    assert_eq!(last["type"], "tool_result");
+    assert_eq!(last["cache_control"]["type"], "ephemeral");
+    assert_eq!(
+        body["messages"][0]["content"][0]["cache_control"]["type"],
+        "ephemeral"
     );
 }
