@@ -111,11 +111,19 @@ mod linked {
         wanted: &[&str],
         local: &'static str,
     ) -> (Arc<BrowserRoute>, Linked) {
+        start_with(config, wanted, Arc::new(Named(local))).await
+    }
+
+    async fn start_with(
+        config: HubConfig,
+        wanted: &[&str],
+        local: Arc<dyn Toolbox>,
+    ) -> (Arc<BrowserRoute>, Linked) {
         let (hub, mut heard) = Hub::start(config).await.expect("started");
         let own = hub.own().to_owned();
         let keeper = Keeper::start(Arc::clone(&hub), own.clone(), wanted);
         let linked = Linked { hub, keeper, own };
-        let route = BrowserRoute::new(Arc::new(Named(local)));
+        let route = BrowserRoute::new(local);
         route.link(linked.clone());
         {
             let linked = linked.clone();
@@ -175,6 +183,73 @@ mod linked {
             b_route.run(call("browser_read")).await.expect("ran"),
             "B ran browser_read with {}"
         );
+    }
+
+    struct Slow(Arc<std::sync::atomic::AtomicBool>);
+
+    impl Toolbox for Slow {
+        fn specs(&self) -> Vec<ToolSpec> {
+            Vec::new()
+        }
+
+        fn run(&self, _call: ToolCall) -> BoxFuture<'_, Result<String, ToolError>> {
+            Box::pin(async move {
+                time::sleep(Duration::from_secs(3)).await;
+                self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(String::from("acted"))
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_call_given_up_on_another_pc_never_finishes_its_work() {
+        let b_config = config("slow-b", true);
+        let a_config = config("slow-a", false);
+        let acted = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (b_route, b) = start_with(
+            b_config.clone(),
+            &[BROWSER_JOB],
+            Arc::new(Slow(Arc::clone(&acted))),
+        )
+        .await;
+        let (_, secret) = Invite::make(&b_config.invite, now() + 600).expect("invite");
+        let code = Code {
+            key: b_config.identity.public,
+            secret,
+            address: None,
+        };
+        let hello = Hello {
+            device: String::from("slow-a"),
+            name: String::from("slow-a"),
+            address: None,
+        };
+        let address = b.hub.listening().expect("listening").to_string();
+        join(&a_config.identity, &hello, &code, &address, &a_config.book)
+            .await
+            .expect("joined");
+        let (a_route, a) = start(a_config, &["main"], "A").await;
+        let mut holder = a.keeper.watch(BROWSER_JOB).expect("watched");
+        let b_key = b.own.clone();
+        time::timeout(
+            Duration::from_secs(30),
+            holder.wait_for(|holder| holder.as_deref() == Some(b_key.as_str())),
+        )
+        .await
+        .expect("a learns b holds the browser in time")
+        .expect("watched");
+
+        let gave_up = time::timeout(Duration::from_secs(1), a_route.run(call("browser_run"))).await;
+        assert!(
+            gave_up.is_err(),
+            "the call is still running when a gives up"
+        );
+        time::sleep(Duration::from_secs(4)).await;
+
+        assert!(
+            !acted.load(std::sync::atomic::Ordering::SeqCst),
+            "b stopped the call"
+        );
+        assert!(b_route.running.lock().expect("unpoisoned").is_empty());
     }
 }
 
