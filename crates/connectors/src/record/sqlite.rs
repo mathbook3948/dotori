@@ -91,10 +91,29 @@ impl SqliteStore {
         })
     }
 
-    /// Whether nothing has been recorded yet.
+    /// Whether no year file holds a record yet. The files are only read, so the folder can still
+    /// be replaced afterwards.
     pub async fn is_empty(&self) -> Result<bool, RecordError> {
-        self.with(|_, folder, _| Ok(years(folder)?.is_empty()))
-            .await
+        self.with(|_, folder, _| {
+            for year in years(folder)? {
+                let path = folder.join(format!("{year:04}.sqlite3"));
+                let connection =
+                    Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+                        .map_err(fail)?;
+                let held =
+                    connection.query_row("SELECT EXISTS(SELECT 1 FROM records)", [], |row| {
+                        row.get::<_, bool>(0)
+                    });
+                match held {
+                    Ok(true) => return Ok(false),
+                    Ok(false) => {}
+                    Err(error) if error.to_string().contains("no such table") => {}
+                    Err(error) => return Err(fail(error)),
+                }
+            }
+            Ok(true)
+        })
+        .await
     }
 
     /// Stores records from another store, each in the file of its own year.

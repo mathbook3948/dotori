@@ -315,3 +315,21 @@ fn the_year_of_a_moment_is_its_utc_year() {
     assert_eq!(year_of(at(951_782_400_000)), 2000);
     assert_eq!(year_of(UNIX_EPOCH - Duration::from_secs(1)), 1969);
 }
+
+#[tokio::test]
+async fn a_year_file_without_records_still_counts_as_empty() {
+    let folder = scratch();
+    std::fs::create_dir_all(&folder).expect("made");
+    Connection::open(folder.join("2026.sqlite3"))
+        .expect("made")
+        .execute_batch(SCHEMA)
+        .expect("schema");
+    let store = SqliteStore::new(folder, "pc-1");
+
+    assert!(store.is_empty().await.expect("checked"));
+    store
+        .append(vec![failed_at(JAN_1_2026, "one")])
+        .await
+        .expect("appended");
+    assert!(!store.is_empty().await.expect("checked"));
+}
