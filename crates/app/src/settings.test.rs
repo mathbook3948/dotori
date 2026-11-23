@@ -293,3 +293,34 @@ fn the_peers_section_says_how_other_pcs_reach_this_one_and_survives_a_save() {
     assert_eq!(parse(&text).expect("read back"), settings);
     assert!(parse("[peers]\nsecret = \"x\"").is_err());
 }
+
+#[test]
+fn saving_some_sections_keeps_the_owners_comments_and_the_rest_of_the_file() {
+    let folder = std::env::temp_dir().join(format!("dotori-parts-{}", std::process::id()));
+    std::fs::create_dir_all(&folder).expect("folder");
+    let path = folder.join("settings.toml");
+    std::fs::write(
+        &path,
+        "# 내 설정\n[model]\nprovider = \"anthropic\"\n\n# 노트북만\n[peers]\nname = \"노트북\" # 이름\n\n[memory]\n",
+    )
+    .expect("written");
+    let mut settings = Settings::load(&path).expect("loaded");
+    settings.model = ModelSettings::OpenaiCompatible {
+        base_url: String::from("http://x"),
+        model: String::from("m"),
+        api_key_env: None,
+        max_tokens: None,
+    };
+    settings.memory = None;
+
+    settings
+        .save_parts(&path, &["model", "memory"])
+        .expect("saved");
+
+    let text = std::fs::read_to_string(&path).expect("read");
+    assert!(text.contains("# 내 설정"), "{text}");
+    assert!(text.contains("# 노트북만"), "{text}");
+    assert!(text.contains("name = \"노트북\" # 이름"), "{text}");
+    assert!(!text.contains("[memory]"), "{text}");
+    assert_eq!(Settings::load(&path).expect("read back"), settings);
+}

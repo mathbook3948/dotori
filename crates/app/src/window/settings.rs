@@ -121,7 +121,7 @@ impl SettingsView {
                 model,
                 ..Settings::load(&self.home.settings())?
             };
-            settings.save(&self.home.settings())?;
+            settings.save_parts(&self.home.settings(), &["model"])?;
             self.earlier = settings;
             Ok(())
         });

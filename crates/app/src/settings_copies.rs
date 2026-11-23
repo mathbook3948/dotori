@@ -153,7 +153,7 @@ impl SettingsCopies {
             return Ok(false);
         }
         let settings = taken.shared.clone().into(Settings::load(&self.settings)?);
-        settings.save(&self.settings)?;
+        settings.save_parts(&self.settings, &["model", "slack", "memory"])?;
         write_stamp(&self.stamp, &taken);
         *known = Some(taken);
         Ok(true)
