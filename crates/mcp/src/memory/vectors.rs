@@ -93,7 +93,6 @@ pub(crate) type Pending = (Vec<(i64, String)>, Option<i64>);
 /// Changing the model drops the other model's vectors and starts again from the first record.
 pub(crate) fn pending(
     index: &mut Connection,
-    record: &Connection,
     model: &str,
     count: i64,
 ) -> rusqlite::Result<Pending> {
@@ -109,8 +108,8 @@ pub(crate) fn pending(
         .and_then(|done| done.parse().ok())
         .unwrap_or(0);
     start.commit()?;
-    let rows: Vec<(i64, Option<String>, Option<String>)> = record
-        .prepare("SELECT seq, sender_name, text FROM records WHERE seq > ?1 ORDER BY seq LIMIT ?2")?
+    let rows: Vec<(i64, Option<String>, Option<String>)> = index
+        .prepare("SELECT seq, sender, text FROM docs WHERE seq > ?1 ORDER BY seq LIMIT ?2")?
         .query_map(params![done, count], |row| {
             Ok((row.get(0)?, row.get(1)?, row.get(2)?))
         })?

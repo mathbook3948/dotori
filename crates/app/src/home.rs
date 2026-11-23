@@ -26,13 +26,23 @@ impl Home {
         self.root.join("settings.toml")
     }
 
+    /// The raw record, one SQLite file per year.
     pub(crate) fn record(&self) -> PathBuf {
-        self.root.join("record.sqlite3")
+        self.root.join("record")
     }
 
-    /// The raw record before it moved to SQLite. It is copied over once and then renamed.
-    pub(crate) fn old_record(&self) -> PathBuf {
-        self.root.join("record.jsonl")
+    /// Earlier forms of the raw record, newest first: one SQLite file, and before that JSON Lines.
+    /// Either is copied over once and then renamed.
+    pub(crate) fn old_records(&self) -> [PathBuf; 2] {
+        [
+            self.root.join("record.sqlite3"),
+            self.root.join("record.jsonl"),
+        ]
+    }
+
+    /// This PC's name in the records it makes, chosen once.
+    pub(crate) fn device(&self) -> PathBuf {
+        self.root.join("device")
     }
 
     pub(crate) fn lock(&self) -> PathBuf {
