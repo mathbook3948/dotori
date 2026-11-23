@@ -428,7 +428,7 @@ fn open_index(path: &PathBuf) -> Result<Connection, String> {
     Ok(index)
 }
 
-fn record_years(folder: &Path) -> rusqlite::Result<Vec<Connection>> {
+fn record_years(folder: &Path) -> rusqlite::Result<Vec<(String, Connection)>> {
     let Ok(entries) = std::fs::read_dir(folder) else {
         return Ok(Vec::new());
     };
@@ -445,7 +445,17 @@ fn record_years(folder: &Path) -> rusqlite::Result<Vec<Connection>> {
     years.sort();
     years
         .iter()
-        .map(|path| Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY))
+        .map(|path| {
+            let year = path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .unwrap_or_default()
+                .to_owned();
+            Ok((
+                year,
+                Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?,
+            ))
+        })
         .collect()
 }
 
@@ -458,34 +468,42 @@ fn meta(index: &Connection, key: &str) -> rusqlite::Result<Option<String>> {
 }
 
 fn copy_records(index: &mut Connection, folder: &Path) -> rusqlite::Result<()> {
-    for year in record_years(folder)? {
+    for (name, year) in record_years(folder)? {
+        let key = format!("arrived:{name}");
         loop {
             let batch = index.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            let copied = meta(&batch, "copied")?.unwrap_or_default();
-            let rows: Vec<Doc> = match year.prepare(
-                "SELECT id, at_ms, kind, channel, place, sender_name, role, text FROM records \
-                 WHERE id > ?1 ORDER BY id LIMIT ?2",
+            let arrived: i64 = meta(&batch, &key)?
+                .and_then(|seq| seq.parse().ok())
+                .unwrap_or(0);
+            let rows: Vec<(i64, Doc)> = match year.prepare(
+                "SELECT a.seq, r.id, r.at_ms, r.kind, r.channel, r.place, r.sender_name, r.role, r.text \
+                 FROM arrived a JOIN records r ON r.id = a.id \
+                 WHERE a.seq > ?1 ORDER BY a.seq LIMIT ?2",
             ) {
                 Ok(mut found) => found
-                    .query_map(params![copied, BATCH], |row| {
-                        Ok(Doc {
-                            record: row.get(0)?,
-                            at_ms: row.get(1)?,
-                            kind: row.get(2)?,
-                            channel: row.get(3)?,
-                            place: row.get(4)?,
-                            sender: row.get(5)?,
-                            role: row.get(6)?,
-                            text: row.get(7)?,
-                        })
+                    .query_map(params![arrived, BATCH], |row| {
+                        Ok((
+                            row.get(0)?,
+                            Doc {
+                                record: row.get(1)?,
+                                at_ms: row.get(2)?,
+                                kind: row.get(3)?,
+                                channel: row.get(4)?,
+                                place: row.get(5)?,
+                                sender: row.get(6)?,
+                                role: row.get(7)?,
+                                text: row.get(8)?,
+                            },
+                        ))
                     })?
                     .collect::<rusqlite::Result<_>>()?,
                 Err(error) if error.to_string().contains("no such table") => Vec::new(),
                 Err(error) => return Err(error),
             };
-            let Some(last) = rows.last().map(|doc| doc.record.clone()) else {
+            let Some(last) = rows.last().map(|(seq, _)| seq.to_string()) else {
                 break;
             };
+            let rows: Vec<Doc> = rows.into_iter().map(|(_, doc)| doc).collect();
             for doc in &rows {
                 batch.execute(
                     "INSERT OR IGNORE INTO docs (record, at_ms, kind, channel, place, sender, role, text) \
@@ -503,8 +521,8 @@ fn copy_records(index: &mut Connection, folder: &Path) -> rusqlite::Result<()> {
                 )?;
             }
             batch.execute(
-                "INSERT OR REPLACE INTO meta (key, value) VALUES ('copied', ?1)",
-                [last],
+                "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)",
+                [&key, &last],
             )?;
             batch.commit()?;
         }

@@ -45,6 +45,26 @@ impl Home {
         self.root.join("device")
     }
 
+    /// This PC's lasting key, which the owner's other PCs know it by.
+    pub(crate) fn peer_key(&self) -> PathBuf {
+        self.root.join("peer.key")
+    }
+
+    /// The owner's other PCs this one may link with.
+    pub(crate) fn peers(&self) -> PathBuf {
+        self.root.join("peers.json")
+    }
+
+    /// The invite this PC handed out for another PC to join it, while it is open.
+    pub(crate) fn invite(&self) -> PathBuf {
+        self.root.join("invite.json")
+    }
+
+    /// Which of the other PCs are linked now. The daemon writes it.
+    pub(crate) fn peers_seen(&self) -> PathBuf {
+        self.root.join("peers-seen.json")
+    }
+
     pub(crate) fn lock(&self) -> PathBuf {
         self.root.join("daemon.lock")
     }

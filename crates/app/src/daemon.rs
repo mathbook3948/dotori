@@ -6,6 +6,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use dotori_connectors::channel::app::AppChannel;
+use dotori_connectors::peer::copies::Announced;
+use dotori_connectors::peer::copies::Copies;
 use dotori_connectors::record::jsonl::JsonlStore;
 use dotori_connectors::record::sqlite::SqliteStore;
 use dotori_connectors::record::sqlite::read_legacy;
@@ -31,6 +33,7 @@ use crate::lock::DaemonLock;
 use crate::notes::MainTools;
 use crate::notes::Noted;
 use crate::notes::Notes;
+use crate::peers;
 use crate::settings::RunnerChoice;
 use crate::settings::Settings;
 use crate::settings::environment;
@@ -74,6 +77,25 @@ pub(crate) async fn serve(
     };
     let sub_sessions = sub_session_runner(&home, &settings, &toolbox, shared)?;
     let records = open_record(&home).await?;
+    let (records, linked): (Arc<dyn RecordStore>, _) = match peers::start(&home, &settings).await {
+        Some((hub, mut heard)) => {
+            let copies = Copies::start(Arc::clone(&hub), records.clone());
+            let hearing = Arc::clone(&copies);
+            tokio::spawn(async move {
+                while let Some(heard) = heard.recv().await {
+                    hearing.hear(&heard).await;
+                }
+            });
+            (
+                Arc::new(Announced {
+                    store: records,
+                    copies,
+                }),
+                Some(hub),
+            )
+        }
+        None => (Arc::new(records), None),
+    };
     let notes = Notes::new(home.notes());
     let model: Arc<dyn Model> = Arc::new(Noted {
         model,
@@ -95,7 +117,7 @@ pub(crate) async fn serve(
         model,
         toolbox,
         sub_sessions,
-        records: Arc::new(records),
+        records,
     };
     let config = AgentConfig {
         queue_capacity: QUEUE,
@@ -114,6 +136,7 @@ pub(crate) async fn serve(
     };
     let _ = fs::remove_file(home.door());
     agent.shutdown().await;
+    drop(linked);
     stopped
 }
 

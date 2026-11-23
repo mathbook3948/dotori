@@ -45,6 +45,22 @@ pub(crate) struct Settings {
     pub(crate) memory: Option<MemorySettings>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) mcp: Vec<RelaySettings>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) peers: Option<PeerSettings>,
+}
+
+/// How the owner's other PCs reach this one. With the section, this PC listens on `listen`, or
+/// on every address at the usual port. `address` is what the others should dial, such as its
+/// Tailscale name, and `name` is how the windows show this PC.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PeerSettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) listen: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) address: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) name: Option<String>,
 }
 
 /// An MCP server made elsewhere that dotori relays, reached at `url` or started as `command`.

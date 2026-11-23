@@ -17,11 +17,14 @@ use dotori_core::sub_session::SubSessionOutcome;
 use rusqlite::Connection;
 use rusqlite::OpenFlags;
 use rusqlite::params;
+use serde::Deserialize;
+use serde::Serialize;
 use uuid::Uuid;
 
 use crate::record::form::Line;
 
-const VERSION: i64 = 2;
+const VERSION: i64 = 3;
+const BEFORE_ARRIVALS: i64 = 2;
 const LEGACY_VERSION: i64 = 1;
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS records (
@@ -37,6 +40,10 @@ CREATE TABLE IF NOT EXISTS records (
     text TEXT,
     line TEXT NOT NULL
 ) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS arrived (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    id TEXT NOT NULL UNIQUE
+);
 CREATE TRIGGER IF NOT EXISTS records_never_change BEFORE UPDATE ON records
 BEGIN SELECT RAISE(ABORT, 'the raw record never changes'); END;
 CREATE TRIGGER IF NOT EXISTS records_never_shrink BEFORE DELETE ON records
@@ -52,6 +59,14 @@ pub struct SqliteStore {
     folder: Arc<PathBuf>,
     device: Arc<str>,
     book: Arc<Mutex<Book>>,
+}
+
+/// A record as it travels between PCs: its number, the PC that made it, and its full form.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Copied {
+    pub id: String,
+    pub device: String,
+    pub line: String,
 }
 
 #[derive(Debug, Default)]
@@ -112,6 +127,130 @@ impl SqliteStore {
                 }
             }
             Ok(true)
+        })
+        .await
+    }
+
+    /// The highest record number each PC made, among the records here.
+    pub async fn marks(&self) -> Result<BTreeMap<String, String>, RecordError> {
+        self.with(|book, folder, _| {
+            let mut marks = BTreeMap::<String, String>::new();
+            for year in years(folder)? {
+                let connection = book.year(folder, year)?;
+                let mut query = connection
+                    .prepare("SELECT device, max(id) FROM records GROUP BY device")
+                    .map_err(fail)?;
+                let rows = query
+                    .query_map([], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    })
+                    .map_err(fail)?;
+                for row in rows {
+                    let (device, highest) = row.map_err(fail)?;
+                    let mark = marks.entry(device).or_default();
+                    if highest > *mark {
+                        *mark = highest;
+                    }
+                }
+            }
+            Ok(marks)
+        })
+        .await
+    }
+
+    /// The records `device` made with numbers above `after`, in order, at most `count` of them
+    /// and about `bytes` long.
+    pub async fn after(
+        &self,
+        device: &str,
+        after: &str,
+        count: usize,
+        bytes: usize,
+    ) -> Result<Vec<Copied>, RecordError> {
+        let device = device.to_owned();
+        let after = after.to_owned();
+        self.with(move |book, folder, _| {
+            let mut found = Vec::new();
+            for year in years(folder)? {
+                let connection = book.year(folder, year)?;
+                let mut query = connection
+                    .prepare(
+                        "SELECT id, line FROM records WHERE device = ?1 AND id > ?2 \
+                         ORDER BY id LIMIT ?3",
+                    )
+                    .map_err(fail)?;
+                let rows = query
+                    .query_map(params![device, after, count as i64], |row| {
+                        Ok(Copied {
+                            id: row.get(0)?,
+                            device: device.clone(),
+                            line: row.get(1)?,
+                        })
+                    })
+                    .map_err(fail)?;
+                for row in rows {
+                    found.push(row.map_err(fail)?);
+                }
+            }
+            found.sort_by(|a, b| a.id.cmp(&b.id));
+            let mut size = 0;
+            let kept = found
+                .iter()
+                .take(count)
+                .take_while(|copied| {
+                    let fits = size == 0 || size + copied.line.len() <= bytes;
+                    size += copied.line.len();
+                    fits
+                })
+                .count();
+            found.truncate(kept);
+            Ok(found)
+        })
+        .await
+    }
+
+    /// Stores records another PC made, keeping their numbers. Records already here are passed
+    /// over. Says how many were new.
+    pub async fn copy_in(&self, copies: Vec<Copied>) -> Result<usize, RecordError> {
+        self.with(move |book, folder, _| {
+            let mut parsed = Vec::with_capacity(copies.len());
+            for copied in &copies {
+                Uuid::parse_str(&copied.id)
+                    .map_err(|error| fail(format!("record {}: {error}", copied.id)))?;
+                let line: Line = serde_json::from_str(&copied.line)
+                    .map_err(|error| fail(format!("record {}: {error}", copied.id)))?;
+                let at_ms = line.at_ms();
+                let record = line
+                    .into_record()
+                    .map_err(|detail| fail(format!("record {}: {detail}", copied.id)))?;
+                parsed.push((copied, at_ms, record));
+            }
+            let mut added = 0;
+            let mut by_year = BTreeMap::<i64, Vec<_>>::new();
+            for (copied, at_ms, record) in parsed {
+                by_year
+                    .entry(year_of(record.at))
+                    .or_default()
+                    .push((copied, at_ms, record));
+            }
+            for (year, rows) in by_year {
+                let connection = book.year(folder, year)?;
+                let batch = connection.transaction().map_err(fail)?;
+                for (copied, at_ms, record) in rows {
+                    if insert_and_note_arrival(
+                        &batch,
+                        &copied.id,
+                        &copied.device,
+                        at_ms,
+                        &record.entry,
+                        &copied.line,
+                    )? {
+                        added += 1;
+                    }
+                }
+                batch.commit().map_err(fail)?;
+            }
+            Ok(added)
         })
         .await
     }
@@ -189,16 +328,26 @@ fn open(path: &Path) -> Result<Connection, RecordError> {
             path.display()
         )));
     }
-    if version != 0 && version < VERSION {
+    if version != 0 && version < BEFORE_ARRIVALS {
         return Err(fail(format!(
             "{} is in an older format ({version})",
             path.display()
         )));
     }
-    connection.execute_batch(SCHEMA).map_err(fail)?;
-    connection
+    let upgrade = connection.unchecked_transaction().map_err(fail)?;
+    upgrade.execute_batch(SCHEMA).map_err(fail)?;
+    if version == BEFORE_ARRIVALS {
+        upgrade
+            .execute(
+                "INSERT OR IGNORE INTO arrived (id) SELECT id FROM records ORDER BY id",
+                [],
+            )
+            .map_err(fail)?;
+    }
+    upgrade
         .pragma_update(None, "user_version", VERSION)
         .map_err(fail)?;
+    upgrade.commit().map_err(fail)?;
     Ok(connection)
 }
 
@@ -318,41 +467,63 @@ impl RecordStore for SqliteStore {
             }
             let year = year_of(first.at);
             let lines: Vec<Line> = records.iter().map(Line::of).collect();
-            let ids: Vec<Uuid> = lines.iter().map(|line| book.next_id(line.at_ms())).collect();
+            let ids: Vec<Uuid> = lines
+                .iter()
+                .map(|line| book.next_id(line.at_ms()))
+                .collect();
             let connection = book.year(folder, year)?;
             let batch = connection.transaction().map_err(fail)?;
-            {
-                let mut insert = batch
-                    .prepare(
-                        "INSERT INTO records \
-                         (id, device, at_ms, kind, channel, place, sender_id, sender_name, role, text, line) \
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-                    )
-                    .map_err(fail)?;
-                for ((record, line), id) in records.iter().zip(&lines).zip(&ids) {
-                    let at_ms = i64::try_from(line.at_ms()).unwrap_or(i64::MAX);
-                    let text = serde_json::to_string(line).map_err(fail)?;
-                    let columns = Columns::of(&record.entry);
-                    insert
-                        .execute(params![
-                            id.to_string(),
-                            device,
-                            at_ms,
-                            columns.kind,
-                            columns.channel,
-                            columns.place,
-                            columns.sender_id,
-                            columns.sender_name,
-                            columns.role,
-                            columns.text,
-                            text
-                        ])
-                        .map_err(fail)?;
-                }
+            for ((record, line), id) in records.iter().zip(&lines).zip(&ids) {
+                let text = serde_json::to_string(line).map_err(fail)?;
+                insert_and_note_arrival(
+                    &batch,
+                    &id.to_string(),
+                    device,
+                    line.at_ms(),
+                    &record.entry,
+                    &text,
+                )?;
             }
             batch.commit().map_err(fail)
         })
     }
+}
+
+fn insert_and_note_arrival(
+    batch: &rusqlite::Transaction<'_>,
+    id: &str,
+    device: &str,
+    at_ms: u64,
+    entry: &Entry,
+    line: &str,
+) -> Result<bool, RecordError> {
+    let columns = Columns::of(entry);
+    let added = batch
+        .execute(
+            "INSERT OR IGNORE INTO records \
+             (id, device, at_ms, kind, channel, place, sender_id, sender_name, role, text, line) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                id,
+                device,
+                i64::try_from(at_ms).unwrap_or(i64::MAX),
+                columns.kind,
+                columns.channel,
+                columns.place,
+                columns.sender_id,
+                columns.sender_name,
+                columns.role,
+                columns.text,
+                line
+            ],
+        )
+        .map_err(fail)?;
+    if added > 0 {
+        batch
+            .execute("INSERT INTO arrived (id) VALUES (?1)", [id])
+            .map_err(fail)?;
+    }
+    Ok(added > 0)
 }
 
 #[derive(Default)]

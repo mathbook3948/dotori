@@ -25,7 +25,8 @@ fn record(config: &MemoryConfig, rows: &[(&str, Option<&str>, Option<&str>)]) {
         .execute_batch(
             "CREATE TABLE IF NOT EXISTS records (id TEXT PRIMARY KEY, device TEXT NOT NULL, \
              at_ms INTEGER NOT NULL, kind TEXT NOT NULL, channel TEXT, place TEXT, sender_id TEXT, \
-             sender_name TEXT, role TEXT, text TEXT, line TEXT NOT NULL) WITHOUT ROWID",
+             sender_name TEXT, role TEXT, text TEXT, line TEXT NOT NULL) WITHOUT ROWID; \
+             CREATE TABLE IF NOT EXISTS arrived (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE)",
         )
         .expect("made");
     for (kind, sender, text) in rows {
@@ -39,6 +40,12 @@ fn record(config: &MemoryConfig, rows: &[(&str, Option<&str>, Option<&str>)]) {
                 params![format!("r{:04}", held + 1), kind, sender, sender.map(|_| "other"), text],
             )
             .expect("inserted");
+        record
+            .execute(
+                "INSERT INTO arrived (id) VALUES (?1)",
+                [format!("r{:04}", held + 1)],
+            )
+            .expect("arrived");
     }
 }
 
@@ -401,8 +408,10 @@ fn records_from_every_year_are_found_and_an_older_index_is_made_again() {
             "CREATE TABLE records (id TEXT PRIMARY KEY, device TEXT NOT NULL, at_ms INTEGER NOT NULL, \
              kind TEXT NOT NULL, channel TEXT, place TEXT, sender_id TEXT, sender_name TEXT, role TEXT, \
              text TEXT, line TEXT NOT NULL) WITHOUT ROWID; \
+             CREATE TABLE arrived (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE); \
              INSERT INTO records (id, device, at_ms, kind, sender_name, role, text, line) \
-             VALUES ('s0001', 'pc', 1704067200000, 'heard', '유노', 'owner', '올해 회의', '{}');",
+             VALUES ('s0001', 'pc', 1704067200000, 'heard', '유노', 'owner', '올해 회의', '{}'); \
+             INSERT INTO arrived (id) VALUES ('s0001');",
         )
         .expect("made");
     let old = Connection::open(&config.index).expect("opened");
@@ -426,4 +435,28 @@ fn records_from_every_year_are_found_and_an_older_index_is_made_again() {
         .query_row("SELECT count(*) FROM vectors", [], |row| row.get(0))
         .expect("counted");
     assert_eq!(stale, 0);
+}
+
+#[test]
+fn a_record_copied_in_later_with_a_smaller_number_is_still_found() {
+    let config = config();
+    record(&config, &[("heard", Some("민지"), Some("첫 회의"))]);
+    let memory = memory(config.clone());
+    assert!(
+        memory
+            .search("회의", 10, None)
+            .expect("searched")
+            .contains("r0001")
+    );
+    let year = Connection::open(config.record.join("2023.sqlite3")).expect("opened");
+    year.execute_batch(
+        "INSERT INTO records (id, device, at_ms, kind, channel, place, sender_name, role, text, line) \
+         VALUES ('a0001', 'other-pc', 1700000000000, 'heard', 'slack', 'C1', '유노', 'owner', '다른 PC 회의', '{}'); \
+         INSERT INTO arrived (id) VALUES ('a0001');",
+    )
+    .expect("copied in");
+
+    let found = memory.search("회의", 10, None).expect("searched");
+
+    assert!(found.contains("[record a0001]"), "{found}");
 }

@@ -7,6 +7,7 @@ mod idle;
 mod link;
 mod lock;
 mod notes;
+mod peers;
 mod replace;
 mod screen_link;
 mod settings;
