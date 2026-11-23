@@ -182,3 +182,47 @@ fn the_token_never_shows_in_debug_output() {
 
     assert!(!format!("{channel:?}").contains("sk-window-token"));
 }
+
+#[tokio::test]
+async fn windows_learn_which_pc_answers_but_it_stays_out_of_the_conversation() {
+    let (channel, address, _inbox) = start().await;
+    channel.answering(String::from("맥북"), false);
+    let mut early = Window::open(address, "secret").await;
+    assert_eq!(
+        early.next().await,
+        Some(ToWindow::Answering {
+            pc: String::from("맥북"),
+            here: false
+        })
+    );
+
+    channel.answering(String::from("데스크톱"), true);
+    assert_eq!(
+        early.next().await,
+        Some(ToWindow::Answering {
+            pc: String::from("데스크톱"),
+            here: true
+        })
+    );
+    let mut published = channel.published();
+    channel.show_line(r#"{"kind":"answering","pc":"x","here":false}"#);
+    channel
+        .deliver(Place::new(MAIN), String::from("hi"))
+        .await
+        .expect("delivered");
+    assert_eq!(
+        published.recv().await.expect("published").line,
+        r#"{"kind":"reply","text":"hi"}"#
+    );
+    let mut late = Window::open(address, "secret").await;
+    assert_eq!(
+        late.next().await,
+        Some(ToWindow::Reply {
+            text: String::from("hi")
+        })
+    );
+    assert!(matches!(
+        late.next().await,
+        Some(ToWindow::Answering { here: true, .. })
+    ));
+}

@@ -35,6 +35,7 @@ pub(crate) struct ChatView {
     screen: Entity<ScreenView>,
     tab: Tab,
     link: LinkState,
+    answering: Option<(String, bool)>,
     input: Entity<TextInput>,
     say: mpsc::UnboundedSender<String>,
     scroll: ScrollHandle,
@@ -74,6 +75,7 @@ impl ChatView {
             screen,
             tab: Tab::Chat,
             link: LinkState::Connecting,
+            answering: None,
             input: cx.new(|cx| TextInput::new("dotori에게 말하기", cx)),
             say,
             scroll: ScrollHandle::new(),
@@ -85,7 +87,12 @@ impl ChatView {
         match update {
             Update::Connected => {
                 self.lines.clear();
+                self.answering = None;
                 self.link = LinkState::Connected;
+            }
+            Update::Event(ToWindow::Answering { pc, here }) => {
+                self.answering = Some((pc, here));
+                return;
             }
             Update::Down(reason) => self.link = LinkState::Down(reason),
             Update::Event(event) => self.lines.push(event),
@@ -179,7 +186,29 @@ impl ChatView {
             }
             LinkState::Down(_) => (theme.danger, "연결이 끊겼어요"),
         };
-        status(color, theme.muted, words)
+        let answering = self
+            .answering
+            .clone()
+            .filter(|_| matches!(self.link, LinkState::Connected))
+            .map(|(pc, here)| {
+                div()
+                    .px_2()
+                    .py_0p5()
+                    .rounded_full()
+                    .bg(if here { theme.ok_soft } else { theme.other })
+                    .text_color(if here { theme.ok } else { theme.other_text })
+                    .child(if here {
+                        format!("이 PC({pc})에서 답해요")
+                    } else {
+                        format!("{pc}에서 답해요")
+                    })
+            });
+        div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(status(color, theme.muted, words))
+            .children(answering)
     }
 
     fn composer(&self, theme: &Theme, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -332,6 +361,7 @@ fn empty(theme: &Theme) -> impl IntoElement {
 
 fn line(theme: &Theme, event: &ToWindow) -> impl IntoElement {
     match event {
+        ToWindow::Answering { .. } => div(),
         ToWindow::Owner { text } => div().flex().justify_end().child(
             div()
                 .max_w(relative(0.8))

@@ -34,6 +34,7 @@ use tokio::net::TcpStream;
 use tokio::net::tcp::OwnedReadHalf;
 use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::RecvError;
+use tokio::sync::watch;
 use tokio::task::JoinSet;
 use tokio::time;
 
@@ -77,6 +78,9 @@ pub enum ToWindow {
         who: String,
         text: String,
     },
+    /// Which of the owner's PCs answers now. Sent only while PCs are linked, and never kept in
+    /// the conversation.
+    Answering { pc: String, here: bool },
 }
 
 /// The app channel on the daemon's side. Windows connect over local TCP and prove themselves
@@ -91,8 +95,16 @@ pub struct AppChannel {
 #[derive(Debug)]
 struct Hub {
     backlog: Mutex<VecDeque<String>>,
-    live: broadcast::Sender<String>,
+    live: broadcast::Sender<Published>,
     next_id: AtomicU64,
+    answering: watch::Sender<Option<String>>,
+}
+
+/// One line every window shows, and the other PC whose window it came from, if it did.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Published {
+    pub line: String,
+    pub origin: Option<String>,
 }
 
 impl AppChannel {
@@ -110,6 +122,7 @@ impl AppChannel {
                 backlog: Mutex::new(VecDeque::new()),
                 live,
                 next_id: AtomicU64::new(0),
+                answering: watch::channel(None).0,
             }),
         };
         Ok((channel, address))
@@ -125,11 +138,66 @@ impl fmt::Debug for AppChannel {
     }
 }
 
+impl AppChannel {
+    /// Every line windows are shown from now on, for showing them on the other PCs too.
+    pub fn published(&self) -> broadcast::Receiver<Published> {
+        self.hub.live.subscribe()
+    }
+
+    /// Tells every window which PC answers now.
+    pub fn answering(&self, pc: String, here: bool) {
+        if let Ok(line) = serde_json::to_string(&ToWindow::Answering { pc, here }) {
+            self.hub.answering.send_replace(Some(line));
+        }
+    }
+
+    /// Shows a line another PC's windows were shown. Anything that is not such a line is
+    /// passed over.
+    pub fn show_line(&self, line: &str) {
+        if serde_json::from_str::<ToWindow>(line)
+            .is_ok_and(|shown| !matches!(shown, ToWindow::Answering { .. }))
+        {
+            self.hub.publish_line(line.to_owned(), None);
+        }
+    }
+
+    /// Words the owner already saw in a window here, ready to hand to the agent.
+    pub fn incoming(&self, text: String) -> Option<Incoming> {
+        Some(self.hub.incoming(Content::parse(text).ok()?))
+    }
+
+    /// What the owner said in a window on the PC `origin`, shown here as if said in a window
+    /// here, and ready to hand to the agent.
+    pub fn heard_elsewhere(&self, text: String, origin: String) -> Option<Incoming> {
+        let content = Content::parse(text.clone()).ok()?;
+        let Ok(line) = serde_json::to_string(&ToWindow::Owner { text }) else {
+            return None;
+        };
+        self.hub.publish_line(line, Some(origin));
+        Some(self.hub.incoming(content))
+    }
+}
+
 impl Hub {
     fn publish(&self, event: &ToWindow) {
         let Ok(line) = serde_json::to_string(event) else {
             return;
         };
+        self.publish_line(line, None);
+    }
+
+    fn incoming(&self, content: Content) -> Incoming {
+        Incoming {
+            id: self.message_id(),
+            place: Place::new(MAIN),
+            sender_id: ExternalUserId::new(OWNER),
+            sender_name: String::from(OWNER),
+            content,
+            audience: Audience::Owner,
+        }
+    }
+
+    fn publish_line(&self, line: String, origin: Option<String>) {
         let mut backlog = self
             .backlog
             .lock()
@@ -138,10 +206,10 @@ impl Hub {
             backlog.pop_front();
         }
         backlog.push_back(line.clone());
-        let _ = self.live.send(line);
+        let _ = self.live.send(Published { line, origin });
     }
 
-    fn join(&self) -> (Vec<String>, broadcast::Receiver<String>) {
+    fn join(&self) -> (Vec<String>, broadcast::Receiver<Published>) {
         let backlog = self
             .backlog
             .lock()
@@ -226,14 +294,32 @@ async fn serve(stream: TcpStream, token: String, hub: Arc<Hub>, inbox: Arc<dyn I
         return;
     }
     let (backlog, mut live) = hub.join();
+    let mut answering = hub.answering.subscribe();
     let sending = async move {
         for line in backlog {
             send(&mut write, &line).await?;
         }
+        let now = answering.borrow_and_update().clone();
+        if let Some(line) = now {
+            send(&mut write, &line).await?;
+        }
         loop {
-            match live.recv().await {
-                Ok(line) => send(&mut write, &line).await?,
-                Err(RecvError::Lagged(_) | RecvError::Closed) => return Ok::<(), io::Error>(()),
+            tokio::select! {
+                published = live.recv() => match published {
+                    Ok(published) => send(&mut write, &published.line).await?,
+                    Err(RecvError::Lagged(_) | RecvError::Closed) => {
+                        return Ok::<(), io::Error>(());
+                    }
+                },
+                changed = answering.changed() => {
+                    if changed.is_err() {
+                        return Ok(());
+                    }
+                    let now = answering.borrow_and_update().clone();
+                    if let Some(line) = now {
+                        send(&mut write, &line).await?;
+                    }
+                }
             }
         }
     };
@@ -246,15 +332,7 @@ async fn serve(stream: TcpStream, token: String, hub: Arc<Hub>, inbox: Arc<dyn I
                 continue;
             };
             hub.publish(&ToWindow::Owner { text });
-            let incoming = Incoming {
-                id: hub.message_id(),
-                place: Place::new(MAIN),
-                sender_id: ExternalUserId::new(OWNER),
-                sender_name: String::from(OWNER),
-                content,
-                audience: Audience::Owner,
-            };
-            if inbox.push(incoming).await.is_err() {
+            if inbox.push(hub.incoming(content)).await.is_err() {
                 return;
             }
         }

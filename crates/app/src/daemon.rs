@@ -5,9 +5,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use tokio::sync::mpsc;
+use tokio::time;
+
 use dotori_connectors::channel::app::AppChannel;
 use dotori_connectors::peer::copies::Announced;
 use dotori_connectors::peer::copies::Copies;
+use dotori_connectors::peer::hub::Heard;
+use dotori_connectors::peer::lease::Keeper;
 use dotori_connectors::record::jsonl::JsonlStore;
 use dotori_connectors::record::sqlite::SqliteStore;
 use dotori_connectors::record::sqlite::read_legacy;
@@ -15,6 +20,8 @@ use dotori_connectors::sub_session::cli::CliRunner;
 use dotori_connectors::sub_session::cli::CodingAgent;
 use dotori_connectors::sub_session::cli::McpServer;
 use dotori_connectors::sub_session::llm::LlmRunner;
+use dotori_core::channel::Channel;
+use dotori_core::channel::Inbox;
 use dotori_core::llm::Model;
 use dotori_core::record::RecordError;
 use dotori_core::record::RecordStore;
@@ -30,6 +37,15 @@ use crate::door::Door;
 use crate::home::Home;
 use crate::idle::NoTools;
 use crate::lock::DaemonLock;
+use crate::main_session;
+use crate::main_session::AgentApp;
+use crate::main_session::Fenced;
+use crate::main_session::Linked;
+use crate::main_session::MAIN_JOB;
+use crate::main_session::Route;
+use crate::main_session::gained;
+use crate::main_session::lost;
+use crate::notes;
 use crate::notes::MainTools;
 use crate::notes::Noted;
 use crate::notes::Notes;
@@ -44,6 +60,9 @@ const SEEN: NonZeroUsize = NonZeroUsize::new(4096).expect("non-zero");
 const TOOL_TIMEOUT: Duration = Duration::from_secs(120);
 const SUB_SESSION_TURNS: usize = 50;
 const SUB_SESSION_LIMIT: Duration = Duration::from_secs(60 * 60);
+const SETTLE: Duration = Duration::from_secs(1);
+const RELEASE_SENT: Duration = Duration::from_millis(300);
+const FLUSH_EVERY: Duration = Duration::from_secs(2);
 
 /// Runs the agent until Ctrl-C or a terminate signal, with the app channel open for windows.
 pub(crate) async fn run(home: Home) -> Result<(), String> {
@@ -60,10 +79,6 @@ pub(crate) async fn serve(
     let _lock = DaemonLock::take(&home.lock())?;
     let settings = Settings::load(&home.settings())?;
     let model = settings.model(environment)?;
-    let channels = settings.channels(environment).unwrap_or_else(|error| {
-        eprintln!("dotori: Slack is off: {error}");
-        Vec::new()
-    });
     let shared = match tools::SharedTools::start().await {
         Ok(tools) => Some(Arc::new(tools)),
         Err(error) => {
@@ -77,68 +92,198 @@ pub(crate) async fn serve(
     };
     let sub_sessions = sub_session_runner(&home, &settings, &toolbox, shared)?;
     let records = open_record(&home).await?;
-    let (records, linked): (Arc<dyn RecordStore>, _) = match peers::start(&home, &settings).await {
-        Some((hub, mut heard)) => {
-            let copies = Copies::start(Arc::clone(&hub), records.clone());
-            let hearing = Arc::clone(&copies);
-            tokio::spawn(async move {
-                while let Some(heard) = heard.recv().await {
-                    hearing.hear(&heard).await;
-                }
-            });
-            (
-                Arc::new(Announced {
-                    store: records,
-                    copies,
-                }),
-                Some(hub),
-            )
-        }
-        None => (Arc::new(records), None),
-    };
     let notes = Notes::new(home.notes());
     let model: Arc<dyn Model> = Arc::new(Noted {
         model,
         notes: Arc::clone(&notes),
     });
     let toolbox: Arc<dyn Toolbox> = Arc::new(MainTools {
-        notes,
+        notes: Arc::clone(&notes),
         shared: toolbox,
     });
     let token = door::token()?;
     let (app, address) = AppChannel::bind(token.clone()).map_err(|error| error.to_string())?;
+    let app = Arc::new(app);
     let door = Door {
         port: address.port(),
         token,
     };
-    let ports = Ports {
-        app: Arc::new(app),
-        channels,
-        model,
-        toolbox,
-        sub_sessions,
-        records,
-    };
+    let (records, linked, heard) = link(&home, &settings, records, &app).await;
+    let route = Route::new(linked.clone());
+    if let (Some(linked), Some((mut heard, copies))) = (linked.clone(), heard) {
+        let app = Arc::clone(&app);
+        let route = Arc::clone(&route);
+        tokio::spawn(notes::share(Arc::clone(&notes), Arc::clone(&linked.hub)));
+        let (words_tx, mut words) = mpsc::unbounded_channel::<Heard>();
+        {
+            let linked = linked.clone();
+            let route = Arc::clone(&route);
+            tokio::spawn(async move {
+                while let Some(heard) = words.recv().await {
+                    main_session::hear(&linked, &app, &route, &heard).await;
+                }
+            });
+        }
+        {
+            let route = Arc::clone(&route);
+            tokio::spawn(async move {
+                let mut every = time::interval(FLUSH_EVERY);
+                loop {
+                    every.tick().await;
+                    route.flush();
+                }
+            });
+        }
+        tokio::spawn(async move {
+            while let Some(heard) = heard.recv().await {
+                linked.keeper.hear(&heard);
+                if notes::hear(&notes, &linked.hub, &heard) {
+                    continue;
+                }
+                if copies.hear(&heard).await {
+                    continue;
+                }
+                let _ = words_tx.send(heard);
+            }
+        });
+    }
+    {
+        let app = Arc::clone(&app);
+        let route = Arc::clone(&route) as Arc<dyn Inbox>;
+        tokio::spawn(async move {
+            if let Err(error) = app.run(route).await {
+                eprintln!("dotori: windows cannot reach dotori: {error}");
+            }
+        });
+    }
+    if let Some(linked) = linked.clone() {
+        let route = Arc::clone(&route);
+        let app = Arc::clone(&app);
+        let mut holder = linked.keeper.watch(MAIN_JOB);
+        tokio::spawn(async move {
+            while let Some(holder) = holder.as_mut() {
+                if holder.changed().await.is_err() {
+                    return;
+                }
+                let now = holder.borrow_and_update().clone();
+                if let Some(key) = now {
+                    app.answering(linked.hub.name_of(&key), key == linked.own);
+                }
+                route.flush();
+            }
+        });
+    }
     let config = AgentConfig {
         queue_capacity: QUEUE,
         seen_capacity: SEEN,
         tool_timeout: TOOL_TIMEOUT,
     };
-    let agent = Agent::spawn(config, ports)
-        .await
-        .map_err(|error| error.to_string())?;
     door.write(&home.door())?;
     eprintln!("dotori is running. Open a window with `dotori chat`.");
     ready();
-    let stopped = tokio::select! {
-        stopped = stop_signal() => stopped,
-        () = quit => Ok(()),
+    let mut stop = std::pin::pin!(stop_signal());
+    let mut quit = std::pin::pin!(quit);
+    let stopped = loop {
+        tokio::select! {
+            () = gained(linked.as_ref()) => {}
+            stopped = &mut stop => break stopped,
+            () = &mut quit => break Ok(()),
+        }
+        if let Some(linked) = &linked {
+            time::sleep(SETTLE).await;
+            if !linked.keeper.holds(MAIN_JOB) {
+                continue;
+            }
+        }
+        let channels = settings
+            .channels(environment)
+            .unwrap_or_else(|error| {
+                eprintln!("dotori: Slack is off: {error}");
+                Vec::new()
+            })
+            .into_iter()
+            .map(|channel| {
+                Arc::new(Fenced {
+                    channel,
+                    linked: linked.clone(),
+                }) as Arc<dyn Channel>
+            })
+            .collect();
+        let ports = Ports {
+            app: Arc::new(AgentApp {
+                app: Arc::clone(&app),
+                route: Arc::clone(&route),
+                linked: linked.clone(),
+            }),
+            channels,
+            model: Arc::clone(&model),
+            toolbox: Arc::clone(&toolbox),
+            sub_sessions: Arc::clone(&sub_sessions),
+            records: Arc::clone(&records),
+        };
+        let agent = Agent::spawn(config.clone(), ports)
+            .await
+            .map_err(|error| error.to_string())?;
+        if linked.is_some() {
+            eprintln!("dotori: this PC runs the assistant now");
+        }
+        for _ in 0..50 {
+            if route.runs_agent() {
+                break;
+            }
+            time::sleep(Duration::from_millis(20)).await;
+        }
+        route.hand_waiting(&app).await;
+        let ended = tokio::select! {
+            () = lost(linked.as_ref()) => None,
+            stopped = &mut stop => Some(stopped),
+            () = &mut quit => Some(Ok(())),
+        };
+        route.elsewhere();
+        agent.shutdown().await;
+        match ended {
+            Some(stopped) => break stopped,
+            None => eprintln!("dotori: another PC runs the assistant now"),
+        }
     };
     let _ = fs::remove_file(home.door());
-    agent.shutdown().await;
-    drop(linked);
+    if let Some(linked) = &linked {
+        linked.keeper.release_all();
+        time::sleep(RELEASE_SENT).await;
+    }
     stopped
 }
+
+async fn link(
+    home: &Home,
+    settings: &Settings,
+    records: SqliteStore,
+    app: &Arc<AppChannel>,
+) -> (Arc<dyn RecordStore>, Option<Linked>, Option<Hearing>) {
+    let Some((hub, heard)) = peers::start(home, settings).await else {
+        return (Arc::new(records), None, None);
+    };
+    let own = hub.own().to_owned();
+    let copies = Copies::start(Arc::clone(&hub), records.clone());
+    let keeper = Keeper::start(Arc::clone(&hub), own.clone(), &[MAIN_JOB]);
+    let linked = Linked {
+        hub,
+        keeper: Arc::clone(&keeper),
+        own,
+    };
+    drop(keeper);
+    tokio::spawn(main_session::mirror(linked.clone(), Arc::clone(app)));
+    (
+        Arc::new(Announced {
+            store: records,
+            copies: Arc::clone(&copies),
+        }),
+        Some(linked),
+        Some((heard, copies)),
+    )
+}
+
+type Hearing = (mpsc::UnboundedReceiver<Heard>, Arc<Copies>);
 
 async fn open_record(home: &Home) -> Result<SqliteStore, String> {
     let device = device::name(&home.device())?;
