@@ -44,7 +44,6 @@ pub(crate) struct BrowserRoute {
     running: Mutex<HashMap<(String, u64), tokio::task::AbortHandle>>,
 }
 
-/// Tells the browser's PC to stop a call if the caller stops waiting for it first.
 struct Abandoned<'a> {
     linked: &'a Linked,
     pc: &'a str,
