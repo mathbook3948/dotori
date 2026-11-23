@@ -17,6 +17,8 @@ use dotori_connectors::sub_session::llm::LLM_SUB_SESSION_SYSTEM;
 use dotori_core::channel::Channel;
 use dotori_core::llm::Model;
 use dotori_mcp::memory::EmbeddingConfig;
+use dotori_mcp::relay::Reach;
+use dotori_mcp::relay::RelayConfig;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -41,6 +43,26 @@ pub(crate) struct Settings {
     pub(crate) sub_sessions: Option<SubSessionSettings>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) memory: Option<MemorySettings>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) mcp: Vec<RelaySettings>,
+}
+
+/// An MCP server made elsewhere that dotori relays, reached at `url` or started as `command`.
+/// A token goes in the environment variable `token_env` names, never in the file.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RelaySettings {
+    pub(crate) name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) token_env: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) command: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) args: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) tools: Option<Vec<String>>,
 }
 
 /// How memory is searched. Without embeddings it matches words only.
@@ -332,6 +354,50 @@ impl Settings {
             api_key,
             dimensions: chosen.dimensions,
         }))
+    }
+
+    /// The MCP servers to relay, reading tokens through `key`. A server set up wrong is named
+    /// in the second list and left out.
+    pub(crate) fn relays(
+        &self,
+        key: impl Fn(&str) -> Option<String>,
+    ) -> (Vec<RelayConfig>, Vec<String>) {
+        let mut chosen = Vec::new();
+        let mut wrong = Vec::new();
+        for server in &self.mcp {
+            let reach = match (&server.url, &server.command) {
+                (Some(url), None) => {
+                    let token = match &server.token_env {
+                        None => None,
+                        Some(variable) => match key(variable) {
+                            Some(token) => Some(token),
+                            None => {
+                                wrong.push(format!("{}: set {variable} to its token", server.name));
+                                continue;
+                            }
+                        },
+                    };
+                    Reach::Http {
+                        url: url.clone(),
+                        token,
+                    }
+                }
+                (None, Some(command)) => Reach::Command {
+                    program: command.clone(),
+                    args: server.args.clone(),
+                },
+                _ => {
+                    wrong.push(format!("{}: give either `url` or `command`", server.name));
+                    continue;
+                }
+            };
+            chosen.push(RelayConfig {
+                name: server.name.clone(),
+                reach,
+                tools: server.tools.clone(),
+            });
+        }
+        (chosen, wrong)
     }
 
     /// The channels besides the app, reading tokens through `key`.

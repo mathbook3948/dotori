@@ -21,6 +21,7 @@ use dotori_mcp::browser::BrowserConfig;
 use dotori_mcp::fetch::WebFetch;
 use dotori_mcp::memory::Memory;
 use dotori_mcp::memory::MemoryConfig;
+use dotori_mcp::relay::relay;
 use dotori_mcp::screen::Screen;
 use dotori_mcp::server::PATH;
 use dotori_mcp::server::Server;
@@ -42,7 +43,7 @@ use crate::home::Home;
 use crate::settings;
 use crate::settings::Settings;
 
-const START_WAIT: Duration = Duration::from_secs(10);
+const START_WAIT: Duration = Duration::from_secs(20);
 
 /// Where the MCP server listens, as its first line of output.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -92,6 +93,12 @@ pub(crate) async fn serve(home: Home) -> Result<(), String> {
         embedding,
     });
     tools.extend(memory.tools());
+    let (relays, wrong) = settings.relays(settings::environment);
+    let (relayed, failed) = relay(relays).await;
+    for problem in wrong.iter().chain(&failed) {
+        eprintln!("dotori: an MCP server is left out: {problem}");
+    }
+    tools.extend(relayed);
     let token = door::token()?;
     let listener = TcpListener::bind(("127.0.0.1", 0))
         .await

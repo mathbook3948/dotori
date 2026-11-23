@@ -253,3 +253,29 @@ fn embeddings_are_off_unless_named_and_take_their_key_from_a_variable() {
         parse("[memory.embeddings]\nmodel = \"x\"\nbase_url = \"y\"\napi_key = \"sk\"").is_err()
     );
 }
+
+#[test]
+fn relayed_servers_come_by_address_or_command_and_take_tokens_from_variables() {
+    let settings = parse(
+        "[[mcp]]\nname = \"notes\"\nurl = \"https://notes.example/mcp\"\ntoken_env = \"NOTES\"\n\n\
+         [[mcp]]\nname = \"files\"\ncommand = \"files-mcp\"\nargs = [\"--root\", \"/x\"]\ntools = [\"read\"]\n\n\
+         [[mcp]]\nname = \"both\"\nurl = \"https://a\"\ncommand = \"b\"",
+    )
+    .expect("parsed");
+    let (chosen, wrong) = settings.relays(|_| None);
+    assert_eq!(chosen.len(), 1);
+    assert_eq!(chosen[0].name, "files");
+    assert_eq!(chosen[0].tools, Some(vec![String::from("read")]));
+    assert_eq!(wrong.len(), 2);
+    assert!(wrong[0].contains("NOTES"));
+    let (chosen, wrong) = settings.relays(|name| (name == "NOTES").then(|| String::from("t")));
+    assert_eq!(chosen.len(), 2);
+    assert_eq!(wrong.len(), 1);
+    let text = toml::to_string(&settings).expect("written");
+    assert_eq!(parse(&text).expect("read back"), settings);
+}
+
+#[test]
+fn a_relayed_token_written_into_the_file_is_refused() {
+    assert!(parse("[[mcp]]\nname = \"n\"\nurl = \"https://a\"\ntoken = \"t\"").is_err());
+}
