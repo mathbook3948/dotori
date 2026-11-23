@@ -71,13 +71,6 @@ impl ExternalMessageId {
     }
 }
 
-/// One user on one channel.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct ChannelUser {
-    pub channel: ChannelId,
-    pub user: ExternalUserId,
-}
-
 #[cfg(test)]
 #[path = "id.test.rs"]
 mod tests;

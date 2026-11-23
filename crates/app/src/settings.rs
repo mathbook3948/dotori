@@ -15,8 +15,6 @@ use dotori_connectors::llm::openai::OpenAiConfig;
 use dotori_connectors::sub_session::SUB_SESSION_SYSTEM;
 use dotori_connectors::sub_session::llm::LLM_SUB_SESSION_SYSTEM;
 use dotori_core::channel::Channel;
-use dotori_core::id::ChannelUser;
-use dotori_core::id::ExternalUserId;
 use dotori_core::llm::Model;
 use dotori_mcp::memory::EmbeddingConfig;
 use serde::Deserialize;
@@ -97,7 +95,8 @@ pub(crate) struct BrowserSettings {
     pub(crate) headless: Option<bool>,
 }
 
-/// Slack is on when this section is in the file. The owner is a Slack user id, such as `U012AB3CD`.
+/// Slack is on when this section is in the file and names the owner. The owner is a Slack user
+/// id, such as `U012AB3CD`, and nobody else is heard.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SlackSettings {
@@ -108,9 +107,6 @@ pub(crate) struct SlackSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) owner: Option<String>,
 }
-
-/// A channel to connect, and the owner's account on it if one is set.
-pub(crate) type Connected = (Arc<dyn Channel>, Option<ChannelUser>);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "provider", rename_all = "kebab-case", deny_unknown_fields)]
@@ -342,10 +338,15 @@ impl Settings {
     pub(crate) fn channels(
         &self,
         key: impl Fn(&str) -> Option<String>,
-    ) -> Result<Vec<Connected>, String> {
+    ) -> Result<Vec<Arc<dyn Channel>>, String> {
         let Some(slack) = &self.slack else {
             return Ok(Vec::new());
         };
+        let owner = slack
+            .owner
+            .clone()
+            .filter(|owner| !owner.trim().is_empty())
+            .ok_or("set `owner` under [slack] to your Slack user id, such as U012AB3CD")?;
         let token = |named: &Option<String>, default: &str, what: &str| {
             let variable = named.as_deref().unwrap_or(default);
             key(variable).ok_or_else(|| format!("set {variable} to your Slack {what}"))
@@ -353,13 +354,10 @@ impl Settings {
         let config = SlackConfig::new(
             token(&slack.app_token_env, SLACK_APP_KEY, "app token")?,
             token(&slack.bot_token_env, SLACK_BOT_KEY, "bot token")?,
+            owner.trim(),
         );
         let channel = SlackChannel::new(config).map_err(|error| error.detail)?;
-        let owner = slack.owner.as_ref().map(|user| ChannelUser {
-            channel: channel.id().clone(),
-            user: ExternalUserId::new(user.as_str()),
-        });
-        Ok(vec![(Arc::new(channel), owner)])
+        Ok(vec![Arc::new(channel)])
     }
 }
 

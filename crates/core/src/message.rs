@@ -55,9 +55,9 @@ impl fmt::Display for EmptyContentError {
 
 impl Error for EmptyContentError {}
 
-/// What a connector hands to its inbox: only messages addressed to the assistant
-/// from places the owner trusts. Core trusts everything it receives.
-/// It carries no channel id and no role. The inbox stamps the channel and core decides the role.
+/// What a connector hands to its inbox: only the owner's messages addressed to the assistant.
+/// Others' messages never arrive. Core trusts everything it receives.
+/// It carries no channel id. The inbox stamps the channel.
 #[derive(Clone, Debug)]
 pub struct Incoming {
     pub id: ExternalMessageId,
@@ -67,6 +67,8 @@ pub struct Incoming {
     pub content: Content,
 }
 
+/// Everything heard now is the owner's. `Other` survives only in records from before dotori
+/// heard the owner alone.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Role {
     Owner,

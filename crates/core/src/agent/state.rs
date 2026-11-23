@@ -7,7 +7,6 @@ use crate::agent::ids::CallId;
 use crate::agent::ids::Ids;
 use crate::agent::ids::SubSessionId;
 use crate::agent::ids::ToolRunId;
-use crate::agent::roster::Roster;
 use crate::agent::threads::Threads;
 use crate::conversation::Action;
 use crate::conversation::Entry;
@@ -22,7 +21,8 @@ use crate::tool::ToolError;
 pub(crate) struct AgentState {
     pub(crate) conversation: Vec<Entry>,
     pub(crate) phase: Phase,
-    pub(crate) roster: Roster,
+    /// The app window's channel, which shows the traffic of every other channel.
+    pub(crate) app: ChannelId,
     pub(crate) threads: Threads,
     pub(crate) sub_sessions: HashMap<SubSessionId, SubSessionSpec>,
     pub(crate) seen: Seen,
@@ -35,11 +35,11 @@ impl AgentState {
     /// message ids are seen again. Work that was running when the process stopped never
     /// returns, so it gets a result that says so, appended after the loaded entries.
     pub(crate) fn resume(
-        roster: Roster,
+        app: ChannelId,
         seen_capacity: NonZeroUsize,
         conversation: Vec<Entry>,
     ) -> Self {
-        let mut state = Self::new(roster, seen_capacity);
+        let mut state = Self::new(app, seen_capacity);
         let mut tools = Vec::new();
         let mut delegated = Vec::new();
         for entry in &conversation {
@@ -88,11 +88,11 @@ impl AgentState {
         state
     }
 
-    pub(crate) fn new(roster: Roster, seen_capacity: NonZeroUsize) -> Self {
+    pub(crate) fn new(app: ChannelId, seen_capacity: NonZeroUsize) -> Self {
         Self {
             conversation: Vec::new(),
             phase: Phase::Idle,
-            roster,
+            app,
             threads: Threads::default(),
             sub_sessions: HashMap::new(),
             seen: Seen::new(seen_capacity),

@@ -55,11 +55,10 @@ pub(crate) async fn serve(
     let _lock = DaemonLock::take(&home.lock())?;
     let settings = Settings::load(&home.settings())?;
     let model = settings.model(environment)?;
-    let connected = settings.channels(environment).unwrap_or_else(|error| {
+    let channels = settings.channels(environment).unwrap_or_else(|error| {
         eprintln!("dotori: Slack is off: {error}");
         Vec::new()
     });
-    let (channels, owners): (Vec<_>, Vec<_>) = connected.into_iter().unzip();
     let shared = match tools::SharedTools::start().await {
         Ok(tools) => Some(Arc::new(tools)),
         Err(error) => {
@@ -97,7 +96,6 @@ pub(crate) async fn serve(
         records: Arc::new(records),
     };
     let config = AgentConfig {
-        owners: owners.into_iter().flatten().collect(),
         queue_capacity: QUEUE,
         seen_capacity: SEEN,
         tool_timeout: TOOL_TIMEOUT,

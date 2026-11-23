@@ -17,7 +17,6 @@ use crate::conversation::Action;
 use crate::conversation::Entry;
 use crate::conversation::ThreadRef;
 use crate::id::ChannelId;
-use crate::id::ChannelUser;
 use crate::llm::ModelError;
 use crate::llm::ModelReply;
 use crate::message::Address;
@@ -61,17 +60,13 @@ fn on_received(state: &mut AgentState, channel: ChannelId, incoming: Incoming) -
     if !state.seen.first_time(key) {
         return Vec::new();
     }
-    let role = state.roster.role_of(&ChannelUser {
-        channel: channel.clone(),
-        user: incoming.sender_id.clone(),
-    });
     let address = Address {
         channel,
         place: incoming.place,
     };
     let thread = state.threads.intern(address.clone());
     let mut effects = Vec::new();
-    if &address.channel != state.roster.app() {
+    if address.channel != state.app {
         effects.push(Effect::Show(Traffic {
             address: address.clone(),
             who: incoming.sender_name.clone(),
@@ -86,16 +81,12 @@ fn on_received(state: &mut AgentState, channel: ChannelId, incoming: Incoming) -
             sender: Sender {
                 id: incoming.sender_id,
                 name: incoming.sender_name,
-                role,
+                role: Role::Owner,
             },
             content: incoming.content,
         },
     });
-    let arrival = match role {
-        Role::Owner => Arrival::Interrupts,
-        Role::Other => Arrival::Joins,
-    };
-    effects.extend(absorb(state, arrival));
+    effects.extend(absorb(state, Arrival::Interrupts));
     effects
 }
 
@@ -186,7 +177,7 @@ fn on_delivery_done(
 ) -> Vec<Effect> {
     match result {
         Ok(()) => match state.threads.resolve(thread) {
-            Some(address) if &address.channel != state.roster.app() => {
+            Some(address) if address.channel != state.app => {
                 vec![Effect::Show(Traffic {
                     address: address.clone(),
                     who: String::from("dotori"),

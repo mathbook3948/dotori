@@ -9,11 +9,11 @@ use crate::message::Incoming;
 use crate::message::Place;
 
 /// One connection, such as Slack. It holds no conversation state.
-/// It decides only whether a message is addressed to the assistant.
+/// It decides only whether a message is the owner's and addressed to the assistant.
 pub trait Channel: Send + Sync + 'static {
     fn id(&self) -> &ChannelId;
 
-    /// Receives until the connection closes and pushes only messages addressed to the assistant.
+    /// Receives until the connection closes and pushes only the owner's messages to the assistant.
     /// Core drops this future on shutdown.
     fn run(&self, inbox: Arc<dyn Inbox>) -> BoxFuture<'_, Result<(), ChannelError>>;
 

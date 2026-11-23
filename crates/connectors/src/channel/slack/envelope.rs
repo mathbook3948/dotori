@@ -19,7 +19,7 @@ pub(crate) enum Kind {
     Nothing,
 }
 
-/// A message addressed to the assistant: a direct message, or a mention in a channel.
+/// The owner's message to the assistant: a direct message, or a mention in a channel.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Arrived {
     pub(crate) id: String,
@@ -55,8 +55,9 @@ struct Event {
     thread_ts: Option<String>,
 }
 
-/// Reads one text frame. `bot` is the assistant's own Slack user id.
-pub(crate) fn read(text: &str, bot: &str) -> Frame {
+/// Reads one text frame. `bot` is the assistant's own Slack user id and `owner` is the owner's.
+/// Everyone else's messages are acknowledged and dropped.
+pub(crate) fn read(text: &str, bot: &str, owner: &str) -> Frame {
     let Ok(envelope) = serde_json::from_str::<Envelope>(text) else {
         return Frame {
             ack: None,
@@ -69,7 +70,7 @@ pub(crate) fn read(text: &str, bot: &str) -> Frame {
         "events_api" => envelope
             .payload
             .and_then(|payload| payload.event)
-            .and_then(|event| arrived(event, bot))
+            .and_then(|event| arrived(event, bot, owner))
             .map_or(Kind::Nothing, Kind::Message),
         _ => Kind::Nothing,
     };
@@ -79,7 +80,7 @@ pub(crate) fn read(text: &str, bot: &str) -> Frame {
     }
 }
 
-fn arrived(event: Event, bot: &str) -> Option<Arrived> {
+fn arrived(event: Event, bot: &str, owner: &str) -> Option<Arrived> {
     let direct = match (event.kind.as_str(), event.channel_type.as_deref()) {
         ("app_mention", _) => false,
         ("message", Some("im")) => true,
@@ -93,7 +94,7 @@ fn arrived(event: Event, bot: &str) -> Option<Arrived> {
         return None;
     }
     let user = event.user?;
-    if user == bot {
+    if user != owner {
         return None;
     }
     let channel = event.channel?;
