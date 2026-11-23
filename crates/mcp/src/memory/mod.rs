@@ -450,6 +450,15 @@ fn open_index(path: &PathBuf) -> Result<Connection, String> {
             [],
         )
         .map_err(fail)?;
+    let made = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_nanos());
+    index
+        .execute(
+            "INSERT OR IGNORE INTO meta (key, value) VALUES ('index_id', ?1)",
+            [format!("{made}-{}", std::process::id())],
+        )
+        .map_err(fail)?;
     Ok(index)
 }
 

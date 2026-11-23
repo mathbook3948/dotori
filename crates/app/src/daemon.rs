@@ -57,6 +57,7 @@ use crate::settings_copies::SettingsCopies;
 use crate::tools;
 use crate::vector_copies;
 use crate::vector_copies::VECTORS_JOB;
+use crate::vector_copies::VectorCopies;
 
 const QUEUE: NonZeroUsize = NonZeroUsize::new(256).expect("non-zero");
 const SEEN: NonZeroUsize = NonZeroUsize::new(4096).expect("non-zero");
@@ -113,10 +114,13 @@ pub(crate) async fn serve(
     };
     let (records, linked, heard) = link(&home, &settings, records, &app).await;
     vector_copies::write_jobs(&home.jobs(), linked.is_none());
-    if let Some(linked) = linked.clone() {
+    let vectors = linked
+        .clone()
+        .map(|linked| VectorCopies::new(linked, home.search_index()));
+    if let (Some(linked), Some(vectors)) = (linked.clone(), vectors.clone()) {
         let jobs = home.jobs();
-        let index = home.search_index();
-        tokio::spawn(vector_copies::keep_asking(linked.clone(), index));
+        tokio::spawn(Arc::clone(&vectors).keep_asking());
+        tokio::spawn(vectors.on_maker_change());
         tokio::spawn(async move {
             let Some(mut holder) = linked.keeper.watch(VECTORS_JOB) else {
                 return;
@@ -155,7 +159,6 @@ pub(crate) async fn serve(
                 }
             });
         }
-        let index = home.search_index();
         let settings_copies = Arc::new(SettingsCopies::new(home.settings(), home.settings_stamp()));
         {
             let settings_copies = Arc::clone(&settings_copies);
@@ -168,15 +171,7 @@ pub(crate) async fn serve(
                 if settings_copies.hear(&linked, &heard) {
                     continue;
                 }
-                if heard
-                    .message
-                    .get("kind")
-                    .and_then(serde_json::Value::as_str)
-                    == Some("linked")
-                {
-                    vector_copies::ask(&linked, &index);
-                }
-                if vector_copies::hear(&linked, &index, &heard) {
+                if vectors.as_ref().is_some_and(|vectors| vectors.hear(&heard)) {
                     continue;
                 }
                 if notes::hear(&notes, &linked.hub, &heard) {

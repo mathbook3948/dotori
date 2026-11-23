@@ -12,7 +12,8 @@ fn the_nearest_records_come_first() {
     index
         .execute_batch(
             "CREATE TABLE vectors (seq INTEGER PRIMARY KEY, model TEXT NOT NULL, vector BLOB NOT NULL); \
-             CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
+             CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL); \
+             CREATE TABLE vector_log (n INTEGER PRIMARY KEY AUTOINCREMENT, seq INTEGER NOT NULL);",
         )
         .expect("made");
     let put = |seq: i64, model: &str, vector: &[f32]| {
@@ -22,6 +23,9 @@ fn the_nearest_records_come_first() {
                 params![seq, model, to_bytes(vector)],
             )
             .expect("put");
+        index
+            .execute("INSERT INTO vector_log (seq) VALUES (?1)", [seq])
+            .expect("logged");
     };
     put(1, "a", &[1.0, 0.0]);
     put(2, "a", &[0.0, 1.0]);

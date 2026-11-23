@@ -4,7 +4,10 @@
 
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Duration;
+use std::time::Instant;
 
 use dotori_connectors::peer::base64url;
 use dotori_connectors::peer::hub::Heard;
@@ -23,6 +26,7 @@ use crate::main_session::Linked;
 pub(crate) const VECTORS_JOB: &str = "vectors";
 const BATCH: i64 = 200;
 const ASK_EVERY: Duration = Duration::from_secs(30);
+const ANSWER_WAIT: Duration = Duration::from_secs(60);
 const TABLES: &str = "
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS copied_vectors (
@@ -41,10 +45,28 @@ pub(crate) struct Sent {
     pub(crate) vector: String,
 }
 
-/// The vectors made here after the `after`th one, and the place of the last one given.
-pub(crate) fn made_after(index: &Path, after: i64) -> Result<(Vec<Sent>, i64), String> {
+/// The vectors made here after the `after`th one in the index named `asked`, the place of the
+/// last one given, and this index's name. An index made again since starts from the first.
+pub(crate) fn made_after(
+    index: &Path,
+    asked: &str,
+    after: i64,
+) -> Result<(Vec<Sent>, i64, String), String> {
     let fail = |error: rusqlite::Error| error.to_string();
     let connection = Connection::open(index).map_err(fail)?;
+    let name: String = match connection
+        .query_row("SELECT value FROM meta WHERE key = 'index_id'", [], |row| {
+            row.get(0)
+        })
+        .optional()
+    {
+        Ok(name) => name.unwrap_or_default(),
+        Err(error) if error.to_string().contains("no such table") => {
+            return Ok((Vec::new(), 0, String::new()));
+        }
+        Err(error) => return Err(fail(error)),
+    };
+    let after = if asked == name { after } else { 0 };
     let found = connection.prepare(
         "SELECT l.n, d.record, v.model, v.vector FROM vector_log l \
          JOIN vectors v ON v.seq = l.seq JOIN docs d ON d.seq = l.seq \
@@ -53,7 +75,7 @@ pub(crate) fn made_after(index: &Path, after: i64) -> Result<(Vec<Sent>, i64), S
     let mut found = match found {
         Ok(found) => found,
         Err(error) if error.to_string().contains("no such table") => {
-            return Ok((Vec::new(), after));
+            return Ok((Vec::new(), after, name));
         }
         Err(error) => return Err(fail(error)),
     };
@@ -73,20 +95,26 @@ pub(crate) fn made_after(index: &Path, after: i64) -> Result<(Vec<Sent>, i64), S
             vector: base64url(&vector),
         })
         .collect();
-    Ok((sent, last))
+    Ok((sent, last, name))
 }
 
 /// Keeps vectors from the PC `from` until their records are indexed here, and how far this PC
-/// got with that PC's vectors.
-pub(crate) fn keep(index: &Path, from: &str, sent: &[Sent], upto: i64) -> Result<(), String> {
+/// got with that PC's index `name`.
+pub(crate) fn keep(
+    index: &Path,
+    from: &str,
+    sent: &[Sent],
+    name: &str,
+    upto: i64,
+) -> Result<(), String> {
     let fail = |error: rusqlite::Error| error.to_string();
     let mut connection = Connection::open(index).map_err(fail)?;
     connection.execute_batch(TABLES).map_err(fail)?;
     let batch = connection.transaction().map_err(fail)?;
     for one in sent {
-        let Some(vector) = unbase64url(&one.vector).filter(|bytes| bytes.len() % 4 == 0) else {
-            continue;
-        };
+        let vector = unbase64url(&one.vector)
+            .filter(|bytes| bytes.len() % 4 == 0)
+            .ok_or_else(|| format!("a vector for {} does not read", one.record))?;
         batch
             .execute(
                 "INSERT OR REPLACE INTO copied_vectors (record, model, vector) VALUES (?1, ?2, ?3)",
@@ -97,18 +125,18 @@ pub(crate) fn keep(index: &Path, from: &str, sent: &[Sent], upto: i64) -> Result
     batch
         .execute(
             "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)",
-            params![mark_key(from), upto.to_string()],
+            params![mark_key(from), format!("{upto} {name}")],
         )
         .map_err(fail)?;
     batch.commit().map_err(fail)
 }
 
-/// How far this PC got with the vectors of the PC `from`.
-pub(crate) fn mark(index: &Path, from: &str) -> i64 {
+/// How far this PC got with the vectors of the PC `from`, and the name of that PC's index then.
+pub(crate) fn mark(index: &Path, from: &str) -> (i64, String) {
     let Ok(connection) = Connection::open(index) else {
-        return 0;
+        return (0, String::new());
     };
-    connection
+    let kept = connection
         .query_row(
             "SELECT value FROM meta WHERE key = ?1",
             [mark_key(from)],
@@ -117,89 +145,175 @@ pub(crate) fn mark(index: &Path, from: &str) -> i64 {
         .optional()
         .ok()
         .flatten()
-        .and_then(|mark| mark.parse().ok())
-        .unwrap_or(0)
+        .unwrap_or_default();
+    let (upto, name) = kept.split_once(' ').unwrap_or((kept.as_str(), ""));
+    (upto.parse().unwrap_or(0), name.to_owned())
 }
 
 fn mark_key(from: &str) -> String {
     format!("vectors_from:{from}")
 }
 
-/// Asks the PC that makes vectors for the ones made since the last this PC got.
-pub(crate) fn ask(linked: &Linked, index: &Path) {
-    let Some(maker) = linked
-        .keeper
-        .watch(VECTORS_JOB)
-        .and_then(|holder| holder.borrow().clone())
-        .filter(|maker| *maker != linked.own)
-    else {
-        return;
-    };
-    let upto = mark(index, &maker);
-    linked
-        .hub
-        .send(&maker, json!({ "kind": "vectors_since", "upto": upto }));
+/// Asks the PC that makes vectors for the ones it made since the last this PC got, one question
+/// at a time.
+#[derive(Debug)]
+pub(crate) struct VectorCopies {
+    linked: Linked,
+    index: PathBuf,
+    asked: Mutex<Option<Instant>>,
 }
 
-/// Asks again every so often, in case the maker made more.
-pub(crate) async fn keep_asking(linked: Linked, index: PathBuf) {
-    let mut every = time::interval(ASK_EVERY);
-    loop {
-        every.tick().await;
-        ask(&linked, &index);
+impl VectorCopies {
+    pub(crate) fn new(linked: Linked, index: PathBuf) -> Arc<Self> {
+        Arc::new(Self {
+            linked,
+            index,
+            asked: Mutex::new(None),
+        })
     }
-}
 
-/// Takes a message about vectors from another PC. Says whether it was one.
-pub(crate) fn hear(linked: &Linked, index: &Path, heard: &Heard) -> bool {
-    match heard.message.get("kind").and_then(Value::as_str) {
-        Some("vectors_since") => {
-            if !linked.keeper.holds(VECTORS_JOB) {
-                return true;
+    async fn ask(self: &Arc<Self>) {
+        let Some(maker) = self
+            .linked
+            .keeper
+            .watch(VECTORS_JOB)
+            .and_then(|holder| holder.borrow().clone())
+            .filter(|maker| *maker != self.linked.own)
+        else {
+            return;
+        };
+        {
+            let mut asked = self.asked.lock().expect("unpoisoned");
+            if asked.is_some_and(|at| at.elapsed() < ANSWER_WAIT) {
+                return;
             }
-            let after = heard
-                .message
-                .get("upto")
-                .and_then(Value::as_i64)
-                .unwrap_or(0);
-            match made_after(index, after) {
-                Ok((sent, upto)) => {
-                    linked.hub.send(
-                        &heard.key,
-                        json!({ "kind": "vectors", "rows": sent, "upto": upto }),
-                    );
+            *asked = Some(Instant::now());
+        }
+        let copies = Arc::clone(self);
+        let from = maker.clone();
+        let Ok((upto, name)) =
+            tokio::task::spawn_blocking(move || mark(&copies.index, &from)).await
+        else {
+            return;
+        };
+        self.linked.hub.send(
+            &maker,
+            json!({ "kind": "vectors_since", "upto": upto, "index": name }),
+        );
+    }
+
+    /// Asks again every so often, in case the maker made more.
+    pub(crate) async fn keep_asking(self: Arc<Self>) {
+        let mut every = time::interval(ASK_EVERY);
+        loop {
+            every.tick().await;
+            self.ask().await;
+        }
+    }
+
+    /// Takes a message about vectors from another PC. Says whether it was one. The work with
+    /// the index happens apart, so other messages do not wait for it.
+    pub(crate) fn hear(self: &Arc<Self>, heard: &Heard) -> bool {
+        let kind = heard.message.get("kind").and_then(Value::as_str);
+        if !matches!(kind, Some("vectors_since" | "vectors")) {
+            return false;
+        }
+        let copies = Arc::clone(self);
+        let heard = heard.clone();
+        tokio::spawn(async move { copies.answer(heard).await });
+        true
+    }
+
+    async fn answer(self: Arc<Self>, heard: Heard) {
+        match heard.message.get("kind").and_then(Value::as_str) {
+            Some("vectors_since") => {
+                if !self.linked.keeper.holds(VECTORS_JOB) {
+                    return;
                 }
-                Err(error) => eprintln!("dotori: vectors could not be read to share: {error}"),
+                let after = heard
+                    .message
+                    .get("upto")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0);
+                let asked = heard
+                    .message
+                    .get("index")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned();
+                let index = self.index.clone();
+                let made =
+                    tokio::task::spawn_blocking(move || made_after(&index, &asked, after)).await;
+                match made {
+                    Ok(Ok((sent, upto, name))) => {
+                        self.linked.hub.send(
+                            &heard.key,
+                            json!({ "kind": "vectors", "rows": sent, "upto": upto, "index": name }),
+                        );
+                    }
+                    Ok(Err(error)) => {
+                        eprintln!("dotori: vectors could not be read to share: {error}")
+                    }
+                    Err(_) => {}
+                }
             }
-            true
-        }
-        Some("vectors") => {
-            let sent: Vec<Sent> = heard
-                .message
-                .get("rows")
-                .and_then(|rows| serde_json::from_value(rows.clone()).ok())
-                .unwrap_or_default();
-            let Some(upto) = heard.message.get("upto").and_then(Value::as_i64) else {
-                return true;
-            };
-            match keep(index, &heard.key, &sent, upto) {
-                Ok(()) if !sent.is_empty() => ask(linked, index),
-                Ok(()) => {}
-                Err(error) => eprintln!(
-                    "dotori: vectors from {} were not kept: {error}",
-                    heard.device
-                ),
+            Some("vectors") => {
+                *self.asked.lock().expect("unpoisoned") = None;
+                let sent: Option<Vec<Sent>> = heard
+                    .message
+                    .get("rows")
+                    .and_then(|rows| serde_json::from_value(rows.clone()).ok());
+                let upto = heard.message.get("upto").and_then(Value::as_i64);
+                let name = heard
+                    .message
+                    .get("index")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned();
+                let (Some(sent), Some(upto)) = (sent, upto) else {
+                    eprintln!("dotori: vectors from {} do not read", heard.device);
+                    return;
+                };
+                let more = !sent.is_empty();
+                let index = self.index.clone();
+                let from = heard.key.clone();
+                let kept =
+                    tokio::task::spawn_blocking(move || keep(&index, &from, &sent, &name, upto))
+                        .await;
+                match kept {
+                    Ok(Ok(())) if more => self.ask().await,
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => {
+                        eprintln!(
+                            "dotori: vectors from {} were not kept: {error}",
+                            heard.device
+                        );
+                    }
+                    Err(_) => {}
+                }
             }
-            true
+            _ => {}
         }
-        _ => false,
+    }
+
+    /// Asks the new maker at once when the job moves.
+    pub(crate) async fn on_maker_change(self: Arc<Self>) {
+        let Some(mut holder) = self.linked.keeper.watch(VECTORS_JOB) else {
+            return;
+        };
+        while holder.changed().await.is_ok() {
+            *self.asked.lock().expect("unpoisoned") = None;
+            self.ask().await;
+        }
     }
 }
 
 /// Tells the MCP server here whether this PC makes vectors now.
 pub(crate) fn write_jobs(jobs: &Path, makes_vectors: bool) {
     let text = json!({ "vectors": makes_vectors }).to_string();
-    if let Err(error) = std::fs::write(jobs, text) {
+    let draft = jobs.with_extension("json.new");
+    let written = std::fs::write(&draft, text).and_then(|()| std::fs::rename(&draft, jobs));
+    if let Err(error) = written {
         eprintln!("dotori: {}: {error}", jobs.display());
     }
 }

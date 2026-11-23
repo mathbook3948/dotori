@@ -515,3 +515,27 @@ fn only_the_pc_holding_the_job_makes_vectors() {
     std::fs::write(&jobs, r#"{"vectors":true}"#).expect("written");
     assert!(makes_vectors(Some(&jobs)));
 }
+
+#[test]
+fn a_copy_made_with_the_makers_newer_model_takes_the_place_of_an_older_vector() {
+    let config = config();
+    record(&config, &[("heard", Some("민지"), Some("회의"))]);
+    let mut index = open_index(&config.index).expect("index");
+    copy_records(&mut index, &config.record).expect("copied records");
+    index
+        .execute_batch(
+            "INSERT INTO vectors (seq, model, vector) VALUES (1, 'old', x'0000803f'); \
+             INSERT INTO vector_log (seq) VALUES (1); \
+             INSERT INTO copied_vectors (record, model, vector) VALUES ('r0001', 'new', x'00000040');",
+        )
+        .expect("held");
+
+    assert!(vectors::merge_copied(&mut index).expect("merged"));
+
+    let mut loaded = vectors::Vectors::default();
+    loaded.load(&index, "new").expect("loaded");
+    assert_eq!(loaded.nearest(&[1.0], 5).expect("compared"), [1]);
+    let mut old = vectors::Vectors::default();
+    old.load(&index, "old").expect("loaded");
+    assert!(old.nearest(&[1.0], 5).expect("compared").is_empty());
+}
