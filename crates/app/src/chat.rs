@@ -67,5 +67,7 @@ pub(crate) fn shown(event: &ToWindow) -> String {
             who,
             text,
         } => format!("[{channel} {place}] {who}: {text}"),
+        ToWindow::Answering { pc, here: true } => format!("(dotori answers on this PC, {pc})"),
+        ToWindow::Answering { pc, here: false } => format!("(dotori answers on {pc})"),
     }
 }

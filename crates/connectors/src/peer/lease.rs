@@ -7,6 +7,8 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
 use std::time::SystemTime;
@@ -147,7 +149,7 @@ impl Book {
             .chain(self.released.get(job).copied())
             .max()
             .unwrap_or(0)
-            + 1;
+            .saturating_add(1);
         self.jobs.insert(
             job.to_owned(),
             Holding {
@@ -178,7 +180,13 @@ impl Book {
             .map(|(job, _)| job.clone())
             .collect();
         for job in &lapsed {
-            self.jobs.remove(job);
+            if let Some(holding) = self.jobs.remove(job) {
+                let mark = self.released.entry(job.clone()).or_default();
+                *mark = (*mark).max(holding.term);
+            }
+        }
+        if !lapsed.is_empty() {
+            self.started = now;
         }
         lapsed
     }
@@ -210,6 +218,7 @@ pub struct Keeper {
     book: Mutex<Book>,
     wanted: BTreeSet<String>,
     told: Mutex<BTreeSet<String>>,
+    stopping: AtomicBool,
     holders: BTreeMap<String, watch::Sender<Option<String>>>,
 }
 
@@ -225,6 +234,7 @@ impl Keeper {
             book: Mutex::new(Book::new(own, Moment::now())),
             wanted: wanted.iter().map(|job| (*job).to_owned()).collect(),
             told: Mutex::new(BTreeSet::new()),
+            stopping: AtomicBool::new(false),
             holders,
         });
         tokio::spawn(Arc::clone(&keeper).keep());
@@ -238,9 +248,21 @@ impl Keeper {
 
     /// Whether this PC still holds `job`. Ask before acting for the job toward the outside.
     pub fn holds(&self, job: &str) -> bool {
-        let mut book = self.book.lock().expect("unpoisoned");
-        book.lapse(Moment::now());
-        book.holds(job)
+        let lapsed = !self
+            .book
+            .lock()
+            .expect("unpoisoned")
+            .lapse(Moment::now())
+            .is_empty();
+        if lapsed {
+            self.after_lapse();
+        }
+        self.book.lock().expect("unpoisoned").holds(job)
+    }
+
+    fn after_lapse(&self) {
+        self.told.lock().expect("unpoisoned").clear();
+        self.step();
     }
 
     /// Takes a message about leases from another PC. Says whether it was one.
@@ -301,6 +323,7 @@ impl Keeper {
 
     /// Lets go of every job this PC holds and tells the others, so one of them takes over at once.
     pub fn release_all(&self) {
+        self.stopping.store(true, Ordering::SeqCst);
         let held = self.book.lock().expect("unpoisoned").held();
         for (job, term) in held {
             self.book.lock().expect("unpoisoned").released(&job, term);
@@ -329,9 +352,16 @@ impl Keeper {
         let mut said = Vec::new();
         {
             let mut book = self.book.lock().expect("unpoisoned");
-            book.lapse(now);
-            for job in &self.wanted {
-                book.claim(job, now, everyone_told);
+            let everyone_told = if book.lapse(now).is_empty() {
+                everyone_told
+            } else {
+                self.told.lock().expect("unpoisoned").clear();
+                self.hub.approved().is_empty()
+            };
+            if !self.stopping.load(Ordering::SeqCst) {
+                for job in &self.wanted {
+                    book.claim(job, now, everyone_told);
+                }
             }
             for (job, term) in book.held() {
                 book.renewed(&job, now);

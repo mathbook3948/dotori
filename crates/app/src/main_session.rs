@@ -58,7 +58,7 @@ enum Target {
 pub(crate) struct Route {
     target: Mutex<Target>,
     linked: Option<Linked>,
-    waiting: Mutex<VecDeque<String>>,
+    waiting: Mutex<VecDeque<(String, Option<String>)>>,
 }
 
 impl Route {
@@ -80,9 +80,15 @@ impl Route {
             Target::Agent(inbox) => Arc::clone(inbox),
             Target::Elsewhere => return,
         };
-        let waiting: Vec<String> = self.waiting.lock().expect("unpoisoned").drain(..).collect();
-        for text in waiting {
-            if let Some(incoming) = app.incoming(text) {
+        let own = self.linked.as_ref().map(|linked| linked.own.clone());
+        let waiting: Vec<(String, Option<String>)> =
+            self.waiting.lock().expect("unpoisoned").drain(..).collect();
+        for (text, origin) in waiting {
+            let incoming = match origin {
+                Some(origin) if Some(&origin) != own.as_ref() => app.heard_elsewhere(text, origin),
+                _ => app.incoming(text),
+            };
+            if let Some(incoming) = incoming {
                 let _ = inbox.push(incoming).await;
             }
         }
@@ -105,15 +111,31 @@ impl Route {
             return;
         };
         let mut waiting = self.waiting.lock().expect("unpoisoned");
-        while let Some(text) = waiting.front() {
-            if !linked
-                .hub
-                .send(&main, json!({ "kind": "owner_said", "text": text }))
-            {
+        while let Some((text, origin)) = waiting.front() {
+            let origin = origin.as_deref().unwrap_or(&linked.own);
+            if !linked.hub.send(
+                &main,
+                json!({ "kind": "owner_said", "text": text, "origin": origin }),
+            ) {
                 return;
             }
             waiting.pop_front();
         }
+    }
+
+    /// Passes on words the owner said on the PC `origin` that reached this PC when it no longer
+    /// ran the main session, or did not run the agent yet.
+    pub(crate) fn forward(&self, text: String, origin: String) {
+        self.wait(text, Some(origin));
+        self.flush();
+    }
+
+    fn wait(&self, text: String, origin: Option<String>) {
+        let mut waiting = self.waiting.lock().expect("unpoisoned");
+        if waiting.len() == WAITING {
+            waiting.pop_front();
+        }
+        waiting.push_back((text, origin));
     }
 }
 
@@ -127,13 +149,7 @@ impl Inbox for Route {
             if let Some(inbox) = agent {
                 return inbox.push(incoming).await;
             }
-            {
-                let mut waiting = self.waiting.lock().expect("unpoisoned");
-                if waiting.len() == WAITING {
-                    waiting.pop_front();
-                }
-                waiting.push_back(incoming.content.as_str().to_owned());
-            }
+            self.wait(incoming.content.as_str().to_owned(), None);
             self.flush();
             Ok(())
         })
@@ -220,10 +236,18 @@ pub(crate) async fn hear(linked: &Linked, app: &AppChannel, route: &Route, heard
             let Some(text) = heard.message.get("text").and_then(Value::as_str) else {
                 return true;
             };
-            if linked.runs_main()
-                && let Some(incoming) = app.heard_elsewhere(text.to_owned(), heard.key.clone())
-            {
-                let _ = route.push(incoming).await;
+            let origin = heard
+                .message
+                .get("origin")
+                .and_then(Value::as_str)
+                .unwrap_or(&heard.key)
+                .to_owned();
+            if linked.runs_main() && route.runs_agent() {
+                if let Some(incoming) = app.heard_elsewhere(text.to_owned(), origin) {
+                    let _ = route.push(incoming).await;
+                }
+            } else {
+                route.forward(text.to_owned(), origin);
             }
             true
         }

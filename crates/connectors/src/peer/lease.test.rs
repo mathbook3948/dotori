@@ -52,6 +52,13 @@ fn a_holder_that_slept_past_its_lease_lets_go() {
 
     assert_eq!(lapsed, ["main"]);
     assert!(!book.holds("main"));
+    let woke = slept(start, TTL + RENEW);
+    assert_eq!(
+        book.claim("main", woke, false),
+        None,
+        "it waits to hear the others again"
+    );
+    assert_eq!(book.claim("main", woke, true), Some(2));
 }
 
 #[test]
@@ -180,4 +187,14 @@ mod linked {
             let _ = std::fs::remove_dir_all(folder);
         }
     }
+}
+
+#[test]
+fn a_huge_term_from_another_pc_cannot_overflow_a_claim() {
+    let start = Moment::now();
+    let mut book = Book::new("b", start);
+    book.heard("main", "a", u64::MAX, start);
+    book.released("main", u64::MAX);
+
+    assert_eq!(book.claim("main", later(start, TTL), false), Some(u64::MAX));
 }

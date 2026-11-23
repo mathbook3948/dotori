@@ -236,3 +236,40 @@ fn a_note_is_kept_on_one_line() {
     );
     assert_eq!(context.lines().count(), 2);
 }
+
+#[tokio::test]
+async fn notes_changed_later_on_another_pc_replace_these_and_older_ones_do_not() {
+    let here = notes();
+    let there = notes();
+    here.heard(&[heard(Role::Owner)]);
+    there.heard(&[heard(Role::Owner)]);
+    here.remember(&json!({ "text": "here first" }))
+        .expect("kept");
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    there
+        .remember(&json!({ "text": "there later" }))
+        .expect("kept");
+    there
+        .remember(&json!({ "text": "and more" }))
+        .expect("kept");
+    let older = here.copy().expect("copied");
+
+    assert!(here.take(&there.copy().expect("copied")).expect("taken"));
+    let context = here.context().expect("notes");
+    assert!(context.contains("[1] there later"), "{context}");
+    assert!(context.contains("[2] and more"), "{context}");
+    assert!(!context.contains("here first"), "{context}");
+    assert!(!there.take(&older).expect("checked"));
+    assert!(!here.take(&there.copy().expect("copied")).expect("same"));
+
+    here.forget(&json!({ "id": 1 })).expect("forgot");
+    assert!(there.take(&here.copy().expect("copied")).expect("taken"));
+    assert_eq!(
+        there.copy().expect("copied").notes,
+        [(
+            2,
+            here.copy().expect("copied").notes[0].1,
+            String::from("and more")
+        )]
+    );
+}

@@ -34,6 +34,7 @@ use tokio::net::TcpStream;
 use tokio::net::tcp::OwnedReadHalf;
 use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::RecvError;
+use tokio::sync::watch;
 use tokio::task::JoinSet;
 use tokio::time;
 
@@ -77,6 +78,9 @@ pub enum ToWindow {
         who: String,
         text: String,
     },
+    /// Which of the owner's PCs answers now. Sent only while PCs are linked, and never kept in
+    /// the conversation.
+    Answering { pc: String, here: bool },
 }
 
 /// The app channel on the daemon's side. Windows connect over local TCP and prove themselves
@@ -93,6 +97,7 @@ struct Hub {
     backlog: Mutex<VecDeque<String>>,
     live: broadcast::Sender<Published>,
     next_id: AtomicU64,
+    answering: watch::Sender<Option<String>>,
 }
 
 /// One line every window shows, and the other PC whose window it came from, if it did.
@@ -117,6 +122,7 @@ impl AppChannel {
                 backlog: Mutex::new(VecDeque::new()),
                 live,
                 next_id: AtomicU64::new(0),
+                answering: watch::channel(None).0,
             }),
         };
         Ok((channel, address))
@@ -138,10 +144,19 @@ impl AppChannel {
         self.hub.live.subscribe()
     }
 
+    /// Tells every window which PC answers now.
+    pub fn answering(&self, pc: String, here: bool) {
+        if let Ok(line) = serde_json::to_string(&ToWindow::Answering { pc, here }) {
+            self.hub.answering.send_replace(Some(line));
+        }
+    }
+
     /// Shows a line another PC's windows were shown. Anything that is not such a line is
     /// passed over.
     pub fn show_line(&self, line: &str) {
-        if serde_json::from_str::<ToWindow>(line).is_ok() {
+        if serde_json::from_str::<ToWindow>(line)
+            .is_ok_and(|shown| !matches!(shown, ToWindow::Answering { .. }))
+        {
             self.hub.publish_line(line.to_owned(), None);
         }
     }
@@ -279,14 +294,32 @@ async fn serve(stream: TcpStream, token: String, hub: Arc<Hub>, inbox: Arc<dyn I
         return;
     }
     let (backlog, mut live) = hub.join();
+    let mut answering = hub.answering.subscribe();
     let sending = async move {
         for line in backlog {
             send(&mut write, &line).await?;
         }
+        let now = answering.borrow_and_update().clone();
+        if let Some(line) = now {
+            send(&mut write, &line).await?;
+        }
         loop {
-            match live.recv().await {
-                Ok(published) => send(&mut write, &published.line).await?,
-                Err(RecvError::Lagged(_) | RecvError::Closed) => return Ok::<(), io::Error>(()),
+            tokio::select! {
+                published = live.recv() => match published {
+                    Ok(published) => send(&mut write, &published.line).await?,
+                    Err(RecvError::Lagged(_) | RecvError::Closed) => {
+                        return Ok::<(), io::Error>(());
+                    }
+                },
+                changed = answering.changed() => {
+                    if changed.is_err() {
+                        return Ok(());
+                    }
+                    let now = answering.borrow_and_update().clone();
+                    if let Some(line) = now {
+                        send(&mut write, &line).await?;
+                    }
+                }
             }
         }
     };

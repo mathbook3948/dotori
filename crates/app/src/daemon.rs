@@ -45,6 +45,7 @@ use crate::main_session::MAIN_JOB;
 use crate::main_session::Route;
 use crate::main_session::gained;
 use crate::main_session::lost;
+use crate::notes;
 use crate::notes::MainTools;
 use crate::notes::Noted;
 use crate::notes::Notes;
@@ -61,6 +62,7 @@ const SUB_SESSION_TURNS: usize = 50;
 const SUB_SESSION_LIMIT: Duration = Duration::from_secs(60 * 60);
 const SETTLE: Duration = Duration::from_secs(1);
 const RELEASE_SENT: Duration = Duration::from_millis(300);
+const FLUSH_EVERY: Duration = Duration::from_secs(2);
 
 /// Runs the agent until Ctrl-C or a terminate signal, with the app channel open for windows.
 pub(crate) async fn run(home: Home) -> Result<(), String> {
@@ -96,7 +98,7 @@ pub(crate) async fn serve(
         notes: Arc::clone(&notes),
     });
     let toolbox: Arc<dyn Toolbox> = Arc::new(MainTools {
-        notes,
+        notes: Arc::clone(&notes),
         shared: toolbox,
     });
     let token = door::token()?;
@@ -111,13 +113,37 @@ pub(crate) async fn serve(
     if let (Some(linked), Some((mut heard, copies))) = (linked.clone(), heard) {
         let app = Arc::clone(&app);
         let route = Arc::clone(&route);
+        tokio::spawn(notes::share(Arc::clone(&notes), Arc::clone(&linked.hub)));
+        let (words_tx, mut words) = mpsc::unbounded_channel::<Heard>();
+        {
+            let linked = linked.clone();
+            let route = Arc::clone(&route);
+            tokio::spawn(async move {
+                while let Some(heard) = words.recv().await {
+                    main_session::hear(&linked, &app, &route, &heard).await;
+                }
+            });
+        }
+        {
+            let route = Arc::clone(&route);
+            tokio::spawn(async move {
+                let mut every = time::interval(FLUSH_EVERY);
+                loop {
+                    every.tick().await;
+                    route.flush();
+                }
+            });
+        }
         tokio::spawn(async move {
             while let Some(heard) = heard.recv().await {
                 linked.keeper.hear(&heard);
+                if notes::hear(&notes, &linked.hub, &heard) {
+                    continue;
+                }
                 if copies.hear(&heard).await {
                     continue;
                 }
-                main_session::hear(&linked, &app, &route, &heard).await;
+                let _ = words_tx.send(heard);
             }
         });
     }
@@ -130,13 +156,18 @@ pub(crate) async fn serve(
             }
         });
     }
-    if let Some(linked) = &linked {
+    if let Some(linked) = linked.clone() {
         let route = Arc::clone(&route);
+        let app = Arc::clone(&app);
         let mut holder = linked.keeper.watch(MAIN_JOB);
         tokio::spawn(async move {
             while let Some(holder) = holder.as_mut() {
                 if holder.changed().await.is_err() {
                     return;
+                }
+                let now = holder.borrow_and_update().clone();
+                if let Some(key) = now {
+                    app.answering(linked.hub.name_of(&key), key == linked.own);
                 }
                 route.flush();
             }
@@ -208,8 +239,8 @@ pub(crate) async fn serve(
             stopped = &mut stop => Some(stopped),
             () = &mut quit => Some(Ok(())),
         };
-        agent.shutdown().await;
         route.elsewhere();
+        agent.shutdown().await;
         match ended {
             Some(stopped) => break stopped,
             None => eprintln!("dotori: another PC runs the assistant now"),

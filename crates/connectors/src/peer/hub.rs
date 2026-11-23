@@ -161,6 +161,23 @@ impl Hub {
         }
     }
 
+    /// What the owner calls the PC with `key`, this one included.
+    pub fn name_of(&self, key: &str) -> String {
+        if key == self.own {
+            return self.config.name.clone();
+        }
+        self.book()
+            .find(key)
+            .map(|peer| {
+                if peer.name.trim().is_empty() {
+                    format!("PC {}", peer.device.get(..6).unwrap_or(&peer.device))
+                } else {
+                    peer.name.clone()
+                }
+            })
+            .unwrap_or_else(|| format!("PC {}", key.get(..6).unwrap_or(key)))
+    }
+
     /// This PC's key, as the others know it.
     pub fn own(&self) -> &str {
         &self.own

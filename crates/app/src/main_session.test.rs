@@ -48,7 +48,7 @@ async fn words_reach_the_agent_while_it_runs_here_and_wait_otherwise() {
         .lock()
         .expect("unpoisoned")
         .iter()
-        .cloned()
+        .map(|(text, _)| text.clone())
         .collect();
     assert_eq!(waiting, ["먼저", "나중"]);
 }
