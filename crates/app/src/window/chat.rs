@@ -195,7 +195,7 @@ impl Focusable for ChatView {
 impl Render for ChatView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(window);
-        let conversation = if self.lines.is_empty() {
+        let conversation = if self.lines.is_empty() && matches!(self.link, LinkState::Connected) {
             empty(&theme).into_any_element()
         } else {
             div()
@@ -339,9 +339,18 @@ fn channel_name(channel: &str) -> String {
 }
 
 fn room_name(place: &str) -> String {
-    match place.split_once('/') {
-        Some((room, _)) => format!("{room} 스레드"),
-        None if place.starts_with('@') => String::from("주인에게만"),
-        None => place.to_owned(),
+    let (room, thread) = match place.split_once('/') {
+        Some((room, _)) => (room, true),
+        None => (place, false),
+    };
+    let named = match room {
+        "@owner" => String::from("주인에게만"),
+        direct if direct.starts_with('D') => String::from("DM"),
+        other => other.to_owned(),
+    };
+    if thread {
+        format!("{named} 스레드")
+    } else {
+        named
     }
 }

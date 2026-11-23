@@ -65,25 +65,29 @@ pub(crate) fn status(color: Rgba, muted: Rgba, words: impl IntoElement) -> Div {
 }
 
 /// Text that wraps only between words. GPUI breaks Korean between any two syllables, so each
-/// word is laid out on its own and lines break at the spaces. A word wider than the line still
-/// wraps inside itself.
+/// word is laid out on its own and lines break at the spaces. Runs of spaces and indentation keep
+/// their width. A word wider than the line still wraps inside itself.
 pub(crate) fn prose(text: &str) -> Div {
     div()
         .flex()
         .flex_col()
         .children(text.split('\n').map(|paragraph| {
-            let words: Vec<SharedString> = paragraph
-                .split(' ')
-                .filter(|word| !word.is_empty())
-                .map(|word| SharedString::from(word.to_owned()))
-                .collect();
-            if words.is_empty() {
+            let paragraph = paragraph.replace('\t', "    ");
+            if paragraph.trim().is_empty() {
                 return div().h(px(10.));
             }
             div()
                 .flex()
                 .flex_wrap()
-                .gap_x(px(4.))
-                .children(words.into_iter().map(|word| div().min_w_0().child(word)))
+                .gap_x(px(SPACE))
+                .children(paragraph.trim_end().split(' ').map(|word| {
+                    if word.is_empty() {
+                        div().w(px(0.))
+                    } else {
+                        div().min_w_0().child(SharedString::from(word.to_owned()))
+                    }
+                }))
         }))
 }
+
+const SPACE: f32 = 4.;
