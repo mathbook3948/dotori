@@ -212,6 +212,7 @@ impl Driver<'_> {
     }
 
     async fn mouse(&self, x: f64, y: f64, clicks: u32, button: &str) -> Result<(), String> {
+        self.page.running.screen.pointer(x, y);
         self.page
             .send(
                 "Input.dispatchMouseEvent",

@@ -8,6 +8,7 @@ mod link;
 mod lock;
 mod notes;
 mod replace;
+mod screen_link;
 mod settings;
 mod tools;
 mod tray;

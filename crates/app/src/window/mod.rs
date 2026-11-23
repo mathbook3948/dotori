@@ -1,6 +1,7 @@
 mod chat;
 mod input;
 mod parts;
+mod screen;
 mod settings;
 mod theme;
 
@@ -23,6 +24,7 @@ use gpui::size;
 
 use crate::home::Home;
 use crate::link;
+use crate::screen_link;
 use crate::window::chat::ChatView;
 use crate::window::settings::SettingsView;
 
@@ -48,7 +50,7 @@ pub(crate) fn run(home: Home, which: Which) -> Result<(), String> {
         cx.bind_keys(input::bindings());
         cx.bind_keys([KeyBinding::new("secondary-q", Quit, None)]);
         let (title, wide, tall) = match which {
-            Which::Chat => ("dotori", 480., 720.),
+            Which::Chat => ("dotori", 560., 760.),
             Which::Settings => ("dotori 설정", 520., 640.),
         };
         let bounds = Bounds::centered(None, size(px(wide), px(tall)), cx);
@@ -68,7 +70,7 @@ pub(crate) fn run(home: Home, which: Which) -> Result<(), String> {
                     let view = cx.new(|cx| {
                         cx.observe_window_appearance(window, |_, _, cx| cx.notify())
                             .detach();
-                        ChatView::new(link::open(home), cx)
+                        ChatView::new(link::open(home.clone()), screen_link::open(home), cx)
                     });
                     window.focus(&view.read(cx).focus_handle(cx));
                     view

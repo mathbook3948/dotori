@@ -14,7 +14,6 @@ fn browser() -> Arc<Browser> {
         executable: std::env::var_os("DOTORI_TEST_CHROME").map(PathBuf::from),
         downloads: base.join("chrome"),
         profile: base.join("profile"),
-        headless: true,
     })
 }
 
@@ -37,7 +36,7 @@ async fn in_page(running: &Running, expression: &str) -> Value {
 fn every_tool_has_a_distinct_name_and_an_object_schema() {
     let tools = browser().tools();
     let names: Vec<&str> = tools.iter().map(|tool| tool.name()).collect();
-    assert_eq!(names, ["browser_run", "browser_read"]);
+    assert_eq!(names, ["browser_run", "browser_read", "browser_ask_owner"]);
     for tool in &tools {
         assert_eq!(tool.input_schema()["type"], "object", "{}", tool.name());
     }
@@ -308,4 +307,59 @@ fn passwords_are_turned_off_and_other_preferences_are_kept() {
     assert_eq!(kept["profile"]["name"], "bot");
     assert_eq!(kept["intl"]["accept_languages"], "ko");
     let _ = std::fs::remove_dir_all(&profile);
+}
+
+#[test]
+fn the_owners_input_becomes_devtools_events() {
+    let (method, click) = owner_event(
+        &json!({ "kind": "mouse", "event": "down", "x": 5, "y": 6, "button": "left", "clicks": 1 }),
+    )
+    .expect("an event");
+    assert_eq!(method, "Input.dispatchMouseEvent");
+    assert_eq!(click["type"], "mousePressed");
+    assert_eq!(click["clickCount"], 1.0);
+    let (_, key) = owner_event(
+        &json!({ "kind": "key", "event": "down", "key": "Enter", "code": 13, "text": "\r" }),
+    )
+    .expect("an event");
+    assert_eq!(key["type"], "keyDown");
+    assert_eq!(key["text"], "\r");
+    let (_, arrow) =
+        owner_event(&json!({ "kind": "key", "event": "down", "key": "ArrowLeft", "code": 37 }))
+            .expect("an event");
+    assert_eq!(arrow["type"], "rawKeyDown");
+    let (method, compose) =
+        owner_event(&json!({ "kind": "compose", "text": "한글" })).expect("an event");
+    assert_eq!(method, "Input.imeSetComposition");
+    assert_eq!(compose["selectionEnd"], 2);
+    assert!(owner_event(&json!({ "kind": "mouse", "event": "fly" })).is_none());
+    let (_, select) = owner_event(
+        &json!({ "kind": "key", "event": "down", "key": "a", "code": 65, "modifiers": 2 }),
+    )
+    .expect("an event");
+    assert_eq!(select["type"], "rawKeyDown");
+    assert_eq!(select["commands"], json!(["selectAll"]));
+    let (_, plain) = owner_event(
+        &json!({ "kind": "key", "event": "down", "key": "a", "code": 65, "text": "a" }),
+    )
+    .expect("an event");
+    assert!(plain.get("commands").is_none());
+}
+
+#[tokio::test]
+async fn asking_the_owner_shows_on_the_screen_and_returns_at_once() {
+    let browser = browser();
+    let tools = browser.tools();
+    assert!(tools[2].call(json!({ "reason": " " })).await.is_err());
+
+    let said = tools[2]
+        .call(json!({ "reason": "Log in to the bank" }))
+        .await
+        .expect("asked");
+
+    assert!(said.contains("Asked the owner"), "{said}");
+    assert_eq!(
+        browser.screen.state.lock().expect("unpoisoned")["asked"],
+        "Log in to the bank"
+    );
 }

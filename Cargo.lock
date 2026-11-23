@@ -1486,6 +1486,7 @@ dependencies = [
  "dotori-mcp",
  "getrandom 0.4.3",
  "gpui",
+ "image",
  "rusqlite",
  "serde",
  "serde_json",

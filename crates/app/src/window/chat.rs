@@ -19,22 +19,32 @@ use tokio::sync::mpsc;
 
 use crate::link::Link;
 use crate::link::Update;
+use crate::screen_link::ScreenLink;
 use crate::window::input::Submit;
 use crate::window::input::TextInput;
 use crate::window::parts::header;
 use crate::window::parts::logo;
 use crate::window::parts::prose;
 use crate::window::parts::status;
+use crate::window::screen::ScreenView;
 use crate::window::theme::Theme;
 
 /// The chat window: the conversation with dotori and the traffic of every other channel.
 pub(crate) struct ChatView {
     lines: Vec<ToWindow>,
+    screen: Entity<ScreenView>,
+    tab: Tab,
     link: LinkState,
     input: Entity<TextInput>,
     say: mpsc::UnboundedSender<String>,
     scroll: ScrollHandle,
     _pump: Task<()>,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Tab {
+    Chat,
+    Browser,
 }
 
 enum LinkState {
@@ -44,8 +54,10 @@ enum LinkState {
 }
 
 impl ChatView {
-    pub(crate) fn new(link: Link, cx: &mut Context<Self>) -> Self {
+    pub(crate) fn new(link: Link, screen: ScreenLink, cx: &mut Context<Self>) -> Self {
         let Link { mut updates, say } = link;
+        let screen = cx.new(|cx| ScreenView::new(screen, cx));
+        cx.observe(&screen, |_, _, cx| cx.notify()).detach();
         let pump = cx.spawn(async move |view, cx| {
             while let Some(update) = updates.recv().await {
                 let applied = view.update(cx, |view, cx| {
@@ -59,6 +71,8 @@ impl ChatView {
         });
         Self {
             lines: Vec::new(),
+            screen,
+            tab: Tab::Chat,
             link: LinkState::Connecting,
             input: cx.new(|cx| TextInput::new("dotori에게 말하기", cx)),
             say,
@@ -97,6 +111,63 @@ impl ChatView {
         if let Some(text) = text {
             let _ = self.say.send(text);
         }
+    }
+
+    fn tabs(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+        let asking = self.screen.read(cx).asking();
+        let tab = |id: &'static str, label: &'static str, which: Tab, cx: &mut Context<Self>| {
+            let chosen = self.tab == which;
+            div()
+                .id(id)
+                .relative()
+                .px_3()
+                .py_1()
+                .rounded_lg()
+                .cursor_pointer()
+                .text_xs()
+                .when(chosen, |tab| {
+                    tab.bg(theme.surface)
+                        .shadow_xs()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme.text)
+                })
+                .when(!chosen, |tab| {
+                    tab.text_color(theme.muted)
+                        .hover(|tab| tab.text_color(theme.text))
+                })
+                .child(label)
+                .when(which == Tab::Browser && asking, |tab| {
+                    tab.child(
+                        div()
+                            .absolute()
+                            .top(px(2.))
+                            .right(px(2.))
+                            .size(px(7.))
+                            .rounded_full()
+                            .bg(theme.warn),
+                    )
+                })
+                .on_click(cx.listener(move |view, _, window, cx| {
+                    view.tab = which;
+                    if which == Tab::Browser {
+                        window.focus(&view.screen.focus_handle(cx));
+                    } else {
+                        window.focus(&view.input.focus_handle(cx));
+                    }
+                    cx.notify();
+                }))
+        };
+        div()
+            .flex()
+            .flex_none()
+            .gap_1()
+            .p_1()
+            .rounded_xl()
+            .bg(theme.canvas)
+            .border_1()
+            .border_color(theme.line)
+            .child(tab("tab-chat", "대화", Tab::Chat, cx))
+            .child(tab("tab-browser", "브라우저", Tab::Browser, cx))
     }
 
     fn status_line(&self, theme: &Theme) -> impl IntoElement {
@@ -214,18 +285,23 @@ impl Render for ChatView {
             .text_sm()
             .line_height(px(21.))
             .on_action(cx.listener(Self::submit))
-            .child(header(&theme, "dotori", self.status_line(&theme)))
-            .child(
-                div()
-                    .id("conversation")
-                    .flex_1()
-                    .overflow_y_scroll()
-                    .track_scroll(&self.scroll)
-                    .px_4()
-                    .py_5()
-                    .child(conversation),
-            )
-            .child(self.composer(&theme, window, cx))
+            .child(header(&theme, "dotori", self.status_line(&theme)).child(self.tabs(&theme, cx)))
+            .when(self.tab == Tab::Chat, |chat| {
+                chat.child(
+                    div()
+                        .id("conversation")
+                        .flex_1()
+                        .overflow_y_scroll()
+                        .track_scroll(&self.scroll)
+                        .px_4()
+                        .py_5()
+                        .child(conversation),
+                )
+                .child(self.composer(&theme, window, cx))
+            })
+            .when(self.tab == Tab::Browser, |chat| {
+                chat.child(div().flex_1().min_h_0().child(self.screen.clone()))
+            })
     }
 }
 

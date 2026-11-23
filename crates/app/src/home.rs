@@ -79,6 +79,11 @@ impl Home {
         self.root.join("work")
     }
 
+    /// How a chat window reaches the browser's screen. The MCP server writes it when it starts.
+    pub(crate) fn screen(&self) -> PathBuf {
+        self.root.join("screen.json")
+    }
+
     pub(crate) fn door(&self) -> PathBuf {
         self.root.join("door.json")
     }

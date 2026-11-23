@@ -7,6 +7,7 @@ mod chrome;
 pub mod fetch;
 pub mod memory;
 mod playwright;
+pub mod screen;
 mod script;
 pub mod server;
 

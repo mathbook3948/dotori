@@ -40,6 +40,7 @@ pub(crate) fn header(theme: &Theme, title: &'static str, under: impl IntoElement
         .child(
             div()
                 .flex()
+                .flex_1()
                 .flex_col()
                 .gap(px(2.))
                 .child(

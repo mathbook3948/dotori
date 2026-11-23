@@ -86,14 +86,13 @@ pub(crate) enum RunnerChoice {
 
 /// Which browser the browser tools drive. Without a path dotori downloads and uses its own
 /// Chrome for Testing, never the browser the owner uses.
-/// Without `headless` the browser shows its window when there is a screen, so the owner can log in.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct BrowserSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) path: Option<PathBuf>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) headless: Option<bool>,
+    #[serde(default, rename = "headless", skip_serializing)]
+    pub(crate) old_headless: Option<bool>,
 }
 
 /// Slack is on when this section is in the file and names the owner. The owner is a Slack user

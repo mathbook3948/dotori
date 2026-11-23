@@ -12,6 +12,7 @@ use tokio::io::BufReader;
 use tokio::process::Child;
 use tokio::process::Command;
 use tokio::sync::Mutex;
+use tokio::sync::mpsc;
 use tokio::time;
 
 use crate::Tool;
@@ -20,6 +21,8 @@ use crate::cdp::Cdp;
 use crate::chrome;
 use crate::fetch;
 use crate::playwright::Driver;
+use crate::screen::Ask;
+use crate::screen::Screen;
 use crate::script;
 use crate::script::run::Native;
 
@@ -31,25 +34,37 @@ const SNAPSHOT: &str = include_str!("snapshot.js");
 const SHOWN: usize = 20_000;
 const CLOSE_WAIT: Duration = Duration::from_secs(10);
 const RUN_WAIT: Duration = Duration::from_secs(100);
+const WIDTH: u32 = 1280;
+const HEIGHT: u32 = 800;
 const WORLD: &str = "dotori";
 
 /// How the browser runs. The profile folder keeps logins between runs. Without an executable,
-/// dotori's own Chrome for Testing in `downloads` is used, fetched there on first use.
+/// dotori's own Chrome for Testing in `downloads` is used, fetched there on first use. The
+/// browser has no window of its own: the owner sees it on the chat window's screen.
 #[derive(Clone, Debug)]
 pub struct BrowserConfig {
     pub executable: Option<PathBuf>,
     pub downloads: PathBuf,
     pub profile: PathBuf,
-    pub headless: bool,
 }
 
 /// One browser shared by every browser tool. It starts on first use and starts again if it died.
-#[derive(Debug)]
 pub struct Browser {
     config: BrowserConfig,
     install: Arc<std::sync::Mutex<Install>>,
     running: Mutex<Option<Running>>,
-    acting: Mutex<()>,
+    acting: Arc<Mutex<()>>,
+    screen: Arc<Screen>,
+    shown: std::sync::Mutex<Option<(Arc<Cdp>, String)>>,
+    owner: Mutex<Option<tokio::sync::OwnedMutexGuard<()>>>,
+}
+
+impl std::fmt::Debug for Browser {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Browser")
+            .field("config", &self.config)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug)]
@@ -66,6 +81,7 @@ pub(crate) struct Running {
     frame: String,
     world: Mutex<Option<i64>>,
     watcher: tokio::task::JoinHandle<()>,
+    pub(crate) screen: Arc<Screen>,
 }
 
 impl Drop for Running {
@@ -84,6 +100,7 @@ impl std::fmt::Debug for Running {
 enum Action {
     Run,
     Read,
+    Ask,
 }
 
 /// One of the browser tools, all driving the same browser.
@@ -95,8 +112,18 @@ pub struct BrowserTool {
 
 impl Browser {
     /// Starts fetching dotori's own browser in the background unless it is there or another one
-    /// is set, so the first page does not wait for the download.
+    /// is set, so the first page does not wait for the download. The browser shows itself on
+    /// `screen` while a chat window watches.
     pub fn new(config: BrowserConfig) -> Arc<Self> {
+        let (screen, asks) = Screen::new();
+        Self::with_screen(config, screen, asks)
+    }
+
+    pub fn with_screen(
+        config: BrowserConfig,
+        screen: Arc<Screen>,
+        asks: mpsc::UnboundedReceiver<Ask>,
+    ) -> Arc<Self> {
         let install = match config
             .executable
             .clone()
@@ -110,17 +137,95 @@ impl Browser {
         if fetching {
             fetch(Arc::clone(&install), config.downloads.clone());
         }
-        Arc::new(Self {
+        let browser = Arc::new(Self {
             config,
             install,
             running: Mutex::new(None),
-            acting: Mutex::new(()),
-        })
+            acting: Arc::new(Mutex::new(())),
+            screen,
+            shown: std::sync::Mutex::new(None),
+            owner: Mutex::new(None),
+        });
+        if tokio::runtime::Handle::try_current().is_ok() {
+            tokio::spawn(Arc::clone(&browser).listen(asks));
+        }
+        browser
+    }
+
+    async fn listen(self: Arc<Self>, mut asks: mpsc::UnboundedReceiver<Ask>) {
+        while let Some(ask) = asks.recv().await {
+            let done = match ask {
+                Ask::Watch(on) => {
+                    if !on && self.owner.lock().await.take().is_some() {
+                        self.screen.update(json!({ "mode": "idle" }));
+                    }
+                    self.cast(on).await
+                }
+                Ask::Take => self.take().await,
+                Ask::Give => {
+                    self.owner.lock().await.take();
+                    self.screen.update(json!({ "mode": "idle", "error": null }));
+                    Ok(())
+                }
+                Ask::Input(input) => {
+                    if self.owner.lock().await.is_some() {
+                        self.owner_input(&input).await
+                    } else {
+                        Ok(())
+                    }
+                }
+            };
+            if let Err(error) = done {
+                self.screen.update(json!({ "error": error }));
+            }
+        }
+    }
+
+    async fn cast(&self, on: bool) -> Result<(), String> {
+        let shown = self.shown.lock().expect("unpoisoned").clone();
+        let Some((cdp, session)) = shown else {
+            return Ok(());
+        };
+        let (method, params) = if on {
+            ("Page.startScreencast", screencast())
+        } else {
+            ("Page.stopScreencast", json!({}))
+        };
+        cdp.send(method, params, Some(&session)).await.map(drop)
+    }
+
+    async fn take(&self) -> Result<(), String> {
+        if self.owner.lock().await.is_some() {
+            self.screen.update(json!({ "mode": "owner" }));
+            return Ok(());
+        }
+        self.screen.update(json!({ "mode": "waiting" }));
+        let held = Arc::clone(&self.acting).lock_owned().await;
+        if let Err(error) = self.page().await {
+            drop(held);
+            self.screen.update(json!({ "mode": "idle" }));
+            return Err(error);
+        }
+        *self.owner.lock().await = Some(held);
+        self.screen
+            .update(json!({ "mode": "owner", "asked": null, "error": null }));
+        Ok(())
+    }
+
+    async fn owner_input(&self, input: &Value) -> Result<(), String> {
+        let shown = self.shown.lock().expect("unpoisoned").clone();
+        let Some((cdp, session)) = shown else {
+            return Ok(());
+        };
+        if let Some((method, params)) = owner_event(input) {
+            cdp.send(method, params, Some(&session)).await?;
+        }
+        Ok(())
     }
 
     /// The tools that drive this browser.
     pub fn tools(self: &Arc<Self>) -> Vec<Box<dyn Tool>> {
-        [Action::Run, Action::Read]
+        [Action::Run, Action::Read, Action::Ask]
             .into_iter()
             .map(|action| {
                 Box::new(BrowserTool {
@@ -207,9 +312,9 @@ impl Browser {
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        if self.config.headless {
-            command.arg("--headless=new");
-        }
+        command
+            .arg("--headless=new")
+            .arg(format!("--window-size={WIDTH},{HEIGHT}"));
         if root() {
             command.arg("--no-sandbox");
         }
@@ -261,7 +366,7 @@ impl Browser {
         let events = cdp
             .events()
             .ok_or("the browser's events are already taken")?;
-        let watcher = tokio::spawn(watch(Arc::clone(&cdp), events));
+        let watcher = tokio::spawn(watch(Arc::clone(&cdp), events, Arc::clone(&self.screen)));
         let page = |method: &'static str, params: Value| {
             let cdp = Arc::clone(&cdp);
             let session = session.clone();
@@ -285,6 +390,10 @@ impl Browser {
             .and_then(Value::as_str)
             .ok_or("the page has no frame")?
             .to_owned();
+        *self.shown.lock().expect("unpoisoned") = Some((Arc::clone(&cdp), session.clone()));
+        if self.screen.watched() {
+            page("Page.startScreencast", screencast()).await?;
+        }
         Ok(Running {
             child,
             cdp,
@@ -292,6 +401,7 @@ impl Browser {
             frame,
             world: Mutex::new(None),
             watcher,
+            screen: Arc::clone(&self.screen),
         })
     }
 }
@@ -375,7 +485,11 @@ pub(crate) fn plain_agent(agent: &str) -> Value {
     })
 }
 
-async fn watch(cdp: Arc<Cdp>, mut events: tokio::sync::mpsc::UnboundedReceiver<Value>) {
+async fn watch(
+    cdp: Arc<Cdp>,
+    mut events: tokio::sync::mpsc::UnboundedReceiver<Value>,
+    screen: Arc<Screen>,
+) {
     while let Some(event) = events.recv().await {
         let session = event.get("sessionId").and_then(Value::as_str);
         let params = event.get("params").cloned().unwrap_or(Value::Null);
@@ -386,6 +500,25 @@ async fn watch(cdp: Arc<Cdp>, mut events: tokio::sync::mpsc::UnboundedReceiver<V
                     Some("alert" | "beforeunload")
                 );
                 Some(("Page.handleJavaScriptDialog", json!({ "accept": accept })))
+            }
+            Some("Page.screencastFrame") => {
+                let meta = |name: &str| {
+                    params
+                        .pointer(&format!("/metadata/{name}"))
+                        .and_then(Value::as_f64)
+                        .unwrap_or(0.0)
+                };
+                if let Some(jpeg) = params.get("data").and_then(Value::as_str) {
+                    screen.frame(jpeg, meta("deviceWidth"), meta("deviceHeight"));
+                }
+                let id = params.get("sessionId").cloned().unwrap_or(Value::Null);
+                Some(("Page.screencastFrameAck", json!({ "sessionId": id })))
+            }
+            Some("Page.frameNavigated") if params.pointer("/frame/parentId").is_none() => {
+                if let Some(url) = params.pointer("/frame/url").and_then(Value::as_str) {
+                    screen.update(json!({ "url": url }));
+                }
+                None
             }
             Some("Fetch.requestPaused") => {
                 let id = params.get("requestId").cloned().unwrap_or(Value::Null);
@@ -417,6 +550,20 @@ pub(crate) fn document_allowed(url: &str) -> Result<(), String> {
 
 impl BrowserTool {
     async fn act(&self, arguments: Value) -> Result<String, String> {
+        if self.action == Action::Ask {
+            let reason = arguments
+                .get("reason")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|reason| !reason.is_empty())
+                .ok_or("`reason` is required")?;
+            self.browser.screen.update(json!({ "asked": reason }));
+            return Ok(String::from(
+                "Asked the owner. They take the browser over from the chat window's browser tab and \
+                 hand it back when done. Do not wait for them: tell the owner what you need, and \
+                 read the page again later.",
+            ));
+        }
         let start = match arguments.get("start_index") {
             None => 0,
             Some(start) => start
@@ -425,7 +572,7 @@ impl BrowserTool {
                 .ok_or("`start_index` must be a whole number from 0")?,
         };
         let script = match self.action {
-            Action::Read => None,
+            Action::Read | Action::Ask => None,
             Action::Run => {
                 let code = arguments
                     .get("code")
@@ -437,7 +584,13 @@ impl BrowserTool {
                 )
             }
         };
+        if self.browser.owner.lock().await.is_some() {
+            return Err(String::from(
+                "the owner is using the browser now; wait until they hand it back",
+            ));
+        }
         let _acting = self.browser.acting.lock().await;
+        self.browser.screen.update(json!({ "mode": "agent" }));
         let running = self.browser.page().await?;
         let page = Page { running: &running };
         let said = match &script {
@@ -466,6 +619,7 @@ impl BrowserTool {
         };
         let broken = !running.cdp.open();
         drop(running);
+        self.browser.screen.update(json!({ "mode": "idle" }));
         if let Err(error) = &shown
             && (broken || error.contains("not found"))
         {
@@ -637,6 +791,7 @@ impl Tool for BrowserTool {
         match self.action {
             Action::Run => "browser_run",
             Action::Read => "browser_read",
+            Action::Ask => "browser_ask_owner",
         }
     }
 
@@ -657,6 +812,11 @@ impl Tool for BrowserTool {
             Action::Read => {
                 "Returns the page now open in the browser, with interactive elements as [n]."
             }
+            Action::Ask => {
+                "Asks the owner to take the browser over in the chat window, such as to log in, \
+                 since dotori never handles passwords. Returns at once; the owner hands it back \
+                 when done."
+            }
         }
     }
 
@@ -672,11 +832,113 @@ impl Tool for BrowserTool {
                 "required": ["code"]
             }),
             Action::Read => json!({ "type": "object", "properties": { "start_index": start } }),
+            Action::Ask => json!({
+                "type": "object",
+                "properties": { "reason": { "type": "string", "description": "What the owner should do, such as `Log in to the bank`." } },
+                "required": ["reason"]
+            }),
         }
     }
 
     fn call(&self, arguments: Value) -> ToolFuture<'_> {
         Box::pin(self.act(arguments))
+    }
+}
+
+fn screencast() -> Value {
+    json!({ "format": "jpeg", "quality": 70, "maxWidth": WIDTH, "maxHeight": HEIGHT, "everyNthFrame": 1 })
+}
+
+/// The DevTools input event for what a chat window sent while the owner holds the browser.
+pub(crate) fn owner_event(input: &Value) -> Option<(&'static str, Value)> {
+    let number = |name: &str| input.get(name).and_then(Value::as_f64).unwrap_or(0.0);
+    let modifiers = input.get("modifiers").and_then(Value::as_i64).unwrap_or(0);
+    match input.get("kind").and_then(Value::as_str)? {
+        "mouse" => {
+            let kind = match input.get("event").and_then(Value::as_str)? {
+                "move" => "mouseMoved",
+                "down" => "mousePressed",
+                "up" => "mouseReleased",
+                _ => return None,
+            };
+            let button = input
+                .get("button")
+                .and_then(Value::as_str)
+                .unwrap_or("none");
+            Some((
+                "Input.dispatchMouseEvent",
+                json!({
+                    "type": kind,
+                    "x": number("x"),
+                    "y": number("y"),
+                    "button": button,
+                    "clickCount": number("clicks").max(if kind == "mouseMoved" { 0.0 } else { 1.0 }),
+                    "modifiers": modifiers
+                }),
+            ))
+        }
+        "wheel" => Some((
+            "Input.dispatchMouseEvent",
+            json!({
+                "type": "mouseWheel",
+                "x": number("x"),
+                "y": number("y"),
+                "deltaX": number("dx"),
+                "deltaY": number("dy"),
+                "modifiers": modifiers
+            }),
+        )),
+        "key" => {
+            let key = input.get("key").and_then(Value::as_str)?;
+            let text = input
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let kind = match (input.get("event").and_then(Value::as_str)?, text.is_empty()) {
+                ("down", true) => "rawKeyDown",
+                ("down", false) => "keyDown",
+                ("up", _) => "keyUp",
+                _ => return None,
+            };
+            let mut event = json!({
+                "type": kind,
+                "key": key,
+                "windowsVirtualKeyCode": number("code"),
+                "modifiers": modifiers
+            });
+            if kind == "keyDown" {
+                event["text"] = json!(text);
+            }
+            let command = match key.to_ascii_lowercase().as_str() {
+                "a" => Some("selectAll"),
+                "c" => Some("copy"),
+                "x" => Some("cut"),
+                "z" if modifiers & 8 != 0 => Some("redo"),
+                "z" => Some("undo"),
+                "y" => Some("redo"),
+                _ => None,
+            };
+            if kind == "rawKeyDown"
+                && modifiers & (2 | 4) != 0
+                && let Some(command) = command
+            {
+                event["commands"] = json!([command]);
+            }
+            Some(("Input.dispatchKeyEvent", event))
+        }
+        "text" => Some((
+            "Input.insertText",
+            json!({ "text": input.get("text").and_then(Value::as_str)? }),
+        )),
+        "compose" => {
+            let text = input.get("text").and_then(Value::as_str)?;
+            let end = text.encode_utf16().count();
+            Some((
+                "Input.imeSetComposition",
+                json!({ "text": text, "selectionStart": end, "selectionEnd": end }),
+            ))
+        }
+        _ => None,
     }
 }
 
