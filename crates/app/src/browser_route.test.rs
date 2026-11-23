@@ -177,3 +177,25 @@ mod linked {
         );
     }
 }
+
+#[tokio::test]
+async fn a_call_the_caller_gave_up_on_is_stopped_and_only_by_that_caller() {
+    let route = BrowserRoute::new(Arc::new(Echo));
+    let task = tokio::spawn(time::sleep(Duration::from_secs(60)));
+    route
+        .running
+        .lock()
+        .expect("unpoisoned")
+        .insert((String::from("a"), 3), task.abort_handle());
+    let from = |key: &str| Heard {
+        key: key.to_owned(),
+        device: key.to_owned(),
+        message: json!({ "kind": "tool_cancel", "id": 3 }),
+    };
+
+    assert!(route.hear(&from("c")));
+    assert!(!task.is_finished());
+    assert!(route.hear(&from("a")));
+
+    assert!(task.await.expect_err("stopped").is_cancelled());
+}

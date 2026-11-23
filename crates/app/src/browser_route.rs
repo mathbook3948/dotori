@@ -41,6 +41,25 @@ pub(crate) struct BrowserRoute {
     linked: OnceLock<Linked>,
     waiting: Mutex<Waiting>,
     next: AtomicU64,
+    running: Mutex<HashMap<(String, u64), tokio::task::AbortHandle>>,
+}
+
+/// Tells the browser's PC to stop a call if the caller stops waiting for it first.
+struct Abandoned<'a> {
+    linked: &'a Linked,
+    pc: &'a str,
+    id: u64,
+    answered: bool,
+}
+
+impl Drop for Abandoned<'_> {
+    fn drop(&mut self) {
+        if !self.answered {
+            self.linked
+                .hub
+                .send(self.pc, json!({ "kind": "tool_cancel", "id": self.id }));
+        }
+    }
 }
 
 impl BrowserRoute {
@@ -50,6 +69,7 @@ impl BrowserRoute {
             linked: OnceLock::new(),
             waiting: Mutex::new(HashMap::new()),
             next: AtomicU64::new(1),
+            running: Mutex::new(HashMap::new()),
         })
     }
 
@@ -100,6 +120,12 @@ impl BrowserRoute {
                 linked.hub.name_of(pc)
             )));
         }
+        let mut abandoned = Abandoned {
+            linked,
+            pc,
+            id,
+            answered: false,
+        };
         let moved = async {
             let Some(mut holder) = linked.keeper.watch(BROWSER_JOB) else {
                 return std::future::pending().await;
@@ -110,7 +136,10 @@ impl BrowserRoute {
         };
         let answer = tokio::select! {
             answer = time::timeout(ANSWER_WAIT, rx) => match answer {
-                Ok(Ok(result)) => result.map_err(failed),
+                Ok(Ok(result)) => {
+                    abandoned.answered = true;
+                    result.map_err(failed)
+                }
                 Ok(Err(_)) => Err(failed(String::from("the browser's PC stopped answering"))),
                 Err(_) => Err(failed(String::from("the browser's PC did not answer in time"))),
             },
@@ -126,9 +155,34 @@ impl BrowserRoute {
     pub(crate) fn hear(self: &Arc<Self>, heard: &Heard) -> bool {
         match heard.message.get("kind").and_then(Value::as_str) {
             Some("tool_call") => {
+                let Some(id) = heard.message.get("id").and_then(Value::as_u64) else {
+                    return true;
+                };
                 let route = Arc::clone(self);
-                let heard = heard.clone();
-                tokio::spawn(async move { route.answer(heard).await });
+                let call = heard.clone();
+                let task = tokio::spawn(async move {
+                    let key = (call.key.clone(), id);
+                    route.answer(call).await;
+                    route.running.lock().expect("unpoisoned").remove(&key);
+                });
+                if !task.is_finished() {
+                    self.running
+                        .lock()
+                        .expect("unpoisoned")
+                        .insert((heard.key.clone(), id), task.abort_handle());
+                }
+                true
+            }
+            Some("tool_cancel") => {
+                if let Some(id) = heard.message.get("id").and_then(Value::as_u64)
+                    && let Some(task) = self
+                        .running
+                        .lock()
+                        .expect("unpoisoned")
+                        .remove(&(heard.key.clone(), id))
+                {
+                    task.abort();
+                }
                 true
             }
             Some("tool_result") => {

@@ -256,9 +256,8 @@ pub(crate) async fn serve(
                     return;
                 }
                 let now = holder.borrow_and_update().clone();
-                if let Some(key) = now {
-                    app.browser_at(linked.hub.name_of(&key), key == linked.own);
-                }
+                let key = now.unwrap_or_else(|| linked.own.clone());
+                app.browser_at(linked.hub.name_of(&key), key == linked.own);
             }
         });
     }
