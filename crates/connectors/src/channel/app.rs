@@ -120,6 +120,9 @@ pub enum ToWindow {
     /// Which of the owner's PCs holds the browser now. Sent only while PCs are linked, and never
     /// kept in the conversation.
     BrowserAt { pc: String, here: bool },
+    /// Everything before this came from the backlog, and what follows happens now. Sent once to
+    /// each window, so it can let new lines move in without moving the history.
+    Live,
 }
 
 /// The app channel on the daemon's side. Windows connect over local TCP and prove themselves
@@ -211,7 +214,10 @@ impl AppChannel {
         if serde_json::from_str::<ToWindow>(line).is_ok_and(|shown| {
             !matches!(
                 shown,
-                ToWindow::Answering { .. } | ToWindow::Alone | ToWindow::BrowserAt { .. }
+                ToWindow::Answering { .. }
+                    | ToWindow::Alone
+                    | ToWindow::BrowserAt { .. }
+                    | ToWindow::Live
             )
         }) {
             self.hub.publish_line(line.to_owned(), None);
@@ -417,6 +423,9 @@ async fn serve(stream: TcpStream, token: String, hub: Arc<Hub>, inbox: Arc<dyn I
         }
         let now = browser.borrow_and_update().clone();
         if let Some(line) = now {
+            send(&mut write, &line).await?;
+        }
+        if let Ok(line) = serde_json::to_string(&ToWindow::Live) {
             send(&mut write, &line).await?;
         }
         loop {

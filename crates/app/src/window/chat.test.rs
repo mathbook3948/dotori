@@ -204,3 +204,125 @@ fn the_owner_allows_or_declines_a_call_from_its_card(cx: &mut TestAppContext) {
         assert_eq!(view.decided.get(&7), Some(&Some(true)));
     });
 }
+
+fn owner(text: &str) -> Update {
+    Update::Event(ToWindow::Owner {
+        text: text.to_owned(),
+        at: 0,
+    })
+}
+
+fn reply(text: &str) -> Update {
+    Update::Event(ToWindow::Reply {
+        text: text.to_owned(),
+        at: 0,
+    })
+}
+
+#[gpui::test]
+fn only_what_dotori_says_now_moves_in_and_the_history_stays_still(cx: &mut TestAppContext) {
+    let (view, cx, wired) = open(cx);
+    for update in [
+        Update::Connected,
+        owner("어제 한 말"),
+        reply("어제 답"),
+        Update::Event(ToWindow::Live),
+        owner("지금 한 말"),
+        reply("지금 답"),
+    ] {
+        wired.updates.send(update).expect("sent");
+    }
+    cx.run_until_parked();
+
+    view.read_with(cx, |view, _| {
+        assert_eq!(view.lines.len(), 4);
+        let moving: Vec<usize> = view.entered.keys().copied().collect();
+        assert_eq!(moving, [3], "only the reply that came now moves in");
+    });
+}
+
+#[gpui::test]
+fn dotori_shows_it_works_until_it_answers(cx: &mut TestAppContext) {
+    let (view, cx, wired) = open(cx);
+    for update in [Update::Connected, owner("어제 한 말")] {
+        wired.updates.send(update).expect("sent");
+    }
+    cx.run_until_parked();
+    view.read_with(cx, |view, _| {
+        assert!(!view.shows_working(), "history waits on nothing")
+    });
+
+    for update in [Update::Event(ToWindow::Live), owner("일정 정리해 줘")] {
+        wired.updates.send(update).expect("sent");
+    }
+    cx.run_until_parked();
+    view.read_with(cx, |view, _| assert!(view.shows_working()));
+
+    wired.updates.send(reply("정리했어요")).expect("sent");
+    cx.run_until_parked();
+    view.read_with(cx, |view, _| assert!(!view.shows_working()));
+}
+
+#[gpui::test]
+fn the_header_says_nothing_while_things_work(cx: &mut TestAppContext) {
+    let (view, cx, wired) = open(cx);
+    wired.updates.send(Update::Connected).expect("sent");
+    cx.run_until_parked();
+    view.read_with(cx, |view, _| assert_eq!(view.notice(), None));
+
+    let answering = |here| {
+        Update::Event(ToWindow::Answering {
+            pc: String::from("회사 PC"),
+            here,
+        })
+    };
+    wired.updates.send(answering(true)).expect("sent");
+    cx.run_until_parked();
+    view.read_with(cx, |view, _| {
+        assert_eq!(view.notice(), None, "this PC answers")
+    });
+
+    wired.updates.send(answering(false)).expect("sent");
+    cx.run_until_parked();
+    view.read_with(cx, |view, _| {
+        assert_eq!(view.notice().as_deref(), Some("지금은 회사 PC에서 답해요"))
+    });
+
+    wired
+        .updates
+        .send(Update::Down(String::from("dotori is not running")))
+        .expect("sent");
+    cx.run_until_parked();
+    view.read_with(cx, |view, _| {
+        assert!(
+            view.notice()
+                .is_some_and(|words| words.contains("꺼져 있어요"))
+        )
+    });
+}
+
+#[gpui::test]
+fn a_message_shows_its_copy_action_while_the_pointer_rests_on_it(cx: &mut TestAppContext) {
+    let (view, cx, wired) = open(cx);
+    for update in [Update::Connected, reply("복사할 답")] {
+        wired.updates.send(update).expect("sent");
+    }
+    cx.run_until_parked();
+    assert!(
+        cx.debug_bounds("copy-0").is_none(),
+        "hidden until the pointer comes"
+    );
+
+    view.update(cx, |view, cx| {
+        view.hovered = Some(0);
+        cx.notify();
+    });
+    cx.run_until_parked();
+    click(cx, "copy-0");
+
+    assert_eq!(
+        cx.read_from_clipboard().and_then(|item| item.text()),
+        Some(String::from("복사할 답"))
+    );
+    view.read_with(cx, |view, _| assert_eq!(view.copied, Some(0)));
+}

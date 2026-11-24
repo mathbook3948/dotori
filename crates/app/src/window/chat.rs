@@ -1,24 +1,30 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::time::Duration;
+use std::time::Instant;
 
 use dotori_connectors::channel::app::FromWindow;
 use dotori_connectors::channel::app::ToWindow;
+use gpui::AnimationElement;
+use gpui::AnimationExt;
 use gpui::AnyElement;
 use gpui::App;
 use gpui::ClickEvent;
 use gpui::ClipboardItem;
 use gpui::Context;
+use gpui::Div;
 use gpui::Entity;
 use gpui::FocusHandle;
 use gpui::Focusable;
 use gpui::FontWeight;
 use gpui::MouseButton;
+use gpui::Pixels;
 use gpui::ScrollHandle;
 use gpui::SharedString;
 use gpui::Task;
 use gpui::Window;
 use gpui::div;
+use gpui::point;
 use gpui::prelude::*;
 use gpui::px;
 use gpui::relative;
@@ -30,11 +36,17 @@ use crate::link::Update;
 use crate::screen_link::ScreenLink;
 use crate::window::input::Submit;
 use crate::window::input::TextInput;
+use crate::window::motion::CROSS_FADE;
+use crate::window::motion::FOLLOW;
+use crate::window::motion::HOVER;
+use crate::window::motion::MESSAGE_ENTER;
+use crate::window::motion::RISE;
+use crate::window::motion::WORKING;
+use crate::window::motion::breath;
 use crate::window::parts::MONO;
 use crate::window::parts::header;
 use crate::window::parts::logo;
 use crate::window::parts::prose;
-use crate::window::parts::status;
 use crate::window::rich::rich;
 use crate::window::screen::ScreenView;
 use crate::window::theme::Theme;
@@ -44,6 +56,9 @@ use crate::window::when::today;
 
 const COPIED_FOR: Duration = Duration::from_millis(1500);
 const SHOWN_VALUE: usize = 600;
+const WORKING_SHOWN_AT_MOST: Duration = Duration::from_secs(120);
+const BOTTOM_SLACK: f32 = 8.;
+const TURN_SPACE: f32 = 18.;
 
 /// The chat window: the conversation with dotori and the traffic of every other channel.
 pub(crate) struct ChatView {
@@ -62,6 +77,11 @@ pub(crate) struct ChatView {
     decided: HashMap<u64, Option<bool>>,
     clicked: HashSet<u64>,
     whole: HashSet<u64>,
+    live: bool,
+    entered: HashMap<usize, Instant>,
+    follow: Option<(Pixels, Instant)>,
+    working: Option<Instant>,
+    switched: Option<Instant>,
     _uncopy: Option<Task<()>>,
     _pump: Task<()>,
 }
@@ -110,13 +130,18 @@ impl ChatView {
             decided: HashMap::new(),
             clicked: HashSet::new(),
             whole: HashSet::new(),
+            live: false,
+            entered: HashMap::new(),
+            follow: None,
+            working: None,
+            switched: None,
             _uncopy: None,
             _pump: pump,
         }
     }
 
     fn apply(&mut self, update: Update) {
-        match update {
+        let event = match update {
             Update::Connected => {
                 self.lines.clear();
                 self.copied = None;
@@ -126,32 +151,85 @@ impl ChatView {
                 self.whole.clear();
                 self.answering = None;
                 self.browser_at = None;
+                self.live = false;
+                self.entered.clear();
+                self.follow = None;
+                self.working = None;
                 self.link = LinkState::Connected;
-            }
-            Update::Event(ToWindow::Answering { pc, here }) => {
-                self.answering = Some((pc, here));
                 return;
             }
-            Update::Event(ToWindow::Alone) => {
-                self.answering = None;
+            Update::Down(reason) => {
+                self.link = LinkState::Down(reason);
+                self.working = None;
                 return;
             }
-            Update::Event(ToWindow::Decided { id, ok }) => {
+            Update::Event(event) => event,
+        };
+        match event {
+            ToWindow::Answering { pc, here } => self.answering = Some((pc, here)),
+            ToWindow::Alone => self.answering = None,
+            ToWindow::Decided { id, ok } => {
                 self.decided.insert(id, Some(ok));
-                return;
             }
-            Update::Event(ToWindow::Lapsed { id }) => {
+            ToWindow::Lapsed { id } => {
                 self.decided.insert(id, None);
-                return;
             }
-            Update::Event(ToWindow::BrowserAt { pc, here }) => {
-                self.browser_at = Some((pc, here));
-                return;
+            ToWindow::BrowserAt { pc, here } => self.browser_at = Some((pc, here)),
+            ToWindow::Live => {
+                self.live = true;
+                self.scroll.scroll_to_bottom();
             }
-            Update::Down(reason) => self.link = LinkState::Down(reason),
-            Update::Event(event) => self.lines.push(event),
+            event => self.show(event),
         }
-        self.scroll.scroll_to_bottom();
+    }
+
+    fn show(&mut self, event: ToWindow) {
+        if !self.live {
+            self.lines.push(event);
+            self.scroll.scroll_to_bottom();
+            return;
+        }
+        let now = Instant::now();
+        let owner = matches!(event, ToWindow::Owner { .. });
+        match event {
+            ToWindow::Owner { .. } => self.working = Some(now),
+            ToWindow::Reply { .. } | ToWindow::Ask { .. } => self.working = None,
+            _ => {}
+        }
+        if !owner {
+            self.entered.insert(self.lines.len(), now);
+        }
+        if owner || self.follow.is_some() || self.at_bottom() {
+            self.follow = Some((self.scroll.offset().y, now));
+        }
+        self.lines.push(event);
+    }
+
+    fn at_bottom(&self) -> bool {
+        let end = self.scroll.max_offset().height;
+        -self.scroll.offset().y >= end - px(BOTTOM_SLACK)
+    }
+
+    fn step_follow(&mut self) -> bool {
+        let Some((from, at)) = self.follow else {
+            return false;
+        };
+        let elapsed = at.elapsed();
+        if !FOLLOW.moving(elapsed) {
+            self.follow = None;
+            self.scroll.scroll_to_bottom();
+            return false;
+        }
+        let to = -self.scroll.max_offset().height;
+        let x = self.scroll.offset().x;
+        self.scroll
+            .set_offset(point(x, from + (to - from) * FOLLOW.at(elapsed)));
+        true
+    }
+
+    fn shows_working(&self) -> bool {
+        self.working
+            .is_some_and(|at| at.elapsed() < WORKING_SHOWN_AT_MOST)
     }
 
     fn submit(&mut self, _: &Submit, _: &mut Window, cx: &mut Context<Self>) {
@@ -194,24 +272,22 @@ impl ChatView {
             return empty(theme).into_any_element();
         }
         let marks = marks(&self.lines, &self.zone, today(&self.zone));
-        let mut rows = Vec::with_capacity(self.lines.len());
-        let mut spaced = false;
+        let mut rows = Vec::with_capacity(self.lines.len() + 1);
         for (n, (event, mark)) in self.lines.iter().zip(&marks).enumerate() {
             if let Some(day) = &mark.day {
                 rows.push(day_line(theme, day).into_any_element());
-                spaced = false;
             }
             let Some(row) = self.line(theme, n, event, mark, cx) else {
                 continue;
             };
-            rows.push(
-                div()
-                    .when(spaced, |row| row.pt_3())
-                    .when(!spaced && n > 0, |row| row.pt_1())
-                    .child(row)
-                    .into_any_element(),
-            );
-            spaced = mark.time.is_some();
+            let row = match self.entered.get(&n) {
+                Some(at) => entering(div().child(row), MESSAGE_ENTER.at(at.elapsed())),
+                None => div().child(row),
+            };
+            rows.push(row.into_any_element());
+        }
+        if self.shows_working() {
+            rows.push(working(theme, self.lines.len()).into_any_element());
         }
         div().flex().flex_col().children(rows).into_any_element()
     }
@@ -222,29 +298,30 @@ impl ChatView {
         n: usize,
         text: &str,
         mark: &Mark,
-        copy_first: bool,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement + use<> {
+    ) -> Option<AnimationElement<Div>> {
         let copied = self.copied == Some(n);
+        if !copied && self.hovered != Some(n) {
+            return None;
+        }
         let text = text.to_owned();
-        let copy = (copied || self.hovered == Some(n)).then(|| {
-            div()
-                .id(("copy", n))
-                .px_1p5()
-                .rounded_md()
-                .text_size(px(11.))
-                .line_height(px(16.))
-                .cursor_pointer()
-                .when(copied, |copy| copy.text_color(theme.text))
-                .when(!copied, |copy| {
-                    copy.text_color(theme.muted)
-                        .hover(|copy| copy.bg(theme.line).text_color(theme.text))
-                })
-                .child(if copied { "복사했어요" } else { "복사" })
-                .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
-                    view.copy(n, text.clone(), cx);
-                }))
-        });
+        let copy = div()
+            .id(("copy", n))
+            .debug_selector(move || format!("copy-{n}"))
+            .px_1p5()
+            .rounded_md()
+            .text_size(px(11.))
+            .line_height(px(16.))
+            .cursor_pointer()
+            .when(copied, |copy| copy.text_color(theme.text))
+            .when(!copied, |copy| {
+                copy.text_color(theme.muted)
+                    .hover(|copy| copy.bg(theme.bubble).text_color(theme.text))
+            })
+            .child(if copied { "복사했어요" } else { "복사" })
+            .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                view.copy(n, text.clone(), cx);
+            }));
         let time = mark.time.clone().map(|time| {
             div()
                 .text_size(px(11.))
@@ -252,19 +329,33 @@ impl ChatView {
                 .text_color(theme.muted)
                 .child(time)
         });
-        let (before, after) = if copy_first {
-            (copy, None)
-        } else {
-            (None, copy)
-        };
+        Some(
+            div()
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap_0p5()
+                .children(time)
+                .child(copy)
+                .with_animation(("meta", n), HOVER.animation(), |meta, shown| {
+                    meta.opacity(shown)
+                }),
+        )
+    }
+
+    fn under(
+        &self,
+        theme: &Theme,
+        n: usize,
+        text: &str,
+        mark: &Mark,
+        cx: &mut Context<Self>,
+    ) -> Div {
         div()
             .flex()
-            .flex_none()
+            .h(px(TURN_SPACE))
             .items_center()
-            .gap_0p5()
-            .children(before)
-            .children(time)
-            .children(after)
+            .children(self.meta(theme, n, text, mark, cx))
     }
 
     fn line(
@@ -279,56 +370,46 @@ impl ChatView {
             ToWindow::Answering { .. }
             | ToWindow::Alone
             | ToWindow::BrowserAt { .. }
+            | ToWindow::Live
             | ToWindow::Decided { .. }
             | ToWindow::Lapsed { .. } => {
                 return None;
             }
             ToWindow::Ask {
                 id, tool, input, ..
-            } => self.ask_card(theme, n, (*id, tool, input), mark, cx),
+            } => self
+                .ask_card(theme, n, (*id, tool, input), mark, cx)
+                .pb(px(TURN_SPACE)),
             ToWindow::Owner { text, .. } => div()
                 .flex()
-                .justify_end()
+                .flex_col()
                 .items_end()
-                .gap_1()
-                .child(self.meta(theme, n, text, mark, true, cx))
                 .child(
                     div()
                         .max_w(relative(0.8))
                         .px_3p5()
                         .py_2()
                         .rounded_2xl()
-                        .rounded_br_md()
-                        .bg(theme.primary)
-                        .text_color(theme.on_primary)
+                        .bg(theme.bubble)
+                        .text_color(theme.text)
                         .child(prose(text)),
-                ),
+                )
+                .child(self.under(theme, n, text, mark, cx).justify_end()),
             ToWindow::Reply { text, .. } => div()
                 .flex()
                 .items_start()
-                .gap_2()
-                .child(logo(theme, 26.))
+                .gap(px(10.))
+                .child(div().flex_none().pt(px(2.)).child(logo(theme, 20.)))
                 .child(
                     div()
                         .flex()
+                        .flex_col()
                         .flex_1()
                         .min_w_0()
-                        .items_end()
-                        .gap_1()
-                        .child(
-                            div()
-                                .max_w(relative(0.8))
-                                .px_3p5()
-                                .py_2()
-                                .rounded_2xl()
-                                .rounded_tl_md()
-                                .bg(theme.surface)
-                                .border_1()
-                                .border_color(theme.line)
-                                .shadow_xs()
-                                .child(rich(text, theme)),
-                        )
-                        .child(self.meta(theme, n, text, mark, false, cx)),
+                        .text_size(px(15.))
+                        .line_height(px(24.))
+                        .child(rich(text, theme))
+                        .child(self.under(theme, n, text, mark, cx)),
                 ),
             ToWindow::Traffic {
                 channel,
@@ -336,106 +417,7 @@ impl ChatView {
                 who,
                 text,
                 ..
-            } => {
-                let (mut status, mut body) = if channel == "decision" {
-                    decision_shown(text)
-                } else {
-                    (None, text.clone())
-                };
-                let mut streams = Vec::new();
-                if place == "run_shell"
-                    && let Some((_, tone)) = &status
-                    && let Some(shell) = shell_shown(*tone == Tone::Ok, &body)
-                {
-                    status = Some(shell.status);
-                    streams = shell.streams;
-                    body = String::new();
-                }
-                let room = match own_tool(place) {
-                    Some(own) => own.to_owned(),
-                    None => room_name(place),
-                };
-                let streams = streams.into_iter().map(|(label, output)| {
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .child(div().text_xs().text_color(theme.muted).child(label))
-                        .child(
-                            div()
-                                .px_3()
-                                .py_2()
-                                .rounded_lg()
-                                .bg(theme.surface)
-                                .font_family(MONO)
-                                .text_sm()
-                                .child(prose(&output)),
-                        )
-                });
-                let pill = status.map(|(words, tone)| {
-                    let (ink, soft) = match tone {
-                        Tone::Ok => (theme.ok, theme.ok_soft),
-                        Tone::Warn => (theme.warn, theme.warn_soft),
-                        Tone::Danger => (theme.danger, theme.danger_soft),
-                        Tone::Quiet => (theme.muted, theme.canvas),
-                    };
-                    div().flex().child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_1p5()
-                            .px_2p5()
-                            .py_0p5()
-                            .rounded_full()
-                            .bg(soft)
-                            .text_color(ink)
-                            .text_xs()
-                            .font_weight(FontWeight::MEDIUM)
-                            .child(div().size(px(6.)).rounded_full().bg(ink))
-                            .child(words),
-                    )
-                });
-                div().flex().child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .w_full()
-                        .px_3()
-                        .py_2()
-                        .rounded_xl()
-                        .bg(theme.bubble)
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap_2()
-                                .text_xs()
-                                .text_color(theme.muted)
-                                .child(
-                                    div()
-                                        .px_1p5()
-                                        .rounded_sm()
-                                        .border_1()
-                                        .border_color(theme.muted)
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .child(SharedString::from(channel_name(channel))),
-                                )
-                                .child(SharedString::from(room))
-                                .child(div().size(px(3.)).rounded_full().bg(theme.muted))
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .font_weight(FontWeight::MEDIUM)
-                                        .child(SharedString::from(who.clone())),
-                                )
-                                .child(self.meta(theme, n, text, mark, true, cx)),
-                        )
-                        .children(pill)
-                        .when(!body.trim().is_empty(), |line| line.child(prose(&body)))
-                        .children(streams),
-                )
-            }
+            } => self.traffic(theme, n, (channel, place, who, text), mark, cx),
         };
         Some(
             row.id(("line", n))
@@ -451,6 +433,117 @@ impl ChatView {
         )
     }
 
+    fn traffic(
+        &self,
+        theme: &Theme,
+        n: usize,
+        (channel, place, who, text): (&str, &str, &str, &str),
+        mark: &Mark,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let (mut status, mut body) = if channel == "decision" {
+            decision_shown(text)
+        } else {
+            (None, text.to_owned())
+        };
+        let mut streams = Vec::new();
+        if place == "run_shell"
+            && let Some((_, tone)) = &status
+            && let Some(shell) = shell_shown(*tone == Tone::Ok, &body)
+        {
+            status = Some(shell.status);
+            streams = shell.streams;
+            body = String::new();
+        }
+        let room = match own_tool(place) {
+            Some(own) => own.to_owned(),
+            None => room_name(place),
+        };
+        let said = !body.trim().is_empty() || !streams.is_empty() || status.is_some();
+        let streams = streams.into_iter().map(|(label, output)| {
+            div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(div().text_xs().text_color(theme.muted).child(label))
+                .child(
+                    div()
+                        .px_3()
+                        .py_2()
+                        .rounded_lg()
+                        .bg(theme.canvas)
+                        .font_family(MONO)
+                        .text_size(px(12.5))
+                        .line_height(px(19.))
+                        .child(prose(&output)),
+                )
+        });
+        let pill = status.map(|(words, tone)| {
+            let (ink, soft) = match tone {
+                Tone::Ok => (theme.ok, theme.ok_soft),
+                Tone::Warn => (theme.warn, theme.warn_soft),
+                Tone::Danger => (theme.danger, theme.danger_soft),
+                Tone::Quiet => (theme.muted, theme.canvas),
+            };
+            div().flex().child(
+                div()
+                    .px_2p5()
+                    .py_0p5()
+                    .rounded_full()
+                    .bg(soft)
+                    .text_color(ink)
+                    .text_xs()
+                    .font_weight(FontWeight::MEDIUM)
+                    .child(words),
+            )
+        });
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .pb(px(TURN_SPACE))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .h(px(18.))
+                    .text_xs()
+                    .text_color(theme.muted)
+                    .child(
+                        div()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(SharedString::from(channel_name(channel))),
+                    )
+                    .child(SharedString::from(room))
+                    .child(
+                        div()
+                            .font_weight(FontWeight::MEDIUM)
+                            .child(SharedString::from(who.to_owned())),
+                    )
+                    .child(div().flex_1())
+                    .children(self.meta(theme, n, text, mark, cx)),
+            )
+            .when(said, |traffic| {
+                traffic.child(
+                    div().flex().child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_1p5()
+                            .max_w(relative(0.8))
+                            .px_3p5()
+                            .py_2()
+                            .rounded_xl()
+                            .bg(theme.surface)
+                            .children(pill)
+                            .when(!body.trim().is_empty(), |line| line.child(prose(&body)))
+                            .children(streams),
+                    ),
+                )
+            })
+    }
+
     fn ask_card(
         &self,
         theme: &Theme,
@@ -464,8 +557,14 @@ impl ChatView {
         let (fields, cut) = asked_fields(tool, input, self.whole.contains(&id));
         let clicked = self.clicked.contains(&id);
         let decided = self.decided.get(&id).copied();
+        let waiting = decided.is_none();
+        let fill = if waiting {
+            theme.warn_soft
+        } else {
+            theme.surface
+        };
+        let inner = if waiting { theme.surface } else { theme.canvas };
         let button = |key: &'static str, label: &'static str, ok: bool, cx: &mut Context<Self>| {
-            let main = ok;
             div()
                 .id(SharedString::from(format!("{key}-{id}")))
                 .debug_selector(|| format!("{key}-{id}"))
@@ -474,18 +573,17 @@ impl ChatView {
                 .rounded_lg()
                 .cursor_pointer()
                 .font_weight(FontWeight::SEMIBOLD)
-                .when(main, |button| {
+                .when(ok, |button| {
                     button
                         .bg(theme.primary)
                         .text_color(theme.on_primary)
                         .hover(|button| button.bg(theme.primary_hover))
                 })
-                .when(!main, |button| {
+                .when(!ok, |button| {
                     button
-                        .border_1()
-                        .border_color(theme.line)
-                        .text_color(theme.muted)
-                        .hover(|button| button.bg(theme.canvas).text_color(theme.text))
+                        .bg(theme.surface)
+                        .text_color(theme.text)
+                        .hover(|button| button.bg(theme.bubble))
                 })
                 .child(label)
                 .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
@@ -495,43 +593,28 @@ impl ChatView {
                     cx.notify();
                 }))
         };
-        let footer = match decided {
-            Some(state) => {
-                let (ink, soft, words) = match state {
-                    Some(true) => (theme.ok, theme.ok_soft, "허락했어요"),
-                    Some(false) => (theme.muted, theme.canvas, "거절했어요"),
-                    None => (
-                        theme.warn,
-                        theme.warn_soft,
-                        "이제 할 수 없어요. 다시 부탁해 주세요",
-                    ),
-                };
-                div().flex().child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_1p5()
-                        .px_2p5()
-                        .py_0p5()
-                        .rounded_full()
-                        .bg(soft)
-                        .text_color(ink)
-                        .text_xs()
-                        .font_weight(FontWeight::MEDIUM)
-                        .child(div().size(px(6.)).rounded_full().bg(ink))
-                        .child(words),
-                )
-            }
-            None if clicked => div().flex().child(
+        let pill = |ink, soft, words: &'static str| {
+            div().flex().child(
                 div()
                     .px_2p5()
                     .py_0p5()
                     .rounded_full()
-                    .bg(theme.canvas)
-                    .text_color(theme.muted)
+                    .bg(soft)
+                    .text_color(ink)
                     .text_xs()
-                    .child("처리하는 중이에요"),
+                    .font_weight(FontWeight::MEDIUM)
+                    .child(words),
+            )
+        };
+        let footer = match decided {
+            Some(Some(true)) => pill(theme.ok, theme.ok_soft, "허락했어요"),
+            Some(Some(false)) => pill(theme.muted, theme.canvas, "거절했어요"),
+            Some(None) => pill(
+                theme.warn,
+                theme.warn_soft,
+                "이제 할 수 없어요. 다시 부탁해 주세요",
             ),
+            None if clicked => pill(theme.muted, theme.surface, "처리하는 중이에요"),
             None => div()
                 .flex()
                 .items_center()
@@ -566,33 +649,19 @@ impl ChatView {
                 .px_4()
                 .py_3()
                 .rounded_xl()
-                .bg(theme.surface)
-                .border_1()
-                .border_color(if decided.is_some() {
-                    theme.line
-                } else {
-                    theme.warn
-                })
-                .shadow_xs()
+                .bg(fill)
                 .child(
                     div()
                         .flex()
                         .items_center()
                         .gap_2()
-                        .child(div().flex_none().size(px(7.)).rounded_full().bg(
-                            if decided.is_some() {
-                                theme.muted
-                            } else {
-                                theme.warn
-                            },
-                        ))
                         .child(
                             div()
                                 .flex_1()
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .child("dotori가 이 일을 해도 될지 물어요"),
                         )
-                        .child(self.meta(theme, n, input, mark, true, cx)),
+                        .children(self.meta(theme, n, input, mark, cx)),
                 )
                 .child(
                     div()
@@ -606,7 +675,7 @@ impl ChatView {
                                     .px_2()
                                     .py_0p5()
                                     .rounded_md()
-                                    .bg(theme.selection)
+                                    .bg(inner)
                                     .text_color(theme.text)
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child(own),
@@ -617,7 +686,7 @@ impl ChatView {
                                 div()
                                     .px_1p5()
                                     .rounded_sm()
-                                    .bg(theme.bubble)
+                                    .bg(inner)
                                     .text_color(theme.muted)
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child(SharedString::from(server.to_owned())),
@@ -640,7 +709,7 @@ impl ChatView {
                         .px_3()
                         .py_2()
                         .rounded_lg()
-                        .bg(theme.canvas)
+                        .bg(inner)
                         .children(fields.into_iter().map(|(key, value)| {
                             let code =
                                 matches!(key.as_str(), "command" | "content" | "old" | "new");
@@ -659,7 +728,12 @@ impl ChatView {
                                     div()
                                         .flex_1()
                                         .min_w_0()
-                                        .when(code, |value| value.font_family(MONO).text_sm())
+                                        .when(code, |value| {
+                                            value
+                                                .font_family(MONO)
+                                                .text_size(px(12.5))
+                                                .line_height(px(19.))
+                                        })
                                         .child(prose(&value)),
                                 )
                         }))
@@ -696,7 +770,10 @@ impl ChatView {
             let chosen = self.tab == which;
             div()
                 .id(id)
-                .relative()
+                .debug_selector(move || id.to_owned())
+                .flex()
+                .items_center()
+                .gap_1p5()
                 .px_3()
                 .py_1()
                 .rounded_lg()
@@ -704,7 +781,6 @@ impl ChatView {
                 .text_xs()
                 .when(chosen, |tab| {
                     tab.bg(theme.surface)
-                        .shadow_xs()
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(theme.text)
                 })
@@ -716,15 +792,18 @@ impl ChatView {
                 .when(which == Tab::Browser && asking, |tab| {
                     tab.child(
                         div()
-                            .absolute()
-                            .top(px(2.))
-                            .right(px(2.))
-                            .size(px(7.))
-                            .rounded_full()
-                            .bg(theme.warn),
+                            .px_1p5()
+                            .rounded_md()
+                            .bg(theme.warn_soft)
+                            .text_color(theme.warn)
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("확인 필요"),
                     )
                 })
                 .on_click(cx.listener(move |view, _, window, cx| {
+                    if view.tab != which {
+                        view.switched = Some(Instant::now());
+                    }
                     view.tab = which;
                     if which == Tab::Browser {
                         window.focus(&view.screen.focus_handle(cx));
@@ -741,63 +820,38 @@ impl ChatView {
             .p_1()
             .rounded_xl()
             .bg(theme.canvas)
-            .border_1()
-            .border_color(theme.line)
             .child(tab("tab-chat", "대화", Tab::Chat, cx))
             .child(tab("tab-browser", "브라우저", Tab::Browser, cx))
     }
 
-    fn status_line(&self, theme: &Theme) -> impl IntoElement {
-        let (color, words) = match &self.link {
-            LinkState::Connecting => (theme.warn, "연결하는 중"),
-            LinkState::Connected => (theme.ok, "연결됨"),
-            LinkState::Down(reason) if reason.contains("not running") => {
-                (theme.danger, "dotori가 꺼져 있어요")
-            }
-            LinkState::Down(_) => (theme.danger, "연결이 끊겼어요"),
-        };
-        let answering = self
-            .answering
-            .clone()
-            .filter(|_| matches!(self.link, LinkState::Connected))
-            .map(|(pc, here)| {
-                let ink = if here { theme.ok } else { theme.muted };
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_1()
-                    .px_2()
-                    .py_0p5()
-                    .rounded_full()
-                    .text_xs()
-                    .font_weight(FontWeight::MEDIUM)
-                    .bg(if here { theme.ok_soft } else { theme.bubble })
-                    .text_color(ink)
-                    .child(div().flex_none().size(px(5.)).rounded_full().bg(ink))
-                    .child(if here {
-                        format!("이 PC({pc})에서 답해요")
-                    } else {
-                        format!("{pc}에서 답해요")
-                    })
-            });
-        div()
-            .flex()
-            .items_center()
-            .gap_2()
-            .child(status(color, theme.muted, words))
-            .children(answering)
+    fn notice(&self) -> Option<String> {
+        match &self.link {
+            LinkState::Connecting => None,
+            LinkState::Down(reason) if reason.contains("not running") => Some(String::from(
+                "dotori가 꺼져 있어요. dotori를 켜면 바로 다시 이어져요",
+            )),
+            LinkState::Down(_) => Some(String::from(
+                "dotori와 연결이 끊겼어요. 다시 연결하는 중이에요",
+            )),
+            LinkState::Connected => match &self.answering {
+                Some((pc, false)) => Some(format!("지금은 {pc}에서 답해요")),
+                _ => None,
+            },
+        }
     }
 
-    fn composer(&self, theme: &Theme, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let focused = self.input.focus_handle(cx).is_focused(window);
+    fn composer(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let ready = matches!(self.link, LinkState::Connected)
             && !self.input.read(cx).text().trim().is_empty();
         let focus = self.input.focus_handle(cx);
         div()
             .flex_none()
             .px_4()
-            .pt_2()
-            .pb_4()
+            .pt_3()
+            .pb_3()
+            .bg(theme.raised)
+            .border_t_1()
+            .border_color(theme.line)
             .child(
                 div()
                     .id("composer")
@@ -807,10 +861,8 @@ impl ChatView {
                     .pl_4()
                     .pr_1p5()
                     .py_1p5()
-                    .rounded_2xl()
+                    .rounded(px(18.))
                     .bg(theme.surface)
-                    .border_1()
-                    .border_color(if focused { theme.primary } else { theme.line })
                     .shadow_sm()
                     .cursor_text()
                     .on_mouse_down(MouseButton::Left, move |_, window, _| {
@@ -828,13 +880,14 @@ impl ChatView {
                     .child(
                         div()
                             .id("send")
+                            .debug_selector(|| String::from("send"))
                             .flex()
                             .flex_none()
                             .items_center()
                             .justify_center()
                             .size(px(34.))
                             .rounded_full()
-                            .bg(if ready { theme.primary } else { theme.line })
+                            .bg(if ready { theme.primary } else { theme.bubble })
                             .text_color(if ready { theme.on_primary } else { theme.muted })
                             .font_weight(FontWeight::BOLD)
                             .when(ready, |send| {
@@ -848,15 +901,11 @@ impl ChatView {
             .child(
                 div()
                     .pt_1p5()
-                    .px_1()
-                    .text_xs()
+                    .px_2()
+                    .text_size(px(11.))
+                    .line_height(px(14.))
                     .text_color(theme.muted)
-                    .child(match &self.link {
-                        LinkState::Down(reason) => {
-                            SharedString::from(format!("다시 연결하는 중이에요. {reason}"))
-                        }
-                        _ => SharedString::new_static("Enter로 보내고, Shift+Enter로 줄을 바꿔요"),
-                    }),
+                    .child("Enter로 보내고, Shift+Enter로 줄을 바꿔요"),
             )
     }
 }
@@ -870,7 +919,33 @@ impl Focusable for ChatView {
 impl Render for ChatView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(window);
+        self.entered
+            .retain(|_, at| MESSAGE_ENTER.moving(at.elapsed()));
+        let fading = self
+            .switched
+            .map(|at| at.elapsed())
+            .filter(|elapsed| CROSS_FADE.moving(*elapsed));
+        if fading.is_none() {
+            self.switched = None;
+        }
+        let following = self.tab == Tab::Chat && self.step_follow();
+        if following || fading.is_some() || !self.entered.is_empty() {
+            window.request_animation_frame();
+        }
+        let shown = fading.map_or(1.0, |elapsed| CROSS_FADE.at(elapsed));
         let conversation = self.conversation(&theme, cx);
+        let notice = self.notice().map(|words| {
+            div()
+                .flex_none()
+                .px_4()
+                .py_1p5()
+                .bg(theme.raised)
+                .border_b_1()
+                .border_color(theme.line)
+                .text_xs()
+                .text_color(theme.muted)
+                .child(words)
+        });
         div()
             .flex()
             .flex_col()
@@ -880,7 +955,8 @@ impl Render for ChatView {
             .text_sm()
             .line_height(px(21.))
             .on_action(cx.listener(Self::submit))
-            .child(header(&theme, "dotori", self.status_line(&theme)).child(self.tabs(&theme, cx)))
+            .child(header(&theme, "dotori", div()).child(self.tabs(&theme, cx)))
+            .children(notice)
             .when(self.tab == Tab::Chat, |chat| {
                 chat.child(
                     div()
@@ -888,24 +964,57 @@ impl Render for ChatView {
                         .flex_1()
                         .overflow_y_scroll()
                         .track_scroll(&self.scroll)
-                        .px_4()
+                        .px_5()
                         .py_5()
+                        .opacity(shown)
                         .child(conversation),
                 )
-                .child(self.composer(&theme, window, cx))
+                .child(self.composer(&theme, cx))
             })
             .when(self.tab == Tab::Browser, |chat| {
-                match self.browser_at.clone().filter(|(_, here)| !here) {
-                    Some((pc, _)) => chat.child(browser_elsewhere(&theme, &pc)),
-                    None => chat.child(div().flex_1().min_h_0().child(self.screen.clone())),
-                }
+                let shown_here = match self.browser_at.clone().filter(|(_, here)| !here) {
+                    Some((pc, _)) => browser_elsewhere(&theme, &pc).into_any_element(),
+                    None => div()
+                        .size_full()
+                        .child(self.screen.clone())
+                        .into_any_element(),
+                };
+                chat.child(div().flex_1().min_h_0().opacity(shown).child(shown_here))
             })
     }
+}
+
+fn entering(row: Div, progress: f32) -> Div {
+    row.relative()
+        .top(px(RISE * (1.0 - progress)))
+        .opacity(progress)
+}
+
+fn working(theme: &Theme, n: usize) -> impl IntoElement {
+    div()
+        .flex()
+        .items_center()
+        .gap(px(10.))
+        .pb(px(TURN_SPACE))
+        .child(logo(theme, 20.).with_animation(
+            "working-logo",
+            WORKING.animation().repeat().with_easing(|t| t),
+            |logo, progress| logo.opacity(breath(progress)),
+        ))
+        .child(
+            div()
+                .text_size(px(13.))
+                .line_height(px(18.))
+                .text_color(theme.muted)
+                .child("생각하는 중"),
+        )
+        .with_animation(("working", n), MESSAGE_ENTER.animation(), entering)
 }
 
 fn browser_elsewhere(theme: &Theme, pc: &str) -> impl IntoElement {
     div()
         .flex_1()
+        .size_full()
         .flex()
         .flex_col()
         .items_center()
@@ -972,24 +1081,13 @@ fn empty(theme: &Theme) -> impl IntoElement {
 fn day_line(theme: &Theme, day: &str) -> impl IntoElement {
     div()
         .flex()
-        .items_center()
-        .gap_3()
-        .py_3()
-        .child(div().flex_1().h(px(1.)).bg(theme.line))
-        .child(
-            div()
-                .px_2p5()
-                .py_0p5()
-                .rounded_full()
-                .bg(theme.raised)
-                .border_1()
-                .border_color(theme.line)
-                .text_size(px(11.))
-                .text_color(theme.muted)
-                .font_weight(FontWeight::MEDIUM)
-                .child(SharedString::from(day.to_owned())),
-        )
-        .child(div().flex_1().h(px(1.)).bg(theme.line))
+        .justify_center()
+        .pb(px(TURN_SPACE))
+        .text_size(px(12.))
+        .line_height(px(16.))
+        .text_color(theme.muted)
+        .font_weight(FontWeight::MEDIUM)
+        .child(SharedString::from(day.to_owned()))
 }
 
 /// How a line about a decided call reads: calm, done, worth a look, or failed.

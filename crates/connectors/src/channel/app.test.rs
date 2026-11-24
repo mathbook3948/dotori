@@ -66,6 +66,15 @@ impl Window {
     }
 
     async fn next(&mut self) -> Option<ToWindow> {
+        loop {
+            match self.next_raw().await? {
+                ToWindow::Live => continue,
+                event => return Some(event),
+            }
+        }
+    }
+
+    async fn next_raw(&mut self) -> Option<ToWindow> {
         let line = time::timeout(WAIT, self.lines.next_line())
             .await
             .expect("in time")
@@ -145,14 +154,14 @@ async fn replies_and_traffic_reach_windows_and_a_late_window_gets_the_backlog() 
     let mut late = Window::open(address, "secret").await;
 
     assert_eq!(
-        late.next_untimed().await,
+        late.next_raw().await.map(untimed),
         Some(ToWindow::Reply {
             text: String::from("hi there"),
             at: 0,
         })
     );
     assert_eq!(
-        late.next_untimed().await,
+        late.next_raw().await.map(untimed),
         Some(ToWindow::Traffic {
             channel: String::from("slack"),
             place: String::from("C1"),
@@ -161,6 +170,7 @@ async fn replies_and_traffic_reach_windows_and_a_late_window_gets_the_backlog() 
             at: 0,
         })
     );
+    assert_eq!(late.next_raw().await, Some(ToWindow::Live));
 }
 
 #[tokio::test]

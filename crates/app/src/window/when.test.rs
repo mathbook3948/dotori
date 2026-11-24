@@ -38,7 +38,7 @@ fn shown(marks: &[Mark]) -> Vec<(Option<&str>, Option<&str>)> {
 }
 
 #[test]
-fn the_time_goes_under_the_last_line_a_speaker_said_in_a_minute() {
+fn every_line_keeps_the_time_it_was_said() {
     let today = date(2026, 11, 23);
     let lines = [
         owner(at(2026, 11, 23, 15, 7, 1)),
@@ -51,7 +51,7 @@ fn the_time_goes_under_the_last_line_a_speaker_said_in_a_minute() {
     assert_eq!(
         shown(&marks(&lines, &seoul(), today)),
         [
-            (Some("오늘"), None),
+            (Some("오늘"), Some("오후 3:07")),
             (None, Some("오후 3:07")),
             (None, Some("오후 3:07")),
             (None, Some("오후 3:08")),
@@ -86,7 +86,7 @@ fn a_new_day_gets_a_line_named_for_how_long_ago_it_was() {
 }
 
 #[test]
-fn lines_elsewhere_each_keep_their_time_and_lines_without_one_show_none() {
+fn lines_without_a_time_show_none() {
     let today = date(2026, 11, 23);
     let elsewhere = |at| ToWindow::Traffic {
         channel: String::from("slack"),
