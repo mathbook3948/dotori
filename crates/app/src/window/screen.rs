@@ -1,4 +1,4 @@
-//! The browser tab of the chat window: dotori's browser as it is now, where dotori clicks, and the
+//! dotori's browser in a window of its own: the page as it is now, where dotori clicks, and the
 //! owner's own mouse and keys once they take it over. Typed text arrives as the OS input method
 //! composed it, so every language is handled the same way.
 
@@ -129,9 +129,70 @@ impl ScreenView {
         }
     }
 
-    /// Whether dotori asked the owner to take the browser over, for a mark on the tab.
+    /// Whether dotori asked the owner to do something in the browser or to log in.
     pub(crate) fn asking(&self) -> bool {
-        self.asked.is_some() || self.asked_login.is_some()
+        !self.down && (self.asked.is_some() || self.asked_login.is_some() || self.wants_files())
+    }
+
+    fn wants_files(&self) -> bool {
+        self.picker
+            .as_ref()
+            .and_then(|picker| picker.get("kind"))
+            .and_then(Value::as_str)
+            == Some("files")
+    }
+
+    /// What dotori asked the owner to do in the browser, if anything, or that the page wants a
+    /// file only the owner can pick.
+    pub(crate) fn asked(&self) -> Option<SharedString> {
+        if self.down {
+            return None;
+        }
+        self.asked.clone().or_else(|| {
+            self.wants_files()
+                .then(|| SharedString::new_static("페이지가 파일을 골라 달라고 해요"))
+        })
+    }
+
+    /// The page as dotori's browser shows it now.
+    pub(crate) fn picture(&self) -> Option<Arc<RenderImage>> {
+        self.picture.clone()
+    }
+
+    /// The site that asks the owner to log in, whether the last try failed, and the fields the
+    /// owner types into.
+    pub(crate) fn login(&self) -> Option<(String, bool, Entity<TextInput>, Entity<TextInput>)> {
+        let asked = self.asked_login.as_ref()?;
+        let (name, secret) = self.login.clone()?;
+        let origin = asked
+            .get("origin")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let site = origin
+            .split_once("://")
+            .map_or(origin, |(_, host)| host)
+            .to_owned();
+        let again = asked.get("again").and_then(Value::as_bool) == Some(true);
+        Some((site, again, name, secret))
+    }
+
+    /// Asks dotori's browser for control, focusing the page in `window`.
+    pub(crate) fn take_over(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if matches!(self.mode, Mode::Owner | Mode::Waiting) || self.down {
+            return;
+        }
+        self.say(json!({ "kind": "take" }));
+        self.mode = Mode::Waiting;
+        window.focus(&self.focus);
+        cx.notify();
+    }
+
+    /// Gives the browser back to dotori if the owner has it.
+    pub(crate) fn hand_back(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.mode, Mode::Owner | Mode::Waiting) {
+            self.say(json!({ "kind": "give" }));
+            cx.notify();
+        }
     }
 
     fn apply(&mut self, item: Seen, cx: &mut Context<Self>) {
@@ -691,7 +752,7 @@ impl ScreenView {
             .into()
     }
 
-    fn log_in(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn log_in(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some((name, secret)) = &self.login else {
             return;
         };
@@ -702,7 +763,7 @@ impl ScreenView {
         self.answer_login(Some(given), window, cx);
     }
 
-    fn answer_login(
+    pub(crate) fn answer_login(
         &mut self,
         given: Option<(String, String)>,
         window: &mut Window,
@@ -739,15 +800,12 @@ impl ScreenView {
     }
 
     fn take(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
-        self.say(json!({ "kind": "take" }));
-        self.mode = Mode::Waiting;
-        window.focus(&self.focus);
-        cx.notify();
+        self.take_over(window, cx);
     }
 
-    fn give(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
-        self.say(json!({ "kind": "give" }));
-        cx.notify();
+    fn done(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
+        self.hand_back(cx);
+        window.remove_window();
     }
 
     fn on_page(&self, at: Point<Pixels>) -> Option<(f64, f64)> {
@@ -827,21 +885,21 @@ impl ScreenView {
 
     fn bar(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let (color, words) = match (self.down, self.mode) {
-            (true, _) => (theme.muted, "연결하는 중"),
-            (false, Mode::Agent) => (theme.primary, "dotori가 쓰는 중"),
-            (false, Mode::Waiting) => (theme.warn, "넘겨받는 중"),
-            (false, Mode::Owner) => (theme.ok, "내가 조작 중"),
-            (false, Mode::Idle) => (theme.muted, "쉬는 중"),
+            (true, _) => (theme.muted, "연결하는 중이에요"),
+            (false, Mode::Agent) => (theme.muted, "dotori가 쓰고 있어요"),
+            (false, Mode::Waiting) => (theme.warn, "넘겨받는 중이에요"),
+            (false, Mode::Owner) => (theme.muted, "다 하면 dotori가 이어서 해요"),
+            (false, Mode::Idle) => (theme.muted, "dotori가 쉬고 있어요"),
         };
         let button = |id: &'static str, label: &'static str, primary: bool| {
             div()
                 .id(id)
+                .debug_selector(move || id.to_owned())
                 .flex_none()
-                .px_3()
-                .py_1()
+                .px_4()
+                .py_1p5()
                 .rounded_lg()
                 .cursor_pointer()
-                .text_xs()
                 .font_weight(FontWeight::SEMIBOLD)
                 .when(primary, |button| {
                     button
@@ -851,20 +909,19 @@ impl ScreenView {
                 })
                 .when(!primary, |button| {
                     button
-                        .border_1()
-                        .border_color(theme.line)
                         .bg(theme.surface)
-                        .hover(|button| button.border_color(theme.primary))
+                        .text_color(theme.text)
+                        .hover(|button| button.bg(theme.bubble))
                 })
                 .child(label)
         };
         let action = match self.mode {
-            Mode::Owner => button("give", "돌려주기", false)
-                .on_click(cx.listener(Self::give))
+            Mode::Owner => button("done", "다 했어요", true)
+                .on_click(cx.listener(Self::done))
                 .into_any_element(),
             Mode::Waiting => div().into_any_element(),
             _ if self.down => div().into_any_element(),
-            _ => button("take", "넘겨받기", true)
+            _ => button("take", "넘겨받기", false)
                 .on_click(cx.listener(Self::take))
                 .into_any_element(),
         };
@@ -872,26 +929,28 @@ impl ScreenView {
             .flex()
             .flex_none()
             .items_center()
-            .gap_2()
+            .gap_3()
             .px_4()
-            .py_2()
+            .h(px(52.))
             .border_b_1()
             .border_color(theme.line)
             .bg(theme.raised)
             .child(
                 div()
-                    .flex()
-                    .flex_none()
-                    .items_center()
-                    .gap_1p5()
-                    .px_2()
-                    .py_0p5()
-                    .rounded_full()
+                    .flex_1()
+                    .min_w_0()
+                    .px_3()
+                    .py_1()
+                    .rounded_lg()
                     .bg(theme.canvas)
-                    .text_xs()
-                    .text_color(color)
-                    .child(div().size(px(7.)).rounded_full().bg(color))
-                    .child(words),
+                    .text_size(px(13.))
+                    .text_color(theme.text)
+                    .truncate()
+                    .child(
+                        self.url
+                            .clone()
+                            .unwrap_or_else(|| SharedString::new_static("about:blank")),
+                    ),
             )
             .when(self.popup, |bar| {
                 bar.child(
@@ -900,28 +959,19 @@ impl ScreenView {
                         .px_2()
                         .py_0p5()
                         .rounded_full()
-                        .bg(theme.warn)
-                        .text_color(theme.on_primary)
+                        .bg(theme.warn_soft)
+                        .text_color(theme.warn)
                         .text_xs()
+                        .font_weight(FontWeight::SEMIBOLD)
                         .child("새 창"),
                 )
             })
             .child(
                 div()
-                    .flex_1()
-                    .min_w_0()
-                    .px_2()
-                    .py_0p5()
-                    .rounded_md()
-                    .bg(theme.canvas)
-                    .text_xs()
-                    .text_color(theme.muted)
-                    .truncate()
-                    .child(
-                        self.url
-                            .clone()
-                            .unwrap_or_else(|| SharedString::new_static("about:blank")),
-                    ),
+                    .flex_none()
+                    .text_size(px(13.))
+                    .text_color(color)
+                    .child(words),
             )
             .child(action)
     }

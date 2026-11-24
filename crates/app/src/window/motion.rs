@@ -69,8 +69,6 @@ pub(crate) const HOVER: Motion = Motion::new(120, Curve::EaseOut);
 pub(crate) const MESSAGE_ENTER: Motion = Motion::new(180, Curve::EaseOut);
 /// The conversation following new text.
 pub(crate) const FOLLOW: Motion = Motion::new(180, Curve::EaseOut);
-/// One tab or theme giving way to another.
-pub(crate) const CROSS_FADE: Motion = Motion::new(180, Curve::EaseInOut);
 /// One breath of the logo while dotori works. The only motion that repeats.
 pub(crate) const WORKING: Motion = Motion::new(1600, Curve::EaseInOut);
 

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -18,8 +19,11 @@ use gpui::Entity;
 use gpui::FocusHandle;
 use gpui::Focusable;
 use gpui::FontWeight;
+use gpui::ImageSource;
 use gpui::MouseButton;
+use gpui::ObjectFit;
 use gpui::Pixels;
+use gpui::RenderImage;
 use gpui::ScrollHandle;
 use gpui::ScrollWheelEvent;
 use gpui::SharedString;
@@ -27,20 +31,24 @@ use gpui::StyleRefinement;
 use gpui::Task;
 use gpui::WeakEntity;
 use gpui::Window;
+use gpui::WindowHandle;
 use gpui::div;
+use gpui::img;
 use gpui::point;
 use gpui::prelude::*;
 use gpui::px;
 use gpui::relative;
+use gpui::svg;
 use jiff::tz::TimeZone;
 use tokio::sync::mpsc;
 
 use crate::link::Link;
 use crate::link::Update;
 use crate::screen_link::ScreenLink;
+use crate::window::browser;
+use crate::window::browser::BrowserWindow;
 use crate::window::input::Submit;
 use crate::window::input::TextInput;
-use crate::window::motion::CROSS_FADE;
 use crate::window::motion::FOLLOW;
 use crate::window::motion::HOVER;
 use crate::window::motion::MESSAGE_ENTER;
@@ -48,7 +56,7 @@ use crate::window::motion::RISE;
 use crate::window::motion::WORKING;
 use crate::window::motion::breath;
 use crate::window::parts::MONO;
-use crate::window::parts::header;
+use crate::window::parts::SETTINGS_ICON;
 use crate::window::parts::logo;
 use crate::window::parts::prose;
 use crate::window::rich::rich;
@@ -62,6 +70,7 @@ const COPIED_FOR: Duration = Duration::from_millis(1500);
 const SHOWN_VALUE: usize = 600;
 const BOTTOM_SLACK: f32 = 8.;
 const TURN_SPACE: f32 = 18.;
+const PREVIEW_EVERY: Duration = Duration::from_millis(500);
 const EDGE: f32 = 20.;
 const WORKING_ROW: f32 = 20.;
 
@@ -69,7 +78,6 @@ const WORKING_ROW: f32 = 20.;
 pub(crate) struct ChatView {
     lines: Vec<ToWindow>,
     screen: Entity<ScreenView>,
-    tab: Tab,
     link: LinkState,
     answering: Option<(String, bool)>,
     browser_at: Option<(String, bool)>,
@@ -88,15 +96,15 @@ pub(crate) struct ChatView {
     busy: bool,
     rows: Entity<Rows>,
     working: Entity<WorkingView>,
-    switched: Option<Instant>,
+    browser: Option<WindowHandle<BrowserWindow>>,
+    card: CardKey,
+    card_picture: Option<usize>,
+    preview_at: Option<Instant>,
+    preview_pending: bool,
+    dismissed: Option<SharedString>,
+    preview: Option<Arc<RenderImage>>,
     _uncopy: Option<Task<()>>,
     _pump: Task<()>,
-}
-
-#[derive(Clone, Copy, PartialEq)]
-enum Tab {
-    Chat,
-    Browser,
 }
 
 enum LinkState {
@@ -109,7 +117,17 @@ impl ChatView {
     pub(crate) fn new(link: Link, screen: ScreenLink, cx: &mut Context<Self>) -> Self {
         let Link { mut updates, say } = link;
         let screen = cx.new(|cx| ScreenView::new(screen, cx));
-        cx.observe(&screen, |_, _, cx| cx.notify()).detach();
+        cx.observe(&screen, |view, _, cx| view.screen_changed(cx))
+            .detach();
+        let closed = cx.entity().downgrade();
+        cx.on_window_closed(move |cx| {
+            let closed = closed.clone();
+            cx.spawn(async move |cx| {
+                let _ = closed.update(cx, |view, cx| view.screen_changed(cx));
+            })
+            .detach();
+        })
+        .detach();
         let chat = cx.entity();
         let rows = cx.new(|cx| {
             cx.observe(&chat, |_, _, cx| cx.notify()).detach();
@@ -132,7 +150,6 @@ impl ChatView {
         Self {
             lines: Vec::new(),
             screen,
-            tab: Tab::Chat,
             link: LinkState::Connecting,
             answering: None,
             browser_at: None,
@@ -151,7 +168,13 @@ impl ChatView {
             busy: false,
             rows,
             working,
-            switched: None,
+            browser: None,
+            card: CardKey::default(),
+            card_picture: None,
+            preview_at: None,
+            preview_pending: false,
+            dismissed: None,
+            preview: None,
             _uncopy: None,
             _pump: pump,
         }
@@ -252,7 +275,10 @@ impl ChatView {
     }
 
     fn shows_working(&self) -> bool {
-        self.busy && matches!(self.link, LinkState::Connected) && !self.waits_on_the_owner()
+        self.busy
+            && matches!(self.link, LinkState::Connected)
+            && self.card.kind.is_none()
+            && !self.waits_on_the_owner()
     }
 
     fn waits_on_the_owner(&self) -> bool {
@@ -299,14 +325,15 @@ impl ChatView {
         cx.notify();
     }
 
-    fn pane(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+    fn pane(&mut self, theme: &Theme, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let card = self.browser_card(theme, window, cx);
         div()
             .id("conversation")
             .size_full()
             .overflow_y_scroll()
             .track_scroll(&self.scroll)
             .px(px(EDGE))
-            .pt(px(EDGE))
+            .pt(px(4.))
             .pb(px(EDGE + WORKING_ROW))
             .on_scroll_wheel(cx.listener(|view, _: &ScrollWheelEvent, _, cx| {
                 view.follow = None;
@@ -315,6 +342,7 @@ impl ChatView {
                 }
             }))
             .child(self.conversation(theme, cx))
+            .children(card)
             .into_any_element()
     }
 
@@ -813,64 +841,340 @@ impl ChatView {
         )
     }
 
-    fn tabs(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
-        let asking = self.screen.read(cx).asking();
-        let tab = |id: &'static str, label: &'static str, which: Tab, cx: &mut Context<Self>| {
-            let chosen = self.tab == which;
+    fn browser_open(&self, cx: &App) -> bool {
+        self.browser.is_some_and(|open| {
+            cx.windows()
+                .iter()
+                .any(|window| window.window_id() == open.window_id())
+        })
+    }
+
+    fn open_browser(&mut self, take: bool, cx: &mut Context<Self>) {
+        self.browser = browser::show(self.browser, &self.screen, take, cx);
+        self.screen_changed(cx);
+    }
+
+    fn close_browser(&mut self, cx: &mut Context<Self>) {
+        self.screen.update(cx, |screen, cx| screen.hand_back(cx));
+        if let Some(open) = self.browser.take() {
+            let _ = open.update(cx, |_, window, _| window.remove_window());
+        }
+        self.screen_changed(cx);
+    }
+
+    fn screen_changed(&mut self, cx: &mut Context<Self>) {
+        let asked = self.screen.read(cx).asked();
+        if self.dismissed.is_some() && asked != self.dismissed {
+            self.dismissed = None;
+        }
+        let ask = self.browser_ask(cx);
+        let key = CardKey::of(ask.as_ref());
+        let picture = match &ask {
+            Some(BrowserAsk::Page {
+                picture: Some(picture),
+                ..
+            }) => Some(Arc::as_ptr(picture) as usize),
+            _ => None,
+        };
+        if key != self.card {
+            if key.kind.is_some() && self.at_bottom() {
+                self.follow = Some((Instant::now(), 0.0));
+            }
+            self.card = key;
+            self.card_picture = picture;
+            self.preview_at = Some(Instant::now());
+            cx.notify();
+            return;
+        }
+        if picture == self.card_picture || self.preview_pending {
+            return;
+        }
+        let waited = self.preview_at.map_or(PREVIEW_EVERY, |at| at.elapsed());
+        if waited >= PREVIEW_EVERY {
+            self.card_picture = picture;
+            self.preview_at = Some(Instant::now());
+            cx.notify();
+            return;
+        }
+        self.preview_pending = true;
+        cx.spawn(async move |view, cx| {
+            cx.background_executor().timer(PREVIEW_EVERY - waited).await;
+            let _ = view.update(cx, |view, cx| {
+                view.preview_pending = false;
+                view.screen_changed(cx);
+            });
+        })
+        .detach();
+    }
+
+    fn browser_ask(&self, cx: &App) -> Option<BrowserAsk> {
+        if self.browser_open(cx) {
+            return Some(BrowserAsk::Opened);
+        }
+        let screen = self.screen.read(cx);
+        if !screen.asking() {
+            return None;
+        }
+        if let Some((site, again, name, secret)) = screen.login() {
+            return Some(BrowserAsk::Login {
+                site,
+                again,
+                name,
+                secret,
+            });
+        }
+        let asked = screen
+            .asked()
+            .filter(|asked| self.dismissed.as_ref() != Some(asked))?;
+        Some(BrowserAsk::Page {
+            asked,
+            picture: screen.picture(),
+        })
+    }
+
+    fn browser_card(
+        &mut self,
+        theme: &Theme,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let ask = self.browser_ask(cx);
+        let shown_picture = match &ask {
+            Some(BrowserAsk::Page { picture, .. }) => picture.clone(),
+            _ => None,
+        };
+        let same = match (&shown_picture, &self.preview) {
+            (Some(now), Some(before)) => Arc::ptr_eq(now, before),
+            (None, None) => true,
+            _ => false,
+        };
+        if !same {
+            if let Some(old) = self.preview.take() {
+                let _ = window.drop_image(old);
+            }
+            self.preview = shown_picture.clone();
+        }
+        let (opened, login, asked) = match ask? {
+            BrowserAsk::Opened => (true, None, None),
+            BrowserAsk::Login {
+                site,
+                again,
+                name,
+                secret,
+            } => (false, Some((site, again, name, secret)), None),
+            BrowserAsk::Page { asked, .. } => (false, None, Some(asked)),
+        };
+        let button = |id: &'static str, label: &'static str, primary: bool| {
             div()
                 .id(id)
                 .debug_selector(move || id.to_owned())
-                .flex()
-                .items_center()
-                .gap_1p5()
-                .px_3()
-                .py_1()
+                .flex_none()
+                .px_4()
+                .py_1p5()
                 .rounded_lg()
                 .cursor_pointer()
-                .text_xs()
-                .when(chosen, |tab| {
-                    tab.bg(theme.surface)
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(theme.text)
+                .font_weight(FontWeight::SEMIBOLD)
+                .when(primary, |button| {
+                    button
+                        .bg(theme.primary)
+                        .text_color(theme.on_primary)
+                        .hover(|button| button.bg(theme.primary_hover))
                 })
-                .when(!chosen, |tab| {
-                    tab.text_color(theme.muted)
-                        .hover(|tab| tab.text_color(theme.text))
+                .when(!primary, |button| {
+                    button
+                        .bg(theme.surface)
+                        .text_color(theme.text)
+                        .hover(|button| button.bg(theme.bubble))
                 })
                 .child(label)
-                .when(which == Tab::Browser && asking, |tab| {
-                    tab.child(
-                        div()
-                            .px_1p5()
-                            .rounded_md()
-                            .bg(theme.warn_soft)
-                            .text_color(theme.warn)
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("확인 필요"),
-                    )
-                })
-                .on_click(cx.listener(move |view, _, window, cx| {
-                    if view.tab != which {
-                        view.switched = Some(Instant::now());
-                    }
-                    view.tab = which;
-                    if which == Tab::Browser {
-                        window.focus(&view.screen.focus_handle(cx));
-                    } else {
-                        window.focus(&view.input.focus_handle(cx));
-                    }
-                    cx.notify();
-                }))
         };
-        div()
-            .flex()
-            .flex_none()
-            .gap_1()
-            .p_1()
-            .rounded_xl()
-            .bg(theme.canvas)
-            .child(tab("tab-chat", "대화", Tab::Chat, cx))
-            .child(tab("tab-browser", "브라우저", Tab::Browser, cx))
+        let card = |fill| {
+            div()
+                .flex()
+                .flex_col()
+                .gap_3()
+                .px_4()
+                .py_3()
+                .mb(px(TURN_SPACE))
+                .rounded_xl()
+                .bg(fill)
+        };
+        let title = |words: SharedString| div().font_weight(FontWeight::SEMIBOLD).child(words);
+        if opened {
+            return Some(
+                card(theme.surface)
+                    .child(title(SharedString::new_static(
+                        "브라우저 창에서 하는 중이에요",
+                    )))
+                    .child(
+                        div()
+                            .text_color(theme.muted)
+                            .child(prose("다 하면 \"다 했어요\"를 누르거나 브라우저 창을 닫아 주세요. dotori가 이어서 할게요.")),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .justify_end()
+                            .gap_2()
+                            .child(button("browser-show", "창 다시 보기", false).bg(theme.canvas).on_click(
+                                cx.listener(|view, _: &ClickEvent, _, cx| {
+                                    view.open_browser(false, cx);
+                                }),
+                            ))
+                            .child(button("browser-done", "다 했어요", true).on_click(
+                                cx.listener(|view, _: &ClickEvent, _, cx| view.close_browser(cx)),
+                            )),
+                    )
+                    .into_any_element(),
+            );
+        }
+        if let Some((site, again, name, secret)) = login {
+            let field = |id: &'static str, label: &'static str, input: Entity<TextInput>| {
+                let target = input.clone();
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(div().text_xs().text_color(theme.muted).child(label))
+                    .child(
+                        div()
+                            .id(id)
+                            .px_3()
+                            .py_2()
+                            .rounded_lg()
+                            .bg(theme.surface)
+                            .cursor_text()
+                            .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                                window.focus(&target.focus_handle(cx));
+                                cx.stop_propagation();
+                            })
+                            .child(input),
+                    )
+            };
+            let screen = self.screen.clone();
+            let next = secret.clone();
+            let log_in = move |screen: &Entity<ScreenView>, window: &mut Window, cx: &mut App| {
+                screen.update(cx, |screen, cx| screen.log_in(window, cx));
+            };
+            let go = screen.clone();
+            let cancel = screen.clone();
+            return Some(
+                card(theme.warn_soft)
+                    .child(title(SharedString::from(format!(
+                        "{site}에 로그인해 주세요"
+                    ))))
+                    .child(field("login-name", "아이디", name).on_action(
+                        move |_: &Submit, window, cx| {
+                            window.focus(&next.focus_handle(cx));
+                        },
+                    ))
+                    .child(
+                        field("login-secret", "비밀번호", secret)
+                            .on_action(move |_: &Submit, window, cx| log_in(&screen, window, cx)),
+                    )
+                    .when(again, |card| {
+                        card.child(
+                            div()
+                                .px_3()
+                                .py_1p5()
+                                .rounded_lg()
+                                .bg(theme.danger_soft)
+                                .text_color(theme.danger)
+                                .text_xs()
+                                .child("아이디나 비밀번호가 맞지 않았어요. 다시 넣어 주세요."),
+                        )
+                    })
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.muted)
+                            .child("이 페이지에만 넘기고 대화 기록에는 남기지 않아요."),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .id("login-in-browser")
+                                    .debug_selector(|| String::from("login-in-browser"))
+                                    .flex_1()
+                                    .text_xs()
+                                    .text_color(theme.text)
+                                    .cursor_pointer()
+                                    .hover(|link| link.underline())
+                                    .child("브라우저 창에서 할게요")
+                                    .on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
+                                        view.open_browser(false, cx);
+                                    })),
+                            )
+                            .child(button("login-cancel", "취소", false).on_click(
+                                move |_, window, cx| {
+                                    cancel.update(cx, |screen, cx| {
+                                        screen.answer_login(None, window, cx);
+                                    });
+                                },
+                            ))
+                            .child(button("login-go", "로그인", true).on_click(
+                                move |_, window, cx| {
+                                    go.update(cx, |screen, cx| screen.log_in(window, cx));
+                                },
+                            )),
+                    )
+                    .into_any_element(),
+            );
+        }
+        let asked = asked?;
+        let mut preview = div()
+            .id("browser-preview")
+            .debug_selector(|| String::from("browser-preview"))
+            .w_full()
+            .rounded_lg()
+            .overflow_hidden()
+            .bg(theme.surface)
+            .cursor_pointer()
+            .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.open_browser(true, cx)))
+            .children(shown_picture.map(|picture| {
+                img(ImageSource::Render(picture))
+                    .size_full()
+                    .object_fit(ObjectFit::Contain)
+            }));
+        preview.style().aspect_ratio = Some(16. / 10.);
+        let later = asked.clone();
+        Some(
+            card(theme.warn_soft)
+                .child(title(SharedString::new_static(
+                    "브라우저에서 마저 해 주세요",
+                )))
+                .child(prose(&asked))
+                .child(preview)
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            div()
+                                .flex_1()
+                                .text_xs()
+                                .text_color(theme.muted)
+                                .child("화면을 눌러도 크게 열려요"),
+                        )
+                        .child(
+                            button("browser-later", "나중에", false).on_click(cx.listener(
+                                move |view, _: &ClickEvent, _, cx| {
+                                    view.dismissed = Some(later.clone());
+                                    view.screen_changed(cx);
+                                },
+                            )),
+                        )
+                        .child(button("browser-open", "브라우저 열기", true).on_click(
+                            cx.listener(|view, _: &ClickEvent, _, cx| view.open_browser(true, cx)),
+                        )),
+                )
+                .into_any_element(),
+        )
     }
 
     fn notice(&self) -> Option<(String, Option<String>)> {
@@ -976,35 +1280,28 @@ impl Render for ChatView {
         let theme = Theme::of(window);
         self.entered
             .retain(|_, at| MESSAGE_ENTER.moving(at.elapsed()));
-        let fading = self
-            .switched
-            .map(|at| at.elapsed())
-            .filter(|elapsed| CROSS_FADE.moving(*elapsed));
-        if fading.is_none() {
-            self.switched = None;
-        }
-        let following = self.tab == Tab::Chat && self.step_follow();
-        if following || fading.is_some() || !self.entered.is_empty() {
+        let following = self.step_follow();
+        if following || !self.entered.is_empty() {
             window.request_animation_frame();
         }
-        let shown = fading.map_or(1.0, |elapsed| CROSS_FADE.at(elapsed));
         let notice = self.notice().map(|(words, detail)| {
             div()
-                .flex_none()
-                .px_4()
-                .py_1p5()
-                .bg(theme.raised)
-                .border_b_1()
-                .border_color(theme.line)
+                .flex()
+                .flex_col()
+                .min_w_0()
                 .text_xs()
-                .text_color(theme.muted)
+                .text_color(theme.text)
                 .child(words)
-                .children(
-                    detail
-                        .map(|detail| div().text_size(px(11.)).line_height(px(14.)).child(detail)),
-                )
+                .children(detail.map(|detail| {
+                    div()
+                        .text_size(px(11.))
+                        .line_height(px(14.))
+                        .text_color(theme.muted)
+                        .truncate()
+                        .child(detail)
+                }))
         });
-        let working_at = if self.shows_working() && self.tab == Tab::Chat {
+        let working_at = if self.shows_working() {
             if self.scroll.bounds_for_item(0).is_none() {
                 window.request_animation_frame();
             }
@@ -1021,46 +1318,108 @@ impl Render for ChatView {
             .text_sm()
             .line_height(px(21.))
             .on_action(cx.listener(Self::submit))
-            .child(header(&theme, "dotori", div()).child(self.tabs(&theme, cx)))
-            .children(notice)
-            .when(self.tab == Tab::Chat, |chat| {
-                chat.child(
-                    div()
-                        .flex_1()
-                        .min_h_0()
-                        .relative()
-                        .opacity(shown)
-                        .child(
-                            AnyView::from(self.rows.clone())
-                                .cached(StyleRefinement::default().size_full()),
-                        )
-                        .children(working_at.map(|top| {
-                            div()
-                                .absolute()
-                                .left(px(EDGE))
-                                .top(top)
-                                .child(self.working.clone())
-                        })),
-                )
-                .child(self.composer(&theme, cx))
-            })
-            .when(self.tab == Tab::Browser, |chat| {
-                let shown_here = match self.browser_at.clone().filter(|(_, here)| !here) {
-                    Some((pc, _)) => browser_elsewhere(&theme, &pc).into_any_element(),
-                    None => div()
-                        .size_full()
-                        .child(self.screen.clone())
-                        .into_any_element(),
-                };
-                chat.child(div().flex_1().min_h_0().opacity(shown).child(shown_here))
-            })
+            .child(
+                div()
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .gap_3()
+                    .h(px(52.))
+                    .pl(px(EDGE))
+                    .pr(px(12.))
+                    .child(div().flex_1().min_w_0().children(notice))
+                    .child(settings_button(&theme)),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .relative()
+                    .child(
+                        AnyView::from(self.rows.clone())
+                            .cached(StyleRefinement::default().size_full()),
+                    )
+                    .children(working_at.map(|top| {
+                        div()
+                            .absolute()
+                            .left(px(EDGE))
+                            .top(top)
+                            .child(self.working.clone())
+                    })),
+            )
+            .child(self.composer(&theme, cx))
     }
+}
+
+fn settings_button(theme: &Theme) -> impl IntoElement {
+    div()
+        .id("settings")
+        .debug_selector(|| String::from("settings"))
+        .flex()
+        .items_center()
+        .justify_center()
+        .size(px(36.))
+        .rounded_full()
+        .bg(theme.surface)
+        .shadow_xs()
+        .cursor_pointer()
+        .hover(|button| button.bg(theme.bubble))
+        .child(
+            svg()
+                .path(SETTINGS_ICON)
+                .size(px(18.))
+                .text_color(theme.muted),
+        )
+        .on_click(|_, _, _| crate::tray::open("settings"))
 }
 
 fn entering(row: Div, progress: f32) -> Div {
     row.relative()
         .top(px(RISE * (1.0 - progress)))
         .opacity(progress)
+}
+
+enum BrowserAsk {
+    Opened,
+    Login {
+        site: String,
+        again: bool,
+        name: Entity<TextInput>,
+        secret: Entity<TextInput>,
+    },
+    Page {
+        asked: SharedString,
+        picture: Option<Arc<RenderImage>>,
+    },
+}
+
+#[derive(Clone, Default, PartialEq)]
+struct CardKey {
+    kind: Option<&'static str>,
+    asked: Option<SharedString>,
+    login: Option<(String, bool)>,
+}
+
+impl CardKey {
+    fn of(ask: Option<&BrowserAsk>) -> Self {
+        match ask {
+            None => Self::default(),
+            Some(BrowserAsk::Opened) => Self {
+                kind: Some("opened"),
+                ..Self::default()
+            },
+            Some(BrowserAsk::Login { site, again, .. }) => Self {
+                kind: Some("login"),
+                asked: None,
+                login: Some((site.clone(), *again)),
+            },
+            Some(BrowserAsk::Page { asked, .. }) => Self {
+                kind: Some("page"),
+                asked: Some(asked.clone()),
+                login: None,
+            },
+        }
+    }
 }
 
 struct Rows {
@@ -1071,7 +1430,7 @@ impl Render for Rows {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(window);
         self.chat
-            .update(cx, |chat, cx| chat.pane(&theme, cx))
+            .update(cx, |chat, cx| chat.pane(&theme, window, cx))
             .unwrap_or_else(|_| div().into_any_element())
     }
 }
@@ -1100,48 +1459,6 @@ impl Render for WorkingView {
             )
             .with_animation("working", MESSAGE_ENTER.animation(), entering)
     }
-}
-
-fn browser_elsewhere(theme: &Theme, pc: &str) -> impl IntoElement {
-    div()
-        .flex_1()
-        .size_full()
-        .flex()
-        .flex_col()
-        .items_center()
-        .justify_center()
-        .gap_3()
-        .px_8()
-        .bg(theme.canvas)
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .justify_center()
-                .size(px(56.))
-                .rounded_2xl()
-                .bg(theme.bubble)
-                .text_color(theme.muted)
-                .text_xl()
-                .font_weight(FontWeight::SEMIBOLD)
-                .child(pc.chars().next().unwrap_or('P').to_uppercase().to_string()),
-        )
-        .child(
-            div()
-                .text_lg()
-                .font_weight(FontWeight::SEMIBOLD)
-                .child(format!("브라우저는 {pc}에 있어요")),
-        )
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .items_center()
-                .text_color(theme.muted)
-                .text_center()
-                .child("dotori는 로그인을 한곳에 모으려고 브라우저를 한 PC에서만 열어요.")
-                .child(format!("보거나 넘겨받으려면 {pc}의 채팅창을 열어 주세요.")),
-        )
 }
 
 fn empty(theme: &Theme) -> impl IntoElement {

@@ -1035,8 +1035,8 @@ impl BrowserTool {
                 .ok_or("`reason` is required")?;
             self.browser.screen.update(json!({ "asked": reason }));
             return Ok(String::from(
-                "Asked the owner. They take the browser over from the chat window's browser tab and \
-                 hand it back when done. Do not wait for them: tell the owner what you need, and \
+                "Asked the owner. A card in the chat window shows them the page, they open the \
+                 browser in its own window and hand it back when done. Do not wait for them: tell the owner what you need, and \
                  read the page again later.",
             ));
         }
@@ -1289,7 +1289,7 @@ impl Tool for BrowserTool {
                 "Returns the page now open in the browser, with interactive elements as [n]."
             }
             Action::Ask => {
-                "Asks the owner to take the browser over in the chat window, such as to log in, \
+                "Asks the owner, through a card in the chat window, to take the browser over, such as to log in, \
                  since dotori never handles passwords. Returns at once; the owner hands it back \
                  when done."
             }

@@ -99,13 +99,15 @@ fn a_shell_result_splits_into_how_it_ended_and_what_it_printed() {
 struct Wired {
     updates: mpsc::UnboundedSender<Update>,
     said: mpsc::UnboundedReceiver<FromWindow>,
+    shown: mpsc::UnboundedSender<crate::screen_link::Seen>,
+    browser: mpsc::UnboundedReceiver<serde_json::Value>,
 }
 
 fn open(cx: &mut TestAppContext) -> (Entity<ChatView>, &mut VisualTestContext, Wired) {
     let (updates_tx, updates) = mpsc::unbounded_channel();
     let (say, said) = mpsc::unbounded_channel();
-    let (_shown, seen) = mpsc::unbounded_channel();
-    let (send, _sent) = mpsc::unbounded_channel();
+    let (shown, seen) = mpsc::unbounded_channel();
+    let (send, browser) = mpsc::unbounded_channel();
     cx.update(|cx| cx.bind_keys(crate::window::input::bindings()));
     let (view, cx) = cx.add_window_view(|_, cx| {
         ChatView::new(Link { updates, say }, ScreenLink { seen, send }, cx)
@@ -116,6 +118,8 @@ fn open(cx: &mut TestAppContext) -> (Entity<ChatView>, &mut VisualTestContext, W
         Wired {
             updates: updates_tx,
             said,
+            shown,
+            browser,
         },
     )
 }
@@ -386,4 +390,181 @@ fn dotori_starting_work_keeps_a_long_conversation_at_its_end(cx: &mut TestAppCon
             "and shows under the last reply"
         );
     });
+}
+
+fn asks(view: &Entity<ChatView>, cx: &mut VisualTestContext) -> &'static str {
+    view.read_with(cx, |view, cx| match view.browser_ask(cx) {
+        None => "nothing",
+        Some(BrowserAsk::Opened) => "opened",
+        Some(BrowserAsk::Login { .. }) => "login",
+        Some(BrowserAsk::Page { .. }) => "page",
+    })
+}
+
+fn browser_state(
+    view: &Entity<ChatView>,
+    cx: &mut VisualTestContext,
+    wired: &Wired,
+    state: serde_json::Value,
+) {
+    wired
+        .shown
+        .send(crate::screen_link::Seen::State(state))
+        .expect("sent");
+    cx.run_until_parked();
+    view.update(cx, |view, cx| {
+        view.scroll.scroll_to_bottom();
+        cx.notify();
+    });
+    cx.run_until_parked();
+}
+
+#[gpui::test]
+fn the_browser_asks_with_a_card_and_opens_in_a_window_of_its_own(cx: &mut TestAppContext) {
+    let (view, cx, mut wired) = open(cx);
+    wired.updates.send(Update::Connected).expect("sent");
+    cx.run_until_parked();
+    assert_eq!(asks(&view, cx), "nothing");
+
+    browser_state(
+        &view,
+        cx,
+        &wired,
+        serde_json::json!({"mode": "agent", "asked": "결제 전에 로그인해 주세요"}),
+    );
+    assert_eq!(asks(&view, cx), "page");
+    let windows = cx.update(|_, cx| cx.windows().len());
+    click(cx, "browser-open");
+
+    assert_eq!(cx.update(|_, cx| cx.windows().len()), windows + 1);
+    assert_eq!(
+        wired.browser.try_recv().ok(),
+        Some(serde_json::json!({"kind": "take"}))
+    );
+    assert_eq!(asks(&view, cx), "opened", "the card follows the window");
+
+    browser_state(&view, cx, &wired, serde_json::json!({"mode": "owner"}));
+    assert_eq!(
+        asks(&view, cx),
+        "opened",
+        "the daemon drops the ask once the owner has the browser"
+    );
+
+    let browser = view
+        .read_with(cx, |view, _| view.browser)
+        .expect("a window");
+    let _ = cx.update(|_, cx| browser.update(cx, |_, window, _| window.remove_window()));
+    cx.run_until_parked();
+    assert_eq!(
+        asks(&view, cx),
+        "nothing",
+        "closing the window ends the card"
+    );
+}
+
+#[gpui::test]
+fn later_puts_the_card_away_until_dotori_asks_something_else(cx: &mut TestAppContext) {
+    let (view, cx, wired) = open(cx);
+    wired.updates.send(Update::Connected).expect("sent");
+    browser_state(
+        &view,
+        cx,
+        &wired,
+        serde_json::json!({"mode": "agent", "asked": "인증 문자를 넣어 주세요"}),
+    );
+
+    click(cx, "browser-later");
+    assert_eq!(asks(&view, cx), "nothing");
+
+    browser_state(
+        &view,
+        cx,
+        &wired,
+        serde_json::json!({"mode": "agent", "asked": "캡차를 풀어 주세요"}),
+    );
+    assert_eq!(asks(&view, cx), "page");
+
+    click(cx, "browser-later");
+    browser_state(&view, cx, &wired, serde_json::json!({"mode": "agent"}));
+    browser_state(
+        &view,
+        cx,
+        &wired,
+        serde_json::json!({"mode": "agent", "asked": "캡차를 풀어 주세요"}),
+    );
+    assert_eq!(
+        asks(&view, cx),
+        "page",
+        "the same words asked again show again"
+    );
+}
+
+#[gpui::test]
+fn dotori_still_shows_it_works_after_the_owner_puts_the_card_away(cx: &mut TestAppContext) {
+    let (view, cx, wired) = open(cx);
+    for update in [
+        Update::Connected,
+        Update::Event(ToWindow::Live),
+        Update::Event(ToWindow::Working { busy: true }),
+    ] {
+        wired.updates.send(update).expect("sent");
+    }
+    browser_state(
+        &view,
+        cx,
+        &wired,
+        serde_json::json!({"mode": "agent", "asked": "인증 문자를 넣어 주세요"}),
+    );
+    view.read_with(cx, |view, _| {
+        assert!(!view.shows_working(), "the card asks instead")
+    });
+
+    click(cx, "browser-later");
+
+    view.read_with(cx, |view, _| assert!(view.shows_working()));
+}
+
+#[gpui::test]
+fn a_dropped_browser_asks_nothing(cx: &mut TestAppContext) {
+    let (view, cx, wired) = open(cx);
+    wired.updates.send(Update::Connected).expect("sent");
+    browser_state(
+        &view,
+        cx,
+        &wired,
+        serde_json::json!({"mode": "agent", "asked": "로그인해 주세요"}),
+    );
+
+    wired
+        .shown
+        .send(crate::screen_link::Seen::Down)
+        .expect("sent");
+    cx.run_until_parked();
+
+    assert_eq!(asks(&view, cx), "nothing");
+}
+
+#[gpui::test]
+fn a_login_is_answered_from_the_card_without_opening_the_browser(cx: &mut TestAppContext) {
+    let (view, cx, mut wired) = open(cx);
+    wired.updates.send(Update::Connected).expect("sent");
+    browser_state(
+        &view,
+        cx,
+        &wired,
+        serde_json::json!({
+            "mode": "agent",
+            "login": {"id": 4, "origin": "https://shop.example.com"}
+        }),
+    );
+    assert_eq!(asks(&view, cx), "login");
+    let windows = cx.update(|_, cx| cx.windows().len());
+
+    click(cx, "login-go");
+
+    let answered = wired.browser.try_recv().expect("an answer");
+    assert_eq!(answered["kind"], "auth");
+    assert_eq!(answered["id"], 4);
+    assert_eq!(cx.update(|_, cx| cx.windows().len()), windows);
+    assert_eq!(asks(&view, cx), "nothing", "answered once");
 }
