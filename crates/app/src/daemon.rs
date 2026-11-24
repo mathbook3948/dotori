@@ -1,7 +1,6 @@
 use std::fs;
 use std::future;
 use std::num::NonZeroUsize;
-use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -24,6 +23,7 @@ use dotori_connectors::sub_session::cli::McpServer;
 use dotori_connectors::sub_session::llm::LlmRunner;
 use dotori_connectors::tool::basic::BasicTools;
 use dotori_connectors::tool::basic::EDIT_FILE;
+use dotori_connectors::tool::basic::Private;
 use dotori_connectors::tool::basic::RUN_SHELL;
 use dotori_connectors::tool::basic::WRITE_FILE;
 use dotori_connectors::tool::basic::WithBasic;
@@ -625,7 +625,10 @@ fn basic(home: &Home, settings: &Settings) -> BasicTools {
         folder: home.work(),
         limit: SHELL_LIMIT,
         hidden_env: settings.guarded_secrets(),
-        private: home.work().parent().map(Path::to_path_buf),
+        private: home.work().parent().map(|dotori| Private {
+            folder: dotori.to_path_buf(),
+            open: home.work(),
+        }),
     }
 }
 
@@ -641,10 +644,8 @@ fn sub_session_runner(
         RunnerChoice::Llm => {
             return Ok(Arc::new(LlmRunner {
                 model: settings.sub_session_model(vault::lookup(vault))?,
-                toolbox: Arc::new(WithBasic {
-                    basic: basic(home, settings),
-                    rest: Arc::clone(toolbox),
-                }),
+                basic: basic(home, settings),
+                rest: Arc::clone(toolbox),
                 max_turns: SUB_SESSION_TURNS,
                 tool_timeout: TOOL_TIMEOUT,
             }));
