@@ -1,6 +1,6 @@
 ---
 name: gpui-design
-description: "Use for any change to how dotori's GPUI windows look or move (crates/app/src/window): colors, themes, layout, components, motion. Plans against DESIGN.md, builds with theme tokens only, then runs the real window under Xvfb and checks screenshots in every theme before calling it done."
+description: "Use for any change to how dotori's GPUI windows look or move (crates/app/src/window): colors, themes, layout, components, motion. Plans against DESIGN.md, builds with theme tokens only, then runs the real window under Xvfb and checks screenshots in every theme that exists before calling it done."
 ---
 
 # GPUI design
@@ -24,7 +24,7 @@ A value that is not a token is a new token: add it to `DESIGN.md` first, in ever
 
 ## 3. Build
 
-- Colors come only from `Theme`, whose fields follow the color tokens. Sizes, radii and gaps use the token values, never a size that is not in `DESIGN.md`.
+- Colors come only from `Theme`, whose fields follow the color tokens. Fields that still carry older names, such as `accent` for `primary`, are renamed by the change that moves a window. Sizes, radii and gaps use the token values, never a size that is not in `DESIGN.md`.
 - Motion uses GPUI's `with_animation` with the duration of the `motion` token. `ease-out` is `ease_out_quint()` (a constructor you call) and `ease-in-out` is `ease_in_out`. Nothing bounces.
 - A state that waits on a disk or the network is drawn at once as waiting, and the work runs off the drawing thread.
 - No status dots, no borders on cards or buttons, no gradients, glass, glows, sparkles or emoji icons, no colored side stripes.
@@ -47,7 +47,7 @@ For each screenshot, check and write down:
 
 - the Do's and Don'ts of `DESIGN.md`, one by one;
 - text contrast against its background, 4.5:1 at least;
-- one accent per screen, on the most likely action;
+- `primary` fills only the action the owner most likely takes next, and colors no text on the canvas;
 - alignment and spacing on the token scale;
 - Korean lines break between words.
 
