@@ -20,6 +20,7 @@ use tokio::process::Command;
 use tokio::time;
 
 use super::SUB_SESSION_SYSTEM;
+use crate::process::Tree;
 
 const TOKEN_VARIABLE: &str = "DOTORI_MCP_TOKEN";
 const SHOWN_ERROR: usize = 2000;
@@ -73,30 +74,6 @@ impl CodingAgent {
                 candidate.is_file().then_some(candidate)
             })
         })
-    }
-}
-
-struct Tree(Option<u32>);
-
-impl Drop for Tree {
-    fn drop(&mut self) {
-        let Some(id) = self.0 else {
-            return;
-        };
-        let mut kill = if cfg!(windows) {
-            let mut kill = std::process::Command::new("taskkill");
-            kill.args(["/T", "/F", "/PID", &id.to_string()]);
-            kill
-        } else {
-            let mut kill = std::process::Command::new("kill");
-            kill.args(["-KILL", "--", &format!("-{id}")]);
-            kill
-        };
-        let _ = kill
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
     }
 }
 
