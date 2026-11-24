@@ -647,3 +647,30 @@ async fn logins_from_one_browser_are_taken_when_another_starts() {
     take_logins(&running.cdp, &logins).await;
     assert!(into.exists(), "a copy already taken is not taken twice");
 }
+
+const FRAMED: &str = "data:text/html,<html><head><title>Framed</title></head><body><h1>Outer</h1>\
+<iframe title=Inside srcdoc=\"<p>Read me</p><button>Pay</button>\"></iframe>\
+<iframe title=Elsewhere src=\"data:text/html,<p>Secret</p>\"></iframe></body></html>";
+
+#[tokio::test]
+#[ignore = "starts a real Chrome; set DOTORI_TEST_CHROME or let it download one"]
+async fn a_frame_from_the_same_page_is_read_and_one_from_elsewhere_is_named() {
+    let browser = browser();
+    let running = browser.page().await.expect("started");
+    let page = Page { running: &running };
+    page.go(FRAMED).await.expect("opened");
+    page.settle().await.expect("settled");
+
+    let shown = page.snapshot().await.expect("read");
+
+    assert!(shown.contains("[frame: Inside]"), "{shown}");
+    assert!(shown.contains("Read me"), "{shown}");
+    assert!(shown.contains("- button: Pay"), "{shown}");
+    assert!(shown.contains("[end of frame]"), "{shown}");
+    assert!(
+        shown.contains("[frame: Elsewhere, from another site, not read]"),
+        "{shown}"
+    );
+    let body = shown.split_once("\n\n").expect("a body").1;
+    assert!(!body.contains("Secret"), "{body}");
+}
