@@ -328,6 +328,7 @@ fn panicking_sub_session_is_reported_as_failed() {
                 actions: vec![Action::Delegate(SubSessionSpec {
                     title: String::from("research"),
                     brief: String::from("look into it"),
+                    folder: None,
                 })],
                 trace: None,
             },
@@ -411,6 +412,7 @@ fn shutdown_returns_while_a_model_call_and_a_sub_session_hang() {
                     actions: vec![Action::Delegate(SubSessionSpec {
                         title: String::from("research"),
                         brief: String::from("look into it"),
+                        folder: None,
                     })],
                     trace: None,
                 })
@@ -744,6 +746,7 @@ fn work_cut_off_by_a_restart_is_reported_as_stopped() {
         let research = SubSessionSpec {
             title: String::from("research"),
             brief: String::from("look into it"),
+            folder: None,
         };
         let store = Arc::new(MemoryStore::default());
         store.records.lock().expect("unpoisoned").extend([

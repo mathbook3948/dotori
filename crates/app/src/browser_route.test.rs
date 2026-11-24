@@ -138,6 +138,18 @@ mod linked {
         (route, linked)
     }
 
+    async fn learns_main(learner: &Linked, main: &Linked) {
+        let mut holder = learner.keeper.watch("main").expect("watched");
+        let key = main.own.clone();
+        time::timeout(
+            Duration::from_secs(30),
+            holder.wait_for(|holder| holder.as_deref() == Some(key.as_str())),
+        )
+        .await
+        .expect("the PC with the browser learns who runs the main session in time")
+        .expect("watched");
+    }
+
     #[tokio::test]
     async fn a_browser_call_runs_on_the_pc_with_the_browser_and_other_tools_run_here() {
         let b_config = config("b", true);
@@ -168,6 +180,7 @@ mod linked {
         .await
         .expect("a learns b holds the browser in time")
         .expect("watched");
+        learns_main(&b, &a).await;
 
         let mut browser = call("browser_run");
         browser.input = String::from(r#"{"code":"1"}"#);
@@ -237,6 +250,7 @@ mod linked {
         .await
         .expect("a learns b holds the browser in time")
         .expect("watched");
+        learns_main(&b, &a).await;
 
         let gave_up = time::timeout(Duration::from_secs(1), a_route.run(call("browser_run"))).await;
         assert!(

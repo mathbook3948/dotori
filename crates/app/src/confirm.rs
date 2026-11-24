@@ -119,6 +119,15 @@ impl Asking {
         }
     }
 
+    /// Lets every call still waiting lapse, as when this PC takes up the main session again: a
+    /// card from before shows it can no longer be done.
+    pub(crate) fn lapse_waiting(&self) {
+        self.waiting
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
+    }
+
     /// Runs or drops the call `id` as the owner decided, and says what came of it. A call decided
     /// already, as by a second click, gives `None`. A call this dotori never asked about, as one
     /// from before it started again, is shown to have lapsed.

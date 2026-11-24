@@ -98,6 +98,7 @@ async fn a_run_returns_the_agent_answer_and_its_failures() {
     let spec = |title: &str| SubSessionSpec {
         title: String::from(title),
         brief: String::from("Do it."),
+        folder: None,
     };
     let done = runner.run(spec("hi")).await;
     assert!(
@@ -108,6 +109,89 @@ async fn a_run_returns_the_agent_answer_and_its_failures() {
     assert!(
         matches!(&failed, SubSessionOutcome::Failed(text) if text.contains("broken")),
         "{failed:?}"
+    );
+    let _ = std::fs::remove_dir_all(&folder);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_job_about_a_folder_starts_the_agent_there_and_a_missing_one_is_refused() {
+    use std::os::unix::fs::PermissionsExt;
+    let folder = std::env::temp_dir().join(format!("dotori-cli-folder-{}", std::process::id()));
+    let project = folder.join("project");
+    std::fs::create_dir_all(&project).expect("made");
+    let script = folder.join("fake-claude");
+    std::fs::write(
+        &script,
+        "#!/bin/sh\nprintf '{\"is_error\":false,\"result\":\"%s\"}' \"$(pwd)\"\n",
+    )
+    .expect("written");
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("runnable");
+    let runner = CliRunner {
+        agent: CodingAgent::ClaudeCode,
+        program: script,
+        folder: folder.join(".local").join("dotori").join("work"),
+        mcp: None,
+        limit: Duration::from_secs(10),
+        hidden_env: Vec::new(),
+    };
+    let spec = |at: Option<&Path>| SubSessionSpec {
+        title: String::from("t"),
+        brief: String::from("b"),
+        folder: at.map(|at| at.display().to_string()),
+    };
+
+    let there = runner.run(spec(Some(&project))).await;
+    let here = runner.run(spec(None)).await;
+    let missing = runner.run(spec(Some(&folder.join("nowhere")))).await;
+    let relative = runner.run(spec(Some(Path::new("project")))).await;
+    std::fs::create_dir_all(folder.join(".secret").join("keys")).expect("made");
+    std::fs::create_dir_all(folder.join(".local").join("dotori").join("record")).expect("made");
+    std::fs::create_dir_all(
+        folder
+            .join(".local")
+            .join("dotori")
+            .join("work")
+            .join("scratch"),
+    )
+    .expect("made");
+    let hidden = runner
+        .run(spec(Some(&folder.join(".secret").join("keys"))))
+        .await;
+    let dotori = runner
+        .run(spec(Some(
+            &folder.join(".local").join("dotori").join("record"),
+        )))
+        .await;
+    let scratch = runner
+        .run(spec(Some(
+            &folder
+                .join(".local")
+                .join("dotori")
+                .join("work")
+                .join("scratch"),
+        )))
+        .await;
+    let root = runner.run(spec(Some(Path::new("/")))).await;
+
+    let canonical = |path: &Path| path.canonicalize().expect("exists").display().to_string();
+    assert!(
+        matches!(&there, SubSessionOutcome::Finished(text) if *text == canonical(&project)),
+        "{there:?}"
+    );
+    assert!(
+        matches!(&here, SubSessionOutcome::Finished(text) if *text == canonical(&folder.join(".local").join("dotori").join("work"))),
+        "{here:?}"
+    );
+    for refused in [missing, relative, hidden, dotori, root] {
+        assert!(
+            matches!(&refused, SubSessionOutcome::Failed(text) if text.contains("not a folder")),
+            "{refused:?}"
+        );
+    }
+    assert!(
+        matches!(&scratch, SubSessionOutcome::Finished(text) if text.ends_with("scratch")),
+        "{scratch:?}"
     );
     let _ = std::fs::remove_dir_all(&folder);
 }
@@ -141,6 +225,7 @@ async fn a_run_past_its_limit_ends_with_everything_it_started() {
         .run(SubSessionSpec {
             title: String::from("slow"),
             brief: String::from("Wait."),
+            folder: None,
         })
         .await;
     assert!(
@@ -177,10 +262,27 @@ async fn a_server_that_is_down_fails_the_run_before_it_starts() {
         .run(SubSessionSpec {
             title: String::from("t"),
             brief: String::from("b"),
+            folder: None,
         })
         .await;
     assert!(
         matches!(&outcome, SubSessionOutcome::Failed(text) if text.contains("it crashed")),
         "{outcome:?}"
+    );
+}
+
+#[test]
+fn a_verbatim_windows_path_starts_the_agent_as_a_plain_one() {
+    assert_eq!(
+        plain(PathBuf::from(r"\\?\C:\Users\me\project")),
+        PathBuf::from(r"C:\Users\me\project")
+    );
+    assert_eq!(
+        plain(PathBuf::from(r"\\?\UNC\server\share")),
+        PathBuf::from(r"\\?\UNC\server\share")
+    );
+    assert_eq!(
+        plain(PathBuf::from("/home/me/project")),
+        PathBuf::from("/home/me/project")
     );
 }

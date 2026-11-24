@@ -60,3 +60,61 @@ async fn alone_this_pc_always_runs_the_main_session() {
     let lost = tokio::time::timeout(std::time::Duration::from_millis(50), lost(None)).await;
     assert!(lost.is_err());
 }
+
+struct Echo;
+
+impl Toolbox for Echo {
+    fn specs(&self) -> Vec<ToolSpec> {
+        Vec::new()
+    }
+
+    fn run(&self, call: ToolCall) -> BoxFuture<'_, Result<String, ToolError>> {
+        Box::pin(async move { Ok(call.name) })
+    }
+}
+
+fn call() -> ToolCall {
+    ToolCall {
+        id: dotori_core::tool::ToolCallId::new("c1"),
+        name: String::from("mail__send"),
+        input: String::from("{}"),
+    }
+}
+
+#[tokio::test]
+async fn a_pc_that_does_not_run_the_main_session_calls_no_tool() {
+    let folder = std::env::temp_dir().join(format!("dotori-fence-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&folder);
+    std::fs::create_dir_all(&folder).expect("folder");
+    let config = dotori_connectors::peer::hub::HubConfig {
+        identity: dotori_connectors::peer::Identity::load_or_make(&folder.join("peer.key"))
+            .expect("key"),
+        device: String::from("here"),
+        name: String::from("here"),
+        address: None,
+        listen: None,
+        book: folder.join("peers.json"),
+        invite: folder.join("invite.json"),
+        seen: folder.join("peers-seen.json"),
+    };
+    let (hub, _heard) = Hub::start(config).await.expect("started");
+    let linked = Linked {
+        keeper: Keeper::start(Arc::clone(&hub), String::from("here"), &[]),
+        hub,
+        own: String::from("here"),
+    };
+
+    let alone = FencedTools {
+        tools: Arc::new(Echo),
+        linked: None,
+    };
+    assert_eq!(alone.run(call()).await.expect("ran"), "mail__send");
+    let fenced = FencedTools {
+        tools: Arc::new(Echo),
+        linked: Some(linked),
+    };
+    let refused = fenced.run(call()).await.expect_err("refused");
+    assert!(refused.detail.contains("another PC"), "{}", refused.detail);
+
+    let _ = std::fs::remove_dir_all(folder);
+}

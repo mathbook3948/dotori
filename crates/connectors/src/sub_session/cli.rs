@@ -24,6 +24,7 @@ use super::SUB_SESSION_SYSTEM;
 const TOKEN_VARIABLE: &str = "DOTORI_MCP_TOKEN";
 const SHOWN_ERROR: usize = 2000;
 const TEXT_FILE_BUSY: i32 = if cfg!(unix) { 26 } else { -1 };
+const PRIVATE: [&str; 2] = ["AppData", "Library"];
 const BUSY_TRIES: u32 = 20;
 const BUSY_WAIT: std::time::Duration = std::time::Duration::from_millis(50);
 
@@ -138,8 +139,17 @@ impl CliRunner {
     }
 
     async fn attempt(&self, spec: SubSessionSpec) -> Result<SubSessionOutcome, String> {
-        std::fs::create_dir_all(&self.folder)
-            .map_err(|error| format!("cannot make {}: {error}", self.folder.display()))?;
+        let folder = match spec.folder.as_deref().map(PathBuf::from) {
+            Some(asked) => match self.allowed(&asked) {
+                Ok(folder) => folder,
+                Err(refused) => return Ok(SubSessionOutcome::Failed(refused)),
+            },
+            None => {
+                std::fs::create_dir_all(&self.folder)
+                    .map_err(|error| format!("cannot make {}: {error}", self.folder.display()))?;
+                self.folder.clone()
+            }
+        };
         let address = match &self.mcp {
             Some(mcp) => Some(
                 mcp.address()
@@ -162,7 +172,7 @@ impl CliRunner {
         let mut command = Command::new(&self.program);
         command
             .args(arguments(self.agent, address.as_ref(), &last.0))
-            .current_dir(&self.folder)
+            .current_dir(&folder)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -225,6 +235,60 @@ impl CliRunner {
             },
         })
     }
+}
+
+impl CliRunner {
+    fn allowed(&self, asked: &Path) -> Result<PathBuf, String> {
+        let shown = asked.display();
+        if !asked.is_absolute() {
+            return Err(format!(
+                "{shown} is not a folder on this PC: give the whole path"
+            ));
+        }
+        let folder = asked
+            .canonicalize()
+            .ok()
+            .filter(|folder| folder.is_dir())
+            .ok_or_else(|| format!("{shown} is not a folder on this PC"))?;
+        let own = self.folder.canonicalize().ok();
+        if own.as_ref().is_some_and(|own| folder.starts_with(own)) {
+            return Ok(plain(folder));
+        }
+        let hidden = folder.components().any(|part| match part {
+            std::path::Component::Normal(name) => name.to_string_lossy().starts_with('.'),
+            _ => false,
+        });
+        let private = ["HOME", "USERPROFILE"]
+            .into_iter()
+            .filter_map(std::env::var_os)
+            .filter_map(|home| PathBuf::from(home).canonicalize().ok())
+            .any(|home| {
+                home.starts_with(&folder)
+                    || PRIVATE
+                        .iter()
+                        .any(|name| folder.starts_with(home.join(name)))
+            });
+        let dotori = self
+            .folder
+            .parent()
+            .and_then(|root| root.canonicalize().ok())
+            .is_some_and(|root| folder.starts_with(&root));
+        if hidden || private || dotori || folder.parent().is_none() {
+            return Err(format!(
+                "{shown} is not a folder a coding agent may work in: pick the project folder itself"
+            ));
+        }
+        Ok(plain(folder))
+    }
+}
+
+fn plain(folder: PathBuf) -> PathBuf {
+    let stripped = folder
+        .to_string_lossy()
+        .strip_prefix(r"\\?\")
+        .filter(|rest| !rest.starts_with("UNC\\"))
+        .map(PathBuf::from);
+    stripped.unwrap_or(folder)
 }
 
 impl SubSessionRunner for CliRunner {

@@ -61,6 +61,7 @@ impl Harness {
         self.model_answers(vec![Action::Delegate(SubSessionSpec {
             title: String::from("booking"),
             brief: String::from("book a table for two"),
+            folder: None,
         })]);
         self.effects
             .iter()
@@ -505,6 +506,7 @@ fn sub_session_outcome_joins_the_next_call() {
     h.model_answers(vec![Action::Delegate(SubSessionSpec {
         title: String::from("booking"),
         brief: String::from("book a table for two"),
+        folder: None,
     })]);
     let sub_session = h
         .effects

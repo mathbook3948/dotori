@@ -21,6 +21,10 @@ use dotori_core::channel::Traffic;
 use dotori_core::id::ChannelId;
 use dotori_core::message::Incoming;
 use dotori_core::message::Place;
+use dotori_core::tool::ToolCall;
+use dotori_core::tool::ToolError;
+use dotori_core::tool::ToolSpec;
+use dotori_core::tool::Toolbox;
 use serde_json::Value;
 use serde_json::json;
 use tokio::sync::broadcast::error::RecvError;
@@ -216,6 +220,30 @@ impl Channel for Fenced {
 
     fn private_place(&self) -> Place {
         self.channel.private_place()
+    }
+}
+
+/// The main session's tools, which run only while this PC still runs the main session, so a PC
+/// that lost it never acts for the owner.
+pub(crate) struct FencedTools {
+    pub(crate) tools: Arc<dyn Toolbox>,
+    pub(crate) linked: Option<Linked>,
+}
+
+impl Toolbox for FencedTools {
+    fn specs(&self) -> Vec<ToolSpec> {
+        self.tools.specs()
+    }
+
+    fn run(&self, call: ToolCall) -> BoxFuture<'_, Result<String, ToolError>> {
+        if let Err(error) = still_main(self.linked.as_ref()) {
+            return Box::pin(async move {
+                Err(ToolError {
+                    detail: error.detail,
+                })
+            });
+        }
+        self.tools.run(call)
     }
 }
 

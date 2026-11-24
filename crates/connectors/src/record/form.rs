@@ -111,6 +111,8 @@ enum ActionForm {
 struct SpecForm {
     title: String,
     brief: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    folder: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -247,6 +249,7 @@ fn spec_form(spec: &SubSessionSpec) -> SpecForm {
     SpecForm {
         title: spec.title.clone(),
         brief: spec.brief.clone(),
+        folder: spec.folder.clone(),
     }
 }
 
@@ -348,6 +351,7 @@ fn spec_of(form: SpecForm) -> SubSessionSpec {
     SubSessionSpec {
         title: form.title,
         brief: form.brief,
+        folder: form.folder,
     }
 }
 

@@ -231,6 +231,7 @@ fn a_tool_or_sub_session_result_after_the_owner_spoke_closes_the_notes() {
         spec: SubSessionSpec {
             title: String::from("t"),
             brief: String::from("b"),
+            folder: None,
         },
         outcome: SubSessionOutcome::Finished(String::from("remember this")),
     };
