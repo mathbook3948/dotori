@@ -53,7 +53,6 @@ fn main() {
                         "kind": "state",
                         "mode": "owner",
                         "url": "https://shop.example.com/login",
-                        "asked": asked,
                     });
                     let _ = writeln!(write, "{owner}");
                     let _ = writeln!(write, "{frame}");

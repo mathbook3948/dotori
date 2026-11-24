@@ -395,7 +395,6 @@ fn dotori_starting_work_keeps_a_long_conversation_at_its_end(cx: &mut TestAppCon
 fn asks(view: &Entity<ChatView>, cx: &mut VisualTestContext) -> &'static str {
     view.read_with(cx, |view, cx| match view.browser_ask(cx) {
         None => "nothing",
-        Some(BrowserAsk::Elsewhere(_)) => "elsewhere",
         Some(BrowserAsk::Opened) => "opened",
         Some(BrowserAsk::Login { .. }) => "login",
         Some(BrowserAsk::Page { .. }) => "page",
@@ -443,6 +442,24 @@ fn the_browser_asks_with_a_card_and_opens_in_a_window_of_its_own(cx: &mut TestAp
         Some(serde_json::json!({"kind": "take"}))
     );
     assert_eq!(asks(&view, cx), "opened", "the card follows the window");
+
+    browser_state(&view, cx, &wired, serde_json::json!({"mode": "owner"}));
+    assert_eq!(
+        asks(&view, cx),
+        "opened",
+        "the daemon drops the ask once the owner has the browser"
+    );
+
+    let browser = view
+        .read_with(cx, |view, _| view.browser)
+        .expect("a window");
+    let _ = cx.update(|_, cx| browser.update(cx, |_, window, _| window.remove_window()));
+    cx.run_until_parked();
+    assert_eq!(
+        asks(&view, cx),
+        "nothing",
+        "closing the window ends the card"
+    );
 }
 
 #[gpui::test]
@@ -466,6 +483,65 @@ fn later_puts_the_card_away_until_dotori_asks_something_else(cx: &mut TestAppCon
         serde_json::json!({"mode": "agent", "asked": "캡차를 풀어 주세요"}),
     );
     assert_eq!(asks(&view, cx), "page");
+
+    click(cx, "browser-later");
+    browser_state(&view, cx, &wired, serde_json::json!({"mode": "agent"}));
+    browser_state(
+        &view,
+        cx,
+        &wired,
+        serde_json::json!({"mode": "agent", "asked": "캡차를 풀어 주세요"}),
+    );
+    assert_eq!(
+        asks(&view, cx),
+        "page",
+        "the same words asked again show again"
+    );
+}
+
+#[gpui::test]
+fn dotori_still_shows_it_works_after_the_owner_puts_the_card_away(cx: &mut TestAppContext) {
+    let (view, cx, wired) = open(cx);
+    for update in [
+        Update::Connected,
+        Update::Event(ToWindow::Live),
+        Update::Event(ToWindow::Working { busy: true }),
+    ] {
+        wired.updates.send(update).expect("sent");
+    }
+    browser_state(
+        &view,
+        cx,
+        &wired,
+        serde_json::json!({"mode": "agent", "asked": "인증 문자를 넣어 주세요"}),
+    );
+    view.read_with(cx, |view, _| {
+        assert!(!view.shows_working(), "the card asks instead")
+    });
+
+    click(cx, "browser-later");
+
+    view.read_with(cx, |view, _| assert!(view.shows_working()));
+}
+
+#[gpui::test]
+fn a_dropped_browser_asks_nothing(cx: &mut TestAppContext) {
+    let (view, cx, wired) = open(cx);
+    wired.updates.send(Update::Connected).expect("sent");
+    browser_state(
+        &view,
+        cx,
+        &wired,
+        serde_json::json!({"mode": "agent", "asked": "로그인해 주세요"}),
+    );
+
+    wired
+        .shown
+        .send(crate::screen_link::Seen::Down)
+        .expect("sent");
+    cx.run_until_parked();
+
+    assert_eq!(asks(&view, cx), "nothing");
 }
 
 #[gpui::test]

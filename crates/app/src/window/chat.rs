@@ -70,6 +70,7 @@ const COPIED_FOR: Duration = Duration::from_millis(1500);
 const SHOWN_VALUE: usize = 600;
 const BOTTOM_SLACK: f32 = 8.;
 const TURN_SPACE: f32 = 18.;
+const PREVIEW_EVERY: Duration = Duration::from_millis(500);
 const EDGE: f32 = 20.;
 const WORKING_ROW: f32 = 20.;
 
@@ -96,8 +97,10 @@ pub(crate) struct ChatView {
     rows: Entity<Rows>,
     working: Entity<WorkingView>,
     browser: Option<WindowHandle<BrowserWindow>>,
-    browser_asks: bool,
-    asked_seen: Option<SharedString>,
+    card: CardKey,
+    card_picture: Option<usize>,
+    preview_at: Option<Instant>,
+    preview_pending: bool,
     dismissed: Option<SharedString>,
     preview: Option<Arc<RenderImage>>,
     _uncopy: Option<Task<()>>,
@@ -114,22 +117,15 @@ impl ChatView {
     pub(crate) fn new(link: Link, screen: ScreenLink, cx: &mut Context<Self>) -> Self {
         let Link { mut updates, say } = link;
         let screen = cx.new(|cx| ScreenView::new(screen, cx));
-        cx.observe(&screen, |view, screen, cx| {
-            let screen = screen.read(cx);
-            let asks = screen.asking();
-            let asked = screen.asked();
-            let live_preview = asks && screen.login().is_none() && !view.browser_open(cx);
-            if live_preview || asks != view.browser_asks || asked != view.asked_seen {
-                if asks
-                    && (asks != view.browser_asks || asked != view.asked_seen)
-                    && view.at_bottom()
-                {
-                    view.follow = Some((Instant::now(), 0.0));
-                }
-                view.browser_asks = asks;
-                view.asked_seen = asked;
-                cx.notify();
-            }
+        cx.observe(&screen, |view, _, cx| view.screen_changed(cx))
+            .detach();
+        let closed = cx.entity().downgrade();
+        cx.on_window_closed(move |cx| {
+            let closed = closed.clone();
+            cx.spawn(async move |cx| {
+                let _ = closed.update(cx, |view, cx| view.screen_changed(cx));
+            })
+            .detach();
         })
         .detach();
         let chat = cx.entity();
@@ -173,8 +169,10 @@ impl ChatView {
             rows,
             working,
             browser: None,
-            browser_asks: false,
-            asked_seen: None,
+            card: CardKey::default(),
+            card_picture: None,
+            preview_at: None,
+            preview_pending: false,
             dismissed: None,
             preview: None,
             _uncopy: None,
@@ -279,7 +277,7 @@ impl ChatView {
     fn shows_working(&self) -> bool {
         self.busy
             && matches!(self.link, LinkState::Connected)
-            && !self.browser_asks
+            && self.card.kind.is_none()
             && !self.waits_on_the_owner()
     }
 
@@ -853,7 +851,7 @@ impl ChatView {
 
     fn open_browser(&mut self, take: bool, cx: &mut Context<Self>) {
         self.browser = browser::show(self.browser, &self.screen, take, cx);
-        cx.notify();
+        self.screen_changed(cx);
     }
 
     fn close_browser(&mut self, cx: &mut Context<Self>) {
@@ -861,19 +859,61 @@ impl ChatView {
         if let Some(open) = self.browser.take() {
             let _ = open.update(cx, |_, window, _| window.remove_window());
         }
-        cx.notify();
+        self.screen_changed(cx);
+    }
+
+    fn screen_changed(&mut self, cx: &mut Context<Self>) {
+        let asked = self.screen.read(cx).asked();
+        if self.dismissed.is_some() && asked != self.dismissed {
+            self.dismissed = None;
+        }
+        let ask = self.browser_ask(cx);
+        let key = CardKey::of(ask.as_ref());
+        let picture = match &ask {
+            Some(BrowserAsk::Page {
+                picture: Some(picture),
+                ..
+            }) => Some(Arc::as_ptr(picture) as usize),
+            _ => None,
+        };
+        if key != self.card {
+            if key.kind.is_some() && self.at_bottom() {
+                self.follow = Some((Instant::now(), 0.0));
+            }
+            self.card = key;
+            self.card_picture = picture;
+            self.preview_at = Some(Instant::now());
+            cx.notify();
+            return;
+        }
+        if picture == self.card_picture || self.preview_pending {
+            return;
+        }
+        let waited = self.preview_at.map_or(PREVIEW_EVERY, |at| at.elapsed());
+        if waited >= PREVIEW_EVERY {
+            self.card_picture = picture;
+            self.preview_at = Some(Instant::now());
+            cx.notify();
+            return;
+        }
+        self.preview_pending = true;
+        cx.spawn(async move |view, cx| {
+            cx.background_executor().timer(PREVIEW_EVERY - waited).await;
+            let _ = view.update(cx, |view, cx| {
+                view.preview_pending = false;
+                view.screen_changed(cx);
+            });
+        })
+        .detach();
     }
 
     fn browser_ask(&self, cx: &App) -> Option<BrowserAsk> {
+        if self.browser_open(cx) {
+            return Some(BrowserAsk::Opened);
+        }
         let screen = self.screen.read(cx);
         if !screen.asking() {
             return None;
-        }
-        if let Some((pc, _)) = self.browser_at.clone().filter(|(_, here)| !here) {
-            return Some(BrowserAsk::Elsewhere(pc));
-        }
-        if self.browser_open(cx) {
-            return Some(BrowserAsk::Opened);
         }
         if let Some((site, again, name, secret)) = screen.login() {
             return Some(BrowserAsk::Login {
@@ -914,16 +954,15 @@ impl ChatView {
             }
             self.preview = shown_picture.clone();
         }
-        let (elsewhere, opened, login, asked) = match ask? {
-            BrowserAsk::Elsewhere(pc) => (Some(pc), false, None, None),
-            BrowserAsk::Opened => (None, true, None, None),
+        let (opened, login, asked) = match ask? {
+            BrowserAsk::Opened => (true, None, None),
             BrowserAsk::Login {
                 site,
                 again,
                 name,
                 secret,
-            } => (None, false, Some((site, again, name, secret)), None),
-            BrowserAsk::Page { asked, .. } => (None, false, None, Some(asked)),
+            } => (false, Some((site, again, name, secret)), None),
+            BrowserAsk::Page { asked, .. } => (false, None, Some(asked)),
         };
         let button = |id: &'static str, label: &'static str, primary: bool| {
             div()
@@ -961,18 +1000,6 @@ impl ChatView {
                 .bg(fill)
         };
         let title = |words: SharedString| div().font_weight(FontWeight::SEMIBOLD).child(words);
-        if let Some(pc) = elsewhere {
-            return Some(
-                card(theme.surface)
-                    .child(title(SharedString::from(format!(
-                        "{pc}의 브라우저에서 마저 해 주세요"
-                    ))))
-                    .child(div().text_color(theme.muted).child(prose(&format!(
-                        "dotori는 로그인을 한곳에 모으려고 브라우저를 {pc}에서만 열어요."
-                    ))))
-                    .into_any_element(),
-            );
-        }
         if opened {
             return Some(
                 card(theme.surface)
@@ -1138,7 +1165,7 @@ impl ChatView {
                             button("browser-later", "나중에", false).on_click(cx.listener(
                                 move |view, _: &ClickEvent, _, cx| {
                                     view.dismissed = Some(later.clone());
-                                    cx.notify();
+                                    view.screen_changed(cx);
                                 },
                             )),
                         )
@@ -1353,7 +1380,6 @@ fn entering(row: Div, progress: f32) -> Div {
 }
 
 enum BrowserAsk {
-    Elsewhere(String),
     Opened,
     Login {
         site: String,
@@ -1365,6 +1391,35 @@ enum BrowserAsk {
         asked: SharedString,
         picture: Option<Arc<RenderImage>>,
     },
+}
+
+#[derive(Clone, Default, PartialEq)]
+struct CardKey {
+    kind: Option<&'static str>,
+    asked: Option<SharedString>,
+    login: Option<(String, bool)>,
+}
+
+impl CardKey {
+    fn of(ask: Option<&BrowserAsk>) -> Self {
+        match ask {
+            None => Self::default(),
+            Some(BrowserAsk::Opened) => Self {
+                kind: Some("opened"),
+                ..Self::default()
+            },
+            Some(BrowserAsk::Login { site, again, .. }) => Self {
+                kind: Some("login"),
+                asked: None,
+                login: Some((site.clone(), *again)),
+            },
+            Some(BrowserAsk::Page { asked, .. }) => Self {
+                kind: Some("page"),
+                asked: Some(asked.clone()),
+                login: None,
+            },
+        }
+    }
 }
 
 struct Rows {

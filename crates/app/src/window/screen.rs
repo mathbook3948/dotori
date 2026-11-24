@@ -1,4 +1,4 @@
-//! The browser tab of the chat window: dotori's browser as it is now, where dotori clicks, and the
+//! dotori's browser in a window of its own: the page as it is now, where dotori clicks, and the
 //! owner's own mouse and keys once they take it over. Typed text arrives as the OS input method
 //! composed it, so every language is handled the same way.
 
@@ -131,12 +131,27 @@ impl ScreenView {
 
     /// Whether dotori asked the owner to do something in the browser or to log in.
     pub(crate) fn asking(&self) -> bool {
-        self.asked.is_some() || self.asked_login.is_some()
+        !self.down && (self.asked.is_some() || self.asked_login.is_some() || self.wants_files())
     }
 
-    /// What dotori asked the owner to do in the browser, if anything.
+    fn wants_files(&self) -> bool {
+        self.picker
+            .as_ref()
+            .and_then(|picker| picker.get("kind"))
+            .and_then(Value::as_str)
+            == Some("files")
+    }
+
+    /// What dotori asked the owner to do in the browser, if anything, or that the page wants a
+    /// file only the owner can pick.
     pub(crate) fn asked(&self) -> Option<SharedString> {
-        self.asked.clone()
+        if self.down {
+            return None;
+        }
+        self.asked.clone().or_else(|| {
+            self.wants_files()
+                .then(|| SharedString::new_static("페이지가 파일을 골라 달라고 해요"))
+        })
     }
 
     /// The page as dotori's browser shows it now.

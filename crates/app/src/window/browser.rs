@@ -70,7 +70,11 @@ pub(crate) fn show(
     cx.open_window(options, |window, cx| {
         let closing = screen.clone();
         window.on_window_should_close(cx, move |_, cx| {
-            closing.update(cx, |screen, cx| screen.hand_back(cx));
+            let closing = closing.clone();
+            cx.spawn(async move |cx| {
+                let _ = closing.update(cx, |screen, cx| screen.hand_back(cx));
+            })
+            .detach();
             true
         });
         if take {
