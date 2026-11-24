@@ -45,6 +45,8 @@ pub(crate) enum Event {
     SubSessionReturned {
         spec: SubSessionSpec,
         outcome: SubSessionOutcome,
+        record: bool,
+        ack: u64,
     },
     Shutdown {
         handing_off: bool,

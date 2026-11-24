@@ -31,6 +31,7 @@ use crate::message::Place;
 use crate::message::Role;
 use crate::message::Sender;
 use crate::record::Record;
+use crate::runtime::Delivered;
 use crate::runtime::fakes::FakeChannel;
 use crate::runtime::fakes::FakeChannelProbe;
 use crate::runtime::fakes::FnModel;
@@ -910,7 +911,7 @@ fn a_sub_session_still_running_when_the_main_session_stops_is_recorded_as_stoppe
 }
 
 #[test]
-fn a_result_the_main_pc_recorded_closes_a_sub_session_handed_off_to_it() {
+fn a_result_another_pc_recorded_does_not_close_work_started_here() {
     block_on(async {
         let research = SubSessionSpec {
             title: String::from("research"),
@@ -929,7 +930,7 @@ fn a_result_the_main_pc_recorded_closes_a_sub_session_handed_off_to_it() {
             }),
             record(Entry::SubSessionReturned {
                 spec: research,
-                outcome: SubSessionOutcome::Finished(String::from("found it")),
+                outcome: SubSessionOutcome::Finished(String::from("theirs")),
             }),
         ]);
         let (app, probe) = FakeChannel::new("app");
@@ -948,10 +949,20 @@ fn a_result_the_main_pc_recorded_closes_a_sub_session_handed_off_to_it() {
         let request = next(&mut asked).await;
         agent.shutdown().await;
 
-        assert!(
-            matches!(sub_session_outcome(&request), Some(SubSessionOutcome::Finished(text)) if text == "found it"),
-            "the real result stands and nothing is closed again"
-        );
+        let stopped = request
+            .conversation
+            .iter()
+            .filter(|entry| {
+                matches!(
+                    entry,
+                    Entry::SubSessionReturned {
+                        outcome: SubSessionOutcome::Failed(_),
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(stopped, 1, "this PC still closes its own delegation");
     });
 }
 
@@ -1013,14 +1024,16 @@ fn handing_off_leaves_running_sub_sessions_open_and_their_results_come_in_later(
             Agent::spawn_continuing(config(Duration::from_secs(1)), ports, vec![long.clone()])
                 .await
                 .expect("valid");
-        assert!(
+        assert_eq!(
             agent
                 .returns()
                 .deliver(
-                    long,
-                    SubSessionOutcome::Finished(String::from("done at last"))
+                    long.clone(),
+                    SubSessionOutcome::Finished(String::from("done at last")),
+                    true
                 )
-                .await
+                .await,
+            Delivered::Taken
         );
         let request = next(&mut asked).await;
         drop(probe);
@@ -1035,5 +1048,76 @@ fn handing_off_leaves_running_sub_sessions_open_and_their_results_come_in_later(
             .filter(|entry| matches!(entry, Entry::SubSessionReturned { .. }))
             .count();
         assert_eq!(results, 1);
+    });
+}
+
+#[test]
+fn a_result_another_pc_recorded_is_shown_but_not_recorded_again_and_a_stray_one_is_refused() {
+    block_on(async {
+        let research = SubSessionSpec {
+            title: String::from("research"),
+            brief: String::from("look into it"),
+            folder: None,
+        };
+        let store = Arc::new(MemoryStore {
+            elsewhere: vec![0],
+            ..MemoryStore::default()
+        });
+        store
+            .records
+            .lock()
+            .expect("unpoisoned")
+            .push(record(Entry::Acted {
+                actions: vec![Action::Delegate(research.clone())],
+                answered: 0,
+                trace: None,
+            }));
+        let (app, _probe) = FakeChannel::new("app");
+        let (asked_tx, mut asked) = mpsc::unbounded_channel();
+        let mut ports = ports(app, Vec::new());
+        ports.model = Arc::new(model(move |request| {
+            let _ = asked_tx.send(request);
+            silence()
+        }));
+        ports.records = Arc::clone(&store) as _;
+        let agent = Agent::spawn(config(Duration::from_secs(1)), ports)
+            .await
+            .expect("valid");
+        let returns = agent.returns();
+
+        let stray = SubSessionSpec {
+            title: String::from("never asked"),
+            brief: String::from("?"),
+            folder: None,
+        };
+        assert_eq!(
+            returns
+                .deliver(stray, SubSessionOutcome::Finished(String::from("x")), false)
+                .await,
+            Delivered::NotOpen
+        );
+        assert_eq!(
+            returns
+                .deliver(
+                    research,
+                    SubSessionOutcome::Finished(String::from("from the other PC")),
+                    false
+                )
+                .await,
+            Delivered::Taken
+        );
+        let request = next(&mut asked).await;
+        agent.shutdown().await;
+
+        assert!(matches!(
+            sub_session_outcome(&request),
+            Some(SubSessionOutcome::Finished(text)) if text == "from the other PC"
+        ));
+        assert!(
+            !stored(&store)
+                .iter()
+                .any(|entry| matches!(entry, Entry::SubSessionReturned { .. })),
+            "the PC that ran it recorded it"
+        );
     });
 }

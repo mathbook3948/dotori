@@ -1,8 +1,12 @@
 use std::error::Error;
 use std::fmt;
 use std::panic;
+use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 
 use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
 use crate::agent::AgentState;
@@ -13,15 +17,19 @@ use crate::runtime::ConfigError;
 use crate::runtime::Ports;
 use crate::runtime::caught::caught;
 use crate::runtime::config::validate;
+use crate::runtime::shell::Acks;
 use crate::runtime::shell::Shell;
 use crate::sub_session::SubSessionOutcome;
 use crate::sub_session::SubSessionSpec;
+
+static NEXT_ACK: AtomicU64 = AtomicU64::new(0);
 
 /// What the app holds while the assistant runs.
 #[derive(Debug)]
 pub struct Agent {
     tx: mpsc::Sender<Event>,
     done: JoinHandle<()>,
+    acks: Acks,
 }
 
 impl Agent {
@@ -50,10 +58,17 @@ impl Agent {
             .collect();
         let state = AgentState::resume(wiring, config.seen_capacity, marked, running);
         let (tx, rx) = mpsc::channel(config.queue_capacity.get());
-        let shell = Shell::start(rx, tx.clone(), ports, config.tool_timeout);
+        let acks = Acks::default();
+        let shell = Shell::start(
+            rx,
+            tx.clone(),
+            ports,
+            config.tool_timeout,
+            Arc::clone(&acks),
+        );
         shell.record(&state.conversation[loaded..]);
         let done = tokio::spawn(shell.run(state));
-        Ok(Self { tx, done })
+        Ok(Self { tx, done, acks })
     }
 
     /// Stops taking input, waits for running tools, aborts sub-sessions and channels,
@@ -74,6 +89,7 @@ impl Agent {
     pub fn returns(&self) -> Returns {
         Returns {
             tx: self.tx.clone(),
+            acks: Arc::clone(&self.acks),
         }
     }
 
@@ -91,16 +107,58 @@ impl Agent {
 #[derive(Clone, Debug)]
 pub struct Returns {
     tx: mpsc::Sender<Event>,
+    acks: Acks,
 }
 
 impl Returns {
-    /// Gives the agent what came of `spec`. Says whether the agent was still there to take it.
-    pub async fn deliver(&self, spec: SubSessionSpec, outcome: SubSessionOutcome) -> bool {
-        self.tx
-            .send(Event::SubSessionReturned { spec, outcome })
+    /// Gives the agent what came of `spec`, which it records unless `record` is false because
+    /// the PC that ran it recorded it already.
+    pub async fn deliver(
+        &self,
+        spec: SubSessionSpec,
+        outcome: SubSessionOutcome,
+        record: bool,
+    ) -> Delivered {
+        let (waiting, taken) = oneshot::channel();
+        let ack = NEXT_ACK.fetch_add(1, Ordering::Relaxed);
+        self.acks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(ack, waiting);
+        if self
+            .tx
+            .send(Event::SubSessionReturned {
+                spec,
+                outcome,
+                record,
+                ack,
+            })
             .await
-            .is_ok()
+            .is_err()
+        {
+            self.acks
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .remove(&ack);
+            return Delivered::Gone;
+        }
+        match taken.await {
+            Ok(true) => Delivered::Taken,
+            Ok(false) => Delivered::NotOpen,
+            Err(_) => Delivered::Gone,
+        }
     }
+}
+
+/// What came of handing a result to an agent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Delivered {
+    /// The agent recorded it, or showed it when it was recorded already, and goes on.
+    Taken,
+    /// No delegation of that sub-session is open, so it was not taken.
+    NotOpen,
+    /// The agent is gone or stopping, so another may take it later.
+    Gone,
 }
 
 impl Drop for Agent {

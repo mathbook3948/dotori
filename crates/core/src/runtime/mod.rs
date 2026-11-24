@@ -11,6 +11,7 @@ pub use config::AgentConfig;
 pub use config::ConfigError;
 pub(crate) use config::Wiring;
 pub use handle::Agent;
+pub use handle::Delivered;
 pub use handle::Returns;
 pub use handle::SpawnError;
 pub use ports::Ports;

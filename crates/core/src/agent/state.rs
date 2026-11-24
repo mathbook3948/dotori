@@ -28,6 +28,7 @@ pub(crate) struct AgentState {
     pub(crate) seen: Seen,
     pub(crate) ids: Ids,
     pub(crate) handing_off: bool,
+    pub(crate) unrecorded: usize,
 }
 
 impl AgentState {
@@ -35,10 +36,9 @@ impl AgentState {
     /// arrival order, so every recorded `ThreadRef` points at the same place, and recent
     /// message ids are seen again. Work this PC started that was running when it stopped never
     /// returns, so it gets a result that says so, appended after the loaded entries. Each entry
-    /// comes with whether this PC made it; work another PC started is left to that PC. A
-    /// sub-session's result closes it wherever it was recorded, since a handed-off result is
-    /// recorded by the PC running the main session. Sub-sessions in `running` still run here and
-    /// are not closed.
+    /// comes with whether this PC made it; work another PC started, and results another PC
+    /// recorded, are left to that PC. Sub-sessions in `running` still run here and are not
+    /// closed.
     pub(crate) fn resume(
         wiring: Wiring,
         seen_capacity: NonZeroUsize,
@@ -70,7 +70,7 @@ impl AgentState {
                 Entry::ToolReturned { call, .. } if mine => {
                     tools.retain(|running| running != call);
                 }
-                Entry::SubSessionReturned { spec, .. } => {
+                Entry::SubSessionReturned { spec, .. } if mine => {
                     if let Some(index) = delegated.iter().position(|running| running == spec) {
                         delegated.remove(index);
                     }
@@ -112,6 +112,7 @@ impl AgentState {
             seen: Seen::new(seen_capacity),
             ids: Ids::default(),
             handing_off: false,
+            unrecorded: 0,
         }
     }
 }

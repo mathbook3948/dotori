@@ -11,21 +11,33 @@ fn spec(title: &str) -> SubSessionSpec {
     }
 }
 
-struct Gated {
-    gate: tokio::sync::Mutex<Option<oneshot::Receiver<()>>>,
-    finished: Arc<AtomicBool>,
-}
+struct Quick(Arc<AtomicBool>);
 
-impl SubSessionRunner for Gated {
+impl SubSessionRunner for Quick {
     fn run(&self, _spec: SubSessionSpec) -> BoxFuture<'_, SubSessionOutcome> {
         Box::pin(async move {
-            if let Some(gate) = self.gate.lock().await.take() {
-                let _ = gate.await;
-            }
-            self.finished.store(true, Ordering::SeqCst);
+            self.0.store(true, Ordering::SeqCst);
             SubSessionOutcome::Finished(String::from("done"))
         })
     }
+}
+
+struct Broken;
+
+impl SubSessionRunner for Broken {
+    fn run(&self, _spec: SubSessionSpec) -> BoxFuture<'_, SubSessionOutcome> {
+        Box::pin(async move { panic!("the runner broke") })
+    }
+}
+
+async fn until(what: &str, mut done: impl FnMut() -> bool) {
+    for _ in 0..100 {
+        if done() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("{what} did not happen in time");
 }
 
 #[test]
@@ -43,64 +55,43 @@ fn a_result_reads_back_the_same_on_the_other_pc() {
 }
 
 #[tokio::test]
-async fn work_goes_on_after_the_agent_lets_go_and_stops_only_when_dotori_does() {
+async fn a_finished_result_stays_counted_as_running_until_someone_takes_it() {
     let handoff = Arc::new(Handoff::default());
-    let (open, gate) = oneshot::channel();
     let finished = Arc::new(AtomicBool::new(false));
     let runner = HandedOff {
         handoff: Arc::clone(&handoff),
-        inner: Arc::new(Gated {
-            gate: tokio::sync::Mutex::new(Some(gate)),
-            finished: Arc::clone(&finished),
-        }),
+        inner: Arc::new(Quick(Arc::clone(&finished))),
     };
 
-    let waiting = runner.run(spec("long"));
+    let waiting = runner.run(spec("quick"));
+    until("the work", || finished.load(Ordering::SeqCst)).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
-    assert_eq!(handoff.running(), [spec("long")]);
-    drop(waiting);
-    let _ = open.send(());
-    for _ in 0..50 {
-        if finished.load(Ordering::SeqCst) {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    assert!(
-        finished.load(Ordering::SeqCst),
-        "the work outlived the agent's wait"
+
+    assert_eq!(
+        handoff.running(),
+        [spec("quick")],
+        "with no agent to take it, a new agent here must leave it open"
     );
-    assert!(handoff.running().is_empty());
-
-    let (_open, gate) = oneshot::channel::<()>();
-    let stopped = Arc::new(AtomicBool::new(false));
-    let runner = HandedOff {
-        handoff: Arc::clone(&handoff),
-        inner: Arc::new(Gated {
-            gate: tokio::sync::Mutex::new(Some(gate)),
-            finished: Arc::clone(&stopped),
-        }),
-    };
-    let waiting = runner.run(spec("cut"));
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    let ended = tokio::time::timeout(Duration::from_millis(50), waiting).await;
+    assert!(ended.is_err(), "the agent hears of it only through Returns");
+    handoff.quit();
     handoff.stop_all();
-    let outcome = waiting.await;
-    assert!(matches!(outcome, SubSessionOutcome::Failed(_)));
-    assert!(!stopped.load(Ordering::SeqCst));
+    assert!(handoff.running().is_empty());
 }
 
 #[tokio::test]
-async fn a_result_the_agent_is_there_for_comes_back_as_usual() {
+async fn a_runner_that_breaks_still_ends_with_a_result() {
     let handoff = Arc::new(Handoff::default());
     let runner = HandedOff {
         handoff: Arc::clone(&handoff),
-        inner: Arc::new(Gated {
-            gate: tokio::sync::Mutex::new(None),
-            finished: Arc::new(AtomicBool::new(false)),
-        }),
+        inner: Arc::new(Broken),
     };
 
-    let outcome = runner.run(spec("quick")).await;
+    let _waiting = runner.run(spec("broken"));
 
-    assert!(matches!(outcome, SubSessionOutcome::Finished(text) if text == "done"));
+    until("the broken run to settle", || !handoff.running().is_empty()).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(handoff.running(), [spec("broken")]);
+    handoff.quit();
+    handoff.stop_all();
 }

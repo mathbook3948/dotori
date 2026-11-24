@@ -202,7 +202,7 @@ pub(crate) async fn serve(
     let (records, linked, heard) = link(&home, &settings, records, &app).await;
     if let Some(linked) = &linked {
         browser.link(linked.clone());
-        handoff.link(linked.clone());
+        handoff.link(linked.clone(), Arc::clone(&records));
     }
     for job in [VECTORS_JOB, BROWSER_JOB] {
         vector_copies::write_job(&home.jobs(), job, linked.is_none());
@@ -338,7 +338,7 @@ pub(crate) async fn serve(
                 }
                 if let Some((spec, outcome)) = handoff::heard(&heard.message) {
                     let handoff = Arc::clone(&handoff);
-                    tokio::spawn(async move { handoff.pass_on(spec, outcome).await });
+                    tokio::spawn(async move { handoff.show(spec, outcome).await });
                     continue;
                 }
                 if settings_copies.hear(&linked, &heard) {
@@ -494,8 +494,9 @@ pub(crate) async fn serve(
         route.elsewhere();
         handoff.serve(None);
         if ended.is_some() {
-            handoff.stop_all();
+            handoff.quit();
             agent.shutdown().await;
+            handoff.stop_all();
         } else {
             agent.hand_off().await;
         }
