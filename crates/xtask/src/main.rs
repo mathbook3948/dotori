@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 mod core_deps;
 mod design_tokens;
 mod docs;
