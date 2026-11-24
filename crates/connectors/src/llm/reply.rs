@@ -54,6 +54,8 @@ struct SayInput {
 struct DelegateInput {
     title: String,
     brief: String,
+    #[serde(default)]
+    folder: Option<String>,
 }
 
 pub(crate) fn decide(uses: Vec<Use>) -> Decided {
@@ -94,6 +96,10 @@ fn action_of(call: &Use) -> Result<Action, String> {
             Ok(Action::Delegate(SubSessionSpec {
                 title: input.title,
                 brief: input.brief,
+                folder: input
+                    .folder
+                    .map(|folder| folder.trim().to_owned())
+                    .filter(|folder| !folder.is_empty()),
             }))
         }
         _ => Ok(Action::UseTool(ToolCall {
@@ -138,7 +144,7 @@ pub(crate) fn tools(toolbox: &[ToolSpec]) -> Vec<ToolSpec> {
                 "Hand a large job to a sub-session that works on its own. The brief is all it knows.",
             ),
             input_schema: String::from(
-                r#"{"type":"object","properties":{"title":{"type":"string","description":"A few words naming the job."},"brief":{"type":"string","description":"Everything the sub-session needs to know to do the job."}},"required":["title","brief"],"additionalProperties":false}"#,
+                r#"{"type":"object","properties":{"title":{"type":"string","description":"A few words naming the job."},"brief":{"type":"string","description":"Everything the sub-session needs to know to do the job."},"folder":{"type":"string","description":"An absolute folder on the owner's PC the job is about, such as a project to change. A coding agent starts there."}},"required":["title","brief"],"additionalProperties":false}"#,
             ),
         },
     ];

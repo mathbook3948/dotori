@@ -67,6 +67,7 @@ fn spec() -> SubSessionSpec {
     SubSessionSpec {
         title: String::from("Look up"),
         brief: String::from("Find the answer."),
+        folder: None,
     }
 }
 

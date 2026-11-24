@@ -106,3 +106,33 @@ fn say_can_be_sent_privately_and_is_public_by_default() {
         .collect();
     assert_eq!(private, vec![true, false]);
 }
+
+#[test]
+fn a_delegation_may_name_the_folder_it_is_about() {
+    let decided = decide(vec![
+        call(
+            "a",
+            DELEGATE,
+            r#"{"title":"Fix","brief":"Fix the build.","folder":" /home/me/project "}"#,
+        ),
+        call(
+            "b",
+            DELEGATE,
+            r#"{"title":"Read","brief":"Read up.","folder":"  "}"#,
+        ),
+        call("c", DELEGATE, r#"{"title":"Plan","brief":"Plan it."}"#),
+    ]);
+
+    let folders: Vec<Option<String>> = decided
+        .actions
+        .iter()
+        .map(|action| match action {
+            Action::Delegate(spec) => spec.folder.clone(),
+            other => panic!("unexpected action {other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        folders,
+        [Some(String::from("/home/me/project")), None, None]
+    );
+}

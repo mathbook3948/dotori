@@ -138,8 +138,20 @@ impl CliRunner {
     }
 
     async fn attempt(&self, spec: SubSessionSpec) -> Result<SubSessionOutcome, String> {
-        std::fs::create_dir_all(&self.folder)
-            .map_err(|error| format!("cannot make {}: {error}", self.folder.display()))?;
+        let folder = match spec.folder.as_deref().map(PathBuf::from) {
+            Some(asked) if asked.is_absolute() && asked.is_dir() => asked,
+            Some(asked) => {
+                return Ok(SubSessionOutcome::Failed(format!(
+                    "{} is not a folder on this PC",
+                    asked.display()
+                )));
+            }
+            None => {
+                std::fs::create_dir_all(&self.folder)
+                    .map_err(|error| format!("cannot make {}: {error}", self.folder.display()))?;
+                self.folder.clone()
+            }
+        };
         let address = match &self.mcp {
             Some(mcp) => Some(
                 mcp.address()
@@ -162,7 +174,7 @@ impl CliRunner {
         let mut command = Command::new(&self.program);
         command
             .args(arguments(self.agent, address.as_ref(), &last.0))
-            .current_dir(&self.folder)
+            .current_dir(&folder)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
