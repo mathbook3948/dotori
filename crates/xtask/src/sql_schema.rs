@@ -32,14 +32,8 @@ pub fn tables_in(source: &str) -> Vec<Table> {
         .filter(|line| !line.trim_start().starts_with("//"))
         .collect::<Vec<_>>()
         .join("\n");
-    let words: Vec<(usize, &str)> = code
-        .split_whitespace()
-        .map(|word| (word.as_ptr() as usize - code.as_ptr() as usize, word))
-        .collect();
-    let bare = |word: &str| {
-        word.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '_')
-            .to_ascii_uppercase()
-    };
+    let words = identifiers(&code);
+    let bare = |word: &str| word.to_ascii_uppercase();
     let mut tables = Vec::new();
     for (at, (_, word)) in words.iter().enumerate() {
         if bare(word) != "CREATE" {
@@ -60,20 +54,20 @@ pub fn tables_in(source: &str) -> Vec<Table> {
         if words.get(next).map(|(_, word)| bare(word)).as_deref() != Some("TABLE") {
             continue;
         }
-        next += 1;
         let guard: Vec<String> = words
             .iter()
-            .skip(next)
+            .skip(next + 1)
             .take(3)
             .map(|(_, word)| bare(word))
             .collect();
         if guard == ["IF", "NOT", "EXISTS"] {
             next += 3;
         }
-        let Some((start, _)) = words.get(next) else {
+        let Some((start, word)) = words.get(next) else {
             continue;
         };
-        let after = &code[*start..];
+        let start = start + word.len();
+        let after = &code[start..];
         let Some(open) = after.find('(') else {
             continue;
         };
@@ -139,6 +133,26 @@ pub fn tables_in(source: &str) -> Vec<Table> {
         tables.push(table);
     }
     tables
+}
+
+fn identifiers(code: &str) -> Vec<(usize, &str)> {
+    let mut found = Vec::new();
+    let mut start = None;
+    for (index, c) in code.char_indices() {
+        let part = c.is_ascii_alphanumeric() || c == '_';
+        match (part, start) {
+            (true, None) => start = Some(index),
+            (false, Some(from)) => {
+                found.push((from, &code[from..index]));
+                start = None;
+            }
+            _ => {}
+        }
+    }
+    if let Some(from) = start {
+        found.push((from, &code[from..]));
+    }
+    found
 }
 
 fn split_top_level(body: &str) -> Vec<&str> {

@@ -714,3 +714,38 @@ fn an_index_an_older_dotori_made_again_after_this_one_moves_forward_too() {
         .expect("counted");
     assert_eq!(kept, 1);
 }
+
+#[test]
+fn an_old_index_from_before_forgetting_moves_forward_too() {
+    let config = config();
+    Connection::open(&config.index)
+        .expect("opened")
+        .execute_batch(
+            "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL); \
+             CREATE TABLE docs (seq INTEGER PRIMARY KEY, record TEXT NOT NULL UNIQUE, \
+                 at_ms INTEGER NOT NULL, kind TEXT NOT NULL, channel TEXT, place TEXT, \
+                 sender TEXT, role TEXT, text TEXT); \
+             CREATE VIRTUAL TABLE terms USING fts5(words, tokenize = 'unicode61'); \
+             CREATE TABLE vectors (seq INTEGER PRIMARY KEY, model TEXT NOT NULL, vector BLOB NOT NULL); \
+             INSERT INTO meta (key, value) VALUES ('format', '2'); \
+             INSERT INTO docs (seq, record, at_ms, kind, sender, text) VALUES (1, 'r1', 1, 'heard', '민지', '안녕'); \
+             INSERT INTO vectors (seq, model, vector) VALUES (1, 'm', x'00');",
+        )
+        .expect("made");
+
+    let index = open_index(&config.index).expect("opened");
+    let sender: String = index
+        .query_row("SELECT sender_name FROM docs WHERE seq = 1", [], |row| {
+            row.get(0)
+        })
+        .expect("renamed");
+    let vectors: i64 = index
+        .query_row("SELECT count(*) FROM vectors", [], |row| row.get(0))
+        .expect("counted");
+
+    assert_eq!(sender, "민지");
+    assert_eq!(vectors, 1);
+    assert_eq!(meta(&index, "format").expect("read"), None);
+    drop(index);
+    open_index(&config.index).expect("opened again");
+}

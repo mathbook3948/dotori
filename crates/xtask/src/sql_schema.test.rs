@@ -92,3 +92,15 @@ fn lowercase_split_and_temporary_tables_are_read_and_comments_are_not() {
         ["kind", "seen_at"]
     );
 }
+
+#[test]
+fn sql_glued_to_code_is_read_and_a_name_built_at_run_time_is_reported() {
+    let source = "c.execute_batch(\"CREATE TABLE notes (sent_at INTEGER)\"); let raw = r#\"CREATE TABLE IF NOT EXISTS later (n INTEGER)\"#; format!(\"CREATE TABLE {name} (a TEXT)\");";
+
+    let names: Vec<String> = tables_in(source)
+        .into_iter()
+        .map(|table| table.name)
+        .collect();
+
+    assert_eq!(names, ["notes", "later", "{name}"]);
+}

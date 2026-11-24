@@ -28,6 +28,7 @@ pub(crate) const VECTORS_JOB: &str = "vectors";
 const BATCH: i64 = 200;
 const ASK_EVERY: Duration = Duration::from_secs(30);
 const ANSWER_WAIT: Duration = Duration::from_secs(60);
+const BUSY: Duration = Duration::from_secs(5);
 
 /// One vector as it travels: the record it is for, the model that made it, and its bytes.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -46,6 +47,7 @@ pub(crate) fn made_after(
 ) -> Result<(Vec<Sent>, i64, String), String> {
     let fail = |error: rusqlite::Error| error.to_string();
     let connection = Connection::open(index).map_err(fail)?;
+    connection.busy_timeout(BUSY).map_err(fail)?;
     let name: String = match connection
         .query_row("SELECT value FROM meta WHERE key = 'index_id'", [], |row| {
             row.get(0)
@@ -137,6 +139,9 @@ pub(crate) fn mark(index: &Path, from: &str) -> (i64, String) {
     let Ok(connection) = Connection::open(index) else {
         return (0, String::new());
     };
+    if connection.busy_timeout(BUSY).is_err() {
+        return (0, String::new());
+    }
     let kept = connection
         .query_row(
             "SELECT value FROM meta WHERE key = ?1",
