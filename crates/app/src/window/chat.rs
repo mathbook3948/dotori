@@ -14,7 +14,6 @@ use gpui::App;
 use gpui::ClickEvent;
 use gpui::ClipboardItem;
 use gpui::Context;
-use gpui::Decorations;
 use gpui::Div;
 use gpui::Entity;
 use gpui::FocusHandle;
@@ -22,23 +21,16 @@ use gpui::Focusable;
 use gpui::FontWeight;
 use gpui::ImageSource;
 use gpui::MouseButton;
-use gpui::MouseDownEvent;
 use gpui::ObjectFit;
 use gpui::Pixels;
-use gpui::Point;
 use gpui::RenderImage;
-use gpui::ResizeEdge;
 use gpui::ScrollHandle;
 use gpui::ScrollWheelEvent;
 use gpui::SharedString;
-use gpui::Size;
-use gpui::Stateful;
 use gpui::StyleRefinement;
 use gpui::Task;
-use gpui::Tiling;
 use gpui::WeakEntity;
 use gpui::Window;
-use gpui::WindowControlArea;
 use gpui::WindowHandle;
 use gpui::div;
 use gpui::img;
@@ -55,6 +47,11 @@ use crate::link::Update;
 use crate::screen_link::ScreenLink;
 use crate::window::browser;
 use crate::window::browser::BrowserWindow;
+use crate::window::chrome::Frame;
+use crate::window::chrome::round_button;
+use crate::window::identity;
+use crate::window::identity::Particle;
+use crate::window::identity::called;
 use crate::window::input::Submit;
 use crate::window::input::TextInput;
 use crate::window::motion::FOLLOW;
@@ -63,9 +60,6 @@ use crate::window::motion::MESSAGE_ENTER;
 use crate::window::motion::RISE;
 use crate::window::motion::WORKING;
 use crate::window::motion::breath;
-use crate::window::parts::CLOSE_ICON;
-use crate::window::parts::MAXIMIZE_ICON;
-use crate::window::parts::MINIMIZE_ICON;
 use crate::window::parts::MONO;
 use crate::window::parts::SETTINGS_ICON;
 use crate::window::parts::logo;
@@ -81,9 +75,6 @@ const COPIED_FOR: Duration = Duration::from_millis(1500);
 const SHOWN_VALUE: usize = 600;
 const BOTTOM_SLACK: f32 = 8.;
 const TURN_SPACE: f32 = 18.;
-const RESIZE_MARGIN: f32 = 6.;
-const TOP_LEFT: f32 = if cfg!(target_os = "macos") { 80. } else { 12. };
-const TOP_HEIGHT: f32 = if cfg!(target_os = "macos") { 40. } else { 52. };
 const PREVIEW_EVERY: Duration = Duration::from_millis(500);
 const EDGE: f32 = 20.;
 const WORKING_ROW: f32 = 20.;
@@ -167,7 +158,7 @@ impl ChatView {
             link: LinkState::Connecting,
             answering: None,
             browser_at: None,
-            input: cx.new(|cx| TextInput::multiline("dotori에게 말하기", cx)),
+            input: cx.new(|cx| TextInput::multiline(say_to(), cx)),
             say,
             scroll: ScrollHandle::new(),
             zone: TimeZone::system(),
@@ -613,7 +604,11 @@ impl ChatView {
                     .child(
                         div()
                             .font_weight(FontWeight::MEDIUM)
-                            .child(SharedString::from(who.to_owned())),
+                            .child(SharedString::from(if who == "dotori" {
+                                identity::name()
+                            } else {
+                                who.to_owned()
+                            })),
                     )
                     .child(div().flex_1())
                     .children(self.meta(theme, n, text, mark, cx)),
@@ -728,11 +723,15 @@ impl ChatView {
                         })
                         .when(tool != "erase_records", |hint| {
                             hint.text_color(theme.muted).child(match tool {
-                                "run_shell" => "허락하면 dotori가 이 명령을 바로 실행해요",
-                                "write_file" | "edit_file" => {
-                                    "허락하면 dotori가 파일을 바로 바꿔요"
-                                }
-                                _ => "허락하면 바로 실행해요",
+                                "run_shell" => format!(
+                                    "허락하면 {} 이 명령을 바로 실행해요",
+                                    called(Particle::Subject)
+                                ),
+                                "write_file" | "edit_file" => format!(
+                                    "허락하면 {} 파일을 바로 바꿔요",
+                                    called(Particle::Subject)
+                                ),
+                                _ => String::from("허락하면 바로 실행해요"),
                             })
                         }),
                 )
@@ -761,7 +760,10 @@ impl ChatView {
                             div()
                                 .flex_1()
                                 .font_weight(FontWeight::SEMIBOLD)
-                                .child("dotori가 이 일을 해도 될지 물어요"),
+                                .child(format!(
+                                    "{} 이 일을 해도 될지 물어요",
+                                    called(Particle::Subject)
+                                )),
                         )
                         .children(self.meta(theme, n, input, mark, cx)),
                 )
@@ -1039,7 +1041,10 @@ impl ChatView {
                     .child(
                         div()
                             .text_color(theme.muted)
-                            .child(prose("다 하면 \"다 했어요\"를 누르거나 브라우저 창을 닫아 주세요. dotori가 이어서 할게요.")),
+                            .child(prose(&format!(
+                                "다 하면 \"다 했어요\"를 누르거나 브라우저 창을 닫아 주세요. {} 이어서 할게요.",
+                                called(Particle::Subject)
+                            ))),
                     )
                     .child(
                         div()
@@ -1307,6 +1312,8 @@ impl Focusable for ChatView {
 impl Render for ChatView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(window).glass();
+        self.input
+            .update(cx, |input, cx| input.set_placeholder(say_to(), cx));
         self.entered
             .retain(|_, at| MESSAGE_ENTER.moving(at.elapsed()));
         let following = self.step_follow();
@@ -1330,12 +1337,7 @@ impl Render for ChatView {
                         .child(detail)
                 }))
         });
-        let tiling = match window.window_decorations() {
-            Decorations::Client { tiling } => Some(tiling),
-            Decorations::Server => None,
-        };
-        let drawn = tiling.is_some();
-        let tiling = tiling.unwrap_or_default();
+        let frame = Frame::of(window);
         let working_at = if self.shows_working() {
             if self.scroll.bounds_for_item(0).is_none() {
                 window.request_animation_frame();
@@ -1344,7 +1346,8 @@ impl Render for ChatView {
         } else {
             None
         };
-        div()
+        frame
+            .resizable(div())
             .flex()
             .flex_col()
             .size_full()
@@ -1353,60 +1356,7 @@ impl Render for ChatView {
             .text_sm()
             .line_height(px(21.))
             .on_action(cx.listener(Self::submit))
-            .when(drawn, |root| {
-                root.on_mouse_down(
-                    MouseButton::Left,
-                    move |event: &MouseDownEvent, window, cx| {
-                        if let Some(edge) =
-                            resize_edge(event.position, window.viewport_size(), tiling)
-                        {
-                            window.start_window_resize(edge);
-                            cx.stop_propagation();
-                        }
-                    },
-                )
-            })
-            .child(
-                div()
-                    .flex_none()
-                    .h(px(TOP_HEIGHT))
-                    .when(!cfg!(target_os = "macos"), |top| top.pt(px(RESIZE_MARGIN)))
-                    .child(
-                        div()
-                            .id("top")
-                            .size_full()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .pl(px(TOP_LEFT))
-                            .pr(px(12.))
-                            .window_control_area(WindowControlArea::Drag)
-                            .when(drawn, |top| {
-                                top.on_mouse_down(
-                                    MouseButton::Left,
-                                    move |event: &MouseDownEvent, window, _| {
-                                        let at = (event.position, window.viewport_size());
-                                        if resize_edge(at.0, at.1, tiling).is_none() {
-                                            window.start_window_move();
-                                        }
-                                    },
-                                )
-                            })
-                            .on_click(move |event: &ClickEvent, window, _| {
-                                if event.click_count() != 2 {
-                                    return;
-                                }
-                                if cfg!(target_os = "macos") {
-                                    window.titlebar_double_click();
-                                } else if drawn {
-                                    window.zoom_window();
-                                }
-                            })
-                            .child(settings_button(&theme))
-                            .child(div().flex_1().min_w_0().children(notice))
-                            .children(window_buttons(&theme, drawn)),
-                    ),
-            )
+            .child(frame.strip(&theme, settings_button(&theme), div().children(notice)))
             .child(
                 div()
                     .flex_1()
@@ -1428,24 +1378,6 @@ impl Render for ChatView {
     }
 }
 
-fn round_button(id: &'static str, theme: &Theme) -> Stateful<Div> {
-    div()
-        .id(id)
-        .debug_selector(move || id.to_owned())
-        .flex()
-        .flex_none()
-        .items_center()
-        .justify_center()
-        .size(px(36.))
-        .rounded_full()
-        .bg(theme.surface)
-        .border_t_1()
-        .border_color(theme.rim)
-        .shadow_sm()
-        .cursor_pointer()
-        .hover(|button| button.bg(theme.bubble))
-}
-
 fn settings_button(theme: &Theme) -> impl IntoElement {
     round_button("settings", theme)
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -1456,55 +1388,6 @@ fn settings_button(theme: &Theme) -> impl IntoElement {
                 .text_color(theme.muted),
         )
         .on_click(|_, _, _| crate::tray::open("settings"))
-}
-
-fn window_buttons(theme: &Theme, drawn: bool) -> Vec<AnyElement> {
-    let buttons = [
-        ("minimize", MINIMIZE_ICON, WindowControlArea::Min),
-        ("maximize", MAXIMIZE_ICON, WindowControlArea::Max),
-        ("close", CLOSE_ICON, WindowControlArea::Close),
-    ];
-    let native = cfg!(target_os = "windows");
-    if !native && !drawn {
-        return Vec::new();
-    }
-    buttons
-        .into_iter()
-        .map(|(id, icon, area)| {
-            let button = round_button(id, theme)
-                .child(svg().path(icon).size(px(16.)).text_color(theme.muted));
-            if native {
-                return button.window_control_area(area).into_any_element();
-            }
-            button
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .on_click(move |_, window, _| match area {
-                    WindowControlArea::Min => window.minimize_window(),
-                    WindowControlArea::Max => window.zoom_window(),
-                    _ => window.remove_window(),
-                })
-                .into_any_element()
-        })
-        .collect()
-}
-
-fn resize_edge(at: Point<Pixels>, size: Size<Pixels>, tiling: Tiling) -> Option<ResizeEdge> {
-    let near = px(RESIZE_MARGIN);
-    let left = !tiling.left && at.x < near;
-    let right = !tiling.right && at.x > size.width - near;
-    let top = !tiling.top && at.y < near;
-    let bottom = !tiling.bottom && at.y > size.height - near;
-    match (top, bottom, left, right) {
-        (true, _, true, _) => Some(ResizeEdge::TopLeft),
-        (true, _, _, true) => Some(ResizeEdge::TopRight),
-        (_, true, true, _) => Some(ResizeEdge::BottomLeft),
-        (_, true, _, true) => Some(ResizeEdge::BottomRight),
-        (true, _, _, _) => Some(ResizeEdge::Top),
-        (_, true, _, _) => Some(ResizeEdge::Bottom),
-        (_, _, true, _) => Some(ResizeEdge::Left),
-        (_, _, _, true) => Some(ResizeEdge::Right),
-        _ => None,
-    }
 }
 
 fn entering(row: Div, progress: f32) -> Div {
@@ -1593,6 +1476,10 @@ impl Render for WorkingView {
             )
             .with_animation("working", MESSAGE_ENTER.animation(), entering)
     }
+}
+
+fn say_to() -> SharedString {
+    SharedString::from(format!("{} 말하기", called(Particle::To)))
 }
 
 fn empty(theme: &Theme) -> impl IntoElement {

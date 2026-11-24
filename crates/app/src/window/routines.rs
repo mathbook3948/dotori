@@ -18,6 +18,8 @@ use gpui::px;
 use crate::home::Home;
 use crate::routines::Routine;
 use crate::routines::Routines;
+use crate::window::identity::Particle;
+use crate::window::identity::called;
 use crate::window::input::Submit;
 use crate::window::input::TextInput;
 use crate::window::parts::prose;
@@ -170,7 +172,11 @@ impl RoutinesView {
                             .rounded_lg()
                             .bg(theme.canvas)
                             .border_1()
-                            .border_color(if focused { theme.primary } else { theme.line })
+                            .border_color(if focused {
+                                theme.primary.into()
+                            } else {
+                                gpui::transparent_black()
+                            })
                             .cursor_text()
                             .on_mouse_down(MouseButton::Left, move |_, window, _| {
                                 window.focus(&focus);
@@ -306,9 +312,9 @@ impl Render for RoutinesView {
             .p_5()
             .rounded_2xl()
             .bg(theme.surface)
-            .border_1()
-            .border_color(theme.line)
-            .shadow_xs()
+            .border_t_1()
+            .border_color(theme.rim)
+            .shadow_sm()
             .child(
                 div()
                     .flex()
@@ -320,9 +326,10 @@ impl Render for RoutinesView {
                             .font_weight(FontWeight::SEMIBOLD)
                             .child("루틴"),
                     )
-                    .child(div().text_xs().text_color(theme.muted).child(
-                        "정해 둔 시간에 dotori가 알아서 하는 일이에요. 결과는 채팅창에 보여요.",
-                    )),
+                    .child(div().text_xs().text_color(theme.muted).child(format!(
+                        "정해 둔 시간에 {} 알아서 하는 일이에요. 결과는 채팅창에 보여요.",
+                        called(Particle::Subject)
+                    ))),
             )
             .child(self.zone_row(&theme, window, cx))
             .child(list)

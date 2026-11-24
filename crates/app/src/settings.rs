@@ -12,6 +12,7 @@ use dotori_connectors::channel::slack::SlackChannel;
 use dotori_connectors::channel::slack::SlackConfig;
 use dotori_connectors::channel::telegram::TelegramChannel;
 use dotori_connectors::channel::telegram::TelegramConfig;
+use dotori_connectors::llm::DEFAULT_SYSTEM;
 use dotori_connectors::llm::anthropic::Anthropic;
 use dotori_connectors::llm::anthropic::AnthropicConfig;
 use dotori_connectors::llm::openai::OpenAi;
@@ -69,6 +70,42 @@ pub(crate) struct Settings {
     pub(crate) peers: Option<PeerSettings>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) window: Option<WindowSettings>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) assistant: Option<AssistantSettings>,
+}
+
+/// What the owner calls the assistant and the picture it shows as. `icon` names an image the
+/// settings window kept in the `icons` folder; without one the assistant shows as the acorn.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct AssistantSettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) icon: Option<String>,
+}
+
+/// The name the assistant goes by when the owner gives none.
+pub(crate) const ASSISTANT_NAME: &str = "dotori";
+/// The longest name the assistant may be given, in characters.
+pub(crate) const ASSISTANT_NAME_LONGEST: usize = 20;
+
+impl AssistantSettings {
+    /// The name the owner gave, or `dotori`.
+    pub(crate) fn name_of(assistant: Option<&Self>) -> String {
+        assistant
+            .and_then(|assistant| assistant.name.as_deref())
+            .map(|name| {
+                name.chars()
+                    .filter(|c| !c.is_control())
+                    .take(ASSISTANT_NAME_LONGEST)
+                    .collect::<String>()
+                    .trim()
+                    .to_owned()
+            })
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| ASSISTANT_NAME.to_owned())
+    }
 }
 
 /// How the windows look: a theme from DESIGN.md by name, and `light`, `dark` or `system` to follow
@@ -586,7 +623,18 @@ impl Settings {
         &self,
         key: impl Fn(&str) -> Option<String>,
     ) -> Result<Arc<dyn Model>, String> {
-        self.model_told(None, key)
+        self.model_told(Some(self.named(DEFAULT_SYSTEM)), key)
+    }
+
+    fn named(&self, system: &str) -> String {
+        let name = AssistantSettings::name_of(self.assistant.as_ref());
+        system
+            .replacen("You are dotori,", &format!("You are {name},"), 1)
+            .replacen(
+                "sub-session of dotori,",
+                &format!("sub-session of {name},"),
+                1,
+            )
     }
 
     /// Builds the model that runs sub-sessions in dotori's loop, told about the sub-session.
@@ -595,7 +643,7 @@ impl Settings {
         key: impl Fn(&str) -> Option<String>,
     ) -> Result<Arc<dyn Model>, String> {
         self.model_told(
-            Some(format!("{SUB_SESSION_SYSTEM}\n{LLM_SUB_SESSION_SYSTEM}")),
+            Some(self.named(&format!("{SUB_SESSION_SYSTEM}\n{LLM_SUB_SESSION_SYSTEM}"))),
             key,
         )
     }

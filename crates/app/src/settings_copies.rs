@@ -1,8 +1,8 @@
 //! Keeps the settings that mean the same on every PC the same on all of them: the model, Slack,
-//! Telegram, Discord and memory search. What belongs to one machine, such as how other PCs reach
-//! it, its browser, its coding agent and its MCP servers, stays with it. Each of the parts goes by
-//! its own time, the one changed last wins, and like any setting they take effect when dotori
-//! starts again.
+//! Telegram, Discord, memory search, and the assistant's name and icon. What belongs to one
+//! machine, such as how other PCs reach it, its browser, its coding agent and its MCP servers,
+//! stays with it. Each of the parts goes by its own time, the one changed last wins, and like any
+//! setting they take effect when dotori starts again.
 
 use std::path::Path;
 use std::path::PathBuf;
@@ -19,6 +19,7 @@ use serde_json::json;
 use tokio::time;
 
 use crate::main_session::Linked;
+use crate::settings::AssistantSettings;
 use crate::settings::DiscordSettings;
 use crate::settings::MemorySettings;
 use crate::settings::ModelSettings;
@@ -42,6 +43,8 @@ pub(crate) struct Shared {
     pub(crate) telegram: Option<TelegramSettings>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) discord: Option<DiscordSettings>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) assistant: Option<AssistantSettings>,
 }
 
 /// When each shared part last changed, in milliseconds since the Unix epoch.
@@ -57,6 +60,8 @@ pub(crate) struct Times {
     pub(crate) telegram: i64,
     #[serde(default)]
     pub(crate) discord: i64,
+    #[serde(default)]
+    pub(crate) assistant: i64,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -73,6 +78,7 @@ impl Shared {
             memory: settings.memory.clone(),
             telegram: settings.telegram.clone(),
             discord: settings.discord.clone(),
+            assistant: settings.assistant.clone(),
         }
     }
 
@@ -83,6 +89,7 @@ impl Shared {
             memory: self.memory,
             telegram: self.telegram,
             discord: self.discord,
+            assistant: self.assistant,
             ..settings
         }
     }
@@ -134,6 +141,11 @@ impl SettingsCopies {
                         before.shared.discord != shared.discord,
                         now,
                     ),
+                    assistant: next(
+                        before.times.assistant,
+                        before.shared.assistant != shared.assistant,
+                        now,
+                    ),
                 },
                 shared,
             },
@@ -144,6 +156,7 @@ impl SettingsCopies {
                     memory: i64::from(shared.memory.is_some()),
                     telegram: i64::from(shared.telegram.is_some()),
                     discord: i64::from(shared.discord.is_some()),
+                    assistant: i64::from(shared.assistant.is_some()),
                 },
                 shared,
             },
@@ -188,13 +201,24 @@ impl SettingsCopies {
             taken.times.discord = times.discord;
             taken.shared.discord = shared.discord;
         }
+        if times.assistant > here.times.assistant && shared.assistant != here.shared.assistant {
+            taken.times.assistant = times.assistant;
+            taken.shared.assistant = shared.assistant;
+        }
         if taken == here {
             return Ok(false);
         }
         let settings = taken.shared.clone().into(Settings::load(&self.settings)?);
         settings.save_parts(
             &self.settings,
-            &["model", "slack", "memory", "telegram", "discord"],
+            &[
+                "model",
+                "slack",
+                "memory",
+                "telegram",
+                "discord",
+                "assistant",
+            ],
         )?;
         write_stamp(&self.stamp, &taken);
         *known = Some(taken);
@@ -242,6 +266,7 @@ impl SettingsCopies {
                     times.memory,
                     times.telegram,
                     times.discord,
+                    times.assistant,
                 ]
                 .iter()
                 .any(|time| *time > latest)

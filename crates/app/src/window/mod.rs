@@ -1,5 +1,7 @@
 mod browser;
 mod chat;
+mod chrome;
+mod identity;
 mod input;
 mod motion;
 mod notes;
@@ -42,6 +44,7 @@ use crate::home::Home;
 use crate::link;
 use crate::screen_link;
 use crate::window::chat::ChatView;
+use crate::window::identity::Identity;
 use crate::window::parts::Assets;
 use crate::window::settings::SettingsView;
 use crate::window::theme::Look;
@@ -49,6 +52,7 @@ use crate::window::theme::Look;
 actions!(dotori, [Quit]);
 
 const LOOK_EVERY: Duration = Duration::from_millis(500);
+const ICON_EVERY: u32 = 4;
 
 /// Which window the process opens. Each runs in a process of its own, so closing it frees
 /// everything GPUI held.
@@ -64,8 +68,10 @@ pub(crate) fn run(home: Home, which: Which) -> Result<(), String> {
         Which::Chat => None,
     };
     let settings_path = home.settings();
+    let icon_folder = home.icons();
     let seen = stamp(&settings_path);
     apply_look(&settings_path);
+    identity::choose(Identity::read(&settings_path, &icon_folder));
     let failed = Rc::new(RefCell::new(None));
     let failure = Rc::clone(&failed);
     Application::new()
@@ -79,21 +85,20 @@ pub(crate) fn run(home: Home, which: Which) -> Result<(), String> {
                 Which::Settings => ("dotori 설정", 520., 640.),
             };
             let bounds = Bounds::centered(None, size(px(wide), px(tall)), cx);
-            let glass = matches!(which, Which::Chat);
             let options = WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 window_min_size: Some(size(px(360.), px(420.))),
                 titlebar: Some(TitlebarOptions {
                     title: Some(SharedString::new_static(title)),
-                    appears_transparent: glass,
-                    traffic_light_position: glass.then(|| point(px(16.), px(12.))),
+                    appears_transparent: true,
+                    traffic_light_position: Some(point(px(16.), px(12.))),
                 }),
-                window_background: if glass && theme::SEE_THROUGH {
+                window_background: if theme::SEE_THROUGH {
                     WindowBackgroundAppearance::Blurred
                 } else {
                     WindowBackgroundAppearance::Opaque
                 },
-                window_decorations: glass.then_some(WindowDecorations::Client),
+                window_decorations: Some(WindowDecorations::Client),
                 app_id: Some(String::from("dotori")),
                 ..WindowOptions::default()
             };
@@ -126,7 +131,7 @@ pub(crate) fn run(home: Home, which: Which) -> Result<(), String> {
                 cx.quit();
                 return;
             }
-            follow_look(settings_path.clone(), seen, cx);
+            follow_look(settings_path.clone(), icon_folder.clone(), seen, cx);
             cx.on_action(|_: &Quit, cx| cx.quit());
             cx.on_window_closed(|cx| {
                 if cx.windows().is_empty() {
@@ -166,21 +171,28 @@ fn stamp(path: &Path) -> Stamp {
     Some((found.modified().ok()?, found.len()))
 }
 
-fn follow_look(settings: PathBuf, mut seen: Stamp, cx: &mut App) {
+fn follow_look(settings: PathBuf, icon_folder: PathBuf, mut seen: Stamp, cx: &mut App) {
     cx.spawn(async move |cx| {
+        let mut ticks = 0_u32;
         loop {
             cx.background_executor().timer(LOOK_EVERY).await;
+            ticks = ticks.wrapping_add(1);
             let path = settings.clone();
+            let folder = icon_folder.clone();
             let last = seen;
-            let (now, look) = cx
+            let look_again = ticks.is_multiple_of(ICON_EVERY);
+            let (now, look, identity) = cx
                 .background_executor()
                 .spawn(async move {
                     let now = stamp(&path);
-                    let look = if now == last { None } else { saved_look(&path) };
-                    (now, look)
+                    let changed = now != last;
+                    let look = if changed { saved_look(&path) } else { None };
+                    let identity = (changed || look_again).then(|| Identity::read(&path, &folder));
+                    (now, look, identity)
                 })
                 .await;
-            if now == seen {
+            let renamed = identity.is_some_and(identity::choose);
+            if now == seen && !renamed {
                 continue;
             }
             seen = now;

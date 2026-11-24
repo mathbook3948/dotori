@@ -8,6 +8,7 @@ use gpui::FocusHandle;
 use gpui::Focusable;
 use gpui::FontWeight;
 use gpui::MouseButton;
+use gpui::PathPromptOptions;
 use gpui::SharedString;
 use gpui::Task;
 use gpui::Window;
@@ -16,7 +17,11 @@ use gpui::prelude::*;
 use gpui::px;
 
 use crate::home::Home;
+use crate::icons;
 use crate::settings::ANTHROPIC_KEY;
+use crate::settings::ASSISTANT_NAME;
+use crate::settings::ASSISTANT_NAME_LONGEST;
+use crate::settings::AssistantSettings;
 use crate::settings::DISCORD_KEY;
 use crate::settings::DiscordForm;
 use crate::settings::Form;
@@ -32,9 +37,14 @@ use crate::settings::WindowSettings;
 use crate::settings::environment;
 use crate::vault::Vault;
 use crate::vault::now_ms;
+use crate::window::chrome::Frame;
+use crate::window::identity;
+use crate::window::identity::Identity;
+use crate::window::identity::Particle;
+use crate::window::identity::called;
 use crate::window::input::TextInput;
 use crate::window::notes::NotesView;
-use crate::window::parts::header;
+use crate::window::parts::logo;
 use crate::window::parts::prose;
 use crate::window::pcs::PcsView;
 use crate::window::routines::RoutinesView;
@@ -64,6 +74,8 @@ pub(crate) struct SettingsView {
     discord_token: Entity<TextInput>,
     vault: Vault,
     kept: Vec<String>,
+    name: Entity<TextInput>,
+    picking: Option<Task<()>>,
     note: Option<Note>,
     look_saving: Option<Task<()>>,
     pcs: Entity<PcsView>,
@@ -115,6 +127,14 @@ impl SettingsView {
         let slack_bot_token = secret(cx);
         let vault = Vault::new(&home.root);
         let kept = vault.names().unwrap_or_default();
+        let name = field(
+            ASSISTANT_NAME,
+            settings
+                .assistant
+                .as_ref()
+                .and_then(|assistant| assistant.name.clone()),
+            cx,
+        );
         Self {
             pcs,
             routines,
@@ -140,6 +160,8 @@ impl SettingsView {
             discord_token,
             vault,
             kept,
+            name,
+            picking: None,
             note: None,
             look_saving: None,
         }
@@ -247,13 +269,17 @@ impl SettingsView {
         let slack = self.slack_form(cx);
         let telegram = self.telegram_form(cx);
         let discord = self.discord_form(cx);
+        let typed_name = self.name.read(cx).text().trim().to_owned();
         let wanted = form.settings(&self.earlier.model).and_then(|model| {
+            let on_disk = Settings::load(&self.home.settings())?;
+            let assistant = assistant_named(on_disk.assistant.clone(), &typed_name)?;
             Ok(Settings {
                 model,
                 slack: slack.settings()?,
                 telegram: telegram.settings()?,
                 discord: discord.settings()?,
-                ..Settings::load(&self.home.settings())?
+                assistant,
+                ..on_disk
             })
         });
         let saved = wanted.and_then(|settings| {
@@ -269,9 +295,10 @@ impl SettingsView {
             }
             settings.save_parts(
                 &self.home.settings(),
-                &["model", "slack", "telegram", "discord"],
+                &["model", "slack", "telegram", "discord", "assistant"],
             )?;
             self.earlier = settings;
+            identity::choose(Identity::read(&self.home.settings(), &self.home.icons()));
             Ok(())
         });
         self.kept = self.vault.names().unwrap_or_default();
@@ -292,6 +319,7 @@ impl Focusable for SettingsView {
 impl Render for SettingsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(window);
+        let frame = Frame::of(window);
         let segment = |id: &'static str,
                        label: &'static str,
                        openai_compatible: bool,
@@ -375,29 +403,43 @@ impl Render for SettingsView {
                 .text_color(color)
                 .text_xs()
                 .child(prose(&words))
+                .into_any_element()
         });
-        div()
+        let note = note.unwrap_or_else(|| {
+            div()
+                .text_xs()
+                .text_color(theme.muted)
+                .child("바뀐 설정은 dotori를 다시 시작하면 적용돼요")
+                .into_any_element()
+        });
+        frame
+            .resizable(div())
             .flex()
             .flex_col()
             .size_full()
-            .bg(theme.canvas)
+            .bg(theme.glass().canvas)
             .text_color(theme.text)
             .text_sm()
             .line_height(px(21.))
-            .child(header(
-                &theme,
-                "설정",
-                div()
-                    .text_xs()
-                    .text_color(theme.muted)
-                    .child("바뀐 설정은 dotori를 다시 시작하면 적용돼요"),
-            ))
+            .child(
+                frame.strip(
+                    &theme,
+                    div()
+                        .text_base()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child("설정"),
+                    div(),
+                ),
+            )
             .child(
                 div()
                     .id("settings")
                     .flex_1()
                     .overflow_y_scroll()
-                    .p_5()
+                    .px_5()
+                    .pb_5()
+                    .child(self.identity_card(&theme, window, cx))
+                    .child(div().h_4())
                     .child(self.look_card(&theme, cx))
                     .child(div().h_4())
                     .child(
@@ -408,9 +450,9 @@ impl Render for SettingsView {
                             .p_5()
                             .rounded_2xl()
                             .bg(theme.surface)
-                            .border_1()
-                            .border_color(theme.line)
-                            .shadow_xs()
+                            .border_t_1()
+                            .border_color(theme.rim)
+                            .shadow_sm()
                             .child(
                                 div()
                                     .flex()
@@ -422,12 +464,10 @@ impl Render for SettingsView {
                                             .font_weight(FontWeight::SEMIBOLD)
                                             .child("대화 모델"),
                                     )
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(theme.muted)
-                                            .child("dotori가 생각하고 답할 때 쓰는 모델이에요."),
-                                    ),
+                                    .child(div().text_xs().text_color(theme.muted).child(format!(
+                                        "{} 생각하고 답할 때 쓰는 모델이에요.",
+                                        called(Particle::Subject)
+                                    ))),
                             )
                             .child(
                                 div()
@@ -436,8 +476,6 @@ impl Render for SettingsView {
                                     .gap_1()
                                     .rounded_xl()
                                     .bg(theme.canvas)
-                                    .border_1()
-                                    .border_color(theme.line)
                                     .child(segment("anthropic", "Anthropic", false, cx))
                                     .child(segment("openai", "OpenAI 호환", true, cx)),
                             )
@@ -464,10 +502,7 @@ impl Render for SettingsView {
                     .gap_3()
                     .px_5()
                     .py_3()
-                    .bg(theme.raised)
-                    .border_t_1()
-                    .border_color(theme.line)
-                    .child(div().flex_1().children(note))
+                    .child(div().flex_1().child(note))
                     .child(
                         div()
                             .id("save")
@@ -475,7 +510,7 @@ impl Render for SettingsView {
                             .flex_none()
                             .px_5()
                             .py_2()
-                            .rounded_xl()
+                            .rounded_lg()
                             .cursor_pointer()
                             .bg(theme.primary)
                             .hover(|save| save.bg(theme.primary_hover))
@@ -704,6 +739,176 @@ impl SettingsView {
         cx.refresh_windows();
     }
 
+    fn pick_icon(&mut self, cx: &mut Context<Self>) {
+        let paths = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some(SharedString::new_static("이 그림 쓰기")),
+        });
+        let folder = self.home.icons();
+        self.picking = Some(cx.spawn(async move |view, cx| {
+            let path = match paths.await {
+                Ok(Ok(Some(paths))) => paths.into_iter().next(),
+                Ok(Ok(None)) | Err(_) => None,
+                Ok(Err(error)) => {
+                    eprintln!("dotori: no file picker: {error}");
+                    let _ = view.update(cx, |view, cx| {
+                        view.note = Some(Note::Failed(SharedString::new_static(
+                            "그림을 고르는 창을 열지 못했어요",
+                        )));
+                        cx.notify();
+                    });
+                    None
+                }
+            };
+            let Some(path) = path else {
+                return;
+            };
+            let kept = cx
+                .background_executor()
+                .spawn(async move {
+                    let fail = |error: std::io::Error| format!("{}: {error}", path.display());
+                    if std::fs::metadata(&path).map_err(fail)?.len() > icons::given_longest() {
+                        return Err(String::from(TOO_LARGE));
+                    }
+                    std::fs::read(&path)
+                        .map_err(fail)
+                        .and_then(|picture| icons::keep(&folder, &picture))
+                })
+                .await;
+            let _ = view.update(cx, |view, cx| view.use_icon(kept, cx));
+        }));
+    }
+
+    fn use_icon(&mut self, kept: Result<String, String>, cx: &mut Context<Self>) {
+        let set = kept
+            .map_err(|error| {
+                eprintln!("dotori: the picture was not kept: {error}");
+                if error == TOO_LARGE {
+                    String::from("20MB보다 작은 그림을 골라 주세요")
+                } else if error.contains("does not read as an image") {
+                    String::from("그림으로 읽지 못했어요. PNG, JPEG, GIF, WebP 그림을 골라 주세요")
+                } else {
+                    String::from("그림을 저장하지 못했어요. 잠시 뒤에 다시 해 보세요")
+                }
+            })
+            .and_then(|name| self.set_icon(Some(name)));
+        self.note = set
+            .err()
+            .map(|error| Note::Failed(SharedString::from(error)));
+        cx.refresh_windows();
+    }
+
+    fn set_icon(&mut self, icon: Option<String>) -> Result<(), String> {
+        let mut settings = Settings::load(&self.home.settings())?;
+        let mut assistant = settings.assistant.take().unwrap_or_default();
+        assistant.icon = icon;
+        settings.assistant = (assistant != AssistantSettings::default()).then_some(assistant);
+        settings.save_parts(&self.home.settings(), &["assistant"])?;
+        let in_use = settings
+            .assistant
+            .as_ref()
+            .and_then(|assistant| assistant.icon.clone());
+        icons::prune(
+            &self.home.icons(),
+            &in_use.as_deref().into_iter().collect::<Vec<_>>(),
+        );
+        self.earlier.assistant = settings.assistant;
+        identity::choose(Identity::read(&self.home.settings(), &self.home.icons()));
+        Ok(())
+    }
+
+    fn identity_card(
+        &self,
+        theme: &Theme,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let custom = self
+            .earlier
+            .assistant
+            .as_ref()
+            .is_some_and(|assistant| assistant.icon.is_some());
+        let button = |id: &'static str, label: &'static str| {
+            div()
+                .id(id)
+                .debug_selector(move || id.to_owned())
+                .px_3()
+                .py_1p5()
+                .rounded_lg()
+                .bg(theme.bubble)
+                .font_weight(FontWeight::MEDIUM)
+                .cursor_pointer()
+                .hover(|button| button.bg(theme.selection))
+                .child(label)
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap_4()
+            .p_5()
+            .rounded_2xl()
+            .bg(theme.surface)
+            .border_t_1()
+            .border_color(theme.rim)
+            .shadow_sm()
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_base()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("이름과 아이콘"),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.muted)
+                            .child("채팅창과 답에서 이 이름과 그림으로 보여요. 묶인 PC에도 같이 보내요."),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_4()
+                    .child(logo(theme, 56.))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .gap_2()
+                            .child(
+                                button("icon-pick", "그림 올리기")
+                                    .on_click(cx.listener(|view, _, _, cx| view.pick_icon(cx))),
+                            )
+                            .when(custom, |row| {
+                                row.child(button("icon-default", "도토리로 되돌리기").on_click(
+                                    cx.listener(|view, _, _, cx| {
+                                        let set = view.set_icon(None);
+                                        view.note = set
+                                            .err()
+                                            .map(|error| Note::Failed(SharedString::from(error)));
+                                        cx.refresh_windows();
+                                    }),
+                                ))
+                            }),
+                    ),
+            )
+            .child(field(
+                theme,
+                window,
+                cx,
+                "이름",
+                "비워 두면 dotori예요. 창에는 저장하면 바로, 대답에는 dotori를 다시 시작하면 적용돼요.",
+                &self.name,
+            ))
+    }
+
     fn look_card(&self, theme: &Theme, cx: &mut Context<Self>) -> gpui::Div {
         let (index, look) = crate::window::theme::saved();
         let current = crate::window::theme::names().nth(index).unwrap_or_default();
@@ -774,7 +979,9 @@ impl SettingsView {
             .p_5()
             .rounded_2xl()
             .bg(theme.surface)
-            .shadow_xs()
+            .border_t_1()
+            .border_color(theme.rim)
+            .shadow_sm()
             .child(
                 div()
                     .flex()
@@ -819,7 +1026,10 @@ impl SettingsView {
         let card = channel_card(
             theme,
             "Slack",
-            "Slack에서도 dotori와 말할 수 있어요. DM이나 멘션으로 부르면 같은 대화로 이어져요.",
+            format!(
+                "Slack에서도 {} 말할 수 있어요. DM이나 멘션으로 부르면 같은 대화로 이어져요.",
+                called(Particle::With)
+            ),
             switch(theme, "slack-switch", on).on_click(cx.listener(|view, _, _, cx| {
                 view.slack_on = !view.slack_on;
                 view.note = None;
@@ -960,10 +1170,29 @@ fn vault_failed(what: &str, error: &str) -> String {
     }
 }
 
+const TOO_LARGE: &str = "the picture is larger than 20 MB";
+
+fn assistant_named(
+    assistant: Option<AssistantSettings>,
+    typed: &str,
+) -> Result<Option<AssistantSettings>, String> {
+    if typed.chars().count() > ASSISTANT_NAME_LONGEST {
+        return Err(format!(
+            "이름은 {ASSISTANT_NAME_LONGEST}자까지 쓸 수 있어요"
+        ));
+    }
+    if typed.chars().any(char::is_control) {
+        return Err(String::from("이름에는 글자만 써 주세요"));
+    }
+    let mut assistant = assistant.unwrap_or_default();
+    assistant.name = (!typed.is_empty() && typed != ASSISTANT_NAME).then(|| typed.to_owned());
+    Ok((assistant != AssistantSettings::default()).then_some(assistant))
+}
+
 fn channel_card(
     theme: &Theme,
     title: &'static str,
-    about: &'static str,
+    about: impl Into<SharedString>,
     switch: impl IntoElement,
 ) -> gpui::Div {
     div()
@@ -973,9 +1202,9 @@ fn channel_card(
         .p_5()
         .rounded_2xl()
         .bg(theme.surface)
-        .border_1()
-        .border_color(theme.line)
-        .shadow_xs()
+        .border_t_1()
+        .border_color(theme.rim)
+        .shadow_sm()
         .child(
             div()
                 .flex()
@@ -994,7 +1223,12 @@ fn channel_card(
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .child(title),
                         )
-                        .child(div().text_xs().text_color(theme.muted).child(prose(about))),
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(theme.muted)
+                                .child(prose(&about.into())),
+                        ),
                 )
                 .child(switch),
         )
@@ -1079,7 +1313,11 @@ fn field(
                 .rounded_lg()
                 .bg(theme.canvas)
                 .border_1()
-                .border_color(if focused { theme.primary } else { theme.line })
+                .border_color(if focused {
+                    theme.primary.into()
+                } else {
+                    gpui::transparent_black()
+                })
                 .cursor_text()
                 .on_mouse_down(MouseButton::Left, move |_, window, _| window.focus(&focus))
                 .child(input.clone()),

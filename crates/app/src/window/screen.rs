@@ -50,6 +50,8 @@ use tokio::sync::mpsc;
 use crate::screen_link::Picture;
 use crate::screen_link::ScreenLink;
 use crate::screen_link::Seen;
+use crate::window::identity::Particle;
+use crate::window::identity::called;
 use crate::window::input::Submit;
 use crate::window::input::TextInput;
 use crate::window::parts::prose;
@@ -885,11 +887,20 @@ impl ScreenView {
 
     fn bar(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let (color, words) = match (self.down, self.mode) {
-            (true, _) => (theme.muted, "연결하는 중이에요"),
-            (false, Mode::Agent) => (theme.muted, "dotori가 쓰고 있어요"),
-            (false, Mode::Waiting) => (theme.warn, "넘겨받는 중이에요"),
-            (false, Mode::Owner) => (theme.muted, "다 하면 dotori가 이어서 해요"),
-            (false, Mode::Idle) => (theme.muted, "dotori가 쉬고 있어요"),
+            (true, _) => (theme.muted, String::from("연결하는 중이에요")),
+            (false, Mode::Agent) => (
+                theme.muted,
+                format!("{} 쓰고 있어요", called(Particle::Subject)),
+            ),
+            (false, Mode::Waiting) => (theme.warn, String::from("넘겨받는 중이에요")),
+            (false, Mode::Owner) => (
+                theme.muted,
+                format!("다 하면 {} 이어서 해요", called(Particle::Subject)),
+            ),
+            (false, Mode::Idle) => (
+                theme.muted,
+                format!("{} 쉬고 있어요", called(Particle::Subject)),
+            ),
         };
         let button = |id: &'static str, label: &'static str, primary: bool| {
             div()
@@ -1147,10 +1158,13 @@ impl Render for ScreenView {
                 .items_center()
                 .justify_center()
                 .text_color(theme.muted)
-                .child(prose(if self.down {
-                    "dotori의 브라우저에 연결하는 중이에요."
+                .child(prose(&if self.down {
+                    format!("{} 브라우저에 연결하는 중이에요.", called(Particle::Of))
                 } else {
-                    "dotori가 브라우저를 쓰면 여기에 보여요."
+                    format!(
+                        "{} 브라우저를 쓰면 여기에 보여요.",
+                        called(Particle::Subject)
+                    )
                 }))
                 .into_any_element(),
         };
@@ -1193,11 +1207,10 @@ impl Render for ScreenView {
                     .py_2()
                     .bg(theme.ok_soft)
                     .text_sm()
-                    .child(
-                        div()
-                            .flex_1()
-                            .child(prose(&format!("dotori가 부탁해요: {asked}"))),
-                    )
+                    .child(div().flex_1().child(prose(&format!(
+                        "{} 부탁해요: {asked}",
+                        called(Particle::Subject)
+                    ))))
             }))
             .children(self.error.clone().map(|error| {
                 div()
