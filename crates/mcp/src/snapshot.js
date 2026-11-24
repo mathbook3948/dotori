@@ -35,22 +35,17 @@
     if (hidden(el)) return;
     if (tag === 'iframe') {
       const name = el.title || el.src || 'unnamed';
-      let inner = null;
-      try {
-        inner = el.contentDocument && el.contentDocument.body;
-      } catch (_) {
-        inner = null;
-      }
+      const inner = el.contentDocument && el.contentDocument.body;
       if (framed) {
         lines.push('[frame: ' + name + ', inside a frame, not read]');
         return;
       }
       if (!inner) {
-        lines.push('[frame: ' + name + ', from another site, not read]');
+        lines.push('[frame: ' + name + ', not read]');
         return;
       }
       lines.push('[frame: ' + name + ']');
-      walk(inner, true);
+      for (const child of inner.childNodes) walk(child, true);
       lines.push('[end of frame]');
       return;
     }

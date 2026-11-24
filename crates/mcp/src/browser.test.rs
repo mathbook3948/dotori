@@ -667,10 +667,7 @@ async fn a_frame_from_the_same_page_is_read_and_one_from_elsewhere_is_named() {
     assert!(shown.contains("Read me"), "{shown}");
     assert!(shown.contains("- button: Pay"), "{shown}");
     assert!(shown.contains("[end of frame]"), "{shown}");
-    assert!(
-        shown.contains("[frame: Elsewhere, from another site, not read]"),
-        "{shown}"
-    );
+    assert!(shown.contains("[frame: Elsewhere, not read]"), "{shown}");
     let body = shown.split_once("\n\n").expect("a body").1;
     assert!(!body.contains("Secret"), "{body}");
 }
