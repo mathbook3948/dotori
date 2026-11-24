@@ -21,16 +21,10 @@ dotori uses [mise](https://mise.jdx.dev) to pin the Rust toolchain and the check
 	sudo apt-get install -y libxkbcommon-dev libxkbcommon-x11-dev
 	```
 
-3. In the repository, install the pinned tools.
+3. In the repository, install the pinned tools. This also turns on the Git hooks. The `commit-msg` hook checks the commit subject, and the `pre-push` hook runs every check.
 
 	```bash
 	mise install
-	```
-
-4. Turn on the Git hooks. The `commit-msg` hook checks the commit subject, and the `pre-push` hook runs every check.
-
-	```bash
-	git config core.hooksPath .githooks
 	```
 
 ## Run the checks

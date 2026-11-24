@@ -2,6 +2,7 @@ mod core_deps;
 mod design_tokens;
 mod docs;
 mod forbidden_chars;
+mod hooks;
 mod root_entries;
 mod sql_schema;
 
@@ -15,6 +16,7 @@ fn main() -> ExitCode {
     let violations = match guard.as_str() {
         "forbidden-chars" => forbidden_chars::run(&workspace_root),
         "core-deps" => core_deps::run(&workspace_root),
+        "hooks" => hooks::check(&workspace_root),
         "root-entries" => root_entries::run(&workspace_root),
         "docs" => docs::check(&workspace_root),
         "sql-schema" => sql_schema::run(&workspace_root),
@@ -23,7 +25,7 @@ fn main() -> ExitCode {
         "docs-write" => docs::write(&workspace_root),
         _ => {
             eprintln!(
-                "usage: xtask <forbidden-chars|core-deps|root-entries|docs|docs-write|sql-schema|design-tokens|design-write>"
+                "usage: xtask <forbidden-chars|core-deps|root-entries|docs|docs-write|hooks|sql-schema|design-tokens|design-write>"
             );
             return ExitCode::from(2);
         }
