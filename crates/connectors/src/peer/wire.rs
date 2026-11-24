@@ -126,9 +126,22 @@ impl Outbox {
             return true;
         }
         self.queue.bytes.fetch_sub(length, Ordering::SeqCst);
+        self.hang_up();
+        false
+    }
+
+    /// Ends the line this outbox feeds at once, dropping what is still queued.
+    pub fn hang_up(&self) {
         self.queue.hung_up.store(true, Ordering::SeqCst);
         self.queue.hang_up.notify_one();
-        false
+    }
+}
+
+struct Aborted(tokio::task::JoinHandle<()>);
+
+impl Drop for Aborted {
+    fn drop(&mut self) {
+        self.0.abort();
     }
 }
 
@@ -344,13 +357,13 @@ impl Line {
             ..
         } = self;
         let (frames_tx, mut frames) = mpsc::channel::<Vec<u8>>(16);
-        let reader = tokio::spawn(async move {
+        let reader = Aborted(tokio::spawn(async move {
             while let Ok(frame) = read_frame(&mut read).await {
                 if frames_tx.send(frame).await.is_err() {
                     return;
                 }
             }
-        });
+        }));
         let mut ping = time::interval(PING);
         let mut last_heard = time::Instant::now();
         let mut pieces = Vec::new();
@@ -400,7 +413,7 @@ impl Line {
                 }
             }
         };
-        reader.abort();
+        drop(reader);
         ended
     }
 }

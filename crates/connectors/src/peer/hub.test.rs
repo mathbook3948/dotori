@@ -388,3 +388,18 @@ async fn a_pc_that_was_unreachable_is_linked_soon_after_it_starts_listening() {
         let _ = std::fs::remove_dir_all(folder);
     }
 }
+
+#[test]
+fn a_line_taken_out_of_the_hub_hangs_up_and_takes_no_more() {
+    let (outbox, _outgoing) = wire::outbox();
+    let linked = Linked {
+        id: 1,
+        dialed_by: [0; KEY],
+        device: String::from("노트북"),
+        outbox: outbox.clone(),
+    };
+
+    drop(linked);
+
+    assert!(!outbox.put(Arc::from(&b"{}"[..])));
+}

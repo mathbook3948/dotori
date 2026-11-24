@@ -42,6 +42,8 @@ use crate::peer::write_privately;
 const DIAL_TICK: Duration = Duration::from_millis(500);
 const REDIAL_FIRST: Duration = Duration::from_secs(2);
 const REDIAL_LONGEST: Duration = Duration::from_secs(60);
+const STEADY: Duration = Duration::from_secs(60);
+const BOOK_EVERY: u32 = 10;
 const DIAL_WAIT: Duration = Duration::from_secs(5);
 const BOOK: &str = "book";
 const GREETING: usize = 16;
@@ -86,6 +88,12 @@ struct Linked {
     dialed_by: [u8; KEY],
     device: String,
     outbox: Outbox,
+}
+
+impl Drop for Linked {
+    fn drop(&mut self) {
+        self.outbox.hang_up();
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -376,11 +384,18 @@ impl Hub {
 
     async fn dial_all(self: Arc<Self>) {
         let mut every = time::interval(DIAL_TICK);
+        let mut ticks = 0_u32;
         loop {
             every.tick().await;
-            let book = self.book();
-            self.drop_unapproved(&book);
-            self.share_changed(&book, None);
+            ticks = ticks.wrapping_add(1);
+            let book = if ticks % BOOK_EVERY == 1 {
+                let book = self.book();
+                self.drop_unapproved(&book);
+                self.share_changed(&book, None);
+                book
+            } else {
+                self.kept.lock().expect("unpoisoned").clone()
+            };
             self.redials
                 .lock()
                 .expect("unpoisoned")
@@ -416,23 +431,21 @@ impl Hub {
                 let hub = Arc::clone(&self);
                 let key = peer.key.clone();
                 tokio::spawn(async move {
-                    let linked = hub.dial(&key, &address).await;
-                    {
-                        let mut redials = hub.redials.lock().expect("unpoisoned");
-                        let place = (key.clone(), address);
-                        let previous = if linked {
-                            None
-                        } else {
-                            redials.get(&place).copied()
-                        };
-                        let redial =
-                            Redial::after(previous, time::Instant::now(), random_or_zero());
-                        redials.insert(place, redial);
+                    if !hub.dial(&key, &address).await {
+                        hub.wait_longer(&key, &address);
                     }
                     hub.dialing.lock().expect("unpoisoned").remove(&key);
                 });
             }
         }
+    }
+
+    fn wait_longer(&self, key: &str, address: &str) {
+        let mut redials = self.redials.lock().expect("unpoisoned");
+        let place = (key.to_owned(), address.to_owned());
+        let previous = redials.get(&place).copied();
+        let redial = Redial::after(previous, time::Instant::now(), random_or_zero());
+        redials.insert(place, redial);
     }
 
     async fn dial(self: &Arc<Self>, key: &str, address: &str) -> bool {
@@ -491,10 +504,7 @@ impl Hub {
                 },
             );
         }
-        self.redials
-            .lock()
-            .expect("unpoisoned")
-            .retain(|(known, _), _| *known != key);
+        let began = time::Instant::now();
         let book = self
             .edit_book(|book| book.moved(&key, &line.hello))
             .unwrap_or_else(|| self.book());
@@ -534,6 +544,22 @@ impl Hub {
         };
         if !still {
             self.mark(&key, false);
+        }
+        if began.elapsed() >= STEADY {
+            self.redials
+                .lock()
+                .expect("unpoisoned")
+                .retain(|(known, _), _| *known != key);
+        } else {
+            let address = self
+                .kept
+                .lock()
+                .expect("unpoisoned")
+                .find(&key)
+                .and_then(|peer| peer.address.clone());
+            if let Some(address) = address {
+                self.wait_longer(&key, &address);
+            }
         }
     }
 
