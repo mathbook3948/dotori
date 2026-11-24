@@ -6,6 +6,7 @@
 CLAUDE.md
 Cargo.lock
 Cargo.toml
+DESIGN.md
 LICENSE-APACHE
 LICENSE-MIT
 README.ko.md
