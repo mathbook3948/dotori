@@ -63,6 +63,11 @@ pub(crate) fn blocks(text: &str) -> Vec<Block> {
         }
         blocks.push(block(&line));
     }
+    if let Some((_, code)) = fenced.as_mut() {
+        while code.last().is_some_and(|line| line.trim().is_empty()) {
+            code.pop();
+        }
+    }
     match fenced {
         Some((opened, code)) if code.is_empty() => blocks.push(Block::Line(words(&opened))),
         Some((_, code)) => blocks.push(Block::Code(code)),
@@ -218,7 +223,13 @@ fn line(words: &[Word], theme: &Theme) -> Div {
                     .flex()
                     .items_start()
                     .min_w_0()
-                    .children(runs.iter().map(|run| drawn(run, theme))),
+                    .children(runs.iter().map(|run| {
+                        if run.code {
+                            drawn(run, theme)
+                        } else {
+                            drawn(run, theme).flex_none()
+                        }
+                    })),
             }
         }))
 }

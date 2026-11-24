@@ -128,6 +128,7 @@ fn bold_marks_inside_code_are_not_counted_and_a_one_line_fence_is_text() {
         ]
     );
     assert_eq!(blocks("```"), [Block::Line(vec![vec![plain("```")]])]);
+    assert_eq!(blocks("```\n\n"), [Block::Line(vec![vec![plain("```")]])]);
 }
 
 #[test]
