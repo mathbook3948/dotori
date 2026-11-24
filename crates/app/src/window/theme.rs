@@ -26,6 +26,7 @@ pub(crate) struct Theme {
     pub(crate) warn_soft: Rgba,
     pub(crate) danger: Rgba,
     pub(crate) danger_soft: Rgba,
+    pub(crate) rim: Rgba,
 }
 
 /// The two colors of dotori's acorn logo.
@@ -155,7 +156,42 @@ impl Theme {
     }
 }
 
+/// How much of the blurred desktop a glass window lets through, `glass.window` of DESIGN.md.
+pub(crate) const GLASS_WINDOW: f32 = 0.6;
+/// How much of it the fills on a glass window let through, `glass.surface` of DESIGN.md.
+pub(crate) const GLASS_SURFACE: f32 = 0.72;
+
+/// Whether this OS blurs what is behind a window, so a window can be glass. Elsewhere the same
+/// window is drawn opaque.
+pub(crate) const SEE_THROUGH: bool = cfg!(any(target_os = "macos", target_os = "windows"));
+
 impl Theme {
+    /// These colors on a glass window: where the OS blurs what is behind the window, the canvas
+    /// and the fills on it let the blurred desktop through.
+    pub(crate) fn glass(self) -> Self {
+        if SEE_THROUGH {
+            self.see_through()
+        } else {
+            self
+        }
+    }
+
+    fn see_through(mut self) -> Self {
+        for window in [&mut self.canvas, &mut self.raised] {
+            window.a = GLASS_WINDOW;
+        }
+        for fill in [
+            &mut self.surface,
+            &mut self.bubble,
+            &mut self.ok_soft,
+            &mut self.warn_soft,
+            &mut self.danger_soft,
+        ] {
+            fill.a = GLASS_SURFACE;
+        }
+        self
+    }
+
     /// Whether these are the colors of a dark look, judged by the canvas.
     pub(crate) fn is_dark(&self) -> bool {
         0.2126 * self.canvas.r + 0.7152 * self.canvas.g + 0.0722 * self.canvas.b < 0.5

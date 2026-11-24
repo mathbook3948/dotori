@@ -22,6 +22,7 @@ colors:
       warn-soft: "#FDF0E1"
       danger: "#BA3E2D"
       danger-soft: "#F8E8E6"
+      rim: "#FFFFFFCC"
     dark:
       canvas: "#0F1114"
       surface: "#181B20"
@@ -40,6 +41,7 @@ colors:
       warn-soft: "#2D2416"
       danger: "#E5736A"
       danger-soft: "#3A2525"
+      rim: "#FFFFFF2E"
   paper:
     light:
       canvas: "#F6F4EF"
@@ -59,6 +61,7 @@ colors:
       warn-soft: "#F4E9D8"
       danger: "#BA3E2D"
       danger-soft: "#F8E8E6"
+      rim: "#FFFFFFCC"
     dark:
       canvas: "#151412"
       surface: "#1E1D1A"
@@ -77,6 +80,7 @@ colors:
       warn-soft: "#2C2418"
       danger: "#E67970"
       danger-soft: "#3F2724"
+      rim: "#FFFFFF2E"
   forest:
     light:
       canvas: "#F2F4F1"
@@ -96,6 +100,7 @@ colors:
       warn-soft: "#F6ECDC"
       danger: "#BA3E2D"
       danger-soft: "#F8E8E6"
+      rim: "#FFFFFFCC"
     dark:
       canvas: "#0F1411"
       surface: "#171E1A"
@@ -114,6 +119,7 @@ colors:
       warn-soft: "#2B2417"
       danger: "#E5736A"
       danger-soft: "#3A2723"
+      rim: "#FFFFFF2E"
   indigo:
     light:
       canvas: "#F4F4F9"
@@ -133,6 +139,7 @@ colors:
       warn-soft: "#FBEEDF"
       danger: "#BA3E2D"
       danger-soft: "#F8E8E6"
+      rim: "#FFFFFFCC"
     dark:
       canvas: "#11111D"
       surface: "#1A1A2A"
@@ -151,6 +158,7 @@ colors:
       warn-soft: "#2D2518"
       danger: "#E5736A"
       danger-soft: "#3B252C"
+      rim: "#FFFFFF2E"
   acorn:
     light:
       canvas: "#F7F3EE"
@@ -170,6 +178,7 @@ colors:
       warn-soft: "#F8EAD6"
       danger: "#BA3E2D"
       danger-soft: "#F8E8E6"
+      rim: "#FFFFFFCC"
     dark:
       canvas: "#1B1714"
       surface: "#26211D"
@@ -188,6 +197,7 @@ colors:
       warn-soft: "#3A2C1B"
       danger: "#E67970"
       danger-soft: "#432925"
+      rim: "#FFFFFF2E"
   logo:
     light:
       cap: "#5B3A1E"
@@ -233,6 +243,9 @@ spacing:
   xl: 20px
   turn: 18px
   rise: 6px
+glass:
+  window: 0.6
+  surface: 0.72
 motion:
   hover:
     duration: 120ms
@@ -286,7 +299,7 @@ This file is the design the windows are moving to. Until a window has moved, `do
 
 ## Layout
 
-- The chat window is the conversation and the composer, with no header. A quiet strip of `canvas` at the top holds only the settings button on the right. The window's own title bar names dotori, and each reply carries the logo.
+- The chat window is the conversation and the composer, with no header and no title bar of the OS where dotori can draw its own. A quiet strip at the top holds the settings button on the left and the close button on the right, and the owner drags the window by it. On macOS the system's window buttons stay on the left and the settings button follows them. Where the OS still draws its own title bar, the close button is left to it. Each reply carries the logo.
 - The strip shows no status while things work. When dotori cannot be reached, one quiet line on its left says so and what to do. When the owner's PCs are linked, the PC that answers is named there only when it is not this one.
 - dotori's browser has no place in the chat window. When it needs the owner, a card asks at the end of the conversation, showing the page as it is now, and the browser opens in a window of its own only when the owner opens it. A login it asks for is answered in the card.
 - The conversation keeps `spacing.turn` between turns and `spacing.xl` around its edge.
@@ -300,9 +313,11 @@ This file is the design the windows are moving to. Until a window has moved, `do
 
 ## Elevation & Depth
 
-- Cards and fields are set apart by fill, not by borders. A card is `surface` or a `-soft` fill on the canvas.
-- Lines are used only to divide large areas, such as the conversation from the composer.
-- The composer alone has a light shadow, so it reads as the place to type.
+- The chat window is glass. Where the OS blurs what is behind a window (macOS and Windows), the canvas lets `glass.window` of the blurred desktop through, and the fills on it, such as bubbles, cards, buttons and the composer, let `glass.surface` through. Elsewhere the same window is opaque.
+- A glass surface has a `rim`, a thin light line along its top edge, and a soft shadow under it. Text, `primary` and the marks on a surface stay solid.
+- Cards and fields are set apart by fill and rim, not by borders around them.
+- Lines are used only to divide large areas.
+- The composer floats lowest and carries the deepest shadow, so it reads as the place to type.
 
 ## Shapes
 
@@ -337,7 +352,7 @@ This file is the design the windows are moving to. Until a window has moved, `do
 - **Failure card**: `danger-soft` fill, `rounded.lg`, what failed and what to do, in `danger` and `text`.
 - **Composer**: `surface` on `raised`, `rounded.composer`, a light shadow, a round `primary` send button, and a `hint` line under it.
 - **Browser card**: `warn-soft` fill, `rounded.lg`, what dotori asks, the page now at 16:10 on `surface` that opens the browser when clicked, and the buttons 나중에 (`surface`) and 브라우저 열기 (`primary`). While the browser window is open it turns `surface` and offers 창 다시 보기 and 다 했어요.
-- **Settings button**: a round `surface` button with a `muted` gear, top right.
+- **Settings and close buttons**: round `surface` glass buttons with a `muted` gear on the left and a `muted` cross on the right of the top strip.
 
 ## Do's and Don'ts
 
@@ -345,6 +360,6 @@ This file is the design the windows are moving to. Until a window has moved, `do
 - Do show a state only when it needs the owner, and say it in words.
 - Don't show status with colored dots.
 - Don't put borders around cards or buttons.
-- Don't use gradients, glass, glows, sparkles, emoji as icons, or cards with a colored stripe on one side.
+- Don't use gradients, glows, sparkles, emoji as icons, or cards with a colored stripe on one side. Glass is the window's material only as Elevation & Depth describes it.
 - Don't draw dotori's replies in bubbles or fill large areas with `primary`.
 - Don't let anything jump, flicker or wait for the network before it answers the owner.

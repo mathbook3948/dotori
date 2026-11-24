@@ -27,6 +27,7 @@ pub(crate) const THEMES: [(&str, Theme, Theme); 5] = [
             warn_soft: hex(0xFDF0E1FF),
             danger: hex(0xBA3E2DFF),
             danger_soft: hex(0xF8E8E6FF),
+            rim: hex(0xFFFFFFCC),
         },
         Theme {
             canvas: hex(0x0F1114FF),
@@ -46,6 +47,7 @@ pub(crate) const THEMES: [(&str, Theme, Theme); 5] = [
             warn_soft: hex(0x2D2416FF),
             danger: hex(0xE5736AFF),
             danger_soft: hex(0x3A2525FF),
+            rim: hex(0xFFFFFF2E),
         },
     ),
     (
@@ -68,6 +70,7 @@ pub(crate) const THEMES: [(&str, Theme, Theme); 5] = [
             warn_soft: hex(0xF4E9D8FF),
             danger: hex(0xBA3E2DFF),
             danger_soft: hex(0xF8E8E6FF),
+            rim: hex(0xFFFFFFCC),
         },
         Theme {
             canvas: hex(0x151412FF),
@@ -87,6 +90,7 @@ pub(crate) const THEMES: [(&str, Theme, Theme); 5] = [
             warn_soft: hex(0x2C2418FF),
             danger: hex(0xE67970FF),
             danger_soft: hex(0x3F2724FF),
+            rim: hex(0xFFFFFF2E),
         },
     ),
     (
@@ -109,6 +113,7 @@ pub(crate) const THEMES: [(&str, Theme, Theme); 5] = [
             warn_soft: hex(0xF6ECDCFF),
             danger: hex(0xBA3E2DFF),
             danger_soft: hex(0xF8E8E6FF),
+            rim: hex(0xFFFFFFCC),
         },
         Theme {
             canvas: hex(0x0F1411FF),
@@ -128,6 +133,7 @@ pub(crate) const THEMES: [(&str, Theme, Theme); 5] = [
             warn_soft: hex(0x2B2417FF),
             danger: hex(0xE5736AFF),
             danger_soft: hex(0x3A2723FF),
+            rim: hex(0xFFFFFF2E),
         },
     ),
     (
@@ -150,6 +156,7 @@ pub(crate) const THEMES: [(&str, Theme, Theme); 5] = [
             warn_soft: hex(0xFBEEDFFF),
             danger: hex(0xBA3E2DFF),
             danger_soft: hex(0xF8E8E6FF),
+            rim: hex(0xFFFFFFCC),
         },
         Theme {
             canvas: hex(0x11111DFF),
@@ -169,6 +176,7 @@ pub(crate) const THEMES: [(&str, Theme, Theme); 5] = [
             warn_soft: hex(0x2D2518FF),
             danger: hex(0xE5736AFF),
             danger_soft: hex(0x3B252CFF),
+            rim: hex(0xFFFFFF2E),
         },
     ),
     (
@@ -191,6 +199,7 @@ pub(crate) const THEMES: [(&str, Theme, Theme); 5] = [
             warn_soft: hex(0xF8EAD6FF),
             danger: hex(0xBA3E2DFF),
             danger_soft: hex(0xF8E8E6FF),
+            rim: hex(0xFFFFFFCC),
         },
         Theme {
             canvas: hex(0x1B1714FF),
@@ -210,6 +219,7 @@ pub(crate) const THEMES: [(&str, Theme, Theme); 5] = [
             warn_soft: hex(0x3A2C1BFF),
             danger: hex(0xE67970FF),
             danger_soft: hex(0x432925FF),
+            rim: hex(0xFFFFFF2E),
         },
     ),
 ];
