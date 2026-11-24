@@ -2,6 +2,7 @@ mod chat;
 mod input;
 mod parts;
 mod pcs;
+mod routines;
 mod screen;
 mod settings;
 mod theme;

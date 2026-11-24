@@ -1,0 +1,200 @@
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
+
+use jiff::civil::date;
+use jiff::tz::offset;
+
+use super::*;
+
+static NEXT: AtomicUsize = AtomicUsize::new(0);
+
+fn routines() -> Arc<Routines> {
+    let n = NEXT.fetch_add(1, Ordering::SeqCst);
+    let folder = std::env::temp_dir().join(format!("dotori-routines-{}-{n}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&folder);
+    Routines::new(folder.join("routines.sqlite3"))
+}
+
+fn seoul() -> TimeZone {
+    TimeZone::fixed(offset(9))
+}
+
+fn at(day: Date, hour: i8, minute: i8) -> Timestamp {
+    day.at(hour, minute, 0, 0)
+        .to_zoned_datetime(seoul())
+        .expect("a time")
+        .timestamp()
+}
+
+fn routine(time: &str, days: u8, date: Option<&str>) -> Routine {
+    Routine {
+        id: 1,
+        name: String::from("아침 브리핑"),
+        time: time.to_owned(),
+        days,
+        date: date.map(str::to_owned),
+        task: String::from("오늘 일정 알려줘"),
+        made_ms: 0,
+        fired_ms: 0,
+    }
+}
+
+#[test]
+fn a_daily_routine_is_due_once_in_the_half_hour_after_its_time() {
+    let monday = date(2026, 11, 23);
+    let mut every_day = routine("08:00", 0, None);
+    let slot = at(monday, 8, 0).as_millisecond();
+
+    assert_eq!(every_day.due(&seoul(), at(monday, 7, 59)), None);
+    assert_eq!(every_day.due(&seoul(), at(monday, 8, 0)), Some(slot));
+    assert_eq!(every_day.due(&seoul(), at(monday, 8, 29)), Some(slot));
+    assert_eq!(every_day.due(&seoul(), at(monday, 8, 31)), None);
+
+    every_day.fired_ms = slot;
+    assert_eq!(every_day.due(&seoul(), at(monday, 8, 10)), None);
+    assert_eq!(
+        every_day.due(&seoul(), at(date(2026, 11, 24), 8, 5)),
+        Some(at(date(2026, 11, 24), 8, 0).as_millisecond())
+    );
+}
+
+#[test]
+fn a_weekday_routine_skips_the_weekend() {
+    let weekdays = routine("09:30", WEEKDAYS, None);
+    let saturday = date(2026, 11, 28);
+    let monday = date(2026, 11, 30);
+
+    assert_eq!(weekdays.due(&seoul(), at(saturday, 9, 40)), None);
+    assert_eq!(
+        weekdays.last_slot(&seoul(), at(saturday, 9, 40)),
+        Some(at(date(2026, 11, 27), 9, 30).as_millisecond())
+    );
+    assert!(weekdays.due(&seoul(), at(monday, 9, 31)).is_some());
+}
+
+#[test]
+fn a_routine_made_after_its_time_waits_for_the_next_one() {
+    let monday = date(2026, 11, 23);
+    let mut late = routine("08:00", 0, None);
+    late.made_ms = at(monday, 8, 5).as_millisecond();
+
+    assert_eq!(late.due(&seoul(), at(monday, 8, 6)), None);
+    assert!(late.due(&seoul(), at(date(2026, 11, 24), 8, 1)).is_some());
+}
+
+#[test]
+fn a_one_time_routine_is_due_only_on_its_day() {
+    let once = routine("14:00", 0, Some("2026-12-24"));
+
+    assert_eq!(once.due(&seoul(), at(date(2026, 12, 23), 14, 5)), None);
+    assert!(once.due(&seoul(), at(date(2026, 12, 24), 14, 5)).is_some());
+    assert_eq!(once.due(&seoul(), at(date(2026, 12, 25), 14, 5)), None);
+}
+
+#[test]
+fn the_schedule_reads_the_way_the_owner_would_say_it() {
+    assert_eq!(routine("08:00", 0, None).when(), "매일");
+    assert_eq!(routine("08:00", WEEKDAYS, None).when(), "평일");
+    assert_eq!(routine("08:00", WEEKEND, None).when(), "주말");
+    assert_eq!(routine("08:00", 0b000_0101, None).when(), "월, 수");
+    assert_eq!(
+        routine("14:00", 0, Some("2026-12-24")).when(),
+        "2026년 12월 24일 한 번"
+    );
+}
+
+#[test]
+fn routines_are_added_checked_and_removed() {
+    let routines = routines();
+
+    let added = routines.add(
+        &json!({
+            "name": "아침 브리핑",
+            "time": "08:00",
+            "days": ["mon", "tue", "wed", "thu", "fri"],
+            "task": "오늘 일정과 날씨 알려줘"
+        }),
+        10,
+    );
+    assert_eq!(added, Ok(String::from("Set up routine [1].")));
+    assert!(
+        routines
+            .add(&json!({ "name": "x", "time": "25:00", "task": "y" }), 11)
+            .is_err()
+    );
+    assert!(
+        routines
+            .add(
+                &json!({ "name": "x", "time": "08:00", "days": ["someday"], "task": "y" }),
+                11
+            )
+            .is_err()
+    );
+    let listed = routines.list().expect("listed");
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].days, WEEKDAYS);
+    assert_eq!(listed[0].made_ms, 10);
+    assert!(
+        routines.context().expect("context").contains(
+            "[1] 아침 브리핑, on mon, tue, wed, thu, fri at 08:00: 오늘 일정과 날씨 알려줘"
+        )
+    );
+
+    assert!(routines.remove(1, 12).is_ok());
+    assert!(routines.remove(1, 13).is_err());
+    assert_eq!(routines.context(), None);
+}
+
+#[test]
+fn a_run_is_noted_and_a_one_time_routine_goes_away() {
+    let routines = routines();
+    routines
+        .add(&json!({ "name": "매일", "time": "08:00", "task": "a" }), 1)
+        .expect("added");
+    routines
+        .add(
+            &json!({ "name": "한 번", "time": "08:00", "date": "2026-12-24", "task": "b" }),
+            1,
+        )
+        .expect("added");
+    let listed = routines.list().expect("listed");
+
+    routines.fired(&listed[0], 500, 600).expect("noted");
+    routines.fired(&listed[1], 500, 600).expect("noted");
+
+    let left = routines.list().expect("listed");
+    assert_eq!(left.len(), 1);
+    assert_eq!(left[0].fired_ms, 500);
+    let incoming = incoming(&left[0], 500).expect("message");
+    assert_eq!(incoming.id.as_str(), "routine-1-500");
+    assert_eq!(incoming.place.as_str(), "매일");
+    assert_eq!(incoming.content.as_str(), "a");
+}
+
+#[test]
+fn the_copy_changed_last_wins() {
+    let here = routines();
+    let there = routines();
+    here.add(
+        &json!({ "name": "여기", "time": "08:00", "task": "a" }),
+        100,
+    )
+    .expect("added");
+    there
+        .add(
+            &json!({ "name": "저기", "time": "09:00", "task": "b" }),
+            200,
+        )
+        .expect("added");
+
+    assert_eq!(here.take(&there.copy().expect("copy")), Ok(true));
+    assert_eq!(there.take(&here.copy().expect("copy")), Ok(false));
+
+    let names: Vec<String> = here
+        .list()
+        .expect("listed")
+        .into_iter()
+        .map(|routine| routine.name)
+        .collect();
+    assert_eq!(names, ["저기"]);
+}

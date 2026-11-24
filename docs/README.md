@@ -12,6 +12,7 @@
 - [MCP](architecture/mcp.md): 에이전트가 쓰는 도구를 어떻게 제공하는지 정한다.
 - [메모리](architecture/memory.md): 비서가 몇 달에서 몇 년 동안 기억을 유지하는 방법을 정한다.
 - [프로세스 구조](architecture/processes.md): dotori를 어떤 프로세스로 나눠 실행하는지 정한다.
+- [루틴](architecture/routines.md): 주인이 정해 둔 시간에 비서가 알아서 하는 일을 어떻게 다루는지 정한다.
 - [세션](architecture/sessions.md): 주인이 어디서 비서와 말하고, 대화를 어떤 세션으로 나누는지 정한다.
 - [Slack 연결](architecture/slack.md): Slack을 채널과 연동으로 어떻게 쓰는지 정한다.
 - [창](architecture/windows.md): 채팅창과 설정창이 어떻게 보이는지 정한다.

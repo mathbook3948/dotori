@@ -32,8 +32,12 @@ use serde_json::Value;
 use serde_json::json;
 use tokio::sync::Notify;
 
+use crate::routines;
+use crate::routines::Routines;
+
 const REMEMBER: &str = "remember";
 const FORGET: &str = "forget";
+const OWNER_TOOLS: [&str; 4] = [REMEMBER, FORGET, routines::ADD, routines::REMOVE];
 const MAX_NOTES: i64 = 50;
 const MAX_LENGTH: usize = 500;
 const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS notes (\
@@ -260,8 +264,8 @@ impl Notes {
             Ok(())
         } else {
             Err(String::from(
-                "only the owner can change notes, right after they ask and before any tool or \
-                 sub-session result; ask the owner to say it again",
+                "only the owner can change notes and routines, right after they ask and before \
+                 any tool or sub-session result; ask the owner to say it again",
             ))
         }
     }
@@ -294,7 +298,7 @@ fn owner_asked(conversation: &[Entry]) -> bool {
         })
         .flatten()
         .filter_map(|action| match action {
-            Action::UseTool(call) if call.name == REMEMBER || call.name == FORGET => {
+            Action::UseTool(call) if OWNER_TOOLS.contains(&call.name.as_str()) => {
                 Some(call.id.as_str())
             }
             _ => None,
@@ -373,23 +377,29 @@ fn one_line(text: &str) -> String {
         .to_owned()
 }
 
-/// The main session's model, given the owner's notes with every request.
+/// The main session's model, given the owner's notes and routines with every request.
 pub(crate) struct Noted {
     pub(crate) model: Arc<dyn Model>,
     pub(crate) notes: Arc<Notes>,
+    pub(crate) routines: Arc<Routines>,
 }
 
 impl Model for Noted {
     fn complete(&self, mut request: ModelRequest) -> BoxFuture<'_, Result<ModelReply, ModelError>> {
         self.notes.heard(&request.conversation);
-        request.context = self.notes.context();
+        let parts: Vec<String> = [self.notes.context(), self.routines.context()]
+            .into_iter()
+            .flatten()
+            .collect();
+        request.context = (!parts.is_empty()).then(|| parts.join("\n\n"));
         self.model.complete(request)
     }
 }
 
-/// The main session's tools: the notes tools, then the shared ones.
+/// The main session's tools: the notes and routines tools, then the shared ones.
 pub(crate) struct MainTools {
     pub(crate) notes: Arc<Notes>,
+    pub(crate) routines: Arc<Routines>,
     pub(crate) shared: Arc<dyn Toolbox>,
 }
 
@@ -420,30 +430,39 @@ impl Toolbox for MainTools {
                 .to_string(),
             },
         ];
+        specs.extend(routine_specs());
         specs.extend(
             self.shared
                 .specs()
                 .into_iter()
-                .filter(|spec| spec.name != REMEMBER && spec.name != FORGET),
+                .filter(|spec| !OWNER_TOOLS.contains(&spec.name.as_str())),
         );
         specs
     }
 
     fn run(&self, call: ToolCall) -> BoxFuture<'_, Result<String, ToolError>> {
-        if call.name != REMEMBER && call.name != FORGET {
+        if !OWNER_TOOLS.contains(&call.name.as_str()) {
             return self.shared.run(call);
         }
         let notes = Arc::clone(&self.notes);
+        let routines = Arc::clone(&self.routines);
         Box::pin(async move {
             let input: Value = serde_json::from_str(&call.input).map_err(|error| ToolError {
                 detail: format!("the input is not JSON: {error}"),
             })?;
-            tokio::task::spawn_blocking(move || {
-                if call.name == REMEMBER {
-                    notes.remember(&input)
-                } else {
-                    notes.forget(&input)
-                }
+            tokio::task::spawn_blocking(move || match call.name.as_str() {
+                REMEMBER => notes.remember(&input),
+                FORGET => notes.forget(&input),
+                routines::ADD => notes
+                    .owner_only()
+                    .and_then(|()| routines.add(&input, now_ms())),
+                _ => notes.owner_only().and_then(|()| {
+                    let id = input
+                        .get("id")
+                        .and_then(Value::as_i64)
+                        .ok_or("`id` is required")?;
+                    routines.remove(id, now_ms())
+                }),
             })
             .await
             .map_err(|error| error.to_string())
@@ -451,6 +470,43 @@ impl Toolbox for MainTools {
             .map_err(|detail| ToolError { detail })
         })
     }
+}
+
+fn routine_specs() -> [ToolSpec; 2] {
+    [
+        ToolSpec {
+            name: String::from(routines::ADD),
+            description: String::from(
+                "Sets up a routine: at a set local time, dotori is handed `task` on the \
+                 `routine` channel, does it, and says the result in that thread, which the owner \
+                 sees in the chat window. Use it right away when the owner asks for something to \
+                 happen regularly or at a set time. Leave out `days` for every day, and give \
+                 `date` for a routine that happens once.",
+            ),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "maxLength": 60, "description": "A short name, such as \"아침 브리핑\"." },
+                    "time": { "type": "string", "pattern": "^[0-2][0-9]:[0-5][0-9]$", "description": "Local time, HH:MM in 24 hours." },
+                    "days": { "type": "array", "items": { "enum": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] } },
+                    "date": { "type": "string", "description": "YYYY-MM-DD, for once." },
+                    "task": { "type": "string", "maxLength": 1000, "description": "What to do, in the owner's words." }
+                },
+                "required": ["name", "time", "task"]
+            })
+            .to_string(),
+        },
+        ToolSpec {
+            name: String::from(routines::REMOVE),
+            description: String::from("Removes a routine by its number when the owner asks."),
+            input_schema: json!({
+                "type": "object",
+                "properties": { "id": { "type": "integer" } },
+                "required": ["id"]
+            })
+            .to_string(),
+        },
+    ]
 }
 
 #[cfg(test)]
