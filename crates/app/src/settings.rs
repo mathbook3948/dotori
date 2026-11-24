@@ -39,11 +39,13 @@ pub(crate) const DISCORD_KEY: &str = "DISCORD_BOT_TOKEN";
 /// Where the Slack bot token is when the settings do not say.
 pub(crate) const SLACK_BOT_KEY: &str = "SLACK_BOT_TOKEN";
 /// The name an OpenAI-compatible API key is kept under once the owner gives one in the settings
-/// window, when the settings named none.
-pub(crate) const OPENAI_KEY: &str = "OPENAI_API_KEY";
+/// window, when the settings named none. It is dotori's own, so no key set for another tool is
+/// sent in its place, and with no value under it the model goes without a key.
+pub(crate) const MODEL_KEY: &str = "DOTORI_MODEL_API_KEY";
 
 /// What the user sets in `settings.toml`. A missing file means every default.
-/// Keys never live in the file. It names the environment variable that holds each key.
+/// Keys never live in the file. It names each key, which is read from the environment variable
+/// of that name or else from the vault.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Settings {
@@ -95,7 +97,8 @@ pub(crate) struct PeerSettings {
 }
 
 /// An MCP server made elsewhere that dotori relays, reached at `url` or started as `command`.
-/// A token goes in the environment variable `token_env` names, never in the file.
+/// Its token goes by the name `token_env` gives, read from the environment or the vault, never
+/// from the file.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RelaySettings {
@@ -334,7 +337,7 @@ impl SlackForm {
         {
             if !variable_name(name) {
                 return Err(format!(
-                    "`{name}`은 환경 변수 이름이 아니에요. 토큰은 여기 말고 환경 변수에 넣어 주세요"
+                    "`{name}`은 키 이름이 아니에요. 토큰은 설정창의 칸에 붙여 넣어 주세요"
                 ));
             }
         }
@@ -383,7 +386,7 @@ impl TelegramForm {
             && !variable_name(name)
         {
             return Err(format!(
-                "`{name}`은 환경 변수 이름이 아니에요. 토큰은 여기 말고 환경 변수에 넣어 주세요"
+                "`{name}`은 키 이름이 아니에요. 토큰은 설정창의 칸에 붙여 넣어 주세요"
             ));
         }
         Ok(Some(TelegramSettings {
@@ -431,7 +434,7 @@ impl DiscordForm {
             && !variable_name(name)
         {
             return Err(format!(
-                "`{name}`은 환경 변수 이름이 아니에요. 토큰은 여기 말고 환경 변수에 넣어 주세요"
+                "`{name}`은 키 이름이 아니에요. 토큰은 설정창의 칸에 붙여 넣어 주세요"
             ));
         }
         Ok(Some(DiscordSettings {
@@ -639,9 +642,11 @@ impl Settings {
             } => {
                 let mut config = OpenAiConfig::new(base_url.clone(), model.clone());
                 if let Some(variable) = api_key_env {
-                    config.api_key = Some(
-                        key(variable).ok_or_else(|| format!("set {variable} to your API key"))?,
-                    );
+                    config.api_key = match key(variable) {
+                        Some(api_key) => Some(api_key),
+                        None if variable == MODEL_KEY => None,
+                        None => return Err(format!("set {variable} to your API key")),
+                    };
                 }
                 config.max_tokens = *max_tokens;
                 if let Some(system) = system {

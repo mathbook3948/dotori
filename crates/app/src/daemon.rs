@@ -332,7 +332,7 @@ pub(crate) async fn serve(
         {
             let vault = Arc::clone(&vault);
             let linked = linked.clone();
-            tokio::spawn(async move { vault::share(&vault, linked).await });
+            tokio::spawn(vault::share(vault, linked));
         }
         let vault = Arc::clone(&vault);
         let routines = Arc::clone(&routines);

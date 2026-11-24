@@ -13,7 +13,15 @@ fn folder() -> PathBuf {
 }
 
 fn vault(folder: &Path) -> Vault {
-    Vault::with_key_file(folder.join("vault.sqlite3"), folder.join("vault.key"))
+    Vault::without_keychain(folder)
+}
+
+fn copy(name: &str, value: Option<&str>, changed_ms: i64) -> SecretCopy {
+    SecretCopy {
+        name: name.to_owned(),
+        value: value.map(str::to_owned),
+        changed_ms,
+    }
 }
 
 #[test]
@@ -80,19 +88,61 @@ fn a_sealed_value_does_not_open_under_another_name() {
 }
 
 #[test]
-fn without_its_key_the_vault_says_so_and_makes_no_new_one() {
+fn a_key_that_does_not_open_the_vault_is_never_used() {
     let folder = folder();
     vault(&folder).set("A", "one", 10).expect("kept");
-    std::fs::remove_file(folder.join("vault.key")).expect("lost the key");
+    std::fs::write(folder.join("vault.key"), [7_u8; KEY_BYTES]).expect("another key");
     let vault = vault(&folder);
 
     let read = vault.get("A");
     let kept = vault.set("B", "two", 20);
 
-    assert!(read.expect_err("no key").contains("gone"));
-    assert!(kept.is_err(), "a new key would leave A sealed for good");
-    assert!(!folder.join("vault.key").exists());
+    assert!(read.expect_err("refused").contains("another key"));
+    assert!(kept.expect_err("refused").contains("another key"));
+    assert_eq!(vault.names().expect("names"), vec!["A"]);
     let _ = std::fs::remove_dir_all(&folder);
+}
+
+#[test]
+fn a_lost_key_lets_the_owner_give_keys_again_and_the_other_pcs_refill_the_rest() {
+    let here = folder();
+    let there = folder();
+    let (here_vault, there_vault) = (vault(&here), vault(&there));
+    here_vault.set("A", "one", 10).expect("kept");
+    assert!(
+        there_vault
+            .take(&here_vault.copy().expect("copy"), 20)
+            .expect("took")
+    );
+    std::fs::remove_file(here.join("vault.key")).expect("lost the key");
+    let here_vault = vault(&here);
+
+    assert!(
+        here_vault
+            .get("A")
+            .expect_err("no key")
+            .contains("give the keys again")
+    );
+    here_vault.set("B", "two", 30).expect("kept with a new key");
+
+    assert_eq!(here_vault.get("A").expect("read"), None);
+    assert!(
+        !here_vault
+            .copy()
+            .expect("copy")
+            .iter()
+            .any(|copy| copy.name == "A"),
+        "what could not be opened is not sent as removed"
+    );
+    assert!(
+        here_vault
+            .take(&there_vault.copy().expect("copy"), 40)
+            .expect("took")
+    );
+    assert_eq!(here_vault.get("A").expect("read").as_deref(), Some("one"));
+    assert_eq!(here_vault.get("B").expect("read").as_deref(), Some("two"));
+    let _ = std::fs::remove_dir_all(&here);
+    let _ = std::fs::remove_dir_all(&there);
 }
 
 #[test]
@@ -113,7 +163,7 @@ fn a_removed_key_goes_from_every_pc() {
     here_vault.set("A", "one", 10).expect("kept");
     assert!(
         there_vault
-            .take(&here_vault.copy().expect("copy"))
+            .take(&here_vault.copy().expect("copy"), 20)
             .expect("took")
     );
     assert_eq!(there_vault.get("A").expect("read").as_deref(), Some("one"));
@@ -121,7 +171,7 @@ fn a_removed_key_goes_from_every_pc() {
     here_vault.remove("A", 20).expect("removed");
     assert!(
         there_vault
-            .take(&here_vault.copy().expect("copy"))
+            .take(&here_vault.copy().expect("copy"), 30)
             .expect("took")
     );
 
@@ -143,24 +193,57 @@ fn each_key_goes_by_its_own_time() {
     vault.set("B", "mine", 10).expect("kept");
 
     let took = vault
-        .take(&[
-            SecretCopy {
-                name: String::from("A"),
-                value: Some(String::from("older")),
-                changed_ms: 20,
-            },
-            SecretCopy {
-                name: String::from("B"),
-                value: Some(String::from("newer")),
-                changed_ms: 20,
-            },
-        ])
+        .take(
+            &[
+                copy("A", Some("older"), 20),
+                copy("B", Some("newer"), 20),
+                copy("B", Some("newest"), 25),
+                copy("B", Some("older again"), 22),
+            ],
+            40,
+        )
         .expect("took");
 
     assert!(took);
     assert_eq!(vault.get("A").expect("read").as_deref(), Some("mine"));
-    assert_eq!(vault.get("B").expect("read").as_deref(), Some("newer"));
-    assert!(!vault.take(&vault.copy().expect("copy")).expect("took"));
+    assert_eq!(vault.get("B").expect("read").as_deref(), Some("newest"));
+    assert!(!vault.take(&vault.copy().expect("copy"), 50).expect("took"));
+    let _ = std::fs::remove_dir_all(&folder);
+}
+
+#[test]
+fn a_key_dated_far_ahead_is_left_out_and_the_rest_is_taken() {
+    let folder = folder();
+    let vault = vault(&folder);
+    let now = 1_000_000_000;
+
+    let took = vault
+        .take(
+            &[
+                copy("AHEAD", Some("x"), now + FUTURE_TAKEN + 1),
+                copy("FINE", Some("y"), now - 5),
+            ],
+            now,
+        )
+        .expect("took");
+
+    assert!(took);
+    assert_eq!(vault.names().expect("names"), vec!["FINE"]);
+    let _ = std::fs::remove_dir_all(&folder);
+}
+
+#[test]
+fn a_change_is_noticed_even_behind_a_key_dated_ahead() {
+    let folder = folder();
+    let vault = vault(&folder);
+    vault
+        .take(&[copy("AHEAD", Some("x"), 5_000)], 1_000)
+        .expect("took");
+    let before = vault.changes().expect("changes");
+
+    vault.set("HERE", "y", 1_000).expect("kept");
+
+    assert_ne!(vault.changes().expect("changes"), before);
     let _ = std::fs::remove_dir_all(&folder);
 }
 

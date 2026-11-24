@@ -374,7 +374,7 @@ fn the_slack_form_refuses_a_missing_owner_and_a_pasted_token() {
     );
     form.app_token_env = Some(String::from("xapp-1-A0-123-abc"));
     let refused = form.settings().expect_err("a token is not a name");
-    assert!(refused.contains("환경 변수"), "{refused}");
+    assert!(refused.contains("키 이름이 아니에요"), "{refused}");
 }
 
 #[test]
@@ -479,7 +479,11 @@ fn the_telegram_form_needs_a_numeric_owner_and_a_variable_name() {
     assert!(form.settings().is_err());
     form.owner = Some(String::from("123456789"));
     form.token_env = Some(String::from("123:secret"));
-    assert!(form.settings().expect_err("a token").contains("환경 변수"));
+    assert!(
+        form.settings()
+            .expect_err("a token")
+            .contains("키 이름이 아니에요")
+    );
     form.token_env = None;
 
     let section = form.settings().expect("valid").expect("on");
@@ -529,7 +533,11 @@ fn the_discord_form_needs_a_snowflake_owner_and_a_variable_name() {
     assert!(form.settings().is_err());
     form.owner = Some(String::from("123456789012345678"));
     form.token_env = Some(String::from("MTIz.abc.def"));
-    assert!(form.settings().expect_err("a token").contains("환경 변수"));
+    assert!(
+        form.settings()
+            .expect_err("a token")
+            .contains("키 이름이 아니에요")
+    );
     form.token_env = None;
 
     let section = form.settings().expect("valid").expect("on");
@@ -537,4 +545,20 @@ fn the_discord_form_needs_a_snowflake_owner_and_a_variable_name() {
     assert_eq!(section.owner.as_deref(), Some("123456789012345678"));
     assert_eq!(DiscordForm::of(Some(&section)), form);
     assert_eq!(DiscordForm::default().settings(), Ok(None));
+}
+
+#[test]
+fn a_model_key_dotori_named_may_be_missing_and_another_may_not() {
+    let model = |name: &str| Settings {
+        model: ModelSettings::OpenaiCompatible {
+            base_url: String::from("http://127.0.0.1:1/v1"),
+            model: String::from("m"),
+            api_key_env: Some(name.to_owned()),
+            max_tokens: None,
+        },
+        ..Settings::default()
+    };
+
+    assert!(model(MODEL_KEY).model(|_| None).is_ok());
+    assert!(model("SOME_OTHER_KEY").model(|_| None).is_err());
 }

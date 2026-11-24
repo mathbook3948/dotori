@@ -20,7 +20,7 @@ use crate::settings::ANTHROPIC_KEY;
 use crate::settings::DISCORD_KEY;
 use crate::settings::DiscordForm;
 use crate::settings::Form;
-use crate::settings::OPENAI_KEY;
+use crate::settings::MODEL_KEY;
 use crate::settings::SLACK_APP_KEY;
 use crate::settings::SLACK_BOT_KEY;
 use crate::settings::Settings;
@@ -158,6 +158,7 @@ impl SettingsView {
         fill(&self.model, next.model, cx);
         fill(&self.base_url, next.base_url, cx);
         self.api_key_env = next.api_key_env;
+        self.api_key.update(cx, |input, cx| input.set_text("", cx));
         fill(&self.effort, next.effort, cx);
         self.openai_compatible = openai_compatible;
         self.note = None;
@@ -234,34 +235,40 @@ impl SettingsView {
     }
 
     fn save(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
-        if self.openai_compatible
-            && self.api_key_env.is_none()
+        let mut form = self.form(cx);
+        if form.openai_compatible
+            && form.api_key_env.is_none()
             && !self.api_key.read(cx).text().trim().is_empty()
         {
-            self.api_key_env = Some(OPENAI_KEY.to_owned());
+            form.api_key_env = Some(MODEL_KEY.to_owned());
         }
-        let form = self.form(cx);
+        let api_key_env = form.api_key_env.clone();
         let slack = self.slack_form(cx);
         let telegram = self.telegram_form(cx);
         let discord = self.discord_form(cx);
-        let saved = form.settings(&self.earlier.model).and_then(|model| {
-            let slack = slack.settings()?;
-            let telegram = telegram.settings()?;
-            let discord = discord.settings()?;
-            let settings = Settings {
+        let wanted = form.settings(&self.earlier.model).and_then(|model| {
+            Ok(Settings {
                 model,
-                slack,
-                telegram,
-                discord,
+                slack: slack.settings()?,
+                telegram: telegram.settings()?,
+                discord: discord.settings()?,
                 ..Settings::load(&self.home.settings())?
-            };
+            })
+        });
+        let saved = wanted.and_then(|settings| {
+            let before = mem::replace(&mut self.api_key_env, api_key_env);
+            if let Err(error) = self.keep_secrets(cx) {
+                self.api_key_env = before;
+                return Err(error);
+            }
             settings.save_parts(
                 &self.home.settings(),
                 &["model", "slack", "telegram", "discord"],
             )?;
             self.earlier = settings;
-            self.keep_secrets(cx)
+            Ok(())
         });
+        self.kept = self.vault.names().unwrap_or_default();
         self.note = Some(match saved {
             Ok(()) => Note::Saved,
             Err(error) => Note::Failed(SharedString::from(error)),
@@ -538,10 +545,11 @@ impl SettingsView {
             })
             .collect();
         for (input, name, value) in typed {
-            self.vault.set(&name, &value, now_ms())?;
+            self.vault
+                .set(&name, &value, now_ms())
+                .map_err(|error| vault_failed("넣지", &error))?;
             input.update(cx, |input, cx| input.set_text("", cx));
         }
-        self.kept = self.vault.names()?;
         Ok(())
     }
 
@@ -549,14 +557,11 @@ impl SettingsView {
         let forgot = self
             .vault
             .remove(name, now_ms())
-            .and_then(|()| self.vault.names());
-        match forgot {
-            Ok(kept) => {
-                self.kept = kept;
-                self.note = None;
-            }
-            Err(error) => self.note = Some(Note::Failed(SharedString::from(error))),
-        }
+            .map_err(|error| vault_failed("지우지", &error));
+        self.kept = self.vault.names().unwrap_or_default();
+        self.note = forgot
+            .err()
+            .map(|error| Note::Failed(SharedString::from(error)));
         cx.notify();
     }
 
@@ -588,7 +593,10 @@ impl SettingsView {
             )
         } else if kept {
             (theme.ok, theme.ok_soft, "금고에 안전하게 보관돼 있어요")
-        } else if name.is_none() {
+        } else if name
+            .as_deref()
+            .is_none_or(|name| self.openai_compatible && name == MODEL_KEY)
+        {
             (theme.muted, theme.bubble, "키가 필요 없으면 비워 둬요")
         } else {
             (theme.warn, theme.warn_soft, "아직 넣지 않았어요")
@@ -613,10 +621,10 @@ impl SettingsView {
         });
         let hint = match &name {
             Some(name) => format!(
-                "이 PC의 키체인으로 잠근 금고에 보관하고, 묶인 PC에는 암호화해서 보내요. 대화하는 AI는 이 값을 볼 수 없어요. 같은 이름({name})의 환경 변수가 있으면 그 값을 먼저 써요."
+                "이 PC에서만 열리게 잠가 금고에 보관하고, 묶인 PC에는 암호화해서 보내요. dotori는 이 값을 대화하는 AI에게 보내지 않아요. 같은 이름({name})의 환경 변수가 있으면 그 값을 먼저 써요."
             ),
             None => String::from(
-                "이 PC의 키체인으로 잠근 금고에 보관하고, 묶인 PC에는 암호화해서 보내요. 대화하는 AI는 이 값을 볼 수 없어요.",
+                "이 PC에서만 열리게 잠가 금고에 보관하고, 묶인 PC에는 암호화해서 보내요. dotori는 이 값을 대화하는 AI에게 보내지 않아요.",
             ),
         };
         div()
@@ -918,6 +926,15 @@ impl SettingsView {
             &self.discord_owner,
         ))
         .child(token)
+    }
+}
+
+fn vault_failed(what: &str, error: &str) -> String {
+    eprintln!("dotori: the vault: {error}");
+    if error.contains("another key") {
+        format!("이 PC의 금고 키가 금고와 맞지 않아서 키를 {what} 못했어요")
+    } else {
+        format!("키를 금고에 {what} 못했어요. 잠시 뒤에 다시 해 보세요")
     }
 }
 
