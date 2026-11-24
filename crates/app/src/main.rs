@@ -4,6 +4,7 @@ mod confirm;
 mod daemon;
 mod device;
 mod door;
+mod forget;
 mod history;
 mod home;
 mod idle;

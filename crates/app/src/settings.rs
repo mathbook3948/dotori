@@ -150,6 +150,13 @@ impl Asked {
         }
     }
 
+    /// Makes `tool` always wait for the owner, whatever the settings say.
+    pub(crate) fn always(&mut self, tool: &str) {
+        if !self.tools.iter().any(|asked| asked == tool) {
+            self.tools.push(tool.to_owned());
+        }
+    }
+
     pub(crate) fn needs(&self, tool: &str) -> bool {
         self.tools.iter().any(|asked| asked == tool)
             || self

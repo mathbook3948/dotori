@@ -432,7 +432,245 @@ async fn a_format_2_file_gains_arrivals_in_number_order() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("version");
+    let triggers: Vec<String> = connection
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' ORDER BY name")
+        .expect("prepared")
+        .query_map([], |row| row.get(0))
+        .expect("queried")
+        .map(|name| name.expect("read"))
+        .collect();
     assert_eq!(arrived, 2);
-    assert_eq!(version, 3);
+    assert_eq!(version, VERSION);
     assert_eq!(ids(&folder, 2025).len(), 2);
+    assert!(
+        !triggers.contains(&String::from("records_never_shrink")),
+        "{triggers:?}"
+    );
+    assert!(triggers.contains(&String::from("records_shrink_only_when_forgotten")));
+}
+
+#[tokio::test]
+async fn a_forgotten_record_leaves_only_its_number_and_never_comes_back() {
+    let here_folder = scratch();
+    let there_folder = scratch();
+    let here = SqliteStore::new(here_folder.clone(), "here");
+    let there = SqliteStore::new(there_folder, "there");
+    there
+        .append(vec![
+            failed_at(JAN_1_2026, "keep"),
+            failed_at(JAN_1_2026 + 1, "card number 1234"),
+        ])
+        .await
+        .expect("appended there");
+    let sent = there.after("there", "", 100, 1 << 20).await.expect("after");
+    here.copy_in(sent.clone()).await.expect("copied");
+    let secret = sent[1].id.clone();
+
+    let forgotten = here
+        .forget(vec![secret.clone()], Vec::new())
+        .await
+        .expect("forgot");
+    assert_eq!(
+        forgotten,
+        [Forgotten {
+            id: secret.clone(),
+            device: String::from("there")
+        }]
+    );
+    assert_eq!(details(&here.load().await.expect("loaded")), ["keep"]);
+    assert_eq!(here.copy_in(sent.clone()).await.expect("copied again"), 0);
+    assert_eq!(details(&here.load().await.expect("loaded")), ["keep"]);
+    assert_eq!(
+        here.marks().await.expect("marks")["there"],
+        secret,
+        "a forgotten number still counts as had, so it is not sent again"
+    );
+    let connection = Connection::open(here_folder.join("2026.sqlite3")).expect("opened");
+    assert!(
+        connection.execute("DELETE FROM records", []).is_err(),
+        "what was not forgotten still cannot be removed"
+    );
+    assert!(connection.execute("DELETE FROM forgotten", []).is_err());
+    let lines: String = connection
+        .query_row("SELECT group_concat(line) FROM records", [], |row| {
+            row.get(0)
+        })
+        .expect("read");
+    assert!(!lines.contains("1234"));
+
+    assert!(
+        here.forget(vec![String::from("not-a-record")], Vec::new())
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        here.forget(vec![secret.clone()], Vec::new())
+            .await
+            .map(|f| f.len())
+            .ok(),
+        None
+    );
+}
+
+#[tokio::test]
+async fn what_another_pc_forgot_is_taken_whether_or_not_the_record_came_yet() {
+    let there_folder = scratch();
+    let early = SqliteStore::new(scratch(), "early");
+    let late = SqliteStore::new(scratch(), "late");
+    let there = SqliteStore::new(there_folder, "there");
+    there
+        .append(vec![failed_at(JAN_1_2026, "secret")])
+        .await
+        .expect("appended");
+    let sent = there.after("there", "", 100, 1 << 20).await.expect("after");
+    early.copy_in(sent.clone()).await.expect("copied");
+    let forgotten = there
+        .forget(vec![sent[0].id.clone()], Vec::new())
+        .await
+        .expect("forgot");
+
+    assert_eq!(
+        early
+            .take_forgotten(forgotten.clone())
+            .await
+            .expect("taken"),
+        1
+    );
+    assert_eq!(
+        early
+            .take_forgotten(forgotten.clone())
+            .await
+            .expect("again"),
+        0
+    );
+    assert!(early.load().await.expect("loaded").is_empty());
+
+    assert_eq!(
+        late.take_forgotten(forgotten.clone()).await.expect("taken"),
+        1
+    );
+    assert_eq!(late.copy_in(sent).await.expect("copied"), 0);
+    assert!(late.load().await.expect("loaded").is_empty());
+    assert_eq!(late.forgotten().await.expect("listed"), forgotten);
+}
+
+#[tokio::test]
+async fn a_forget_for_a_record_not_here_yet_never_moves_how_far_this_pc_holds() {
+    let there = SqliteStore::new(scratch(), "there");
+    let late = SqliteStore::new(scratch(), "late");
+    there
+        .append(vec![
+            failed_at(JAN_1_2026, "first"),
+            failed_at(JAN_1_2026 + 1, "second"),
+        ])
+        .await
+        .expect("appended");
+    let sent = there.after("there", "", 100, 1 << 20).await.expect("after");
+    let forgotten = there
+        .forget(vec![sent[1].id.clone()], Vec::new())
+        .await
+        .expect("forgot");
+
+    late.take_forgotten(forgotten).await.expect("taken");
+    assert!(
+        !late.marks().await.expect("marks").contains_key("there"),
+        "a record never held does not count as held"
+    );
+    late.copy_in(sent.clone()).await.expect("copied");
+
+    assert_eq!(details(&late.load().await.expect("loaded")), ["first"]);
+    assert_eq!(
+        late.marks().await.expect("marks")["there"],
+        sent[1].id,
+        "once its copy was refused it counts"
+    );
+}
+
+#[tokio::test]
+async fn a_copy_is_refused_wherever_its_forget_was_filed() {
+    let there = SqliteStore::new(scratch(), "there");
+    let late = SqliteStore::new(scratch(), "late");
+    there
+        .append(vec![failed_at(DEC_31_2025, "end of year")])
+        .await
+        .expect("appended");
+    let mut sent = there.after("there", "", 100, 1 << 20).await.expect("after");
+    let next_year = Uuid::new_v7(uuid::Timestamp::from_unix(
+        uuid::NoContext,
+        JAN_1_2026 / 1000 + 5,
+        0,
+    ))
+    .to_string();
+    sent[0].id.clone_from(&next_year);
+
+    late.take_forgotten(vec![Forgotten {
+        id: next_year,
+        device: String::from("there"),
+    }])
+    .await
+    .expect("taken");
+
+    assert_eq!(late.copy_in(sent).await.expect("copied"), 0);
+    assert!(late.load().await.expect("loaded").is_empty());
+}
+
+#[tokio::test]
+async fn what_carries_a_forgotten_number_goes_with_it_and_a_wrong_maker_is_refused() {
+    let folder = scratch();
+    let store = SqliteStore::new(folder.clone(), "here");
+    store
+        .append(vec![failed_at(JAN_1_2026, "card 1234")])
+        .await
+        .expect("appended");
+    let id = store.after("here", "", 10, 1 << 20).await.expect("after")[0]
+        .id
+        .clone();
+    store
+        .append(vec![
+            Record {
+                at: UNIX_EPOCH + Duration::from_millis(JAN_1_2026 + 1),
+                entry: Entry::ToolReturned {
+                    call: dotori_core::tool::ToolCallId::new("search"),
+                    result: Ok(format!("[record {id}] card 1234")),
+                },
+            },
+            failed_at(JAN_1_2026 + 2, &format!("I said {id} once")),
+        ])
+        .await
+        .expect("appended");
+
+    let carrying = store.carrying(vec![id.clone()]).await.expect("found");
+    assert_eq!(
+        carrying.len(),
+        1,
+        "only results carry a number, not what was said"
+    );
+    let forgotten = store
+        .forget(vec![id.clone()], vec![carrying[0].id.clone()])
+        .await
+        .expect("forgot");
+
+    assert_eq!(forgotten.len(), 2);
+    assert_eq!(
+        details(&store.load().await.expect("loaded")),
+        [format!("I said {id} once")]
+    );
+
+    let other = SqliteStore::new(scratch(), "other");
+    other
+        .append(vec![failed_at(JAN_1_2026, "mine")])
+        .await
+        .expect("appended");
+    let mine = other.after("other", "", 10, 1 << 20).await.expect("after")[0]
+        .id
+        .clone();
+    let forged = other
+        .take_forgotten(vec![Forgotten {
+            id: mine,
+            device: String::from("someone else"),
+        }])
+        .await
+        .expect("taken");
+    assert_eq!(forged, 0);
+    assert_eq!(details(&other.load().await.expect("loaded")), ["mine"]);
 }

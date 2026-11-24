@@ -3,6 +3,7 @@ use std::future;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use tokio::sync::mpsc;
@@ -30,6 +31,8 @@ use dotori_core::runtime::AgentConfig;
 use dotori_core::runtime::Ports;
 use dotori_core::sub_session::SubSessionRunner;
 use dotori_core::tool::Toolbox;
+use dotori_mcp::memory::Memory;
+use dotori_mcp::memory::MemoryConfig;
 use dotori_mcp::relay::relay;
 
 use crate::browser_route::BROWSER_JOB;
@@ -41,6 +44,9 @@ use crate::confirm::Guarded;
 use crate::device;
 use crate::door;
 use crate::door::Door;
+use crate::forget::FORGET;
+use crate::forget::Forget;
+use crate::forget::Previewed;
 use crate::history;
 use crate::home::Home;
 use crate::idle::NoTools;
@@ -123,7 +129,7 @@ pub(crate) async fn serve(
     let (app, address) = AppChannel::bind(token.clone()).map_err(|error| error.to_string())?;
     let app = Arc::new(app);
     let (guarded, wrong) = settings.relays(environment, true);
-    let (guarded, failed) = relay(guarded).await;
+    let (mut guarded, failed) = relay(guarded).await;
     for problem in wrong.iter().chain(&failed) {
         eprintln!("dotori: an MCP server is left out: {problem}");
     }
@@ -134,6 +140,20 @@ pub(crate) async fn serve(
         );
         asked.close_server_of(&name);
     }
+    let forget_copies: Arc<OnceLock<Arc<Copies>>> = Arc::default();
+    let forgetting = MemoryConfig {
+        record: home.record(),
+        index: home.search_index(),
+        dictionaries: home.dictionaries(),
+        embedding: None,
+        jobs: None,
+    };
+    guarded.push(Box::new(Forget {
+        store: records.clone(),
+        memory: forgetting.clone(),
+        copies: Arc::clone(&forget_copies),
+    }));
+    asked.always(FORGET);
     let asking = Arc::new(Asking::new(
         asked,
         Arc::new(Guarded {
@@ -147,7 +167,10 @@ pub(crate) async fn serve(
     let toolbox: Arc<dyn Toolbox> = Arc::new(MainTools {
         notes: Arc::clone(&notes),
         routines: Arc::clone(&routines),
-        shared: Arc::clone(&asking) as Arc<dyn Toolbox>,
+        shared: Arc::new(Previewed {
+            inner: Arc::clone(&asking) as Arc<dyn Toolbox>,
+            store: records.clone(),
+        }),
     });
     match records.load().await {
         Ok(earlier) => app.show_earlier(&history::lines(&earlier)),
@@ -230,6 +253,23 @@ pub(crate) async fn serve(
                     confirm::decided(&asking, &outcomes, linked.as_ref(), decision, passed_on)
                         .await;
                 });
+            }
+        });
+    }
+    if let Some((_, copies)) = &heard {
+        let _ = forget_copies.set(Arc::clone(copies));
+        let copies = Arc::clone(copies);
+        tokio::spawn(async move {
+            loop {
+                copies.forgotten_elsewhere().await;
+                let memory = forgetting.clone();
+                match tokio::task::spawn_blocking(move || Memory::drop_forgotten(&memory)).await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => eprintln!(
+                        "dotori: the search index keeps what another PC forgot until the next search: {error}"
+                    ),
+                    Err(error) => eprintln!("dotori: {error}"),
+                }
             }
         });
     }

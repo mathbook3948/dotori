@@ -41,6 +41,7 @@ const BATCH_PAUSE: Duration = Duration::from_secs(1);
 const FILL_PAUSE: Duration = Duration::from_secs(30);
 const FAILED_PAUSE: Duration = Duration::from_secs(300);
 const FORMAT: &str = "2";
+const BUSY: Duration = Duration::from_secs(5);
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS docs (
@@ -63,6 +64,7 @@ CREATE TABLE IF NOT EXISTS copied_vectors (
     vector BLOB NOT NULL,
     PRIMARY KEY (record, model)
 );
+CREATE TABLE IF NOT EXISTS forgotten (record TEXT PRIMARY KEY) WITHOUT ROWID;
 ";
 const DROP: &str = "
 DROP TABLE IF EXISTS meta;
@@ -71,6 +73,7 @@ DROP TABLE IF EXISTS terms;
 DROP TABLE IF EXISTS vectors;
 DROP TABLE IF EXISTS vector_log;
 DROP TABLE IF EXISTS copied_vectors;
+DROP TABLE IF EXISTS forgotten;
 ";
 
 /// Where memory reads the raw record, keeps its index, and keeps dictionaries. The record is a
@@ -172,6 +175,7 @@ impl Memory {
             if vectors::any(index, &wanted).map_err(|error| error.to_string())? {
                 memory.meaning_ready.store(true, Ordering::SeqCst);
             }
+            drop_forgotten(index, &memory.config.record).map_err(|error| error.to_string())?;
             copy_records(index, &memory.config.record).map_err(|error| error.to_string())?;
             if vectors::merge_copied(index).map_err(|error| error.to_string())? {
                 memory.meaning_ready.store(true, Ordering::SeqCst);
@@ -201,6 +205,13 @@ impl Memory {
         .await
         .map_err(|error| error.to_string())??;
         Ok(true)
+    }
+
+    /// Removes from the search index and its vectors every record the raw record has forgotten
+    /// since the last time, without waiting for the next search.
+    pub fn drop_forgotten(config: &MemoryConfig) -> Result<(), String> {
+        let mut index = open_index(&config.index)?;
+        drop_forgotten(&mut index, &config.record).map_err(|error| error.to_string())
     }
 
     /// The tools that use this memory.
@@ -432,6 +443,10 @@ fn open_index(path: &PathBuf) -> Result<Connection, String> {
     }
     let index = Connection::open(path).map_err(|error| error.to_string())?;
     let fail = |error: rusqlite::Error| error.to_string();
+    index.busy_timeout(BUSY).map_err(fail)?;
+    index
+        .pragma_update(None, "secure_delete", "ON")
+        .map_err(fail)?;
     index.execute_batch(SCHEMA).map_err(fail)?;
     if meta(&index, "format").map_err(fail)?.as_deref() != Some(FORMAT) {
         index.execute_batch(DROP).map_err(fail)?;
@@ -443,6 +458,12 @@ fn open_index(path: &PathBuf) -> Result<Connection, String> {
             )
             .map_err(fail)?;
     }
+    index
+        .execute(
+            "INSERT INTO terms (terms, rank) VALUES ('secure-delete', 1)",
+            [],
+        )
+        .map_err(fail)?;
     index
         .execute(
             "INSERT INTO vector_log (seq) SELECT seq FROM vectors \
@@ -577,6 +598,69 @@ fn copy_records(index: &mut Connection, folder: &Path) -> rusqlite::Result<()> {
     Ok(())
 }
 
+fn drop_forgotten(index: &mut Connection, folder: &Path) -> rusqlite::Result<()> {
+    let mut dropped_vectors = false;
+    let mut dropped = false;
+    for (name, year) in record_years(folder)? {
+        let key = format!("forgotten:{name}");
+        let seen: i64 = meta(index, &key)?
+            .and_then(|seen| seen.parse().ok())
+            .unwrap_or(0);
+        let rows: Vec<(i64, String)> =
+            match year.prepare("SELECT n, id FROM forgotten WHERE n > ?1 ORDER BY n") {
+                Ok(mut found) => found
+                    .query_map([seen], |row| Ok((row.get(0)?, row.get(1)?)))?
+                    .collect::<rusqlite::Result<_>>()?,
+                Err(error) if error.to_string().contains("no such table") => Vec::new(),
+                Err(error) => return Err(error),
+            };
+        let Some(last) = rows.last().map(|(n, _)| n.to_string()) else {
+            continue;
+        };
+        let batch = index.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        for (_, record) in &rows {
+            batch.execute(
+                "INSERT OR IGNORE INTO forgotten (record) VALUES (?1)",
+                [record],
+            )?;
+            let seq: Option<i64> = batch
+                .query_row("SELECT seq FROM docs WHERE record = ?1", [record], |row| {
+                    row.get(0)
+                })
+                .optional()?;
+            if let Some(seq) = seq {
+                dropped = true;
+                batch.execute("DELETE FROM terms WHERE rowid = ?1", [seq])?;
+                dropped_vectors |= batch.execute("DELETE FROM vectors WHERE seq = ?1", [seq])? > 0;
+                batch.execute("DELETE FROM vector_log WHERE seq = ?1", [seq])?;
+                batch.execute("DELETE FROM docs WHERE seq = ?1", [seq])?;
+            }
+        }
+        batch.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)",
+            [&key, &last],
+        )?;
+        batch.commit()?;
+    }
+    index.execute(
+        "DELETE FROM copied_vectors WHERE record IN (SELECT record FROM forgotten)",
+        [],
+    )?;
+    if dropped {
+        index.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
+    }
+    if dropped_vectors {
+        let merged: i64 = meta(index, "vectors_merged")?
+            .and_then(|merged| merged.parse().ok())
+            .unwrap_or(0);
+        index.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('vectors_merged', ?1)",
+            [(merged + 1).to_string()],
+        )?;
+    }
+    Ok(())
+}
+
 struct Doc {
     record: String,
     at_ms: i64,
@@ -589,6 +673,7 @@ struct Doc {
 }
 
 fn catch_up(index: &mut Connection, folder: &Path, analyzer: &Analyzer) -> rusqlite::Result<()> {
+    drop_forgotten(index, folder)?;
     copy_records(index, folder)?;
     vectors::merge_copied(index)?;
     if meta(index, "analyzer")?.as_deref() != Some(analyzer.name()) {

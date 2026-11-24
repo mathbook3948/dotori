@@ -539,3 +539,93 @@ fn a_copy_made_with_the_makers_newer_model_takes_the_place_of_an_older_vector() 
     old.load(&index, "old").expect("loaded");
     assert!(old.nearest(&[1.0], 5).expect("compared").is_empty());
 }
+
+fn forget_in_record(config: &MemoryConfig, id: &str) {
+    let record = Connection::open(config.record.join("2023.sqlite3")).expect("opened");
+    record
+        .execute_batch(
+            "CREATE TABLE IF NOT EXISTS forgotten (n INTEGER PRIMARY KEY AUTOINCREMENT, \
+             id TEXT NOT NULL UNIQUE, device TEXT NOT NULL)",
+        )
+        .expect("made");
+    record
+        .execute("INSERT INTO forgotten (id, device) VALUES (?1, 'pc')", [id])
+        .expect("forgotten");
+    record
+        .execute("DELETE FROM records WHERE id = ?1", [id])
+        .expect("removed");
+    record
+        .execute("DELETE FROM arrived WHERE id = ?1", [id])
+        .expect("removed");
+}
+
+#[test]
+fn a_forgotten_record_leaves_the_search_index() {
+    let config = config();
+    record(
+        &config,
+        &[
+            ("heard", Some("민지"), Some("내 카드 번호는 1234야")),
+            ("heard", Some("민지"), Some("카드 정리 끝났어")),
+        ],
+    );
+    let memory = memory(config.clone());
+    assert_eq!(
+        memory
+            .search("카드", 10, None)
+            .expect("searched")
+            .lines()
+            .count(),
+        2
+    );
+
+    forget_in_record(&config, "r0001");
+
+    let found = memory.search("카드", 10, None).expect("searched");
+    assert_eq!(found.lines().count(), 1, "{found}");
+    assert!(found.starts_with("[record r0002]"), "{found}");
+    assert_eq!(
+        memory.search("1234", 10, None).expect("searched"),
+        "Nothing in memory matches."
+    );
+    let index = Connection::open(&config.index).expect("opened");
+    let kept: String = index
+        .query_row("SELECT group_concat(text, ' ') FROM docs", [], |row| {
+            row.get(0)
+        })
+        .expect("read");
+    assert!(!kept.contains("1234"), "{kept}");
+}
+
+#[tokio::test]
+async fn a_forgotten_record_loses_its_vector_too() {
+    let config = config();
+    record(
+        &config,
+        &[
+            ("heard", Some("민지"), Some("내일 미팅은 3시에 해요")),
+            ("heard", Some("유노"), Some("점심 메뉴 추천해줘")),
+        ],
+    );
+    let memory = embedded(config.clone(), embedding_api(false).await);
+    while memory.fill_once().await.expect("filled") {}
+    let search = &memory.tools()[0];
+    let before = search
+        .call(json!({ "query": "meeting", "limit": 1 }))
+        .await
+        .expect("searched");
+    assert!(before.starts_with("[record r0001]"), "{before}");
+
+    forget_in_record(&config, "r0001");
+    let after = search
+        .call(json!({ "query": "meeting", "limit": 2 }))
+        .await
+        .expect("searched");
+
+    assert!(!after.contains("r0001"), "{after}");
+    let index = Connection::open(&config.index).expect("opened");
+    let vectors: i64 = index
+        .query_row("SELECT count(*) FROM vectors", [], |row| row.get(0))
+        .expect("counted");
+    assert_eq!(vectors, 1);
+}

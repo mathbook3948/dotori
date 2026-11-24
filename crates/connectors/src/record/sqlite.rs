@@ -16,6 +16,7 @@ use dotori_core::record::RecordStore;
 use dotori_core::sub_session::SubSessionOutcome;
 use rusqlite::Connection;
 use rusqlite::OpenFlags;
+use rusqlite::OptionalExtension;
 use rusqlite::params;
 use serde::Deserialize;
 use serde::Serialize;
@@ -23,9 +24,11 @@ use uuid::Uuid;
 
 use crate::record::form::Line;
 
-const VERSION: i64 = 3;
+const VERSION: i64 = 4;
 const BEFORE_ARRIVALS: i64 = 2;
 const LEGACY_VERSION: i64 = 1;
+const SETTLE_TRIES: usize = 20;
+const SETTLE_WAIT: std::time::Duration = std::time::Duration::from_millis(100);
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS records (
     id TEXT PRIMARY KEY,
@@ -46,8 +49,21 @@ CREATE TABLE IF NOT EXISTS arrived (
 );
 CREATE TRIGGER IF NOT EXISTS records_never_change BEFORE UPDATE ON records
 BEGIN SELECT RAISE(ABORT, 'the raw record never changes'); END;
-CREATE TRIGGER IF NOT EXISTS records_never_shrink BEFORE DELETE ON records
-BEGIN SELECT RAISE(ABORT, 'the raw record never shrinks'); END;
+CREATE TABLE IF NOT EXISTS forgotten (
+    n INTEGER PRIMARY KEY AUTOINCREMENT,
+    id TEXT NOT NULL UNIQUE,
+    device TEXT NOT NULL,
+    held INTEGER NOT NULL DEFAULT 0
+);
+DROP TRIGGER IF EXISTS records_never_shrink;
+CREATE TRIGGER IF NOT EXISTS records_shrink_only_when_forgotten BEFORE DELETE ON records
+WHEN NOT EXISTS (SELECT 1 FROM forgotten WHERE id = OLD.id)
+BEGIN SELECT RAISE(ABORT, 'the raw record loses only what the owner asked to forget'); END;
+CREATE TRIGGER IF NOT EXISTS forgotten_never_changes BEFORE UPDATE ON forgotten
+WHEN NEW.n != OLD.n OR NEW.id != OLD.id OR NEW.device != OLD.device OR NEW.held < OLD.held
+BEGIN SELECT RAISE(ABORT, 'what was forgotten stays forgotten'); END;
+CREATE TRIGGER IF NOT EXISTS forgotten_never_shrinks BEFORE DELETE ON forgotten
+BEGIN SELECT RAISE(ABORT, 'what was forgotten stays forgotten'); END;
 ";
 
 /// The raw record in SQLite, one file per year in one folder, such as `2026.sqlite3`.
@@ -59,6 +75,24 @@ pub struct SqliteStore {
     folder: Arc<PathBuf>,
     device: Arc<str>,
     book: Arc<Mutex<Book>>,
+}
+
+/// A record the owner asked to forget, by its number and the PC that made it. Only these numbers
+/// stay, so a copy that arrives later is refused and the other PCs can forget it too.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Forgotten {
+    pub id: String,
+    pub device: String,
+}
+
+/// A record as the owner would recognize it, to show before it is forgotten.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Described {
+    pub id: String,
+    pub at_ms: i64,
+    pub kind: String,
+    pub sender: Option<String>,
+    pub text: Option<String>,
 }
 
 /// A record as it travels between PCs: its number, the PC that made it, and its full form.
@@ -138,7 +172,12 @@ impl SqliteStore {
             for year in years(folder)? {
                 let connection = book.year(folder, year)?;
                 let mut query = connection
-                    .prepare("SELECT device, max(id) FROM records GROUP BY device")
+                    .prepare(
+                        "SELECT device, max(id) FROM \
+                         (SELECT device, id FROM records \
+                          UNION ALL SELECT device, id FROM forgotten WHERE held = 1) \
+                         GROUP BY device",
+                    )
                     .map_err(fail)?;
                 let rows = query
                     .query_map([], |row| {
@@ -233,7 +272,28 @@ impl SqliteStore {
             }
             let mut added = 0;
             let mut by_year = BTreeMap::<i64, Vec<_>>::new();
-            for (copied, at_ms, record) in parsed {
+            let held = years(folder)?;
+            let mut refused = Vec::new();
+            'rows: for (copied, at_ms, record) in parsed {
+                for year in &held {
+                    let stone: Option<(String, bool)> = book
+                        .year(folder, *year)?
+                        .query_row(
+                            "SELECT device, held FROM forgotten WHERE id = ?1",
+                            [&copied.id],
+                            |row| Ok((row.get(0)?, row.get(1)?)),
+                        )
+                        .optional()
+                        .map_err(fail)?;
+                    if let Some((device, held)) = stone
+                        && device == copied.device
+                    {
+                        if !held {
+                            refused.push((*year, copied.id.clone()));
+                        }
+                        continue 'rows;
+                    }
+                }
                 by_year
                     .entry(year_of(record.at))
                     .or_default()
@@ -256,7 +316,192 @@ impl SqliteStore {
                 }
                 batch.commit().map_err(fail)?;
             }
+            for (year, id) in refused {
+                book.year(folder, year)?
+                    .execute("UPDATE forgotten SET held = 1 WHERE id = ?1", [&id])
+                    .map_err(fail)?;
+            }
             Ok(added)
+        })
+        .await
+    }
+
+    /// Forgets the records numbered `ids` at the owner's request, together with `carriers`, the
+    /// records the owner was shown that carry their numbers, such as the search result that found
+    /// them. Each is removed from the raw record and its number kept as forgotten. Fails,
+    /// forgetting nothing, if any of `ids` is not here; a carrier already gone is passed over.
+    pub async fn forget(
+        &self,
+        ids: Vec<String>,
+        carriers: Vec<String>,
+    ) -> Result<Vec<Forgotten>, RecordError> {
+        self.with(move |book, folder, _| {
+            let mut found = Vec::new();
+            for id in &ids {
+                let (year, device) =
+                    held(book, folder, id)?.ok_or_else(|| fail(format!("no record {id}")))?;
+                found.push((
+                    year,
+                    Forgotten {
+                        id: id.clone(),
+                        device,
+                    },
+                ));
+            }
+            for id in carriers {
+                if found.iter().any(|(_, known)| known.id == id) {
+                    continue;
+                }
+                if let Some((year, device)) = held(book, folder, &id)? {
+                    found.push((year, Forgotten { id, device }));
+                }
+            }
+            for (year, forgotten) in &found {
+                forget_in(book.year(folder, *year)?, forgotten, true)?;
+            }
+            settle(book, folder)?;
+            Ok(found.into_iter().map(|(_, forgotten)| forgotten).collect())
+        })
+        .await
+    }
+
+    /// Takes in what another PC forgot. A record here is removed, unless the PC named as its maker
+    /// is not the one that made it; one not here yet is refused when it arrives. Says how many
+    /// were new.
+    pub async fn take_forgotten(&self, list: Vec<Forgotten>) -> Result<usize, RecordError> {
+        self.with(move |book, folder, _| {
+            let mut taken = 0;
+            let mut ids = Vec::new();
+            for forgotten in &list {
+                let Ok(number) = Uuid::parse_str(&forgotten.id) else {
+                    continue;
+                };
+                if number.hyphenated().to_string() != forgotten.id {
+                    continue;
+                }
+                let (year, here) = match held(book, folder, &forgotten.id)? {
+                    Some((_, device)) if device != forgotten.device => continue,
+                    Some((year, _)) => (year, true),
+                    None => {
+                        if tombstoned(book, folder, &forgotten.id)?.is_some() {
+                            continue;
+                        }
+                        let Some((seconds, _)) =
+                            number.get_timestamp().map(|stamp| stamp.to_unix())
+                        else {
+                            continue;
+                        };
+                        (
+                            year_of(UNIX_EPOCH + std::time::Duration::from_secs(seconds)),
+                            false,
+                        )
+                    }
+                };
+                if forget_in(book.year(folder, year)?, forgotten, here)? || here {
+                    taken += 1;
+                }
+                ids.push(forgotten.id.clone());
+            }
+            for (year, id, device) in carrying(book, folder, &ids)? {
+                if forget_in(book.year(folder, year)?, &Forgotten { id, device }, true)? {
+                    taken += 1;
+                }
+            }
+            if taken > 0 {
+                settle(book, folder)?;
+            }
+            Ok(taken)
+        })
+        .await
+    }
+
+    /// What the records that carry one of `ids` hold, such as the search result that found them.
+    /// These go when `ids` are forgotten.
+    pub async fn carrying(&self, ids: Vec<String>) -> Result<Vec<Described>, RecordError> {
+        self.with(move |book, folder, _| {
+            let mut found = Vec::new();
+            for (year, id, _) in carrying(book, folder, &ids)? {
+                found.push(
+                    book.year(folder, year)?
+                        .query_row(
+                            "SELECT at_ms, kind, sender_name, text FROM records WHERE id = ?1",
+                            [&id],
+                            |row| {
+                                Ok(Described {
+                                    id: id.clone(),
+                                    at_ms: row.get(0)?,
+                                    kind: row.get(1)?,
+                                    sender: row.get(2)?,
+                                    text: row.get(3)?,
+                                })
+                            },
+                        )
+                        .map_err(fail)?,
+                );
+            }
+            Ok(found)
+        })
+        .await
+    }
+
+    /// What each record numbered `ids` holds, as the owner would recognize it: when it was made,
+    /// who spoke and what was said, in the order asked. Fails on a number not here.
+    pub async fn described(&self, ids: Vec<String>) -> Result<Vec<Described>, RecordError> {
+        self.with(move |book, folder, _| {
+            let mut found = Vec::with_capacity(ids.len());
+            'ids: for id in &ids {
+                for year in years(folder)? {
+                    let row = book
+                        .year(folder, year)?
+                        .query_row(
+                            "SELECT at_ms, kind, sender_name, text FROM records WHERE id = ?1",
+                            [id],
+                            |row| {
+                                Ok(Described {
+                                    id: id.clone(),
+                                    at_ms: row.get(0)?,
+                                    kind: row.get(1)?,
+                                    sender: row.get(2)?,
+                                    text: row.get(3)?,
+                                })
+                            },
+                        )
+                        .optional()
+                        .map_err(fail)?;
+                    if let Some(row) = row {
+                        found.push(row);
+                        continue 'ids;
+                    }
+                }
+                return Err(fail(format!("no record {id}")));
+            }
+            Ok(found)
+        })
+        .await
+    }
+
+    /// Every record forgotten here.
+    pub async fn forgotten(&self) -> Result<Vec<Forgotten>, RecordError> {
+        self.with(|book, folder, _| {
+            let mut all = Vec::new();
+            for year in years(folder)? {
+                let connection = book.year(folder, year)?;
+                let mut query = connection
+                    .prepare("SELECT id, device FROM forgotten ORDER BY n")
+                    .map_err(fail)?;
+                let rows = query
+                    .query_map([], |row| {
+                        Ok(Forgotten {
+                            id: row.get(0)?,
+                            device: row.get(1)?,
+                        })
+                    })
+                    .map_err(fail)?;
+                for row in rows {
+                    all.push(row.map_err(fail)?);
+                }
+            }
+            Ok(all)
         })
         .await
     }
@@ -291,7 +536,12 @@ impl Book {
         for year in years(folder)? {
             let highest: Option<String> = self
                 .year(folder, year)?
-                .query_row("SELECT max(id) FROM records", [], |row| row.get(0))
+                .query_row(
+                    "SELECT max(id) FROM \
+                     (SELECT id FROM records UNION ALL SELECT id FROM forgotten WHERE held = 1)",
+                    [],
+                    |row| row.get(0),
+                )
                 .map_err(fail)?;
             if let Some(highest) = highest {
                 let highest = Uuid::parse_str(&highest).map_err(fail)?;
@@ -324,6 +574,9 @@ fn open(path: &Path) -> Result<Connection, RecordError> {
         .map_err(fail)?;
     connection
         .pragma_update(None, "synchronous", "FULL")
+        .map_err(fail)?;
+    connection
+        .pragma_update(None, "secure_delete", "ON")
         .map_err(fail)?;
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
@@ -495,6 +748,123 @@ impl RecordStore for SqliteStore {
     }
 }
 
+fn held(book: &mut Book, folder: &Path, id: &str) -> Result<Option<(i64, String)>, RecordError> {
+    for year in years(folder)? {
+        let device: Option<String> = book
+            .year(folder, year)?
+            .query_row("SELECT device FROM records WHERE id = ?1", [id], |row| {
+                row.get(0)
+            })
+            .optional()
+            .map_err(fail)?;
+        if let Some(device) = device {
+            return Ok(Some((year, device)));
+        }
+    }
+    Ok(None)
+}
+
+fn tombstoned(book: &mut Book, folder: &Path, id: &str) -> Result<Option<i64>, RecordError> {
+    for year in years(folder)? {
+        let here: bool = book
+            .year(folder, year)?
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM forgotten WHERE id = ?1)",
+                [id],
+                |row| row.get(0),
+            )
+            .map_err(fail)?;
+        if here {
+            return Ok(Some(year));
+        }
+    }
+    Ok(None)
+}
+
+fn carrying(
+    book: &mut Book,
+    folder: &Path,
+    ids: &[String],
+) -> Result<Vec<(i64, String, String)>, RecordError> {
+    let mut found = Vec::new();
+    for year in years(folder)? {
+        let connection = book.year(folder, year)?;
+        for id in ids {
+            let mut query = connection
+                .prepare(
+                    "SELECT id, device FROM records WHERE id != ?1 \
+                     AND kind IN ('tool_returned', 'sub_task_returned') AND instr(line, ?1) > 0",
+                )
+                .map_err(fail)?;
+            let rows = query
+                .query_map([id], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(fail)?;
+            for row in rows {
+                let (carrier, device) = row.map_err(fail)?;
+                if !ids.contains(&carrier) && !found.iter().any(|(_, known, _)| *known == carrier) {
+                    found.push((year, carrier, device));
+                }
+            }
+        }
+    }
+    Ok(found)
+}
+
+fn forget_in(
+    connection: &mut Connection,
+    forgotten: &Forgotten,
+    held: bool,
+) -> Result<bool, RecordError> {
+    let batch = connection.transaction().map_err(fail)?;
+    let new = batch
+        .execute(
+            "INSERT OR IGNORE INTO forgotten (id, device, held) VALUES (?1, ?2, ?3)",
+            params![forgotten.id, forgotten.device, held],
+        )
+        .map_err(fail)?;
+    if held {
+        batch
+            .execute(
+                "UPDATE forgotten SET held = 1 WHERE id = ?1",
+                [&forgotten.id],
+            )
+            .map_err(fail)?;
+    }
+    batch
+        .execute("DELETE FROM records WHERE id = ?1", [&forgotten.id])
+        .map_err(fail)?;
+    batch
+        .execute("DELETE FROM arrived WHERE id = ?1", [&forgotten.id])
+        .map_err(fail)?;
+    batch.commit().map_err(fail)?;
+    Ok(new > 0)
+}
+
+fn settle(book: &mut Book, folder: &Path) -> Result<(), RecordError> {
+    for year in years(folder)? {
+        let connection = book.year(folder, year)?;
+        let mut settled = false;
+        for _ in 0..SETTLE_TRIES {
+            let busy: i64 = connection
+                .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))
+                .map_err(fail)?;
+            if busy == 0 {
+                settled = true;
+                break;
+            }
+            std::thread::sleep(SETTLE_WAIT);
+        }
+        if !settled {
+            eprintln!(
+                "dotori: the {year} record is busy, so what was forgotten leaves its log only later"
+            );
+        }
+    }
+    Ok(())
+}
+
 fn insert_and_note_arrival(
     batch: &rusqlite::Transaction<'_>,
     id: &str,
@@ -508,7 +878,8 @@ fn insert_and_note_arrival(
         .execute(
             "INSERT OR IGNORE INTO records \
              (id, device, at_ms, kind, channel, place, sender_id, sender_name, role, text, line) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+             SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11 \
+             WHERE NOT EXISTS (SELECT 1 FROM forgotten WHERE id = ?1 AND device = ?2)",
             params![
                 id,
                 device,
