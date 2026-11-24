@@ -389,12 +389,11 @@ impl Render for PcsView {
                                     .gap_1p5()
                                     .text_xs()
                                     .text_color(theme.muted)
-                                    .child(div().size(px(7.)).rounded_full().bg(if linked {
-                                        theme.ok
-                                    } else {
-                                        theme.muted
-                                    }))
-                                    .child(state)
+                                    .child(
+                                        div()
+                                            .text_color(if linked { theme.ok } else { theme.muted })
+                                            .child(state),
+                                    )
                                     .children(peer.address.clone().map(|address| {
                                         div().text_color(theme.muted).child(address)
                                     })),
