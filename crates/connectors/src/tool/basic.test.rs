@@ -32,6 +32,7 @@ fn tools() -> (WithBasic, PathBuf) {
             folder: folder.join("work"),
             limit: Duration::from_secs(5),
             hidden_env: vec![String::from("DOTORI_TEST_SECRET")],
+            private: Some(folder.clone()),
         },
         rest: Arc::new(Nothing),
     };
@@ -115,11 +116,11 @@ async fn a_file_is_written_read_with_numbers_and_edited_in_place() {
     .expect("read");
     assert!(by_whole_path.starts_with("1\t하나\n"));
 
-    std::fs::write(folder.join("binary"), [0u8, 1, 2]).expect("written");
+    std::fs::write(folder.join("work").join("binary"), [0u8, 1, 2]).expect("written");
     let binary = run(
         &tools,
         READ_FILE,
-        json!({ "path": folder.join("binary").display().to_string() }),
+        json!({ "path": folder.join("work").join("binary").display().to_string() }),
     )
     .await;
     assert!(binary.expect_err("binary").contains("not a text file"));
@@ -191,4 +192,126 @@ fn long_output_keeps_its_end_on_a_character_boundary() {
     let shown = tail(&long);
     assert!(shown.ends_with('끝'));
     assert!(shown.len() <= OUTPUT + 40);
+}
+
+#[tokio::test]
+async fn dotori_s_own_files_stay_out_of_reach_but_its_work_folder_does_not() {
+    let (tools, folder) = tools();
+    std::fs::create_dir_all(&folder).expect("made");
+    std::fs::write(folder.join("door.json"), "{\"token\":\"secret\"}").expect("written");
+
+    let door = run(
+        &tools,
+        READ_FILE,
+        json!({ "path": folder.join("door.json").display().to_string() }),
+    )
+    .await;
+    assert!(door.expect_err("refused").contains("dotori's own"));
+    let sneaky = run(&tools, READ_FILE, json!({ "path": "../door.json" })).await;
+    let sneaky = sneaky.expect_err("refused");
+    assert!(sneaky.contains("dotori's own"), "{sneaky}");
+    let overwrite = run(
+        &tools,
+        WRITE_FILE,
+        json!({ "path": "../door.json", "content": "x" }),
+    )
+    .await;
+    assert!(overwrite.is_err());
+    run(
+        &tools,
+        WRITE_FILE,
+        json!({ "path": "draft.md", "content": "ok" }),
+    )
+    .await
+    .expect("work folder");
+    let _ = std::fs::remove_dir_all(folder);
+}
+
+#[tokio::test]
+async fn windows_line_ends_are_kept_when_an_edit_spans_lines() {
+    let (tools, folder) = tools();
+    run(
+        &tools,
+        WRITE_FILE,
+        json!({ "path": "crlf.txt", "content": "one\r\ntwo\r\nthree\r\n" }),
+    )
+    .await
+    .expect("wrote");
+
+    run(
+        &tools,
+        EDIT_FILE,
+        json!({ "path": "crlf.txt", "old": "one\ntwo", "new": "1\n2" }),
+    )
+    .await
+    .expect("edited");
+
+    let text = std::fs::read_to_string(folder.join("work").join("crlf.txt")).expect("read");
+    assert_eq!(text, "1\r\n2\r\nthree\r\n");
+    let _ = std::fs::remove_dir_all(folder);
+}
+
+#[tokio::test]
+async fn a_long_read_says_where_it_really_stopped() {
+    let (tools, folder) = tools();
+    let line = "x".repeat(200);
+    let content: String = (0..2000).map(|_| format!("{line}\n")).collect();
+    run(
+        &tools,
+        WRITE_FILE,
+        json!({ "path": "big.txt", "content": content }),
+    )
+    .await
+    .expect("wrote");
+
+    let read = run(&tools, READ_FILE, json!({ "path": "big.txt" }))
+        .await
+        .expect("read");
+
+    let shown = read.lines().filter(|row| row.contains('\t')).count();
+    assert!(shown < 2000);
+    assert!(
+        read.ends_with(&format!(
+            "(2000 lines in all; read on from line {})\n",
+            shown + 1
+        )),
+        "{}",
+        &read[read.len() - 80..]
+    );
+    let _ = std::fs::remove_dir_all(folder);
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_device_is_not_read_and_a_command_left_running_does_not_hold_the_answer() {
+    let (tools, folder) = tools();
+
+    let device = run(&tools, READ_FILE, json!({ "path": "/dev/zero" })).await;
+    assert!(device.expect_err("refused").contains("not a file"));
+
+    let started = std::time::Instant::now();
+    let left = run(
+        &tools,
+        RUN_SHELL,
+        json!({ "command": "sleep 20 & echo started" }),
+    )
+    .await
+    .expect("ran");
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+    assert!(left.starts_with("exit code: 0"), "{left}");
+
+    let loud = run(
+        &tools,
+        RUN_SHELL,
+        json!({ "command": "yes | head -c 5000000" }),
+    )
+    .await
+    .expect("ran");
+    assert!(loud.len() < OUTPUT * 2 + 200, "{}", loud.len());
+    assert!(loud.contains("(only the last part)"));
+    let _ = std::fs::remove_dir_all(folder);
 }

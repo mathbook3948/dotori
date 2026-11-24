@@ -15,7 +15,10 @@ use dotori_core::tool::Toolbox;
 use serde::Deserialize;
 use serde_json::Value;
 use serde_json::json;
+use tokio::io::AsyncRead;
+use tokio::io::AsyncReadExt;
 use tokio::process::Command;
+use tokio::task::JoinHandle;
 use tokio::time;
 
 use crate::process::Tree;
@@ -32,6 +35,8 @@ const LINES: usize = 2000;
 const READ_BYTES: u64 = 10 * 1024 * 1024;
 const SHOWN: usize = 256 * 1024;
 const OUTPUT: usize = 30 * 1024;
+const LINE: usize = 4000;
+const DRAIN: Duration = Duration::from_secs(1);
 
 /// Files and a shell on this PC, as the owner's own user. Relative paths start in `folder`.
 #[derive(Clone, Debug)]
@@ -41,6 +46,8 @@ pub struct BasicTools {
     /// Environment variables a command must not see, such as tokens only the main session's
     /// guarded tools use.
     pub hidden_env: Vec<String>,
+    /// A folder whose files these tools leave alone, such as dotori's own, apart from `folder`.
+    pub private: Option<PathBuf>,
 }
 
 /// The basic tools in front of `rest`, which gets every other call.
@@ -172,8 +179,7 @@ impl BasicTools {
     }
 
     fn resolve(&self, path: &str) -> Result<PathBuf, String> {
-        let path = path.trim();
-        if path.is_empty() {
+        if path.trim().is_empty() {
             return Err(String::from("the path is empty"));
         }
         let path = Path::new(path);
@@ -184,63 +190,102 @@ impl BasicTools {
         })
     }
 
-    async fn read(&self, input: ReadInput) -> Result<String, String> {
-        let path = self.resolve(&input.path)?;
-        let size = tokio::fs::metadata(&path)
-            .await
-            .map_err(|error| format!("{}: {error}", path.display()))?
-            .len();
-        if size > READ_BYTES {
+    fn file(&self, path: &str) -> Result<PathBuf, String> {
+        let path = self.resolve(path)?;
+        let Some(private) = &self.private else {
+            return Ok(path);
+        };
+        let real = |path: &Path| {
+            path.ancestors()
+                .find_map(|known| {
+                    let rest = path.strip_prefix(known).ok()?;
+                    let mut real = known.canonicalize().ok()?;
+                    for part in rest.components() {
+                        match part {
+                            std::path::Component::ParentDir => {
+                                real.pop();
+                            }
+                            std::path::Component::CurDir => {}
+                            other => real.push(other),
+                        }
+                    }
+                    Some(real)
+                })
+                .unwrap_or_else(|| path.to_path_buf())
+        };
+        let (shown, folder, private) = (real(&path), real(&self.folder), real(private));
+        if shown.starts_with(&private) && !shown.starts_with(&folder) {
             return Err(format!(
-                "{} is too large to read whole; read it with run_shell",
+                "{} is dotori's own; these tools work only in its work folder there",
                 path.display()
             ));
         }
-        let bytes = tokio::fs::read(&path)
+        Ok(path)
+    }
+
+    async fn read(&self, input: ReadInput) -> Result<String, String> {
+        let path = self.file(&input.path)?;
+        let shown = path.display();
+        let kind = tokio::fs::metadata(&path)
             .await
-            .map_err(|error| format!("{}: {error}", path.display()))?;
+            .map_err(|error| format!("{shown}: {error}"))?;
+        if !kind.is_file() {
+            return Err(format!("{shown} is not a file"));
+        }
+        let mut bytes = Vec::new();
+        tokio::fs::File::open(&path)
+            .await
+            .map_err(|error| format!("{shown}: {error}"))?
+            .take(READ_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .await
+            .map_err(|error| format!("{shown}: {error}"))?;
+        if bytes.len() as u64 > READ_BYTES {
+            return Err(format!(
+                "{shown} is too large to read whole; read parts of it with run_shell"
+            ));
+        }
         if bytes.contains(&0) {
-            return Err(format!("{} is not a text file", path.display()));
+            return Err(format!("{shown} is not a text file"));
         }
         let text = String::from_utf8_lossy(&bytes);
         let start = input.offset.unwrap_or(1).max(1);
         let count = input.limit.unwrap_or(LINES).clamp(1, LINES);
         let total = text.lines().count();
-        let mut shown = String::new();
+        let mut out = String::new();
+        let mut last = start - 1;
         for (n, line) in text.lines().enumerate().skip(start - 1).take(count) {
-            let row = format!("{}\t{line}\n", n + 1);
-            if shown.len() + row.len() > SHOWN {
-                shown.push_str("(cut short; read on with `offset`)\n");
+            let mut kept: String = line.chars().take(LINE).collect();
+            if kept.len() < line.len() {
+                kept.push_str(" …(line cut short)");
+            }
+            let row = format!("{}\t{kept}\n", n + 1);
+            if !out.is_empty() && out.len() + row.len() > SHOWN {
                 break;
             }
-            shown.push_str(&row);
+            out.push_str(&row);
+            last = n + 1;
         }
-        if shown.is_empty() {
-            return Ok(format!(
-                "{} has {total} lines; none from line {start}",
-                path.display()
-            ));
+        if out.is_empty() {
+            return Ok(format!("{shown} has {total} lines; none from line {start}"));
         }
-        let last = (start - 1 + count).min(total);
         if last < total {
-            shown.push_str(&format!(
+            out.push_str(&format!(
                 "({total} lines in all; read on from line {})\n",
                 last + 1
             ));
         }
-        Ok(shown)
+        Ok(out)
     }
 
     async fn write(&self, input: WriteInput) -> Result<String, String> {
-        let path = self.resolve(&input.path)?;
+        let path = self.file(&input.path)?;
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent)
                 .await
                 .map_err(|error| format!("{}: {error}", parent.display()))?;
         }
-        tokio::fs::write(&path, input.content.as_bytes())
-            .await
-            .map_err(|error| format!("{}: {error}", path.display()))?;
+        replace(&path, input.content.as_bytes()).await?;
         Ok(format!(
             "Wrote {} bytes to {}.",
             input.content.len(),
@@ -249,16 +294,30 @@ impl BasicTools {
     }
 
     async fn edit(&self, input: EditInput) -> Result<String, String> {
-        let path = self.resolve(&input.path)?;
+        let path = self.file(&input.path)?;
         if input.old.is_empty() {
             return Err(String::from(
                 "`old` is empty; use write_file for a new file",
             ));
         }
-        let text = tokio::fs::read_to_string(&path)
+        let bytes = tokio::fs::read(&path)
             .await
             .map_err(|error| format!("{}: {error}", path.display()))?;
-        let found = text.matches(&input.old).count();
+        let text = String::from_utf8(bytes).map_err(|_| {
+            format!(
+                "{} is not UTF-8 text, so it is not edited; change it with run_shell",
+                path.display()
+            )
+        })?;
+        let (old, new) = if text.contains("\r\n") && !input.old.contains('\r') {
+            (
+                input.old.replace('\n', "\r\n"),
+                input.new.replace('\n', "\r\n"),
+            )
+        } else {
+            (input.old.clone(), input.new.clone())
+        };
+        let found = text.matches(&old).count();
         if found == 0 {
             return Err(format!(
                 "`old` is not in {}; read it again and copy the text exactly",
@@ -272,13 +331,11 @@ impl BasicTools {
             ));
         }
         let changed = if input.all {
-            text.replace(&input.old, &input.new)
+            text.replace(&old, &new)
         } else {
-            text.replacen(&input.old, &input.new, 1)
+            text.replacen(&old, &new, 1)
         };
-        tokio::fs::write(&path, changed.as_bytes())
-            .await
-            .map_err(|error| format!("{}: {error}", path.display()))?;
+        replace(&path, changed.as_bytes()).await?;
         Ok(format!(
             "Replaced {} place(s) in {}.",
             if input.all { found } else { 1 },
@@ -304,15 +361,7 @@ impl BasicTools {
             .map(Duration::from_secs)
             .unwrap_or(self.limit)
             .min(self.limit);
-        let mut command = if cfg!(windows) {
-            let mut command = Command::new("cmd");
-            command.arg("/C").arg(&input.command);
-            command
-        } else {
-            let mut command = Command::new("sh");
-            command.arg("-c").arg(&input.command);
-            command
-        };
+        let mut command = shell_command(&input.command);
         command
             .current_dir(&folder)
             .stdin(Stdio::null())
@@ -324,12 +373,14 @@ impl BasicTools {
         for hidden in &self.hidden_env {
             command.env_remove(hidden);
         }
-        let child = command
+        let mut child = command
             .spawn()
             .map_err(|error| format!("cannot run in {}: {error}", folder.display()))?;
         let mut tree = Tree(child.id());
-        let output = match time::timeout(limit, child.wait_with_output()).await {
-            Ok(output) => output.map_err(|error| error.to_string())?,
+        let stdout = child.stdout.take().map(|out| tokio::spawn(last_part(out)));
+        let stderr = child.stderr.take().map(|err| tokio::spawn(last_part(err)));
+        let status = match time::timeout(limit, child.wait()).await {
+            Ok(status) => status.map_err(|error| error.to_string())?,
             Err(_) => {
                 return Err(format!(
                     "the command did not finish in {} seconds and was stopped",
@@ -338,16 +389,86 @@ impl BasicTools {
             }
         };
         tree.0 = None;
-        let code = output.status.code().map_or_else(
+        let code = status.code().map_or_else(
             || String::from("none (stopped by a signal)"),
             |code| code.to_string(),
         );
         Ok(format!(
             "exit code: {code}\nstdout:\n{}\nstderr:\n{}",
-            tail(&String::from_utf8_lossy(&output.stdout)),
-            tail(&String::from_utf8_lossy(&output.stderr))
+            drained(stdout).await,
+            drained(stderr).await
         ))
     }
+}
+
+#[cfg(windows)]
+fn shell_command(line: &str) -> Command {
+    let mut command = Command::new("cmd");
+    command.raw_arg(format!("/S /C \"{line}\""));
+    command
+}
+
+#[cfg(not(windows))]
+fn shell_command(line: &str) -> Command {
+    let mut command = Command::new("sh");
+    command.arg("-c").arg(line);
+    command
+}
+
+async fn last_part(mut from: impl AsyncRead + Unpin) -> (Vec<u8>, bool) {
+    let mut kept = Vec::new();
+    let mut cut = false;
+    let mut buffer = [0u8; 8192];
+    while let Ok(read) = from.read(&mut buffer).await {
+        if read == 0 {
+            break;
+        }
+        kept.extend_from_slice(&buffer[..read]);
+        if kept.len() > OUTPUT * 2 {
+            kept.drain(..kept.len() - OUTPUT);
+            cut = true;
+        }
+    }
+    (kept, cut)
+}
+
+async fn drained(reading: Option<JoinHandle<(Vec<u8>, bool)>>) -> String {
+    let Some(mut reading) = reading else {
+        return String::new();
+    };
+    let (bytes, cut) = match time::timeout(DRAIN, &mut reading).await {
+        Ok(Ok(read)) => read,
+        _ => {
+            reading.abort();
+            return String::from(
+                "(not read: something the command left running still holds it open)",
+            );
+        }
+    };
+    let text = String::from_utf8_lossy(&bytes);
+    let shown = tail(&text);
+    if cut && !shown.starts_with("(only the last part)") {
+        return format!("(only the last part)\n{shown}");
+    }
+    shown
+}
+
+async fn replace(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let staged = path.with_file_name(format!(".{name}.dotori-{}", std::process::id()));
+    tokio::fs::write(&staged, bytes)
+        .await
+        .map_err(|error| format!("{}: {error}", path.display()))?;
+    if let Ok(was) = tokio::fs::metadata(path).await {
+        let _ = tokio::fs::set_permissions(&staged, was.permissions()).await;
+    }
+    tokio::fs::rename(&staged, path).await.map_err(|error| {
+        let _ = std::fs::remove_file(&staged);
+        format!("{}: {error}", path.display())
+    })
 }
 
 impl std::fmt::Debug for WithBasic {

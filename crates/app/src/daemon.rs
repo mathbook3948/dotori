@@ -1,6 +1,7 @@
 use std::fs;
 use std::future;
 use std::num::NonZeroUsize;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -22,6 +23,9 @@ use dotori_connectors::sub_session::cli::CodingAgent;
 use dotori_connectors::sub_session::cli::McpServer;
 use dotori_connectors::sub_session::llm::LlmRunner;
 use dotori_connectors::tool::basic::BasicTools;
+use dotori_connectors::tool::basic::EDIT_FILE;
+use dotori_connectors::tool::basic::RUN_SHELL;
+use dotori_connectors::tool::basic::WRITE_FILE;
 use dotori_connectors::tool::basic::WithBasic;
 use dotori_core::channel::Channel;
 use dotori_core::channel::Inbox;
@@ -156,12 +160,17 @@ pub(crate) async fn serve(
         memory: forgetting.clone(),
         copies: Arc::clone(&forget_copies),
     }));
-    asked.always(FORGET);
+    for tool in [FORGET, RUN_SHELL, WRITE_FILE, EDIT_FILE] {
+        asked.always(tool);
+    }
     let asking = Arc::new(Asking::new(
         asked,
-        Arc::new(Guarded {
-            tools: guarded,
-            rest: Arc::clone(&browser) as Arc<dyn Toolbox>,
+        Arc::new(WithBasic {
+            basic: basic(&home, &settings),
+            rest: Arc::new(Guarded {
+                tools: guarded,
+                rest: Arc::clone(&browser) as Arc<dyn Toolbox>,
+            }),
         }),
         Arc::clone(&app),
     ));
@@ -170,12 +179,9 @@ pub(crate) async fn serve(
     let toolbox: Arc<dyn Toolbox> = Arc::new(MainTools {
         notes: Arc::clone(&notes),
         routines: Arc::clone(&routines),
-        shared: Arc::new(WithBasic {
-            basic: basic(&home, &settings),
-            rest: Arc::new(Previewed {
-                inner: Arc::clone(&asking) as Arc<dyn Toolbox>,
-                store: records.clone(),
-            }),
+        shared: Arc::new(Previewed {
+            inner: Arc::clone(&asking) as Arc<dyn Toolbox>,
+            store: records.clone(),
         }),
     });
     match records.load().await {
@@ -580,6 +586,7 @@ fn basic(home: &Home, settings: &Settings) -> BasicTools {
         folder: home.work(),
         limit: SHELL_LIMIT,
         hidden_env: settings.guarded_secrets(),
+        private: home.work().parent().map(Path::to_path_buf),
     }
 }
 
