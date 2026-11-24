@@ -111,7 +111,7 @@ impl Render for NotesView {
                     .gap_1()
                     .py_3()
                     .text_xs()
-                    .text_color(theme.faint)
+                    .text_color(theme.muted)
                     .child("아직 메모가 없어요")
                     .child("채팅창에서 \"앞으로 존댓말 써 줘\"처럼 부탁해도 돼요"),
             );
@@ -134,7 +134,7 @@ impl Render for NotesView {
                             .mt(px(7.))
                             .size(px(6.))
                             .rounded_full()
-                            .bg(theme.accent),
+                            .bg(theme.primary),
                     )
                     .child(div().flex_1().min_w_0().child(prose(text)))
                     .child(
@@ -170,7 +170,7 @@ impl Render for NotesView {
                     .rounded_lg()
                     .bg(theme.canvas)
                     .border_1()
-                    .border_color(if focused { theme.accent } else { theme.line })
+                    .border_color(if focused { theme.primary } else { theme.line })
                     .cursor_text()
                     .on_mouse_down(MouseButton::Left, move |_, window, _| window.focus(&focus))
                     .on_action(cx.listener(|view, _: &Submit, _, cx| view.add(cx)))
@@ -186,11 +186,11 @@ impl Render for NotesView {
                     .font_weight(FontWeight::SEMIBOLD)
                     .when(ready, |add| {
                         add.cursor_pointer()
-                            .bg(theme.accent)
-                            .text_color(theme.accent_text)
-                            .hover(|add| add.bg(theme.accent_hover))
+                            .bg(theme.primary)
+                            .text_color(theme.on_primary)
+                            .hover(|add| add.bg(theme.primary_hover))
                     })
-                    .when(!ready, |add| add.bg(theme.line).text_color(theme.faint))
+                    .when(!ready, |add| add.bg(theme.line).text_color(theme.muted))
                     .child("더하기")
                     .on_click(cx.listener(|view, _, _, cx| view.add(cx))),
             );

@@ -62,6 +62,19 @@ pub(crate) struct Settings {
     pub(crate) mcp: Vec<RelaySettings>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) peers: Option<PeerSettings>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) window: Option<WindowSettings>,
+}
+
+/// How the windows look: a theme from DESIGN.md by name, and `light`, `dark` or `system` to follow
+/// the system's look. Missing or unknown values keep the defaults.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct WindowSettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) theme: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) look: Option<String>,
 }
 
 /// How the owner's other PCs reach this one. With the section, this PC listens on `listen`, or

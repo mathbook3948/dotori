@@ -1,28 +1,69 @@
+use std::borrow::Cow;
+
+use gpui::AssetSource;
 use gpui::Div;
 use gpui::FontWeight;
+use gpui::Img;
 use gpui::Rgba;
 use gpui::SharedString;
 use gpui::div;
+use gpui::img;
 use gpui::prelude::*;
 use gpui::px;
 
 use crate::window::theme::Theme;
+use crate::window::themes::LOGO;
 
-/// The round acorn-brown badge with a `d`, dotori's mark in every window.
-pub(crate) fn logo(theme: &Theme, size: f32) -> Div {
-    div()
-        .flex()
-        .flex_none()
-        .items_center()
-        .justify_center()
-        .size(px(size))
-        .rounded_full()
-        .bg(theme.accent)
-        .text_color(theme.accent_text)
-        .text_size(px(size * 0.5))
-        .font_weight(FontWeight::BOLD)
-        .child("d")
+/// dotori's acorn, in the logo's colors for `theme`.
+pub(crate) fn logo(theme: &Theme, size: f32) -> Img {
+    img(if theme.is_dark() {
+        DARK_LOGO
+    } else {
+        LIGHT_LOGO
+    })
+    .flex_none()
+    .size(px(size))
 }
+
+/// The windows' own images: the logo in a light and a dark look. GPUI loads an image named this
+/// way with its colors in the order it draws, which an image made from bytes does not get.
+pub(crate) struct Assets;
+
+impl AssetSource for Assets {
+    fn load(&self, path: &str) -> gpui::Result<Option<Cow<'static, [u8]>>> {
+        let colors = match path {
+            LIGHT_LOGO => LOGO.0,
+            DARK_LOGO => LOGO.1,
+            _ => return Ok(None),
+        };
+        let svg = ACORN
+            .replace("{cap}", &css(colors.cap))
+            .replace("{nut}", &css(colors.nut));
+        Ok(Some(Cow::Owned(svg.into_bytes())))
+    }
+
+    fn list(&self, _path: &str) -> gpui::Result<Vec<SharedString>> {
+        Ok(vec![
+            SharedString::new_static(LIGHT_LOGO),
+            SharedString::new_static(DARK_LOGO),
+        ])
+    }
+}
+
+const LIGHT_LOGO: &str = "logo/light.svg";
+const DARK_LOGO: &str = "logo/dark.svg";
+
+fn css(color: Rgba) -> String {
+    let channel = |value: f32| (value.clamp(0.0, 1.0) * 255.0).round() as u8;
+    format!(
+        "#{:02X}{:02X}{:02X}",
+        channel(color.r),
+        channel(color.g),
+        channel(color.b)
+    )
+}
+
+const ACORN: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="40 34 176 196" width="176" height="196"><g transform="translate(128 128) scale(0.72) translate(-128 -128) rotate(15 128 140) translate(0 -4)"><path fill="{nut}" d="M 64 124 Q 128 152 192 124 C 202 154 196 190 162 214 C 146 226 134 231 128 236 C 122 231 110 226 94 214 C 60 190 54 154 64 124 Z"/><path fill="{cap}" d="M 56 112 Q 46 112 46 102 C 46 70 82 52 128 52 C 174 52 210 70 210 102 Q 210 112 200 112 Q 128 140 56 112 Z"/><path d="M128 54 Q128 36 112 26" fill="none" stroke="{cap}" stroke-width="16" stroke-linecap="round"/></g></svg>"#;
 
 /// The bar at the top of a window: the mark, a title, and a line under it.
 pub(crate) fn header(theme: &Theme, title: &'static str, under: impl IntoElement) -> Div {

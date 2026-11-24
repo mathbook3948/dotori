@@ -235,7 +235,7 @@ impl ChatView {
                 .text_size(px(11.))
                 .line_height(px(16.))
                 .cursor_pointer()
-                .when(copied, |copy| copy.text_color(theme.accent))
+                .when(copied, |copy| copy.text_color(theme.primary))
                 .when(!copied, |copy| {
                     copy.text_color(theme.muted)
                         .hover(|copy| copy.bg(theme.line).text_color(theme.text))
@@ -249,7 +249,7 @@ impl ChatView {
             div()
                 .text_size(px(11.))
                 .line_height(px(16.))
-                .text_color(theme.faint)
+                .text_color(theme.muted)
                 .child(time)
         });
         let (before, after) = if copy_first {
@@ -299,8 +299,8 @@ impl ChatView {
                         .py_2()
                         .rounded_2xl()
                         .rounded_br_md()
-                        .bg(theme.accent)
-                        .text_color(theme.accent_text)
+                        .bg(theme.primary)
+                        .text_color(theme.on_primary)
                         .child(prose(text)),
                 ),
             ToWindow::Reply { text, .. } => div()
@@ -360,7 +360,7 @@ impl ChatView {
                         .flex()
                         .flex_col()
                         .gap_1()
-                        .child(div().text_xs().text_color(theme.other_text).child(label))
+                        .child(div().text_xs().text_color(theme.muted).child(label))
                         .child(
                             div()
                                 .px_3()
@@ -404,25 +404,25 @@ impl ChatView {
                         .px_3()
                         .py_2()
                         .rounded_xl()
-                        .bg(theme.other)
+                        .bg(theme.bubble)
                         .child(
                             div()
                                 .flex()
                                 .items_center()
                                 .gap_2()
                                 .text_xs()
-                                .text_color(theme.other_text)
+                                .text_color(theme.muted)
                                 .child(
                                     div()
                                         .px_1p5()
                                         .rounded_sm()
                                         .border_1()
-                                        .border_color(theme.other_text)
+                                        .border_color(theme.muted)
                                         .font_weight(FontWeight::SEMIBOLD)
                                         .child(SharedString::from(channel_name(channel))),
                                 )
                                 .child(SharedString::from(room))
-                                .child(div().size(px(3.)).rounded_full().bg(theme.other_text))
+                                .child(div().size(px(3.)).rounded_full().bg(theme.muted))
                                 .child(
                                     div()
                                         .flex_1()
@@ -476,9 +476,9 @@ impl ChatView {
                 .font_weight(FontWeight::SEMIBOLD)
                 .when(main, |button| {
                     button
-                        .bg(theme.accent)
-                        .text_color(theme.accent_text)
-                        .hover(|button| button.bg(theme.accent_hover))
+                        .bg(theme.primary)
+                        .text_color(theme.on_primary)
+                        .hover(|button| button.bg(theme.primary_hover))
                 })
                 .when(!main, |button| {
                     button
@@ -545,7 +545,7 @@ impl ChatView {
                                 .child("허락하면 모든 PC에서 지워요. 되돌릴 수 없어요")
                         })
                         .when(tool != "memory_forget", |hint| {
-                            hint.text_color(theme.faint).child(match tool {
+                            hint.text_color(theme.muted).child(match tool {
                                 "run_shell" => "허락하면 dotori가 이 명령을 바로 실행해요",
                                 "write_file" | "edit_file" => {
                                     "허락하면 dotori가 파일을 바로 바꿔요"
@@ -581,7 +581,7 @@ impl ChatView {
                         .gap_2()
                         .child(div().flex_none().size(px(7.)).rounded_full().bg(
                             if decided.is_some() {
-                                theme.faint
+                                theme.muted
                             } else {
                                 theme.warn
                             },
@@ -607,7 +607,7 @@ impl ChatView {
                                     .py_0p5()
                                     .rounded_md()
                                     .bg(theme.selection)
-                                    .text_color(theme.accent)
+                                    .text_color(theme.primary)
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child(own),
                             )
@@ -617,8 +617,8 @@ impl ChatView {
                                 div()
                                     .px_1p5()
                                     .rounded_sm()
-                                    .bg(theme.other)
-                                    .text_color(theme.other_text)
+                                    .bg(theme.bubble)
+                                    .text_color(theme.muted)
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child(SharedString::from(server.to_owned())),
                             )
@@ -672,7 +672,7 @@ impl ChatView {
                                         .py_0p5()
                                         .rounded_md()
                                         .text_xs()
-                                        .text_color(theme.accent)
+                                        .text_color(theme.primary)
                                         .cursor_pointer()
                                         .hover(|more| more.bg(theme.selection))
                                         .child("전체 보기")
@@ -761,7 +761,7 @@ impl ChatView {
             .clone()
             .filter(|_| matches!(self.link, LinkState::Connected))
             .map(|(pc, here)| {
-                let ink = if here { theme.ok } else { theme.other_text };
+                let ink = if here { theme.ok } else { theme.muted };
                 div()
                     .flex()
                     .items_center()
@@ -771,7 +771,7 @@ impl ChatView {
                     .rounded_full()
                     .text_xs()
                     .font_weight(FontWeight::MEDIUM)
-                    .bg(if here { theme.ok_soft } else { theme.other })
+                    .bg(if here { theme.ok_soft } else { theme.bubble })
                     .text_color(ink)
                     .child(div().flex_none().size(px(5.)).rounded_full().bg(ink))
                     .child(if here {
@@ -810,7 +810,7 @@ impl ChatView {
                     .rounded_2xl()
                     .bg(theme.surface)
                     .border_1()
-                    .border_color(if focused { theme.accent } else { theme.line })
+                    .border_color(if focused { theme.primary } else { theme.line })
                     .shadow_sm()
                     .cursor_text()
                     .on_mouse_down(MouseButton::Left, move |_, window, _| {
@@ -834,16 +834,12 @@ impl ChatView {
                             .justify_center()
                             .size(px(34.))
                             .rounded_full()
-                            .bg(if ready { theme.accent } else { theme.line })
-                            .text_color(if ready {
-                                theme.accent_text
-                            } else {
-                                theme.faint
-                            })
+                            .bg(if ready { theme.primary } else { theme.line })
+                            .text_color(if ready { theme.on_primary } else { theme.muted })
                             .font_weight(FontWeight::BOLD)
                             .when(ready, |send| {
                                 send.cursor_pointer()
-                                    .hover(|send| send.bg(theme.accent_hover))
+                                    .hover(|send| send.bg(theme.primary_hover))
                             })
                             .child("↑")
                             .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.send(cx))),
@@ -854,7 +850,7 @@ impl ChatView {
                     .pt_1p5()
                     .px_1()
                     .text_xs()
-                    .text_color(theme.faint)
+                    .text_color(theme.muted)
                     .child(match &self.link {
                         LinkState::Down(reason) => {
                             SharedString::from(format!("다시 연결하는 중이에요. {reason}"))
@@ -924,8 +920,8 @@ fn browser_elsewhere(theme: &Theme, pc: &str) -> impl IntoElement {
                 .justify_center()
                 .size(px(56.))
                 .rounded_2xl()
-                .bg(theme.other)
-                .text_color(theme.other_text)
+                .bg(theme.bubble)
+                .text_color(theme.muted)
                 .text_xl()
                 .font_weight(FontWeight::SEMIBOLD)
                 .child(pc.chars().next().unwrap_or('P').to_uppercase().to_string()),

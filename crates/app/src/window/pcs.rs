@@ -304,7 +304,7 @@ impl Render for PcsView {
                                 .rounded_lg()
                                 .bg(theme.canvas)
                                 .border_1()
-                                .border_color(theme.accent)
+                                .border_color(theme.primary)
                                 .font_family(MONO)
                                 .text_xs()
                                 .child(prose(code)),
@@ -350,7 +350,7 @@ impl Render for PcsView {
                     .py_3()
                     .text_center()
                     .text_xs()
-                    .text_color(theme.faint)
+                    .text_color(theme.muted)
                     .child("아직 묶은 PC가 없어요"),
             );
         }
@@ -392,11 +392,11 @@ impl Render for PcsView {
                                     .child(div().size(px(7.)).rounded_full().bg(if linked {
                                         theme.ok
                                     } else {
-                                        theme.faint
+                                        theme.muted
                                     }))
                                     .child(state)
                                     .children(peer.address.clone().map(|address| {
-                                        div().text_color(theme.faint).child(address)
+                                        div().text_color(theme.muted).child(address)
                                     })),
                             ),
                     )
@@ -497,7 +497,7 @@ fn badge(theme: &Theme, name: &str) -> impl IntoElement {
         .size(px(30.))
         .rounded_lg()
         .bg(theme.selection)
-        .text_color(theme.accent)
+        .text_color(theme.primary)
         .font_weight(FontWeight::SEMIBOLD)
         .child(first)
 }
@@ -523,13 +523,13 @@ fn button(
                 .border_1()
                 .border_color(theme.line)
                 .text_color(theme.text)
-                .hover(|button| button.border_color(theme.accent).text_color(theme.accent))
+                .hover(|button| button.border_color(theme.primary).text_color(theme.primary))
         })
         .when(!quiet, |button| {
             button
-                .bg(theme.accent)
-                .text_color(theme.accent_text)
-                .hover(|button| button.bg(theme.accent_hover))
+                .bg(theme.primary)
+                .text_color(theme.on_primary)
+                .hover(|button| button.bg(theme.primary_hover))
         })
         .child(label)
         .on_click(click)
@@ -551,7 +551,7 @@ fn input_box(
         .rounded_lg()
         .bg(theme.canvas)
         .border_1()
-        .border_color(if focused { theme.accent } else { theme.line })
+        .border_color(if focused { theme.primary } else { theme.line })
         .cursor_text()
         .on_mouse_down(MouseButton::Left, move |_, window, _| window.focus(&focus))
         .child(input.clone())

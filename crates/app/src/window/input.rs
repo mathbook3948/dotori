@@ -730,7 +730,7 @@ impl TextInput {
         let style = window.text_style();
         let theme = Theme::of(window);
         let (text, color) = if self.content.is_empty() {
-            (self.placeholder.clone(), theme.faint.into())
+            (self.placeholder.clone(), theme.muted.into())
         } else if self.masked {
             (
                 SharedString::from(DOT.to_string().repeat(self.content.chars().count())),
@@ -844,7 +844,7 @@ impl Element for TextElement {
                 Vec::new(),
                 Some(fill(
                     Bounds::new(bounds.origin + at, size(px(1.5), shaped.line_height)),
-                    theme.accent,
+                    theme.primary,
                 )),
             )
         } else {
