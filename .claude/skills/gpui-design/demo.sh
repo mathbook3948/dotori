@@ -8,8 +8,10 @@ set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 display="${DEMO_DISPLAY:-97}"
-dotori="$repo/target/debug/dotori"
-model="$repo/target/debug/examples/demo_model"
+target="${CARGO_TARGET_DIR:-$repo/target}"
+dotori="$target/debug/dotori"
+model="$target/debug/examples/demo_model"
+offline="http://127.0.0.1:9"
 
 usage() { sed -n '2,6p' "$0" >&2; exit 2; }
 [ $# -ge 2 ] || usage
@@ -26,7 +28,7 @@ background() {
 case "$command" in
 start)
   (cd "$repo" && mise exec -- cargo build --quiet -p dotori --bin dotori --example demo_model)
-  if ! pgrep -f "Xvfb :$display" >/dev/null; then
+  if ! pgrep -f "Xvfb :$display( |$)" >/dev/null; then
     rm -f "/tmp/.X11-unix/X$display" "/tmp/.X$display-lock"
     background "$home/xvfb.log" Xvfb ":$display" -screen 0 1280x900x24
     sleep 2
@@ -35,6 +37,7 @@ start)
   rm -f "$home/model.port"
   background "$home/model.log" "$model" "$home/model.port"
   for _ in $(seq 50); do [ -s "$home/model.port" ] && break; sleep 0.1; done
+  [ -s "$home/model.port" ] || { echo "the fake model did not start; see $home/model.log" >&2; exit 1; }
   port="$(cat "$home/model.port")"
   cat >"$home/settings.toml" <<EOF
 [model]
@@ -46,8 +49,11 @@ api_key_env = "DOTORI_DEMO_KEY"
 [browser]
 path = "no-browser-in-demo"
 EOF
+  rm -f "$home/door.json"
   background "$home/daemon.log" \
-    env -u DISPLAY -u WAYLAND_DISPLAY DOTORI_HOME="$home" DOTORI_DEMO_KEY=fake "$dotori" daemon
+    env -u DISPLAY -u WAYLAND_DISPLAY HOME="$home" DOTORI_HOME="$home" DOTORI_DEMO_KEY=fake \
+    HTTPS_PROXY="$offline" HTTP_PROXY="$offline" ALL_PROXY="$offline" NO_PROXY=127.0.0.1,localhost \
+    "$dotori" daemon
   for _ in $(seq 100); do [ -s "$home/door.json" ] && break; sleep 0.1; done
   [ -s "$home/door.json" ] || { echo "the daemon did not start; see $home/daemon.log" >&2; exit 1; }
   echo "ready: $home"

@@ -25,6 +25,29 @@ use support::model::Script;
 
 const WAIT: Duration = Duration::from_secs(120);
 const KEY: &str = "DOTORI_E2E_KEY";
+const OFFLINE: &str = "http://127.0.0.1:9";
+
+struct Running {
+    daemon: Child,
+    home: PathBuf,
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        let _ = self.daemon.start_kill();
+        if std::thread::panicking()
+            && let Ok(log) = std::fs::read_to_string(self.home.join("daemon.log"))
+        {
+            eprintln!("daemon.log:\n{log}");
+        }
+        for _ in 0..50 {
+            if std::fs::remove_dir_all(&self.home).is_ok() || !self.home.exists() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+}
 
 struct Window {
     lines: Lines<BufReader<OwnedReadHalf>>,
@@ -126,8 +149,8 @@ impl Window {
     }
 }
 
-fn home() -> PathBuf {
-    let home = std::env::temp_dir().join(format!("dotori-e2e-{}", std::process::id()));
+fn home(name: &str) -> PathBuf {
+    let home = std::env::temp_dir().join(format!("dotori-e2e-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&home);
     std::fs::create_dir_all(&home).expect("a home");
     home
@@ -146,6 +169,10 @@ fn daemon(home: &Path) -> Child {
         .arg("daemon")
         .env("DOTORI_HOME", home)
         .env(KEY, "fake")
+        .env("HTTPS_PROXY", OFFLINE)
+        .env("HTTP_PROXY", OFFLINE)
+        .env("ALL_PROXY", OFFLINE)
+        .env("NO_PROXY", "127.0.0.1,localhost")
         .stdin(Stdio::null())
         .stdout(log.try_clone().expect("a log"))
         .stderr(log)
@@ -172,9 +199,12 @@ async fn the_owner_talks_to_dotori_and_decides_on_a_command() {
         command: command.to_owned(),
     })
     .await;
-    let home = home();
+    let home = home("decide");
     settings(&home, model);
-    let mut running = daemon(&home);
+    let _running = Running {
+        daemon: daemon(&home),
+        home: home.clone(),
+    };
     let mut window = Window::open(&home).await;
 
     window
@@ -195,7 +225,4 @@ async fn the_owner_talks_to_dotori_and_decides_on_a_command() {
     let declined = window.asked_to_run(command).await;
     window.decide(declined, false).await;
     window.reply(model::SKIPPED).await;
-
-    let _ = running.kill().await;
-    let _ = std::fs::remove_dir_all(&home);
 }
