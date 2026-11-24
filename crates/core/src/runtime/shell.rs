@@ -46,6 +46,8 @@ pub(crate) struct Shell {
     rx: mpsc::Receiver<Event>,
     tx: mpsc::Sender<Event>,
     shows: mpsc::UnboundedSender<Traffic>,
+    app: Arc<dyn AppWindow>,
+    working: bool,
     records: mpsc::UnboundedSender<Record>,
     outboxes: HashMap<ChannelId, mpsc::UnboundedSender<Delivery>>,
     model: Arc<dyn Model>,
@@ -81,6 +83,7 @@ impl Shell {
         let mut tasks = JoinSet::new();
         let mut senders = JoinSet::new();
         let shows = spawn_show_worker(&mut senders, Arc::clone(&ports.app));
+        let window = Arc::clone(&ports.app);
         let records = spawn_record_writer(&mut senders, ports.records);
         let app: Arc<dyn Channel> = ports.app;
         let mut outboxes = HashMap::new();
@@ -93,6 +96,8 @@ impl Shell {
             rx,
             tx,
             shows,
+            app: window,
+            working: false,
             records,
             outboxes,
             model: ports.model,
@@ -119,6 +124,7 @@ impl Shell {
                 .saturating_sub(mem::take(&mut state.unrecorded))
                 .max(recorded);
             self.record(&state.conversation[recorded..end]);
+            self.tell_working(state.working());
             for effect in effects {
                 if matches!(effect, Effect::Stop) {
                     break 'events;
@@ -130,7 +136,15 @@ impl Shell {
         self.stop().await;
     }
 
+    fn tell_working(&mut self, busy: bool) {
+        if self.working != busy {
+            self.working = busy;
+            self.app.working(busy);
+        }
+    }
+
     async fn stop(mut self) {
+        self.tell_working(false);
         self.rx.close();
         self.acks
             .lock()

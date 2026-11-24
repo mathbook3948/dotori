@@ -27,6 +27,10 @@ pub trait Channel: Send + Sync + 'static {
 /// The app chat window. Besides its own conversation it shows the traffic of every other channel.
 pub trait AppWindow: Channel {
     fn show(&self, traffic: Traffic) -> BoxFuture<'_, Result<(), ChannelError>>;
+
+    /// Whether the assistant is at work now, thinking or running tools. Core calls this each
+    /// time that changes, and with false when it stops.
+    fn working(&self, _busy: bool) {}
 }
 
 #[derive(Clone, Debug)]

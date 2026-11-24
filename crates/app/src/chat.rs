@@ -32,7 +32,7 @@ pub(crate) async fn run(home: Home) -> Result<(), String> {
                     down.set(true);
                     eprintln!("({reason}; reconnecting)");
                 }
-                Update::Event(ToWindow::Live) => {}
+                Update::Event(ToWindow::Live | ToWindow::Working { .. }) => {}
                 Update::Event(event) => println!("{}", shown(&event)),
             }
         }
@@ -82,5 +82,7 @@ pub(crate) fn shown(event: &ToWindow) -> String {
         ToWindow::BrowserAt { pc, here: true } => format!("(the browser is on this PC, {pc})"),
         ToWindow::BrowserAt { pc, here: false } => format!("(the browser is on {pc})"),
         ToWindow::Live => String::from("(what follows happens now)"),
+        ToWindow::Working { busy: true } => String::from("(dotori is working)"),
+        ToWindow::Working { busy: false } => String::from("(dotori is idle)"),
     }
 }

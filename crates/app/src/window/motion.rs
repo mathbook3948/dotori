@@ -4,6 +4,8 @@
 use std::time::Duration;
 
 use gpui::Animation;
+use gpui::ease_in_out;
+use gpui::ease_out_quint;
 
 /// How a movement eases between its start and its end.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -19,9 +21,8 @@ impl Curve {
     pub(crate) fn ease(self, progress: f32) -> f32 {
         let t = progress.clamp(0.0, 1.0);
         match self {
-            Self::EaseOut => 1.0 - (1.0 - t).powi(3),
-            Self::EaseInOut if t < 0.5 => 4.0 * t * t * t,
-            Self::EaseInOut => 1.0 - (-2.0 * t + 2.0).powi(3) / 2.0,
+            Self::EaseOut => ease_out_quint()(t),
+            Self::EaseInOut => ease_in_out(t),
         }
     }
 }

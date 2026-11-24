@@ -14,6 +14,7 @@ use tokio::net::TcpStream;
 #[derive(Clone, Debug)]
 pub struct Script {
     pub command: String,
+    pub think: std::time::Duration,
 }
 
 /// Set to a file path to keep each last message and answer there, one JSON object per line.
@@ -68,6 +69,7 @@ async fn serve(mut stream: TcpStream, script: &Script) -> std::io::Result<()> {
         }
     };
     let asked: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+    tokio::time::sleep(script.think).await;
     let message = answer(&asked, script);
     if let Some(log) = std::env::var_os(LOG) {
         let line = json!({ "last": asked["messages"].as_array().and_then(|all| all.last()), "answer": message });

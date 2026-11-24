@@ -197,6 +197,7 @@ async fn the_owner_talks_to_dotori_and_decides_on_a_command() {
     let command = "echo e2e";
     let model = model::start(Script {
         command: command.to_owned(),
+        think: Duration::ZERO,
     })
     .await;
     let home = home("decide");
@@ -206,9 +207,19 @@ async fn the_owner_talks_to_dotori_and_decides_on_a_command() {
         home: home.clone(),
     };
     let mut window = Window::open(&home).await;
+    window
+        .until("the backlog to end", |event| {
+            matches!(event, ToWindow::Live).then_some(())
+        })
+        .await;
 
     window
         .say("내일 오전 10시 30분에 치과 예약 있어. 아침 8시에 알려 줘")
+        .await;
+    window
+        .until("dotori at work", |event| {
+            matches!(event, ToWindow::Working { busy: true }).then_some(())
+        })
         .await;
     window.reply(model::REMINDED).await;
     assert_eq!(routines_named(&home, "치과 알림"), 1);

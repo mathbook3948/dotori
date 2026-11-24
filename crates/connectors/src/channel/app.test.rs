@@ -68,7 +68,7 @@ impl Window {
     async fn next(&mut self) -> Option<ToWindow> {
         loop {
             match self.next_raw().await? {
-                ToWindow::Live => continue,
+                ToWindow::Live | ToWindow::Working { .. } => continue,
                 event => return Some(event),
             }
         }
@@ -170,7 +170,30 @@ async fn replies_and_traffic_reach_windows_and_a_late_window_gets_the_backlog() 
             at: 0,
         })
     );
+    assert_eq!(
+        late.next_raw().await,
+        Some(ToWindow::Working { busy: false })
+    );
     assert_eq!(late.next_raw().await, Some(ToWindow::Live));
+}
+
+#[tokio::test]
+async fn windows_hear_when_dotori_starts_and_stops_working() {
+    let (channel, address, _inbox) = start().await;
+    channel.working(true);
+    let mut window = Window::open(address, "secret").await;
+
+    assert_eq!(
+        window.next_raw().await,
+        Some(ToWindow::Working { busy: true })
+    );
+    assert_eq!(window.next_raw().await, Some(ToWindow::Live));
+
+    channel.working(false);
+    assert_eq!(
+        window.next_raw().await,
+        Some(ToWindow::Working { busy: false })
+    );
 }
 
 #[tokio::test]

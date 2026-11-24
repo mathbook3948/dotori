@@ -242,25 +242,51 @@ fn only_what_dotori_says_now_moves_in_and_the_history_stays_still(cx: &mut TestA
 }
 
 #[gpui::test]
-fn dotori_shows_it_works_until_it_answers(cx: &mut TestAppContext) {
+fn dotori_shows_it_works_while_the_daemon_says_so_and_not_while_it_waits_on_the_owner(
+    cx: &mut TestAppContext,
+) {
     let (view, cx, wired) = open(cx);
-    for update in [Update::Connected, owner("어제 한 말")] {
-        wired.updates.send(update).expect("sent");
-    }
-    cx.run_until_parked();
-    view.read_with(cx, |view, _| {
-        assert!(!view.shows_working(), "history waits on nothing")
-    });
-
-    for update in [Update::Event(ToWindow::Live), owner("일정 정리해 줘")] {
+    let busy = |busy| Update::Event(ToWindow::Working { busy });
+    for update in [Update::Connected, Update::Event(ToWindow::Live), busy(true)] {
         wired.updates.send(update).expect("sent");
     }
     cx.run_until_parked();
     view.read_with(cx, |view, _| assert!(view.shows_working()));
 
-    wired.updates.send(reply("정리했어요")).expect("sent");
+    wired
+        .updates
+        .send(Update::Event(ToWindow::Ask {
+            id: 3,
+            tool: String::from("run_shell"),
+            input: String::from(r#"{"command":"ls"}"#),
+            at: 0,
+        }))
+        .expect("sent");
+    cx.run_until_parked();
+    view.read_with(cx, |view, _| {
+        assert!(!view.shows_working(), "the card asks the owner instead")
+    });
+
+    wired
+        .updates
+        .send(Update::Event(ToWindow::Decided { id: 3, ok: true }))
+        .expect("sent");
+    cx.run_until_parked();
+    view.read_with(cx, |view, _| assert!(view.shows_working()));
+
+    wired.updates.send(busy(false)).expect("sent");
     cx.run_until_parked();
     view.read_with(cx, |view, _| assert!(!view.shows_working()));
+
+    wired.updates.send(busy(true)).expect("sent");
+    wired
+        .updates
+        .send(Update::Down(String::from("dotori closed the connection")))
+        .expect("sent");
+    cx.run_until_parked();
+    view.read_with(cx, |view, _| {
+        assert!(!view.shows_working(), "down is not busy")
+    });
 }
 
 #[gpui::test]
@@ -268,7 +294,8 @@ fn the_header_says_nothing_while_things_work(cx: &mut TestAppContext) {
     let (view, cx, wired) = open(cx);
     wired.updates.send(Update::Connected).expect("sent");
     cx.run_until_parked();
-    view.read_with(cx, |view, _| assert_eq!(view.notice(), None));
+    let words = |view: &ChatView| view.notice().map(|(words, _)| words);
+    view.read_with(cx, |view, _| assert_eq!(words(view), None));
 
     let answering = |here| {
         Update::Event(ToWindow::Answering {
@@ -279,13 +306,13 @@ fn the_header_says_nothing_while_things_work(cx: &mut TestAppContext) {
     wired.updates.send(answering(true)).expect("sent");
     cx.run_until_parked();
     view.read_with(cx, |view, _| {
-        assert_eq!(view.notice(), None, "this PC answers")
+        assert_eq!(words(view), None, "this PC answers")
     });
 
     wired.updates.send(answering(false)).expect("sent");
     cx.run_until_parked();
     view.read_with(cx, |view, _| {
-        assert_eq!(view.notice().as_deref(), Some("지금은 회사 PC에서 답해요"))
+        assert_eq!(words(view).as_deref(), Some("지금은 회사 PC에서 답해요"))
     });
 
     wired
@@ -294,10 +321,9 @@ fn the_header_says_nothing_while_things_work(cx: &mut TestAppContext) {
         .expect("sent");
     cx.run_until_parked();
     view.read_with(cx, |view, _| {
-        assert!(
-            view.notice()
-                .is_some_and(|words| words.contains("꺼져 있어요"))
-        )
+        let (words, detail) = view.notice().expect("a notice");
+        assert!(words.contains("꺼져 있어요"));
+        assert_eq!(detail.as_deref(), Some("dotori is not running"));
     });
 }
 

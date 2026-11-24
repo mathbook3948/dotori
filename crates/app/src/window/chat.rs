@@ -8,6 +8,7 @@ use dotori_connectors::channel::app::ToWindow;
 use gpui::AnimationElement;
 use gpui::AnimationExt;
 use gpui::AnyElement;
+use gpui::AnyView;
 use gpui::App;
 use gpui::ClickEvent;
 use gpui::ClipboardItem;
@@ -20,8 +21,11 @@ use gpui::FontWeight;
 use gpui::MouseButton;
 use gpui::Pixels;
 use gpui::ScrollHandle;
+use gpui::ScrollWheelEvent;
 use gpui::SharedString;
+use gpui::StyleRefinement;
 use gpui::Task;
+use gpui::WeakEntity;
 use gpui::Window;
 use gpui::div;
 use gpui::point;
@@ -56,9 +60,10 @@ use crate::window::when::today;
 
 const COPIED_FOR: Duration = Duration::from_millis(1500);
 const SHOWN_VALUE: usize = 600;
-const WORKING_SHOWN_AT_MOST: Duration = Duration::from_secs(120);
 const BOTTOM_SLACK: f32 = 8.;
 const TURN_SPACE: f32 = 18.;
+const EDGE: f32 = 20.;
+const WORKING_ROW: f32 = 20.;
 
 /// The chat window: the conversation with dotori and the traffic of every other channel.
 pub(crate) struct ChatView {
@@ -79,8 +84,10 @@ pub(crate) struct ChatView {
     whole: HashSet<u64>,
     live: bool,
     entered: HashMap<usize, Instant>,
-    follow: Option<(Pixels, Instant)>,
-    working: Option<Instant>,
+    follow: Option<(Instant, f32)>,
+    busy: bool,
+    rows: Entity<Rows>,
+    working: Entity<WorkingView>,
     switched: Option<Instant>,
     _uncopy: Option<Task<()>>,
     _pump: Task<()>,
@@ -103,6 +110,14 @@ impl ChatView {
         let Link { mut updates, say } = link;
         let screen = cx.new(|cx| ScreenView::new(screen, cx));
         cx.observe(&screen, |_, _, cx| cx.notify()).detach();
+        let chat = cx.entity();
+        let rows = cx.new(|cx| {
+            cx.observe(&chat, |_, _, cx| cx.notify()).detach();
+            Rows {
+                chat: chat.downgrade(),
+            }
+        });
+        let working = cx.new(|_| WorkingView);
         let pump = cx.spawn(async move |view, cx| {
             while let Some(update) = updates.recv().await {
                 let applied = view.update(cx, |view, cx| {
@@ -133,7 +148,9 @@ impl ChatView {
             live: false,
             entered: HashMap::new(),
             follow: None,
-            working: None,
+            busy: false,
+            rows,
+            working,
             switched: None,
             _uncopy: None,
             _pump: pump,
@@ -154,13 +171,13 @@ impl ChatView {
                 self.live = false;
                 self.entered.clear();
                 self.follow = None;
-                self.working = None;
+                self.busy = false;
                 self.link = LinkState::Connected;
                 return;
             }
             Update::Down(reason) => {
                 self.link = LinkState::Down(reason);
-                self.working = None;
+                self.busy = false;
                 return;
             }
             Update::Event(event) => event,
@@ -179,6 +196,7 @@ impl ChatView {
                 self.live = true;
                 self.scroll.scroll_to_bottom();
             }
+            ToWindow::Working { busy } => self.busy = busy,
             event => self.show(event),
         }
     }
@@ -191,16 +209,11 @@ impl ChatView {
         }
         let now = Instant::now();
         let owner = matches!(event, ToWindow::Owner { .. });
-        match event {
-            ToWindow::Owner { .. } => self.working = Some(now),
-            ToWindow::Reply { .. } | ToWindow::Ask { .. } => self.working = None,
-            _ => {}
-        }
         if !owner {
             self.entered.insert(self.lines.len(), now);
         }
         if owner || self.follow.is_some() || self.at_bottom() {
-            self.follow = Some((self.scroll.offset().y, now));
+            self.follow = Some((now, 0.0));
         }
         self.lines.push(event);
     }
@@ -211,7 +224,7 @@ impl ChatView {
     }
 
     fn step_follow(&mut self) -> bool {
-        let Some((from, at)) = self.follow else {
+        let Some((at, done)) = self.follow else {
             return false;
         };
         let elapsed = at.elapsed();
@@ -220,16 +233,35 @@ impl ChatView {
             self.scroll.scroll_to_bottom();
             return false;
         }
+        let now = FOLLOW.at(elapsed);
+        let left = (1.0 - now) / (1.0 - done).max(f32::EPSILON);
         let to = -self.scroll.max_offset().height;
-        let x = self.scroll.offset().x;
+        let offset = self.scroll.offset();
         self.scroll
-            .set_offset(point(x, from + (to - from) * FOLLOW.at(elapsed)));
+            .set_offset(point(offset.x, to + (offset.y - to) * left));
+        self.follow = Some((at, now));
         true
     }
 
+    fn working_top(&self) -> Option<Pixels> {
+        let viewport = self.scroll.bounds();
+        let content = self.scroll.bounds_for_item(0)?;
+        let top = content.bottom() + self.scroll.offset().y - viewport.top();
+        let lowest = viewport.size.height - px(EDGE + WORKING_ROW);
+        (top <= lowest + px(BOTTOM_SLACK)).then_some(top.min(lowest))
+    }
+
     fn shows_working(&self) -> bool {
-        self.working
-            .is_some_and(|at| at.elapsed() < WORKING_SHOWN_AT_MOST)
+        self.busy && matches!(self.link, LinkState::Connected) && !self.waits_on_the_owner()
+    }
+
+    fn waits_on_the_owner(&self) -> bool {
+        self.lines.iter().any(|line| match line {
+            ToWindow::Ask { id, .. } => {
+                !self.decided.contains_key(id) && !self.clicked.contains(id)
+            }
+            _ => false,
+        })
     }
 
     fn submit(&mut self, _: &Submit, _: &mut Window, cx: &mut Context<Self>) {
@@ -267,6 +299,27 @@ impl ChatView {
         cx.notify();
     }
 
+    fn pane(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let room = if self.shows_working() {
+            WORKING_ROW
+        } else {
+            0.
+        };
+        div()
+            .id("conversation")
+            .size_full()
+            .overflow_y_scroll()
+            .track_scroll(&self.scroll)
+            .px(px(EDGE))
+            .pt(px(EDGE))
+            .pb(px(EDGE + room))
+            .on_scroll_wheel(cx.listener(|view, _: &ScrollWheelEvent, _, _| {
+                view.follow = None;
+            }))
+            .child(self.conversation(theme, cx))
+            .into_any_element()
+    }
+
     fn conversation(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
         if self.lines.is_empty() && matches!(self.link, LinkState::Connected) {
             return empty(theme).into_any_element();
@@ -285,9 +338,6 @@ impl ChatView {
                 None => div().child(row),
             };
             rows.push(row.into_any_element());
-        }
-        if self.shows_working() {
-            rows.push(working(theme, self.lines.len()).into_any_element());
         }
         div().flex().flex_col().children(rows).into_any_element()
     }
@@ -310,7 +360,7 @@ impl ChatView {
             .debug_selector(move || format!("copy-{n}"))
             .px_1p5()
             .rounded_md()
-            .text_size(px(11.))
+            .text_size(px(12.))
             .line_height(px(16.))
             .cursor_pointer()
             .when(copied, |copy| copy.text_color(theme.text))
@@ -324,7 +374,7 @@ impl ChatView {
             }));
         let time = mark.time.clone().map(|time| {
             div()
-                .text_size(px(11.))
+                .text_size(px(12.))
                 .line_height(px(16.))
                 .text_color(theme.muted)
                 .child(time)
@@ -371,6 +421,7 @@ impl ChatView {
             | ToWindow::Alone
             | ToWindow::BrowserAt { .. }
             | ToWindow::Live
+            | ToWindow::Working { .. }
             | ToWindow::Decided { .. }
             | ToWindow::Lapsed { .. } => {
                 return None;
@@ -824,17 +875,23 @@ impl ChatView {
             .child(tab("tab-browser", "브라우저", Tab::Browser, cx))
     }
 
-    fn notice(&self) -> Option<String> {
+    fn notice(&self) -> Option<(String, Option<String>)> {
         match &self.link {
             LinkState::Connecting => None,
-            LinkState::Down(reason) if reason.contains("not running") => Some(String::from(
-                "dotori가 꺼져 있어요. dotori를 켜면 바로 다시 이어져요",
-            )),
-            LinkState::Down(_) => Some(String::from(
-                "dotori와 연결이 끊겼어요. 다시 연결하는 중이에요",
-            )),
+            LinkState::Down(reason) => {
+                let words = if reason.contains("not running") {
+                    "dotori가 꺼져 있어요. dotori를 켜면 바로 다시 이어져요"
+                } else if reason.contains("closed the connection") {
+                    "dotori가 연결을 끊었어요. 다시 연결하는 중이에요"
+                } else if reason.contains("not reachable") {
+                    "dotori에 닿지 않아요. 다시 연결하는 중이에요"
+                } else {
+                    "dotori에 연결하지 못했어요. 다시 해 보는 중이에요"
+                };
+                Some((String::from(words), Some(reason.clone())))
+            }
             LinkState::Connected => match &self.answering {
-                Some((pc, false)) => Some(format!("지금은 {pc}에서 답해요")),
+                Some((pc, false)) => Some((format!("지금은 {pc}에서 답해요"), None)),
                 _ => None,
             },
         }
@@ -933,8 +990,7 @@ impl Render for ChatView {
             window.request_animation_frame();
         }
         let shown = fading.map_or(1.0, |elapsed| CROSS_FADE.at(elapsed));
-        let conversation = self.conversation(&theme, cx);
-        let notice = self.notice().map(|words| {
+        let notice = self.notice().map(|(words, detail)| {
             div()
                 .flex_none()
                 .px_4()
@@ -945,7 +1001,20 @@ impl Render for ChatView {
                 .text_xs()
                 .text_color(theme.muted)
                 .child(words)
+                .children(
+                    detail
+                        .map(|detail| div().text_size(px(11.)).line_height(px(14.)).child(detail)),
+                )
         });
+        let working_at = if self.shows_working() && self.tab == Tab::Chat {
+            let at = self.working_top();
+            if at.is_none() {
+                window.request_animation_frame();
+            }
+            at
+        } else {
+            None
+        };
         div()
             .flex()
             .flex_col()
@@ -960,14 +1029,21 @@ impl Render for ChatView {
             .when(self.tab == Tab::Chat, |chat| {
                 chat.child(
                     div()
-                        .id("conversation")
                         .flex_1()
-                        .overflow_y_scroll()
-                        .track_scroll(&self.scroll)
-                        .px_5()
-                        .py_5()
+                        .min_h_0()
+                        .relative()
                         .opacity(shown)
-                        .child(conversation),
+                        .child(
+                            AnyView::from(self.rows.clone())
+                                .cached(StyleRefinement::default().size_full()),
+                        )
+                        .children(working_at.map(|top| {
+                            div()
+                                .absolute()
+                                .left(px(EDGE))
+                                .top(top)
+                                .child(self.working.clone())
+                        })),
                 )
                 .child(self.composer(&theme, cx))
             })
@@ -990,25 +1066,43 @@ fn entering(row: Div, progress: f32) -> Div {
         .opacity(progress)
 }
 
-fn working(theme: &Theme, n: usize) -> impl IntoElement {
-    div()
-        .flex()
-        .items_center()
-        .gap(px(10.))
-        .pb(px(TURN_SPACE))
-        .child(logo(theme, 20.).with_animation(
-            "working-logo",
-            WORKING.animation().repeat().with_easing(|t| t),
-            |logo, progress| logo.opacity(breath(progress)),
-        ))
-        .child(
-            div()
-                .text_size(px(13.))
-                .line_height(px(18.))
-                .text_color(theme.muted)
-                .child("생각하는 중"),
-        )
-        .with_animation(("working", n), MESSAGE_ENTER.animation(), entering)
+struct Rows {
+    chat: WeakEntity<ChatView>,
+}
+
+impl Render for Rows {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = Theme::of(window);
+        self.chat
+            .update(cx, |chat, cx| chat.pane(&theme, cx))
+            .unwrap_or_else(|_| div().into_any_element())
+    }
+}
+
+struct WorkingView;
+
+impl Render for WorkingView {
+    fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let theme = Theme::of(window);
+        div()
+            .flex()
+            .items_center()
+            .h(px(WORKING_ROW))
+            .gap(px(10.))
+            .child(logo(&theme, 20.).with_animation(
+                "working-logo",
+                WORKING.animation().repeat().with_easing(|t| t),
+                |logo, progress| logo.opacity(breath(progress)),
+            ))
+            .child(
+                div()
+                    .text_size(px(13.))
+                    .line_height(px(18.))
+                    .text_color(theme.muted)
+                    .child("생각하는 중"),
+            )
+            .with_animation("working", MESSAGE_ENTER.animation(), entering)
+    }
 }
 
 fn browser_elsewhere(theme: &Theme, pc: &str) -> impl IntoElement {

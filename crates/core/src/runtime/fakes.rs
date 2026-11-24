@@ -68,6 +68,7 @@ pub(crate) struct FakeChannel {
     inbound: Mutex<Option<mpsc::UnboundedReceiver<Incoming>>>,
     delivered: mpsc::UnboundedSender<(Place, String)>,
     shown: mpsc::UnboundedSender<Traffic>,
+    working: mpsc::UnboundedSender<bool>,
     deliver_delay: Duration,
 }
 
@@ -75,6 +76,7 @@ pub(crate) struct FakeChannelProbe {
     pub(crate) say: mpsc::UnboundedSender<Incoming>,
     pub(crate) delivered: mpsc::UnboundedReceiver<(Place, String)>,
     pub(crate) shown: mpsc::UnboundedReceiver<Traffic>,
+    pub(crate) working: mpsc::UnboundedReceiver<bool>,
 }
 
 impl FakeChannel {
@@ -87,17 +89,20 @@ impl FakeChannel {
         let (say, inbound) = mpsc::unbounded_channel();
         let (delivered_tx, delivered) = mpsc::unbounded_channel();
         let (shown_tx, shown) = mpsc::unbounded_channel();
+        let (working_tx, working) = mpsc::unbounded_channel();
         let channel = Arc::new(Self {
             id: channel_id(id),
             inbound: Mutex::new(Some(inbound)),
             delivered: delivered_tx,
             shown: shown_tx,
+            working: working_tx,
             deliver_delay,
         });
         let probe = FakeChannelProbe {
             say,
             delivered,
             shown,
+            working,
         };
         (channel, probe)
     }
@@ -140,6 +145,10 @@ impl AppWindow for FakeChannel {
     fn show(&self, traffic: Traffic) -> BoxFuture<'_, Result<(), ChannelError>> {
         let _ = self.shown.send(traffic);
         Box::pin(async { Ok(()) })
+    }
+
+    fn working(&self, busy: bool) {
+        let _ = self.working.send(busy);
     }
 }
 

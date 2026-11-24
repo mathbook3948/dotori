@@ -32,6 +32,7 @@ pub(crate) fn marks(lines: &[ToWindow], zone: &TimeZone, today: Date) -> Vec<Mar
                 | ToWindow::Alone
                 | ToWindow::BrowserAt { .. }
                 | ToWindow::Live
+                | ToWindow::Working { .. }
                 | ToWindow::Decided { .. }
                 | ToWindow::Lapsed { .. } => return Mark::default(),
             };

@@ -194,6 +194,10 @@ impl AppWindow for AgentApp {
     fn show(&self, traffic: Traffic) -> BoxFuture<'_, Result<(), ChannelError>> {
         self.app.show(traffic)
     }
+
+    fn working(&self, busy: bool) {
+        self.app.working(busy);
+    }
 }
 
 /// A channel that sends only while this PC still runs the main session.

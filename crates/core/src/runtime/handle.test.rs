@@ -171,6 +171,29 @@ fn owner_message_on_the_app_gets_a_reply() {
 }
 
 #[test]
+fn the_window_hears_when_the_agent_starts_and_stops_working() {
+    block_on(async {
+        let (app, mut probe) = FakeChannel::new("app");
+        let mut ports = ports(app, Vec::new());
+        ports.model = Arc::new(echo_model());
+        let agent = Agent::spawn(config(Duration::from_secs(1)), ports)
+            .await
+            .expect("valid");
+
+        owner_says(&probe, "m1", "hi");
+
+        assert!(next(&mut probe.working).await, "busy once the owner speaks");
+        assert_eq!(
+            next(&mut probe.delivered).await,
+            (Place::new("main"), String::from("hello"))
+        );
+        assert!(!next(&mut probe.working).await, "idle after the answer");
+        agent.shutdown().await;
+        assert!(probe.working.try_recv().is_err(), "nothing more while idle");
+    });
+}
+
+#[test]
 fn other_channel_traffic_and_its_reply_are_shown_on_the_app() {
     block_on(async {
         let (app, mut app_probe) = FakeChannel::new("app");
