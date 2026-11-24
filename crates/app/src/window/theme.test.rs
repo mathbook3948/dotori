@@ -31,20 +31,17 @@ fn looks_read_back_as_they_are_written() {
 #[test]
 fn the_glass_opacities_match_design_md() {
     let design = include_str!("../../../../DESIGN.md");
-    assert!(design.contains(&format!(
-        "glass:\n  window: {GLASS_WINDOW}\n  surface: {GLASS_SURFACE}\n"
-    )));
+    assert!(design.contains(&format!("glass:\n  window: {GLASS_WINDOW}\nmotion:")));
 }
 
 #[test]
-fn a_see_through_theme_lets_the_desktop_through_its_canvas_and_fills_only() {
+fn a_see_through_theme_lets_the_desktop_through_its_canvas_only() {
     let (light, _) = named("graphite").expect("graphite");
 
     let glass = light.see_through();
 
     assert_eq!(glass.canvas.a, GLASS_WINDOW);
-    assert_eq!(glass.surface.a, GLASS_SURFACE);
-    assert_eq!(glass.warn_soft.a, GLASS_SURFACE);
+    assert_eq!(glass.surface, light.surface, "fills stay solid");
     assert_eq!(glass.text, light.text, "text stays solid");
     assert_eq!(glass.primary, light.primary, "the main button stays solid");
 }

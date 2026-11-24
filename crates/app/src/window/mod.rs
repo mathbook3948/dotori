@@ -86,7 +86,7 @@ pub(crate) fn run(home: Home, which: Which) -> Result<(), String> {
                 titlebar: Some(TitlebarOptions {
                     title: Some(SharedString::new_static(title)),
                     appears_transparent: glass,
-                    traffic_light_position: glass.then(|| point(px(16.), px(20.))),
+                    traffic_light_position: glass.then(|| point(px(16.), px(12.))),
                 }),
                 window_background: if glass && theme::SEE_THROUGH {
                     WindowBackgroundAppearance::Blurred

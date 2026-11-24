@@ -158,8 +158,6 @@ impl Theme {
 
 /// How much of the blurred desktop a glass window lets through, `glass.window` of DESIGN.md.
 pub(crate) const GLASS_WINDOW: f32 = 0.6;
-/// How much of it the fills on a glass window let through, `glass.surface` of DESIGN.md.
-pub(crate) const GLASS_SURFACE: f32 = 0.72;
 
 /// Whether this OS blurs what is behind a window, so a window can be glass. Elsewhere the same
 /// window is drawn opaque.
@@ -167,7 +165,9 @@ pub(crate) const SEE_THROUGH: bool = cfg!(any(target_os = "macos", target_os = "
 
 impl Theme {
     /// These colors on a glass window: where the OS blurs what is behind the window, the canvas
-    /// and the fills on it let the blurred desktop through.
+    /// lets the blurred desktop through. The fills on it stay solid, since GPUI adds the alpha of
+    /// what it draws over a see-through canvas instead of blending it, so a see-through fill
+    /// would come out solid and darker.
     pub(crate) fn glass(self) -> Self {
         if SEE_THROUGH {
             self.see_through()
@@ -179,15 +179,6 @@ impl Theme {
     fn see_through(mut self) -> Self {
         for window in [&mut self.canvas, &mut self.raised] {
             window.a = GLASS_WINDOW;
-        }
-        for fill in [
-            &mut self.surface,
-            &mut self.bubble,
-            &mut self.ok_soft,
-            &mut self.warn_soft,
-            &mut self.danger_soft,
-        ] {
-            fill.a = GLASS_SURFACE;
         }
         self
     }

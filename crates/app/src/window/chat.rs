@@ -35,6 +35,7 @@ use gpui::Size;
 use gpui::Stateful;
 use gpui::StyleRefinement;
 use gpui::Task;
+use gpui::Tiling;
 use gpui::WeakEntity;
 use gpui::Window;
 use gpui::WindowControlArea;
@@ -63,6 +64,8 @@ use crate::window::motion::RISE;
 use crate::window::motion::WORKING;
 use crate::window::motion::breath;
 use crate::window::parts::CLOSE_ICON;
+use crate::window::parts::MAXIMIZE_ICON;
+use crate::window::parts::MINIMIZE_ICON;
 use crate::window::parts::MONO;
 use crate::window::parts::SETTINGS_ICON;
 use crate::window::parts::logo;
@@ -80,6 +83,7 @@ const BOTTOM_SLACK: f32 = 8.;
 const TURN_SPACE: f32 = 18.;
 const RESIZE_MARGIN: f32 = 6.;
 const TOP_LEFT: f32 = if cfg!(target_os = "macos") { 80. } else { 12. };
+const TOP_HEIGHT: f32 = if cfg!(target_os = "macos") { 40. } else { 52. };
 const PREVIEW_EVERY: Duration = Duration::from_millis(500);
 const EDGE: f32 = 20.;
 const WORKING_ROW: f32 = 20.;
@@ -1326,7 +1330,12 @@ impl Render for ChatView {
                         .child(detail)
                 }))
         });
-        let drawn = matches!(window.window_decorations(), Decorations::Client { .. });
+        let tiling = match window.window_decorations() {
+            Decorations::Client { tiling } => Some(tiling),
+            Decorations::Server => None,
+        };
+        let drawn = tiling.is_some();
+        let tiling = tiling.unwrap_or_default();
         let working_at = if self.shows_working() {
             if self.scroll.bounds_for_item(0).is_none() {
                 window.request_animation_frame();
@@ -1345,34 +1354,58 @@ impl Render for ChatView {
             .line_height(px(21.))
             .on_action(cx.listener(Self::submit))
             .when(drawn, |root| {
-                root.on_mouse_down(MouseButton::Left, |event: &MouseDownEvent, window, cx| {
-                    if let Some(edge) = resize_edge(event.position, window.viewport_size()) {
-                        window.start_window_resize(edge);
-                        cx.stop_propagation();
-                    }
-                })
+                root.on_mouse_down(
+                    MouseButton::Left,
+                    move |event: &MouseDownEvent, window, cx| {
+                        if let Some(edge) =
+                            resize_edge(event.position, window.viewport_size(), tiling)
+                        {
+                            window.start_window_resize(edge);
+                            cx.stop_propagation();
+                        }
+                    },
+                )
             })
             .child(
                 div()
-                    .id("top")
-                    .flex()
                     .flex_none()
-                    .items_center()
-                    .gap_3()
-                    .h(px(52.))
-                    .pl(px(TOP_LEFT))
-                    .pr(px(12.))
-                    .window_control_area(WindowControlArea::Drag)
-                    .when(drawn, |top| {
-                        top.on_mouse_down(MouseButton::Left, |_, window, _| {
-                            window.start_window_move();
-                        })
-                    })
-                    .child(settings_button(&theme))
-                    .child(div().flex_1().min_w_0().children(notice))
-                    .when(cfg!(target_os = "windows") || drawn, |top| {
-                        top.child(close_button(&theme))
-                    }),
+                    .h(px(TOP_HEIGHT))
+                    .when(!cfg!(target_os = "macos"), |top| top.pt(px(RESIZE_MARGIN)))
+                    .child(
+                        div()
+                            .id("top")
+                            .size_full()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .pl(px(TOP_LEFT))
+                            .pr(px(12.))
+                            .window_control_area(WindowControlArea::Drag)
+                            .when(drawn, |top| {
+                                top.on_mouse_down(
+                                    MouseButton::Left,
+                                    move |event: &MouseDownEvent, window, _| {
+                                        let at = (event.position, window.viewport_size());
+                                        if resize_edge(at.0, at.1, tiling).is_none() {
+                                            window.start_window_move();
+                                        }
+                                    },
+                                )
+                            })
+                            .on_click(move |event: &ClickEvent, window, _| {
+                                if event.click_count() != 2 {
+                                    return;
+                                }
+                                if cfg!(target_os = "macos") {
+                                    window.titlebar_double_click();
+                                } else if drawn {
+                                    window.zoom_window();
+                                }
+                            })
+                            .child(settings_button(&theme))
+                            .child(div().flex_1().min_w_0().children(notice))
+                            .children(window_buttons(&theme, drawn)),
+                    ),
             )
             .child(
                 div()
@@ -1411,11 +1444,11 @@ fn round_button(id: &'static str, theme: &Theme) -> Stateful<Div> {
         .shadow_sm()
         .cursor_pointer()
         .hover(|button| button.bg(theme.bubble))
-        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
 }
 
 fn settings_button(theme: &Theme) -> impl IntoElement {
     round_button("settings", theme)
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .child(
             svg()
                 .path(SETTINGS_ICON)
@@ -1425,18 +1458,42 @@ fn settings_button(theme: &Theme) -> impl IntoElement {
         .on_click(|_, _, _| crate::tray::open("settings"))
 }
 
-fn close_button(theme: &Theme) -> impl IntoElement {
-    round_button("close", theme)
-        .child(svg().path(CLOSE_ICON).size(px(16.)).text_color(theme.muted))
-        .on_click(|_, window, _| window.remove_window())
+fn window_buttons(theme: &Theme, drawn: bool) -> Vec<AnyElement> {
+    let buttons = [
+        ("minimize", MINIMIZE_ICON, WindowControlArea::Min),
+        ("maximize", MAXIMIZE_ICON, WindowControlArea::Max),
+        ("close", CLOSE_ICON, WindowControlArea::Close),
+    ];
+    let native = cfg!(target_os = "windows");
+    if !native && !drawn {
+        return Vec::new();
+    }
+    buttons
+        .into_iter()
+        .map(|(id, icon, area)| {
+            let button = round_button(id, theme)
+                .child(svg().path(icon).size(px(16.)).text_color(theme.muted));
+            if native {
+                return button.window_control_area(area).into_any_element();
+            }
+            button
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(move |_, window, _| match area {
+                    WindowControlArea::Min => window.minimize_window(),
+                    WindowControlArea::Max => window.zoom_window(),
+                    _ => window.remove_window(),
+                })
+                .into_any_element()
+        })
+        .collect()
 }
 
-fn resize_edge(at: Point<Pixels>, size: Size<Pixels>) -> Option<ResizeEdge> {
+fn resize_edge(at: Point<Pixels>, size: Size<Pixels>, tiling: Tiling) -> Option<ResizeEdge> {
     let near = px(RESIZE_MARGIN);
-    let left = at.x < near;
-    let right = at.x > size.width - near;
-    let top = at.y < near;
-    let bottom = at.y > size.height - near;
+    let left = !tiling.left && at.x < near;
+    let right = !tiling.right && at.x > size.width - near;
+    let top = !tiling.top && at.y < near;
+    let bottom = !tiling.bottom && at.y > size.height - near;
     match (top, bottom, left, right) {
         (true, _, true, _) => Some(ResizeEdge::TopLeft),
         (true, _, _, true) => Some(ResizeEdge::TopRight),

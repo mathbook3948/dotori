@@ -34,8 +34,8 @@ impl AssetSource for Assets {
         if path == SETTINGS_ICON {
             return Ok(Some(Cow::Borrowed(GEAR.as_bytes())));
         }
-        if path == CLOSE_ICON {
-            return Ok(Some(Cow::Borrowed(CROSS.as_bytes())));
+        if let Some((_, svg)) = ICONS.iter().find(|(name, _)| *name == path) {
+            return Ok(Some(Cow::Borrowed(svg.as_bytes())));
         }
         let colors = match path {
             LIGHT_LOGO => LOGO.0,
@@ -54,6 +54,8 @@ impl AssetSource for Assets {
             SharedString::new_static(DARK_LOGO),
             SharedString::new_static(SETTINGS_ICON),
             SharedString::new_static(CLOSE_ICON),
+            SharedString::new_static(MINIMIZE_ICON),
+            SharedString::new_static(MAXIMIZE_ICON),
         ])
     }
 }
@@ -63,7 +65,24 @@ const LIGHT_LOGO: &str = "logo/light.svg";
 pub(crate) const SETTINGS_ICON: &str = "icons/settings.svg";
 /// The cross that closes a window that draws its own top, in the color of its text.
 pub(crate) const CLOSE_ICON: &str = "icons/close.svg";
-const CROSS: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>"#;
+/// The bar that minimizes such a window.
+pub(crate) const MINIMIZE_ICON: &str = "icons/minimize.svg";
+/// The square that maximizes such a window, or puts it back.
+pub(crate) const MAXIMIZE_ICON: &str = "icons/maximize.svg";
+const ICONS: [(&str, &str); 3] = [
+    (
+        CLOSE_ICON,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>"#,
+    ),
+    (
+        MINIMIZE_ICON,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round"><path d="M6 12h12"/></svg>"#,
+    ),
+    (
+        MAXIMIZE_ICON,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linejoin="round"><rect x="6.5" y="6.5" width="11" height="11" rx="1.5"/></svg>"#,
+    ),
+];
 const GEAR: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.08a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.08a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>"#;
 const DARK_LOGO: &str = "logo/dark.svg";
 

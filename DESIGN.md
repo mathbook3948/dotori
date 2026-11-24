@@ -245,7 +245,6 @@ spacing:
   rise: 6px
 glass:
   window: 0.6
-  surface: 0.72
 motion:
   hover:
     duration: 120ms
@@ -313,7 +312,7 @@ This file is the design the windows are moving to. Until a window has moved, `do
 
 ## Elevation & Depth
 
-- The chat window is glass. Where the OS blurs what is behind a window (macOS and Windows), the canvas lets `glass.window` of the blurred desktop through, and the fills on it, such as bubbles, cards, buttons and the composer, let `glass.surface` through. Elsewhere the same window is opaque.
+- The chat window is glass. Where the OS blurs what is behind a window (macOS and Windows), the canvas lets `glass.window` of the blurred desktop through. The fills on it, such as bubbles, cards, buttons and the composer, stay solid: GPUI 0.2.2 adds the alpha of what it draws over a see-through canvas instead of blending it, so a see-through fill would come out solid and darker. Elsewhere the same window is opaque.
 - A glass surface has a `rim`, a thin light line along its top edge, and a soft shadow under it. Text, `primary` and the marks on a surface stay solid.
 - Cards and fields are set apart by fill and rim, not by borders around them.
 - Lines are used only to divide large areas.
@@ -350,7 +349,7 @@ This file is the design the windows are moving to. Until a window has moved, `do
 - **Tool line**: `small`, `muted`, an icon on the left and a chevron on the right.
 - **Permission card**: `warn-soft` fill, `rounded.lg`, a bold question, the command on `surface` in `code`, and the buttons 거절 (`surface`) and 허락 (`primary`).
 - **Failure card**: `danger-soft` fill, `rounded.lg`, what failed and what to do, in `danger` and `text`.
-- **Composer**: `surface` on `raised`, `rounded.composer`, a light shadow, a round `primary` send button, and a `hint` line under it.
+- **Composer**: a `surface` pill (`rounded.full`) with a `rim` and the deepest shadow, straight on the canvas, a round `primary` send button, and a `hint` line under it.
 - **Browser card**: `warn-soft` fill, `rounded.lg`, what dotori asks, the page now at 16:10 on `surface` that opens the browser when clicked, and the buttons 나중에 (`surface`) and 브라우저 열기 (`primary`). While the browser window is open it turns `surface` and offers 창 다시 보기 and 다 했어요.
 - **Settings and close buttons**: round `surface` glass buttons with a `muted` gear on the left and a `muted` cross on the right of the top strip.
 
@@ -359,7 +358,7 @@ This file is the design the windows are moving to. Until a window has moved, `do
 - Do keep `primary` for the action the owner most likely takes next.
 - Do show a state only when it needs the owner, and say it in words.
 - Don't show status with colored dots.
-- Don't put borders around cards or buttons.
+- Don't put borders around cards or buttons. A `rim` along the top edge of a glass surface is the one line they carry.
 - Don't use gradients, glows, sparkles, emoji as icons, or cards with a colored stripe on one side. Glass is the window's material only as Elevation & Depth describes it.
 - Don't draw dotori's replies in bubbles or fill large areas with `primary`.
 - Don't let anything jump, flicker or wait for the network before it answers the owner.
