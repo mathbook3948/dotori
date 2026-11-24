@@ -17,6 +17,7 @@
 - [세션](architecture/sessions.md): 주인이 어디서 비서와 말하고, 대화를 어떤 세션으로 나누는지 정한다.
 - [Slack 연결](architecture/slack.md): Slack을 채널과 연동으로 어떻게 쓰는지 정한다.
 - [Telegram 연결](architecture/telegram.md): Telegram을 주인이 비서와 말하는 채널로 어떻게 쓰는지 정한다.
+- [비밀값 보관](architecture/vault.md): API 키와 봇 토큰 같은 비밀값을 어디에 두고 어떻게 다른 PC로 옮기는지 정한다.
 - [창](architecture/windows.md): 채팅창과 설정창이 어떻게 보이는지 정한다.
 
 ## engineering

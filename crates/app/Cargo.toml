@@ -15,6 +15,7 @@ publish = false
 dotori-connectors = { path = "../connectors" }
 dotori-core = { path = "../core" }
 dotori-mcp = { path = "../mcp" }
+chacha20poly1305 = "0.10.1"
 getrandom = "0.4"
 gpui = "0.2.2"
 serde = { version = "1", features = ["derive"] }
@@ -27,6 +28,7 @@ tray-icon = { version = "0.26.1", default-features = false, features = ["ksni"] 
 unicode-segmentation = "1"
 image = { version = "0.25.10", default-features = false, features = ["jpeg"] }
 jiff = "1.0.2"
+keyring = "4.2.0"
 
 [dev-dependencies]
 gpui = { version = "0.2.2", features = ["test-support"] }

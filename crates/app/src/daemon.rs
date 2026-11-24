@@ -81,9 +81,10 @@ use crate::routines::RoutineChannel;
 use crate::routines::Routines;
 use crate::settings::RunnerChoice;
 use crate::settings::Settings;
-use crate::settings::environment;
 use crate::settings_copies::SettingsCopies;
 use crate::tools;
+use crate::vault;
+use crate::vault::Vault;
 use crate::vector_copies;
 use crate::vector_copies::VECTORS_JOB;
 use crate::vector_copies::VectorCopies;
@@ -113,7 +114,8 @@ pub(crate) async fn serve(
 ) -> Result<(), String> {
     let _lock = DaemonLock::take(&home.lock())?;
     let settings = Settings::load(&home.settings())?;
-    let model = settings.model(environment)?;
+    let vault = Arc::new(Vault::new(&home.root));
+    let model = settings.model(vault::lookup(&vault))?;
     let shared = match tools::SharedTools::start().await {
         Ok(tools) => Some(Arc::new(tools)),
         Err(error) => {
@@ -128,7 +130,7 @@ pub(crate) async fn serve(
     let handoff = Arc::new(Handoff::default());
     let sub_sessions: Arc<dyn SubSessionRunner> = Arc::new(HandedOff {
         handoff: Arc::clone(&handoff),
-        inner: sub_session_runner(&home, &settings, &toolbox, shared)?,
+        inner: sub_session_runner(&home, &settings, &vault, &toolbox, shared)?,
     });
     let records = open_record(&home).await?;
     let notes = Notes::new(home.notes());
@@ -142,7 +144,7 @@ pub(crate) async fn serve(
     let token = door::token()?;
     let (app, address) = AppChannel::bind(token.clone()).map_err(|error| error.to_string())?;
     let app = Arc::new(app);
-    let (guarded, wrong) = settings.relays(environment, true);
+    let (guarded, wrong) = settings.relays(vault::lookup(&vault), true);
     let (mut guarded, failed) = relay(guarded).await;
     for problem in wrong.iter().chain(&failed) {
         eprintln!("dotori: an MCP server is left out: {problem}");
@@ -327,6 +329,12 @@ pub(crate) async fn serve(
             let linked = linked.clone();
             tokio::spawn(async move { settings_copies.share(linked).await });
         }
+        {
+            let vault = Arc::clone(&vault);
+            let linked = linked.clone();
+            tokio::spawn(async move { vault::share(&vault, linked).await });
+        }
+        let vault = Arc::clone(&vault);
         let routines = Arc::clone(&routines);
         let handoff = Arc::clone(&handoff);
         tokio::spawn(async move {
@@ -342,6 +350,9 @@ pub(crate) async fn serve(
                     continue;
                 }
                 if settings_copies.hear(&linked, &heard) {
+                    continue;
+                }
+                if vault::hear(&vault, &linked, &heard) {
                     continue;
                 }
                 if vectors.as_ref().is_some_and(|vectors| vectors.hear(&heard)) {
@@ -441,7 +452,7 @@ pub(crate) async fn serve(
                 continue;
             }
         }
-        let (mut channels, off) = settings.channels(environment);
+        let (mut channels, off) = settings.channels(vault::lookup(&vault));
         for problem in off {
             eprintln!("dotori: {problem}");
         }
@@ -615,6 +626,7 @@ fn basic(home: &Home, settings: &Settings) -> BasicTools {
 fn sub_session_runner(
     home: &Home,
     settings: &Settings,
+    vault: &Vault,
     toolbox: &Arc<dyn Toolbox>,
     shared: Option<Arc<tools::SharedTools>>,
 ) -> Result<Arc<dyn SubSessionRunner>, String> {
@@ -622,7 +634,7 @@ fn sub_session_runner(
     let agent = match chosen.runner.unwrap_or_default() {
         RunnerChoice::Llm => {
             return Ok(Arc::new(LlmRunner {
-                model: settings.sub_session_model(environment)?,
+                model: settings.sub_session_model(vault::lookup(vault))?,
                 toolbox: Arc::new(WithBasic {
                     basic: basic(home, settings),
                     rest: Arc::clone(toolbox),

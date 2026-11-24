@@ -37,3 +37,38 @@ fn picking_a_theme_and_a_look_saves_them_and_draws_with_them(cx: &mut TestAppCon
     assert_eq!(look, Look::Dark);
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[gpui::test]
+fn a_pasted_key_goes_into_the_vault_and_can_be_forgotten(cx: &mut TestAppContext) {
+    let root = std::env::temp_dir().join(format!("dotori-keys-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("a home");
+    std::fs::write(root.join("settings.toml"), "").expect("settings");
+    let home = Home { root: root.clone() };
+    let settings = Settings::load(&home.settings()).expect("loaded");
+    let (view, cx) = cx.add_window_view(|_, cx| SettingsView::new(home, settings, cx));
+    cx.run_until_parked();
+
+    view.update(cx, |view, cx| {
+        view.api_key
+            .update(cx, |input, cx| input.set_text("sk-ant-pasted", cx));
+    });
+    click(cx, "save");
+
+    let vault = Vault::new(&root);
+    assert_eq!(
+        vault.get(ANTHROPIC_KEY).expect("read").as_deref(),
+        Some("sk-ant-pasted")
+    );
+    assert!(view.read_with(cx, |view, cx| view.api_key.read(cx).text().is_empty()));
+    let file = std::fs::read_to_string(root.join("settings.toml")).expect("settings");
+    assert!(
+        !file.contains("sk-ant-pasted"),
+        "the key never reaches the settings file"
+    );
+
+    click(cx, "forget-ANTHROPIC_API_KEY");
+
+    assert_eq!(vault.get(ANTHROPIC_KEY).expect("read"), None);
+    let _ = std::fs::remove_dir_all(&root);
+}

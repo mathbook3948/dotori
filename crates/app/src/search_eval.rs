@@ -11,8 +11,9 @@ use dotori_mcp::memory::Method;
 use dotori_mcp::memory::Report;
 
 use crate::home::Home;
-use crate::settings;
 use crate::settings::Settings;
+use crate::vault;
+use crate::vault::Vault;
 
 const USAGE: &str =
     "usage: dotori search-eval <file>, one {\"question\": ..., \"expect\": [...]} per line";
@@ -26,7 +27,8 @@ pub(crate) async fn run(home: Home, file: Option<String>) -> Result<(), String> 
     if cases.is_empty() {
         return Err(format!("{file} holds no questions. {USAGE}"));
     }
-    let embedding = Settings::load(&home.settings())?.embedding(settings::environment)?;
+    let embedding =
+        Settings::load(&home.settings())?.embedding(vault::lookup(&Vault::new(&home.root)))?;
     let memory = Memory::new(MemoryConfig {
         record: home.record(),
         index: home.search_index(),

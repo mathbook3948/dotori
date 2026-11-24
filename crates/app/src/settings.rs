@@ -38,6 +38,9 @@ pub(crate) const TELEGRAM_KEY: &str = "TELEGRAM_BOT_TOKEN";
 pub(crate) const DISCORD_KEY: &str = "DISCORD_BOT_TOKEN";
 /// Where the Slack bot token is when the settings do not say.
 pub(crate) const SLACK_BOT_KEY: &str = "SLACK_BOT_TOKEN";
+/// The name an OpenAI-compatible API key is kept under once the owner gives one in the settings
+/// window, when the settings named none.
+pub(crate) const OPENAI_KEY: &str = "OPENAI_API_KEY";
 
 /// What the user sets in `settings.toml`. A missing file means every default.
 /// Keys never live in the file. It names the environment variable that holds each key.
