@@ -898,7 +898,6 @@ fn found(theme: &Theme, input: &Entity<TextInput>, default: &str, cx: &App) -> g
             .bg(soft)
             .text_color(ink)
             .text_xs()
-            .child(div().flex_none().size(px(6.)).rounded_full().bg(ink))
             .child(words),
     )
 }
