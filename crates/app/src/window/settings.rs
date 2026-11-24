@@ -20,6 +20,8 @@ use crate::settings::SLACK_APP_KEY;
 use crate::settings::SLACK_BOT_KEY;
 use crate::settings::Settings;
 use crate::settings::SlackForm;
+use crate::settings::TELEGRAM_KEY;
+use crate::settings::TelegramForm;
 use crate::settings::environment;
 use crate::window::input::TextInput;
 use crate::window::notes::NotesView;
@@ -43,6 +45,9 @@ pub(crate) struct SettingsView {
     slack_owner: Entity<TextInput>,
     slack_app_env: Entity<TextInput>,
     slack_bot_env: Entity<TextInput>,
+    telegram_on: bool,
+    telegram_owner: Entity<TextInput>,
+    telegram_token_env: Entity<TextInput>,
     note: Option<Note>,
     pcs: Entity<PcsView>,
     routines: Entity<RoutinesView>,
@@ -79,6 +84,10 @@ impl SettingsView {
         let routines = cx.new(|cx| RoutinesView::new(&home, cx));
         let notes = cx.new(|cx| NotesView::new(&home, cx));
         let slack = SlackForm::of(settings.slack.as_ref());
+        let telegram = TelegramForm::of(settings.telegram.as_ref());
+        let telegram_token_env = field(TELEGRAM_KEY, telegram.token_env.clone(), cx);
+        cx.observe(&telegram_token_env, |_, _, cx| cx.notify())
+            .detach();
         let slack_app_env = field(SLACK_APP_KEY, slack.app_token_env.clone(), cx);
         let slack_bot_env = field(SLACK_BOT_KEY, slack.bot_token_env.clone(), cx);
         cx.observe(&slack_app_env, |_, _, cx| cx.notify()).detach();
@@ -99,6 +108,9 @@ impl SettingsView {
             slack_owner: field("U012AB3CD", slack.owner, cx),
             slack_app_env,
             slack_bot_env,
+            telegram_on: telegram.on,
+            telegram_owner: field("123456789", telegram.owner, cx),
+            telegram_token_env,
             note: None,
         }
     }
@@ -152,17 +164,32 @@ impl SettingsView {
         }
     }
 
+    fn telegram_form(&self, cx: &Context<Self>) -> TelegramForm {
+        let read = |field: &Entity<TextInput>| {
+            let text = field.read(cx).text().trim().to_owned();
+            (!text.is_empty()).then_some(text)
+        };
+        TelegramForm {
+            on: self.telegram_on,
+            owner: read(&self.telegram_owner),
+            token_env: read(&self.telegram_token_env),
+        }
+    }
+
     fn save(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
         let form = self.form(cx);
         let slack = self.slack_form(cx);
+        let telegram = self.telegram_form(cx);
         let saved = form.settings(&self.earlier.model).and_then(|model| {
             let slack = slack.settings()?;
+            let telegram = telegram.settings()?;
             let settings = Settings {
                 model,
                 slack,
+                telegram,
                 ..Settings::load(&self.home.settings())?
             };
-            settings.save_parts(&self.home.settings(), &["model", "slack"])?;
+            settings.save_parts(&self.home.settings(), &["model", "slack", "telegram"])?;
             self.earlier = settings;
             Ok(())
         });
@@ -335,6 +362,8 @@ impl Render for SettingsView {
                     .child(div().h_4())
                     .child(self.slack_card(&theme, window, cx))
                     .child(div().h_4())
+                    .child(self.telegram_card(&theme, window, cx))
+                    .child(div().h_4())
                     .child(self.notes.clone())
                     .child(div().h_4())
                     .child(self.routines.clone())
@@ -380,66 +409,197 @@ impl SettingsView {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let on = self.slack_on;
-        let switch = div()
-            .id("slack-switch")
-            .flex()
-            .flex_none()
-            .items_center()
-            .w(px(40.))
-            .h(px(22.))
-            .p(px(2.))
-            .rounded_full()
-            .cursor_pointer()
-            .bg(if on { theme.accent } else { theme.line })
-            .when(on, |switch| switch.justify_end())
-            .child(
-                div()
-                    .size(px(18.))
-                    .rounded_full()
-                    .bg(theme.surface)
-                    .shadow_sm(),
-            )
-            .on_click(cx.listener(|view, _, _, cx| {
+        let card = channel_card(
+            theme,
+            "Slack",
+            "Slack에서도 dotori와 말할 수 있어요. DM이나 멘션으로 부르면 같은 대화로 이어져요.",
+            switch(theme, "slack-switch", on).on_click(cx.listener(|view, _, _, cx| {
                 view.slack_on = !view.slack_on;
                 view.note = None;
                 cx.notify();
-            }));
-        let head = div()
-            .flex()
-            .items_center()
-            .gap_3()
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .gap_1()
-                    .child(
-                        div()
-                            .text_base()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("Slack"),
-                    )
-                    .child(div().text_xs().text_color(theme.muted).child(
-                        "Slack에서도 dotori와 말할 수 있어요. DM이나 멘션으로 부르면 같은 대화로 이어져요.",
-                    )),
-            )
-            .child(switch);
-        let mut card = div()
-            .flex()
-            .flex_col()
-            .gap_4()
-            .p_5()
-            .rounded_2xl()
-            .bg(theme.surface)
-            .border_1()
-            .border_color(theme.line)
-            .shadow_xs()
-            .child(head);
+            })),
+        );
         if !on {
             return card;
         }
-        let step = |n: &'static str, words: &'static str| {
+        let app_found = found(theme, &self.slack_app_env, SLACK_APP_KEY, cx);
+        let bot_found = found(theme, &self.slack_bot_env, SLACK_BOT_KEY, cx);
+        card.child(guide(
+            theme,
+            &[
+                "api.slack.com/apps에서 앱을 만들고 Socket Mode를 켜요. connections:write 권한으로 앱 토큰(xapp-)을 만들어요.",
+                "봇 권한 app_mentions:read, chat:write, im:history, im:read, im:write, users:read, channels:read, groups:read를 주고, app_mention과 message.im 이벤트를 구독한 뒤 설치해서 봇 토큰(xoxb-)을 받아요.",
+                "두 토큰을 아래 이름의 환경 변수에 넣고 dotori를 다시 시작해요. 토큰은 파일에 저장하지 않아요.",
+            ],
+        ))
+        .child(field(
+            theme,
+            window,
+            cx,
+            "내 Slack 멤버 ID",
+            "Slack에서 내 프로필을 열고 더보기 메뉴의 \"멤버 ID 복사\"로 얻어요. 이 사람의 말만 들어요.",
+            &self.slack_owner,
+        ))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap_1p5()
+                .child(field(
+                    theme,
+                    window,
+                    cx,
+                    "앱 토큰이 든 환경 변수",
+                    "비워 두면 SLACK_APP_TOKEN이에요.",
+                    &self.slack_app_env,
+                ))
+                .child(app_found),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap_1p5()
+                .child(field(
+                    theme,
+                    window,
+                    cx,
+                    "봇 토큰이 든 환경 변수",
+                    "비워 두면 SLACK_BOT_TOKEN이에요.",
+                    &self.slack_bot_env,
+                ))
+                .child(bot_found),
+        )
+    }
+
+    fn telegram_card(
+        &self,
+        theme: &Theme,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let on = self.telegram_on;
+        let card = channel_card(
+            theme,
+            "Telegram",
+            "Telegram 봇으로도 말할 수 있어요. 봇에게 바로 말하거나 그룹에서 부르면 같은 대화로 이어져요.",
+            switch(theme, "telegram-switch", on).on_click(cx.listener(|view, _, _, cx| {
+                view.telegram_on = !view.telegram_on;
+                view.note = None;
+                cx.notify();
+            })),
+        );
+        if !on {
+            return card;
+        }
+        let token_found = found(theme, &self.telegram_token_env, TELEGRAM_KEY, cx);
+        card.child(guide(
+            theme,
+            &[
+                "Telegram에서 @BotFather에게 /newbot을 보내 봇을 만들고 토큰을 받아요.",
+                "토큰을 아래 이름의 환경 변수에 넣고 dotori를 다시 시작해요. 토큰은 파일에 저장하지 않아요.",
+                "그룹에서도 쓰려면 봇을 그룹에 넣고 @봇이름으로 불러요.",
+            ],
+        ))
+        .child(field(
+            theme,
+            window,
+            cx,
+            "내 Telegram 사용자 ID",
+            "숫자예요. @userinfobot에게 아무 말이나 보내면 알려 줘요. 이 사람의 말만 들어요.",
+            &self.telegram_owner,
+        ))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap_1p5()
+                .child(field(
+                    theme,
+                    window,
+                    cx,
+                    "봇 토큰이 든 환경 변수",
+                    "비워 두면 TELEGRAM_BOT_TOKEN이에요.",
+                    &self.telegram_token_env,
+                ))
+                .child(token_found),
+        )
+    }
+}
+
+fn channel_card(
+    theme: &Theme,
+    title: &'static str,
+    about: &'static str,
+    switch: impl IntoElement,
+) -> gpui::Div {
+    div()
+        .flex()
+        .flex_col()
+        .gap_4()
+        .p_5()
+        .rounded_2xl()
+        .bg(theme.surface)
+        .border_1()
+        .border_color(theme.line)
+        .shadow_xs()
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap_3()
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .flex_1()
+                        .min_w_0()
+                        .gap_1()
+                        .child(
+                            div()
+                                .text_base()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(title),
+                        )
+                        .child(div().text_xs().text_color(theme.muted).child(prose(about))),
+                )
+                .child(switch),
+        )
+}
+
+fn switch(theme: &Theme, id: &'static str, on: bool) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .flex()
+        .flex_none()
+        .items_center()
+        .w(px(40.))
+        .h(px(22.))
+        .p(px(2.))
+        .rounded_full()
+        .cursor_pointer()
+        .bg(if on { theme.accent } else { theme.line })
+        .when(on, |switch| switch.justify_end())
+        .child(
+            div()
+                .size(px(18.))
+                .rounded_full()
+                .bg(theme.surface)
+                .shadow_sm(),
+        )
+}
+
+fn guide(theme: &Theme, steps: &[&'static str]) -> gpui::Div {
+    div()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .p_3()
+        .rounded_xl()
+        .bg(theme.canvas)
+        .text_xs()
+        .text_color(theme.muted)
+        .children(steps.iter().enumerate().map(|(n, words)| {
             div()
                 .flex()
                 .items_start()
@@ -457,107 +617,42 @@ impl SettingsView {
                         .text_color(theme.accent)
                         .text_size(px(11.))
                         .font_weight(FontWeight::SEMIBOLD)
-                        .child(n),
+                        .child(SharedString::from((n + 1).to_string())),
                 )
                 .child(div().flex_1().min_w_0().child(prose(words)))
-        };
-        let guide = div()
+        }))
+}
+
+fn found(theme: &Theme, input: &Entity<TextInput>, default: &str, cx: &App) -> gpui::Div {
+    let typed = input.read(cx).text().trim().to_owned();
+    let name = if typed.is_empty() {
+        default.to_owned()
+    } else {
+        typed
+    };
+    let (ink, soft, words) = if environment(&name).is_some() {
+        (theme.ok, theme.ok_soft, format!("{name}이 이 PC에 있어요"))
+    } else {
+        (
+            theme.warn,
+            theme.warn_soft,
+            format!("{name}이 이 PC에 아직 없어요"),
+        )
+    };
+    div().flex().child(
+        div()
             .flex()
-            .flex_col()
-            .gap_2()
-            .p_3()
-            .rounded_xl()
-            .bg(theme.canvas)
+            .items_center()
+            .gap_1p5()
+            .px_2()
+            .py_0p5()
+            .rounded_full()
+            .bg(soft)
+            .text_color(ink)
             .text_xs()
-            .text_color(theme.muted)
-            .child(step(
-                "1",
-                "api.slack.com/apps에서 앱을 만들고 Socket Mode를 켜요. connections:write 권한으로 앱 토큰(xapp-)을 만들어요.",
-            ))
-            .child(step(
-                "2",
-                "봇 권한 app_mentions:read, chat:write, im:history, im:read, im:write, users:read, channels:read, groups:read를 주고, app_mention과 message.im 이벤트를 구독한 뒤 설치해서 봇 토큰(xoxb-)을 받아요.",
-            ))
-            .child(step(
-                "3",
-                "두 토큰을 아래 이름의 환경 변수에 넣고 dotori를 다시 시작해요. 토큰은 파일에 저장하지 않아요.",
-            ));
-        let found = |input: &Entity<TextInput>, default: &str, cx: &Context<Self>| {
-            let typed = input.read(cx).text().trim().to_owned();
-            let name = if typed.is_empty() {
-                default.to_owned()
-            } else {
-                typed
-            };
-            let there = environment(&name).is_some();
-            let (ink, soft, words) = if there {
-                (theme.ok, theme.ok_soft, format!("{name}이 이 PC에 있어요"))
-            } else {
-                (
-                    theme.warn,
-                    theme.warn_soft,
-                    format!("{name}이 이 PC에 아직 없어요"),
-                )
-            };
-            div().flex().child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_1p5()
-                    .px_2()
-                    .py_0p5()
-                    .rounded_full()
-                    .bg(soft)
-                    .text_color(ink)
-                    .text_xs()
-                    .child(div().flex_none().size(px(6.)).rounded_full().bg(ink))
-                    .child(words),
-            )
-        };
-        let app_found = found(&self.slack_app_env, SLACK_APP_KEY, cx);
-        let bot_found = found(&self.slack_bot_env, SLACK_BOT_KEY, cx);
-        card = card
-            .child(guide)
-            .child(field(
-                theme,
-                window,
-                cx,
-                "내 Slack 멤버 ID",
-                "Slack에서 내 프로필을 열고 더보기 메뉴의 \"멤버 ID 복사\"로 얻어요. 이 사람의 말만 들어요.",
-                &self.slack_owner,
-            ))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1p5()
-                    .child(field(
-                        theme,
-                        window,
-                        cx,
-                        "앱 토큰이 든 환경 변수",
-                        "비워 두면 SLACK_APP_TOKEN이에요.",
-                        &self.slack_app_env,
-                    ))
-                    .child(app_found),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1p5()
-                    .child(field(
-                        theme,
-                        window,
-                        cx,
-                        "봇 토큰이 든 환경 변수",
-                        "비워 두면 SLACK_BOT_TOKEN이에요.",
-                        &self.slack_bot_env,
-                    ))
-                    .child(bot_found),
-            );
-        card
-    }
+            .child(div().flex_none().size(px(6.)).rounded_full().bg(ink))
+            .child(words),
+    )
 }
 
 fn field(

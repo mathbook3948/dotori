@@ -126,11 +126,22 @@ fn saved_settings_load_back() {
     assert_eq!(Settings::load(&path).expect("loaded"), settings);
 }
 
+fn channels(
+    settings: &Settings,
+    key: impl Fn(&str) -> Option<String>,
+) -> Result<Vec<Arc<dyn dotori_core::channel::Channel>>, String> {
+    let (built, off) = settings.channels(key);
+    if off.is_empty() {
+        Ok(built)
+    } else {
+        Err(off.join("; "))
+    }
+}
+
 #[test]
 fn without_a_slack_section_there_is_no_other_channel() {
     assert!(
-        Settings::default()
-            .channels(|_| None)
+        channels(&Settings::default(), |_| None)
             .expect("built")
             .is_empty()
     );
@@ -139,19 +150,18 @@ fn without_a_slack_section_there_is_no_other_channel() {
 #[test]
 fn slack_takes_both_tokens_from_their_variables_and_names_the_owner() {
     let settings = parse("[slack]\nowner = \"U012AB3CD\"").expect("parsed");
-    let missing = settings.channels(|_| None).err().expect("needs tokens");
+    let missing = channels(&settings, |_| None).err().expect("needs tokens");
     assert!(missing.contains("SLACK_APP_TOKEN"), "{missing}");
-    let only_app = settings
-        .channels(|name| (name == "SLACK_APP_TOKEN").then(|| String::from("xapp")))
-        .err()
-        .expect("needs the bot token");
+    let only_app = channels(&settings, |name| {
+        (name == "SLACK_APP_TOKEN").then(|| String::from("xapp"))
+    })
+    .err()
+    .expect("needs the bot token");
     assert!(only_app.contains("SLACK_BOT_TOKEN"), "{only_app}");
 
-    let channels = settings
-        .channels(|_| Some(String::from("token")))
-        .expect("built");
-    assert_eq!(channels.len(), 1);
-    assert_eq!(channels[0].id().as_str(), "slack");
+    let built = channels(&settings, |_| Some(String::from("token"))).expect("built");
+    assert_eq!(built.len(), 1);
+    assert_eq!(built[0].id().as_str(), "slack");
 }
 
 #[test]
@@ -159,7 +169,7 @@ fn slack_stays_off_until_it_knows_whose_messages_to_hear() {
     let key = |_: &str| Some(String::from("token"));
     for text in ["[slack]", "[slack]\nowner = \"  \""] {
         let settings = parse(text).expect("parsed");
-        let error = settings.channels(key).err().expect("needs the owner");
+        let error = channels(&settings, key).err().expect("needs the owner");
         assert!(error.contains("owner"), "{error}");
     }
 }
@@ -430,4 +440,51 @@ fn a_mistyped_confirm_name_makes_its_whole_server_wait_and_its_token_stays_hidde
     let names: Vec<&str> = shared.iter().map(|config| config.name.as_str()).collect();
     assert_eq!(names, ["notes"]);
     assert!(wrong[0].contains("already has this name"), "{wrong:?}");
+}
+
+#[test]
+fn telegram_needs_its_token_and_owner_and_stays_apart_from_slack() {
+    let settings =
+        parse("[slack]\nowner = \"U1\"\n\n[telegram]\nowner = 42\ntoken_env = \"MY_TG\"")
+            .expect("parsed");
+
+    let (built, off) = settings.channels(|name| (name != "MY_TG").then(|| String::from("t")));
+    assert_eq!(built.len(), 1);
+    assert_eq!(built[0].id().as_str(), "slack");
+    assert!(
+        off[0].contains("Telegram is off") && off[0].contains("MY_TG"),
+        "{off:?}"
+    );
+
+    let (built, off) = settings.channels(|_| Some(String::from("123:t")));
+    assert!(off.is_empty(), "{off:?}");
+    let names: Vec<&str> = built.iter().map(|channel| channel.id().as_str()).collect();
+    assert_eq!(names, ["slack", "telegram"]);
+
+    let (_, off) = parse("[telegram]")
+        .expect("parsed")
+        .channels(|_| Some(String::from("t")));
+    assert!(off[0].contains("owner"), "{off:?}");
+    assert!(parse("[telegram]\ntoken = \"123:t\"").is_err());
+}
+
+#[test]
+fn the_telegram_form_needs_a_numeric_owner_and_a_variable_name() {
+    let mut form = TelegramForm {
+        on: true,
+        ..TelegramForm::default()
+    };
+    assert!(form.settings().is_err());
+    form.owner = Some(String::from("@me"));
+    assert!(form.settings().is_err());
+    form.owner = Some(String::from("123456789"));
+    form.token_env = Some(String::from("123:secret"));
+    assert!(form.settings().expect_err("a token").contains("환경 변수"));
+    form.token_env = None;
+
+    let section = form.settings().expect("valid").expect("on");
+
+    assert_eq!(section.owner, Some(123_456_789));
+    assert_eq!(TelegramForm::of(Some(&section)), form);
+    assert_eq!(TelegramForm::default().settings(), Ok(None));
 }

@@ -1,8 +1,8 @@
-//! Keeps the settings that mean the same on every PC the same on all of them: the model, Slack
-//! and memory search. What belongs to one machine, such as how other PCs reach it, its browser,
-//! its coding agent and its MCP servers, stays with it. Each of the three parts goes by its own
-//! time, the one changed last wins, and like any setting they take effect when dotori starts
-//! again.
+//! Keeps the settings that mean the same on every PC the same on all of them: the model, Slack,
+//! Telegram and memory search. What belongs to one machine, such as how other PCs reach it, its
+//! browser, its coding agent and its MCP servers, stays with it. Each of the four parts goes by
+//! its own time, the one changed last wins, and like any setting they take effect when dotori
+//! starts again.
 
 use std::path::Path;
 use std::path::PathBuf;
@@ -23,6 +23,7 @@ use crate::settings::MemorySettings;
 use crate::settings::ModelSettings;
 use crate::settings::Settings;
 use crate::settings::SlackSettings;
+use crate::settings::TelegramSettings;
 
 const LOOK_EVERY: Duration = Duration::from_secs(5);
 const FUTURE_TAKEN: i64 = 24 * 60 * 60 * 1000;
@@ -36,6 +37,8 @@ pub(crate) struct Shared {
     pub(crate) slack: Option<SlackSettings>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) memory: Option<MemorySettings>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) telegram: Option<TelegramSettings>,
 }
 
 /// When each shared part last changed, in milliseconds since the Unix epoch.
@@ -47,6 +50,8 @@ pub(crate) struct Times {
     pub(crate) slack: i64,
     #[serde(default)]
     pub(crate) memory: i64,
+    #[serde(default)]
+    pub(crate) telegram: i64,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -61,6 +66,7 @@ impl Shared {
             model: settings.model.clone(),
             slack: settings.slack.clone(),
             memory: settings.memory.clone(),
+            telegram: settings.telegram.clone(),
         }
     }
 
@@ -69,6 +75,7 @@ impl Shared {
             model: self.model,
             slack: self.slack,
             memory: self.memory,
+            telegram: self.telegram,
             ..settings
         }
     }
@@ -110,6 +117,11 @@ impl SettingsCopies {
                         before.shared.memory != shared.memory,
                         now,
                     ),
+                    telegram: next(
+                        before.times.telegram,
+                        before.shared.telegram != shared.telegram,
+                        now,
+                    ),
                 },
                 shared,
             },
@@ -118,6 +130,7 @@ impl SettingsCopies {
                     model: i64::from(shared.model != ModelSettings::default()),
                     slack: i64::from(shared.slack.is_some()),
                     memory: i64::from(shared.memory.is_some()),
+                    telegram: i64::from(shared.telegram.is_some()),
                 },
                 shared,
             },
@@ -149,11 +162,15 @@ impl SettingsCopies {
             taken.times.memory = times.memory;
             taken.shared.memory = shared.memory;
         }
+        if times.telegram > here.times.telegram && shared.telegram != here.shared.telegram {
+            taken.times.telegram = times.telegram;
+            taken.shared.telegram = shared.telegram;
+        }
         if taken == here {
             return Ok(false);
         }
         let settings = taken.shared.clone().into(Settings::load(&self.settings)?);
-        settings.save_parts(&self.settings, &["model", "slack", "memory"])?;
+        settings.save_parts(&self.settings, &["model", "slack", "memory", "telegram"])?;
         write_stamp(&self.stamp, &taken);
         *known = Some(taken);
         Ok(true)
@@ -194,7 +211,7 @@ impl SettingsCopies {
                     return true;
                 };
                 let latest = now_ms().saturating_add(FUTURE_TAKEN);
-                if [times.model, times.slack, times.memory]
+                if [times.model, times.slack, times.memory, times.telegram]
                     .iter()
                     .any(|time| *time > latest)
                 {
