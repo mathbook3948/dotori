@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
@@ -31,6 +32,7 @@ use serde::Serialize;
 use serde_json::Value;
 use serde_json::json;
 use tokio::sync::Notify;
+use tokio::time;
 
 use crate::confirm;
 use crate::routines;
@@ -39,8 +41,9 @@ use crate::routines::Routines;
 const REMEMBER: &str = "remember";
 const FORGET: &str = "forget";
 const OWNER_TOOLS: [&str; 4] = [REMEMBER, FORGET, routines::ADD, routines::REMOVE];
-const MAX_NOTES: i64 = 50;
-const MAX_LENGTH: usize = 500;
+pub(crate) const MAX_NOTES: i64 = 50;
+const LOOK_EVERY: Duration = Duration::from_secs(20);
+pub(crate) const MAX_LENGTH: usize = 500;
 const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS notes (\
     id INTEGER PRIMARY KEY AUTOINCREMENT, at_ms INTEGER NOT NULL, text TEXT NOT NULL); \
     CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL)";
@@ -57,7 +60,7 @@ pub(crate) struct NotesCopy {
 pub(crate) struct Notes {
     path: PathBuf,
     connection: Mutex<Option<Connection>>,
-    shown: Mutex<Option<Option<String>>>,
+    shown: Mutex<Option<(i64, Option<String>)>>,
     owner_spoke: AtomicBool,
     changes: Notify,
 }
@@ -96,7 +99,8 @@ impl Notes {
         done
     }
 
-    fn list(&self) -> Result<Vec<(i64, String)>, String> {
+    /// Every note with its number, oldest first.
+    pub(crate) fn list(&self) -> Result<Vec<(i64, String)>, String> {
         self.with(|connection| {
             connection
                 .prepare("SELECT id, text FROM notes ORDER BY id")?
@@ -105,18 +109,21 @@ impl Notes {
         })
     }
 
-    /// What the model is told about the notes, or `None` when there are none. It is read once
-    /// and again only after a note changes.
+    /// What the model is told about the notes, or `None` when there are none. It is read again
+    /// only after the notes change, here, in the settings window, or from another PC.
     pub(crate) fn context(&self) -> Option<String> {
+        let changed = self.with(changed_ms).unwrap_or(-1);
         let mut shown = self
             .shown
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(shown) = shown.as_ref() {
+        if let Some((at, shown)) = shown.as_ref()
+            && *at == changed
+        {
             return shown.clone();
         }
         let fresh = self.read_context();
-        *shown = Some(fresh.clone());
+        *shown = Some((changed, fresh.clone()));
         fresh
     }
 
@@ -214,33 +221,34 @@ impl Notes {
         let text = input
             .get("text")
             .and_then(Value::as_str)
-            .map(one_line)
-            .filter(|text| !text.is_empty())
             .ok_or("`text` is required")?;
+        self.keep(text).map(|id| format!("Kept as note [{id}]."))
+    }
+
+    /// Keeps a note the owner wrote, as in the settings window. Gives its number.
+    pub(crate) fn keep(&self, text: &str) -> Result<i64, String> {
+        let text = one_line(text);
+        if text.is_empty() {
+            return Err(String::from("`text` is required"));
+        }
         let text = text.as_str();
         if text.chars().count() > MAX_LENGTH {
             return Err(format!("a note is at most {MAX_LENGTH} characters"));
         }
         let at_ms = now_ms();
         let id = self.with(|connection| {
-            let count: i64 =
-                connection.query_row("SELECT count(*) FROM notes", [], |row| row.get(0))?;
-            if count >= MAX_NOTES {
-                return Ok(None);
-            }
-            connection.execute(
-                "INSERT INTO notes (at_ms, text) VALUES (?1, ?2)",
-                params![at_ms, text],
+            let added = connection.execute(
+                "INSERT INTO notes (at_ms, text) SELECT ?1, ?2 \
+                 WHERE (SELECT count(*) FROM notes) < ?3",
+                params![at_ms, text, MAX_NOTES],
             )?;
-            Ok(Some(connection.last_insert_rowid()))
+            Ok((added > 0).then(|| connection.last_insert_rowid()))
         })?;
+        let id = id.ok_or(format!(
+            "there are already {MAX_NOTES} notes; ask the owner which to forget"
+        ))?;
         self.touched();
-        match id {
-            Some(id) => Ok(format!("Kept as note [{id}].")),
-            None => Err(format!(
-                "there are already {MAX_NOTES} notes; ask the owner which to forget"
-            )),
-        }
+        Ok(id)
     }
 
     fn forget(&self, input: &Value) -> Result<String, String> {
@@ -249,6 +257,11 @@ impl Notes {
             .get("id")
             .and_then(Value::as_i64)
             .ok_or("`id` is required")?;
+        self.drop_note(id)
+    }
+
+    /// Drops the note `id`, as the owner asks in the settings window.
+    pub(crate) fn drop_note(&self, id: i64) -> Result<String, String> {
         let removed =
             self.with(|connection| connection.execute("DELETE FROM notes WHERE id = ?1", [id]))?;
         if removed > 0 {
@@ -336,11 +349,20 @@ pub(crate) fn hear(notes: &Notes, hub: &Hub, heard: &Heard) -> bool {
     }
 }
 
-/// Sends the notes to every linked PC whenever they change here.
+/// Sends the notes to every linked PC whenever they change here, also from the settings window.
 pub(crate) async fn share(notes: Arc<Notes>, hub: Arc<Hub>) {
+    let mut sent = notes.copy().map(|copy| copy.changed_ms).unwrap_or(0);
+    let mut every = time::interval(LOOK_EVERY);
     loop {
-        notes.changes().await;
-        if let Ok(copy) = notes.copy() {
+        tokio::select! {
+            () = notes.changes() => {}
+            _ = every.tick() => {}
+        }
+        let Ok(copy) = notes.copy() else {
+            continue;
+        };
+        if copy.changed_ms != sent {
+            sent = copy.changed_ms;
             hub.broadcast(&json!({ "kind": "notes", "copy": copy }));
         }
     }

@@ -22,6 +22,7 @@ use crate::settings::Settings;
 use crate::settings::SlackForm;
 use crate::settings::environment;
 use crate::window::input::TextInput;
+use crate::window::notes::NotesView;
 use crate::window::parts::header;
 use crate::window::parts::prose;
 use crate::window::pcs::PcsView;
@@ -45,6 +46,7 @@ pub(crate) struct SettingsView {
     note: Option<Note>,
     pcs: Entity<PcsView>,
     routines: Entity<RoutinesView>,
+    notes: Entity<NotesView>,
 }
 
 #[derive(Clone)]
@@ -75,6 +77,7 @@ impl SettingsView {
             cx.new(|cx| PcsView::new(home, settings, cx))
         };
         let routines = cx.new(|cx| RoutinesView::new(&home, cx));
+        let notes = cx.new(|cx| NotesView::new(&home, cx));
         let slack = SlackForm::of(settings.slack.as_ref());
         let slack_app_env = field(SLACK_APP_KEY, slack.app_token_env.clone(), cx);
         let slack_bot_env = field(SLACK_BOT_KEY, slack.bot_token_env.clone(), cx);
@@ -83,6 +86,7 @@ impl SettingsView {
         Self {
             pcs,
             routines,
+            notes,
             home,
             earlier: settings,
             openai_compatible: form.openai_compatible,
@@ -330,6 +334,8 @@ impl Render for SettingsView {
                     )
                     .child(div().h_4())
                     .child(self.slack_card(&theme, window, cx))
+                    .child(div().h_4())
+                    .child(self.notes.clone())
                     .child(div().h_4())
                     .child(self.routines.clone())
                     .child(div().h_4())
