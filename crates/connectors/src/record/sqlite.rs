@@ -10,6 +10,7 @@ use dotori_core::BoxFuture;
 use dotori_core::conversation::Action;
 use dotori_core::conversation::Entry;
 use dotori_core::message::Role;
+use dotori_core::record::Marked;
 use dotori_core::record::Record;
 use dotori_core::record::RecordError;
 use dotori_core::record::RecordStore;
@@ -687,32 +688,53 @@ fn parse(line: &str) -> Result<Record, String> {
 
 impl RecordStore for SqliteStore {
     fn load(&self) -> BoxFuture<'_, Result<Vec<Record>, RecordError>> {
-        self.with(|book, folder, _| {
+        Box::pin(async move {
+            Ok(self
+                .load_marked()
+                .await?
+                .into_iter()
+                .map(|marked| marked.record)
+                .collect())
+        })
+    }
+
+    fn load_marked(&self) -> BoxFuture<'_, Result<Vec<Marked>, RecordError>> {
+        self.with(|book, folder, own| {
             let mut found = Vec::new();
             for year in years(folder)? {
                 let connection = book.year(folder, year)?;
                 let mut query = connection
-                    .prepare("SELECT id, line FROM records")
+                    .prepare("SELECT id, device, line FROM records")
                     .map_err(fail)?;
                 let rows = query
                     .query_map([], |row| {
-                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                        ))
                     })
                     .map_err(fail)?;
                 for row in rows {
-                    let (id, line) = row.map_err(fail)?;
+                    let (id, device, line) = row.map_err(fail)?;
                     let number = Uuid::parse_str(&id)
                         .map_err(|error| fail(format!("record {id}: {error}")))?;
                     let record =
                         parse(&line).map_err(|detail| fail(format!("record {id}: {detail}")))?;
-                    found.push((number, record));
+                    found.push((
+                        number,
+                        Marked {
+                            record,
+                            here: device == own,
+                        },
+                    ));
                 }
             }
             found.sort_by_key(|(number, _)| *number);
             if let Some((last, _)) = found.last() {
                 book.last = book.last.max(Some(*last));
             }
-            Ok(found.into_iter().map(|(_, record)| record).collect())
+            Ok(found.into_iter().map(|(_, marked)| marked).collect())
         })
     }
 

@@ -807,3 +807,160 @@ fn work_cut_off_by_a_restart_is_reported_as_stopped() {
         );
     });
 }
+
+#[test]
+fn work_another_pc_started_is_left_for_that_pc_to_close() {
+    block_on(async {
+        let research = SubSessionSpec {
+            title: String::from("research"),
+            brief: String::from("look into it"),
+            folder: None,
+        };
+        let store = Arc::new(MemoryStore {
+            elsewhere: vec![0],
+            ..MemoryStore::default()
+        });
+        store
+            .records
+            .lock()
+            .expect("unpoisoned")
+            .push(record(Entry::Acted {
+                actions: vec![tool_call(), Action::Delegate(research)],
+                answered: 0,
+                trace: None,
+            }));
+        let (app, probe) = FakeChannel::new("app");
+        let (asked_tx, mut asked) = mpsc::unbounded_channel();
+        let mut ports = ports(app, Vec::new());
+        ports.model = Arc::new(model(move |request| {
+            let _ = asked_tx.send(request);
+            silence()
+        }));
+        ports.records = Arc::clone(&store) as _;
+        let agent = Agent::spawn(config(Duration::from_secs(1)), ports)
+            .await
+            .expect("valid");
+
+        owner_says(&probe, "m1", "where were we?");
+
+        let request = next(&mut asked).await;
+        assert!(tool_result(&request).is_none());
+        assert!(sub_session_outcome(&request).is_none());
+        agent.shutdown().await;
+        assert!(
+            !stored(&store).iter().any(|entry| matches!(
+                entry,
+                Entry::ToolReturned { .. } | Entry::SubSessionReturned { .. }
+            )),
+            "nothing is closed for the other PC"
+        );
+    });
+}
+
+#[test]
+fn a_sub_session_still_running_when_the_main_session_stops_is_recorded_as_stopped() {
+    block_on(async {
+        let store = Arc::new(MemoryStore::default());
+        let (app, probe) = FakeChannel::new("app");
+        let mut ports = ports(app, Vec::new());
+        let asked = Arc::new(AtomicUsize::new(0));
+        let counting = Arc::clone(&asked);
+        ports.model = Arc::new(model(move |_| {
+            if counting.fetch_add(1, Ordering::SeqCst) == 0 {
+                ModelReply {
+                    actions: vec![Action::Delegate(SubSessionSpec {
+                        title: String::from("long"),
+                        brief: String::from("take your time"),
+                        folder: None,
+                    })],
+                    trace: None,
+                }
+            } else {
+                silence()
+            }
+        }));
+        let (started_tx, mut started) = mpsc::unbounded_channel();
+        ports.sub_sessions = Arc::new(FnSubSessions(Box::new(move |_| {
+            let _ = started_tx.send(());
+            Box::pin(std::future::pending())
+        })));
+        ports.records = Arc::clone(&store) as _;
+        let agent = Agent::spawn(config(Duration::from_secs(1)), ports)
+            .await
+            .expect("valid");
+
+        owner_says(&probe, "m1", "start the long job");
+        time::timeout(Duration::from_secs(5), started.recv())
+            .await
+            .expect("started in time");
+        agent.shutdown().await;
+
+        let stopped = stored(&store).into_iter().find_map(|entry| match entry {
+            Entry::SubSessionReturned {
+                outcome: SubSessionOutcome::Failed(detail),
+                ..
+            } => Some(detail),
+            _ => None,
+        });
+        assert!(
+            stopped.is_some_and(|detail| detail.contains("stopped running on this PC")),
+            "the PC that started it says it stopped"
+        );
+    });
+}
+
+#[test]
+fn a_result_another_pc_recorded_does_not_close_work_started_here() {
+    block_on(async {
+        let research = SubSessionSpec {
+            title: String::from("research"),
+            brief: String::from("look into it"),
+            folder: None,
+        };
+        let store = Arc::new(MemoryStore {
+            elsewhere: vec![1],
+            ..MemoryStore::default()
+        });
+        store.records.lock().expect("unpoisoned").extend([
+            record(Entry::Acted {
+                actions: vec![Action::Delegate(research.clone())],
+                answered: 0,
+                trace: None,
+            }),
+            record(Entry::SubSessionReturned {
+                spec: research,
+                outcome: SubSessionOutcome::Finished(String::from("theirs")),
+            }),
+        ]);
+        let (app, probe) = FakeChannel::new("app");
+        let (asked_tx, mut asked) = mpsc::unbounded_channel();
+        let mut ports = ports(app, Vec::new());
+        ports.model = Arc::new(model(move |request| {
+            let _ = asked_tx.send(request);
+            silence()
+        }));
+        ports.records = Arc::clone(&store) as _;
+        let agent = Agent::spawn(config(Duration::from_secs(1)), ports)
+            .await
+            .expect("valid");
+
+        owner_says(&probe, "m1", "where were we?");
+        let request = next(&mut asked).await;
+        agent.shutdown().await;
+
+        let stopped = request
+            .conversation
+            .iter()
+            .filter(|entry| {
+                matches!(
+                    entry,
+                    Entry::SubSessionReturned {
+                        outcome: SubSessionOutcome::Failed(_),
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(stopped, 1, "this PC still closes its own delegation");
+    });
+}

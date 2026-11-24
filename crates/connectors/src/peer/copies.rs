@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use dotori_core::BoxFuture;
+use dotori_core::record::Marked;
 use dotori_core::record::Record;
 use dotori_core::record::RecordError;
 use dotori_core::record::RecordStore;
@@ -270,6 +271,10 @@ pub struct Announced {
 impl RecordStore for Announced {
     fn load(&self) -> BoxFuture<'_, Result<Vec<Record>, RecordError>> {
         self.store.load()
+    }
+
+    fn load_marked(&self) -> BoxFuture<'_, Result<Vec<Marked>, RecordError>> {
+        self.store.load_marked()
     }
 
     fn append(&self, records: Vec<Record>) -> BoxFuture<'_, Result<(), RecordError>> {

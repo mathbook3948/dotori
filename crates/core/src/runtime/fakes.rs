@@ -25,6 +25,7 @@ use crate::message::Audience;
 use crate::message::Content;
 use crate::message::Incoming;
 use crate::message::Place;
+use crate::record::Marked;
 use crate::record::Record;
 use crate::record::RecordError;
 use crate::record::RecordStore;
@@ -206,12 +207,14 @@ pub(crate) fn ports(app: Arc<FakeChannel>, channels: Vec<Arc<dyn Channel>>) -> P
     }
 }
 
-/// A record store in memory. It can refuse the next few appends, or every load.
+/// A record store in memory. It can refuse the next few appends, or every load, and can say
+/// that the records at some positions were made on another PC.
 #[derive(Default)]
 pub(crate) struct MemoryStore {
     pub(crate) records: Mutex<Vec<Record>>,
     pub(crate) failing_appends: AtomicUsize,
     pub(crate) failing_load: bool,
+    pub(crate) elsewhere: Vec<usize>,
 }
 
 impl RecordStore for MemoryStore {
@@ -224,6 +227,21 @@ impl RecordStore for MemoryStore {
             Ok(self.records.lock().expect("unpoisoned").clone())
         };
         Box::pin(async move { result })
+    }
+
+    fn load_marked(&self) -> BoxFuture<'_, Result<Vec<Marked>, RecordError>> {
+        Box::pin(async move {
+            Ok(self
+                .load()
+                .await?
+                .into_iter()
+                .enumerate()
+                .map(|(n, record)| Marked {
+                    record,
+                    here: !self.elsewhere.contains(&n),
+                })
+                .collect())
+        })
     }
 
     fn append(&self, records: Vec<Record>) -> BoxFuture<'_, Result<(), RecordError>> {

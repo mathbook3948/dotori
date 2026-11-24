@@ -674,3 +674,29 @@ async fn what_carries_a_forgotten_number_goes_with_it_and_a_wrong_maker_is_refus
     assert_eq!(forged, 0);
     assert_eq!(details(&other.load().await.expect("loaded")), ["mine"]);
 }
+
+#[tokio::test]
+async fn loaded_records_say_which_this_pc_made() {
+    let here = SqliteStore::new(scratch(), "here");
+    let there = SqliteStore::new(scratch(), "there");
+    there
+        .append(vec![failed_at(JAN_1_2026, "theirs")])
+        .await
+        .expect("appended");
+    here.copy_in(there.after("there", "", 10, 1 << 20).await.expect("after"))
+        .await
+        .expect("copied");
+    here.append(vec![failed_at(JAN_1_2026 + 1, "mine")])
+        .await
+        .expect("appended");
+
+    let marked: Vec<bool> = here
+        .load_marked()
+        .await
+        .expect("loaded")
+        .into_iter()
+        .map(|marked| marked.here)
+        .collect();
+
+    assert_eq!(marked, [false, true]);
+}
