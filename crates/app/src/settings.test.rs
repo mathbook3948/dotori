@@ -262,13 +262,14 @@ fn relayed_servers_come_by_address_or_command_and_take_tokens_from_variables() {
          [[mcp]]\nname = \"both\"\nurl = \"https://a\"\ncommand = \"b\"",
     )
     .expect("parsed");
-    let (chosen, wrong) = settings.relays(|_| None);
+    let (chosen, wrong) = settings.relays(|_| None, false);
     assert_eq!(chosen.len(), 1);
     assert_eq!(chosen[0].name, "files");
     assert_eq!(chosen[0].tools, Some(vec![String::from("read")]));
     assert_eq!(wrong.len(), 2);
     assert!(wrong[0].contains("NOTES"));
-    let (chosen, wrong) = settings.relays(|name| (name == "NOTES").then(|| String::from("t")));
+    let (chosen, wrong) =
+        settings.relays(|name| (name == "NOTES").then(|| String::from("t")), false);
     assert_eq!(chosen.len(), 2);
     assert_eq!(wrong.len(), 1);
     let text = toml::to_string(&settings).expect("written");
@@ -377,9 +378,31 @@ fn relayed_tools_the_owner_listed_wait_for_their_ok() {
 
     let asked = settings.asked();
 
+    let shared: Vec<String> = settings
+        .relays(|_| None, false)
+        .0
+        .into_iter()
+        .map(|config| config.name)
+        .collect();
+    let guarded: Vec<String> = settings
+        .relays(|_| None, true)
+        .0
+        .into_iter()
+        .map(|config| config.name)
+        .collect();
+    assert_eq!(shared, ["notes"]);
+    assert_eq!(guarded, ["mail", "chat"]);
     assert!(asked.needs("mail__send"));
     assert!(!asked.needs("mail__read"));
     assert!(asked.needs("chat__post"));
     assert!(!asked.needs("notes__write"));
     assert!(!asked.needs("send"));
+    assert_eq!(
+        asked.unmatched(["mail__send", "chat__post"].into_iter()),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        asked.unmatched(["mail__Send"].into_iter()),
+        ["mail__send", "chat__"]
+    );
 }

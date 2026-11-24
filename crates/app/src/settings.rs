@@ -93,6 +93,21 @@ pub(crate) struct Asked {
 }
 
 impl Asked {
+    /// The listed names that none of `offered` matches, as a typo would leave them.
+    pub(crate) fn unmatched<'a>(&self, offered: impl Iterator<Item = &'a str>) -> Vec<String> {
+        let offered: Vec<&str> = offered.collect();
+        self.tools
+            .iter()
+            .filter(|tool| !offered.contains(&tool.as_str()))
+            .chain(
+                self.servers
+                    .iter()
+                    .filter(|server| !offered.iter().any(|tool| tool.starts_with(server.as_str()))),
+            )
+            .cloned()
+            .collect()
+    }
+
     pub(crate) fn needs(&self, tool: &str) -> bool {
         self.tools.iter().any(|asked| asked == tool)
             || self
@@ -516,13 +531,21 @@ impl Settings {
         asked
     }
 
+    /// The external MCP servers to relay, reading tokens through `key`. `guarded` picks the
+    /// servers with tools that wait for the owner, which only the daemon relays, so only the
+    /// main session reaches them; otherwise the rest, which the shared MCP server relays.
     pub(crate) fn relays(
         &self,
         key: impl Fn(&str) -> Option<String>,
+        guarded: bool,
     ) -> (Vec<RelayConfig>, Vec<String>) {
         let mut chosen = Vec::new();
         let mut wrong = Vec::new();
-        for server in &self.mcp {
+        for server in self
+            .mcp
+            .iter()
+            .filter(|server| server.confirm.is_empty() != guarded)
+        {
             let reach = match (&server.url, &server.command) {
                 (Some(url), None) => {
                     let token = match &server.token_env {

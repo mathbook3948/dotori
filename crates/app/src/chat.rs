@@ -77,6 +77,7 @@ pub(crate) fn shown(event: &ToWindow) -> String {
         }
         ToWindow::Decided { ok: true, .. } => String::from("(you allowed it)"),
         ToWindow::Decided { ok: false, .. } => String::from("(you declined it)"),
+        ToWindow::Lapsed { .. } => String::from("(it no longer waits, so it did not run)"),
         ToWindow::BrowserAt { pc, here: true } => format!("(the browser is on this PC, {pc})"),
         ToWindow::BrowserAt { pc, here: false } => format!("(the browser is on {pc})"),
     }

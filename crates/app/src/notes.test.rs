@@ -363,3 +363,14 @@ async fn routines_follow_the_owner_like_notes_and_the_model_sees_both() {
         .expect("removed");
     assert_eq!(routines.context(), None);
 }
+
+#[test]
+fn what_came_of_a_call_the_owner_allowed_does_not_open_the_notes() {
+    let mut from_decision = heard(Role::Owner);
+    if let Entry::Heard { message, .. } = &mut from_decision {
+        message.address.channel = ChannelId::parse(confirm::DECISION).expect("valid");
+    }
+
+    assert!(owner_asked(&[heard(Role::Owner)]));
+    assert!(!owner_asked(&[heard(Role::Owner), from_decision]));
+}

@@ -75,15 +75,26 @@ async fn a_listed_call_waits_and_runs_only_once_the_owner_allows_it() {
     assert_eq!(tool, "mail__send");
     assert!(input.contains("I quit"));
 
-    let said = asking.decide(id, true).await.expect("waiting");
-    assert!(said.contains("allowed the call to `mail__send`"), "{said}");
-    assert!(said.ends_with("ran mail__send"), "{said}");
+    let outcome = asking.decide(id, true).await;
+    assert_eq!(outcome.tool, "mail__send");
+    assert!(
+        outcome.text.contains("not the owner's words"),
+        "{}",
+        outcome.text
+    );
+    assert!(outcome.text.ends_with("ran mail__send"), "{}", outcome.text);
     assert_eq!(counting.0.load(Ordering::SeqCst), 1);
     assert_eq!(
         shown(&published.recv().await.expect("decided").line),
         ToWindow::Decided { id, ok: true }
     );
-    assert_eq!(asking.decide(id, true).await, None);
+
+    let again = asking.decide(id, true).await;
+    assert!(again.text.contains("no longer waits"), "{}", again.text);
+    assert_eq!(
+        shown(&published.recv().await.expect("lapsed").line),
+        ToWindow::Lapsed { id }
+    );
     assert_eq!(counting.0.load(Ordering::SeqCst), 1);
 }
 
@@ -96,11 +107,10 @@ async fn a_declined_call_never_runs() {
         panic!("an ask first");
     };
 
-    let said = asking.decide(id, false).await.expect("waiting");
+    let outcome = asking.decide(id, false).await;
 
-    assert!(said.contains("declined"), "{said}");
+    assert!(outcome.text.contains("declined"), "{}", outcome.text);
     assert_eq!(counting.0.load(Ordering::SeqCst), 0);
-    assert_eq!(asking.decide(id + 1, true).await, None);
 }
 
 #[test]
@@ -117,4 +127,60 @@ fn a_decision_passed_on_by_another_pc_reads_back() {
     );
     assert_eq!(heard(&from(json!({ "kind": "decide", "id": 7 }))), None);
     assert_eq!(heard(&from(json!({ "kind": "notes" }))), None);
+}
+
+struct Mail;
+
+impl Tool for Mail {
+    fn name(&self) -> &str {
+        "mail__send"
+    }
+
+    fn description(&self) -> &str {
+        "Sends mail."
+    }
+
+    fn input_schema(&self) -> Value {
+        json!({ "type": "object" })
+    }
+
+    fn call(&self, arguments: Value) -> dotori_mcp::ToolFuture<'_> {
+        Box::pin(async move { Ok(format!("sent {arguments}")) })
+    }
+}
+
+#[tokio::test]
+async fn guarded_tools_join_the_others_and_run_where_they_are() {
+    let counting = Arc::new(Counting(AtomicUsize::new(0)));
+    let guarded = Guarded {
+        tools: vec![Box::new(Mail)],
+        rest: Arc::clone(&counting) as Arc<dyn Toolbox>,
+    };
+
+    let names: Vec<String> = guarded.specs().into_iter().map(|spec| spec.name).collect();
+    assert_eq!(names, ["mail__send"]);
+    assert_eq!(
+        guarded.run(call("mail__send")).await.expect("ran"),
+        r#"sent {"to":"boss@example.com","text":"I quit"}"#
+    );
+    assert_eq!(counting.0.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        guarded.run(call("webfetch")).await.expect("ran"),
+        "ran webfetch"
+    );
+}
+
+#[test]
+fn what_came_of_a_call_arrives_as_data_not_as_the_owner() {
+    let outcome = Outcome {
+        id: 3,
+        tool: String::from("mail__send"),
+        text: String::from("The owner declined this call, so it did not run."),
+    };
+
+    let incoming = incoming(&outcome).expect("a message");
+
+    assert_eq!(incoming.id.as_str(), "decision-3");
+    assert_eq!(incoming.place.as_str(), "mail__send");
+    assert_eq!(incoming.sender_id.as_str(), DECISION);
 }

@@ -113,6 +113,8 @@ pub enum ToWindow {
     },
     /// The owner allowed or declined what dotori asked about.
     Decided { id: u64, ok: bool },
+    /// What dotori asked about no longer waits, so the owner's answer came too late.
+    Lapsed { id: u64 },
     /// Which of the owner's PCs holds the browser now. Sent only while PCs are linked, and never
     /// kept in the conversation.
     BrowserAt { pc: String, here: bool },
@@ -227,6 +229,11 @@ impl AppChannel {
     /// Shows every window what the owner decided about the call `id`.
     pub fn decided(&self, id: u64, ok: bool) {
         self.hub.publish(&ToWindow::Decided { id, ok });
+    }
+
+    /// Shows every window that the call `id` no longer waits for the owner.
+    pub fn lapsed(&self, id: u64) {
+        self.hub.publish(&ToWindow::Lapsed { id });
     }
 
     /// What the owner decides in the windows here, from now on. Only the last caller hears.

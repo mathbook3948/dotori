@@ -40,6 +40,7 @@ use crate::window::when::marks;
 use crate::window::when::today;
 
 const COPIED_FOR: Duration = Duration::from_millis(1500);
+const SHOWN_VALUE: usize = 600;
 
 /// The chat window: the conversation with dotori and the traffic of every other channel.
 pub(crate) struct ChatView {
@@ -55,7 +56,7 @@ pub(crate) struct ChatView {
     zone: TimeZone,
     copied: Option<usize>,
     hovered: Option<usize>,
-    decided: HashMap<u64, bool>,
+    decided: HashMap<u64, Option<bool>>,
     _uncopy: Option<Task<()>>,
     _pump: Task<()>,
 }
@@ -127,7 +128,11 @@ impl ChatView {
                 return;
             }
             Update::Event(ToWindow::Decided { id, ok }) => {
-                self.decided.insert(id, ok);
+                self.decided.insert(id, Some(ok));
+                return;
+            }
+            Update::Event(ToWindow::Lapsed { id }) => {
+                self.decided.insert(id, None);
                 return;
             }
             Update::Event(ToWindow::BrowserAt { pc, here }) => {
@@ -265,7 +270,8 @@ impl ChatView {
             ToWindow::Answering { .. }
             | ToWindow::Alone
             | ToWindow::BrowserAt { .. }
-            | ToWindow::Decided { .. } => {
+            | ToWindow::Decided { .. }
+            | ToWindow::Lapsed { .. } => {
                 return None;
             }
             ToWindow::Ask {
@@ -414,11 +420,15 @@ impl ChatView {
                 }))
         };
         let footer = match decided {
-            Some(ok) => {
-                let (ink, soft, words) = if ok {
-                    (theme.ok, theme.ok_soft, "허락했어요")
-                } else {
-                    (theme.muted, theme.canvas, "거절했어요")
+            Some(state) => {
+                let (ink, soft, words) = match state {
+                    Some(true) => (theme.ok, theme.ok_soft, "허락했어요"),
+                    Some(false) => (theme.muted, theme.canvas, "거절했어요"),
+                    None => (
+                        theme.warn,
+                        theme.warn_soft,
+                        "이제 할 수 없어요. 다시 부탁해 주세요",
+                    ),
                 };
                 div().flex().child(
                     div()
@@ -846,7 +856,7 @@ fn day_line(theme: &Theme, day: &str) -> impl IntoElement {
 }
 
 fn asked_fields(input: &str) -> Vec<(String, String)> {
-    match serde_json::from_str::<serde_json::Value>(input) {
+    let fields = match serde_json::from_str::<serde_json::Value>(input) {
         Ok(serde_json::Value::Object(fields)) if !fields.is_empty() => fields
             .into_iter()
             .map(|(key, value)| {
@@ -858,7 +868,28 @@ fn asked_fields(input: &str) -> Vec<(String, String)> {
             })
             .collect(),
         _ => vec![(String::from("input"), input.to_owned())],
+    };
+    fields
+        .into_iter()
+        .map(|(key, value)| (key, shown_value(&value)))
+        .collect()
+}
+
+fn shown_value(value: &str) -> String {
+    let mut lines: Vec<&str> = Vec::new();
+    for line in value.lines() {
+        if line.trim().is_empty() && lines.last().is_some_and(|last| last.trim().is_empty()) {
+            continue;
+        }
+        lines.push(line);
     }
+    let joined = lines.join("\n");
+    let total = joined.chars().count();
+    if total <= SHOWN_VALUE {
+        return joined;
+    }
+    let cut: String = joined.chars().take(SHOWN_VALUE).collect();
+    format!("{cut}\n(전체 {total}자 중 앞부분)")
 }
 
 fn channel_name(channel: &str) -> String {
@@ -867,6 +898,7 @@ fn channel_name(channel: &str) -> String {
         "telegram" => String::from("Telegram"),
         "discord" => String::from("Discord"),
         "routine" => String::from("루틴"),
+        "decision" => String::from("허락한 일"),
         other => other.to_owned(),
     }
 }

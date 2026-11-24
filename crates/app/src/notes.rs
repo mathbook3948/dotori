@@ -32,6 +32,7 @@ use serde_json::Value;
 use serde_json::json;
 use tokio::sync::Notify;
 
+use crate::confirm;
 use crate::routines;
 use crate::routines::Routines;
 
@@ -286,7 +287,7 @@ fn owner_asked(conversation: &[Entry]) -> bool {
     let Entry::Heard { message, .. } = &conversation[last] else {
         return false;
     };
-    if message.sender.role != Role::Owner {
+    if message.sender.role != Role::Owner || message.address.channel.as_str() == confirm::DECISION {
         return false;
     }
     let since = &conversation[last + 1..];
