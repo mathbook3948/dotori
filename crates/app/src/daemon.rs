@@ -21,6 +21,8 @@ use dotori_connectors::sub_session::cli::CliRunner;
 use dotori_connectors::sub_session::cli::CodingAgent;
 use dotori_connectors::sub_session::cli::McpServer;
 use dotori_connectors::sub_session::llm::LlmRunner;
+use dotori_connectors::tool::basic::BasicTools;
+use dotori_connectors::tool::basic::WithBasic;
 use dotori_core::channel::Channel;
 use dotori_core::channel::Inbox;
 use dotori_core::llm::Model;
@@ -82,6 +84,7 @@ use crate::vector_copies::VectorCopies;
 const QUEUE: NonZeroUsize = NonZeroUsize::new(256).expect("non-zero");
 const SEEN: NonZeroUsize = NonZeroUsize::new(4096).expect("non-zero");
 const TOOL_TIMEOUT: Duration = Duration::from_secs(120);
+const SHELL_LIMIT: Duration = Duration::from_secs(110);
 const SUB_SESSION_TURNS: usize = 50;
 const SUB_SESSION_LIMIT: Duration = Duration::from_secs(60 * 60);
 const SETTLE: Duration = Duration::from_secs(1);
@@ -167,9 +170,12 @@ pub(crate) async fn serve(
     let toolbox: Arc<dyn Toolbox> = Arc::new(MainTools {
         notes: Arc::clone(&notes),
         routines: Arc::clone(&routines),
-        shared: Arc::new(Previewed {
-            inner: Arc::clone(&asking) as Arc<dyn Toolbox>,
-            store: records.clone(),
+        shared: Arc::new(WithBasic {
+            basic: basic(&home, &settings),
+            rest: Arc::new(Previewed {
+                inner: Arc::clone(&asking) as Arc<dyn Toolbox>,
+                store: records.clone(),
+            }),
         }),
     });
     match records.load().await {
@@ -569,6 +575,14 @@ async fn open_record(home: &Home) -> Result<SqliteStore, String> {
     Ok(SqliteStore::new(home.record(), device))
 }
 
+fn basic(home: &Home, settings: &Settings) -> BasicTools {
+    BasicTools {
+        folder: home.work(),
+        limit: SHELL_LIMIT,
+        hidden_env: settings.guarded_secrets(),
+    }
+}
+
 fn sub_session_runner(
     home: &Home,
     settings: &Settings,
@@ -580,7 +594,10 @@ fn sub_session_runner(
         RunnerChoice::Llm => {
             return Ok(Arc::new(LlmRunner {
                 model: settings.sub_session_model(environment)?,
-                toolbox: Arc::clone(toolbox),
+                toolbox: Arc::new(WithBasic {
+                    basic: basic(home, settings),
+                    rest: Arc::clone(toolbox),
+                }),
                 max_turns: SUB_SESSION_TURNS,
                 tool_timeout: TOOL_TIMEOUT,
             }));
