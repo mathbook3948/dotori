@@ -197,3 +197,209 @@ async fn greetings_past_the_limit_are_hung_up_on_until_they_end() {
         let _ = std::fs::remove_dir_all(folder);
     }
 }
+
+fn approve(book: &Path, other: &Pc, address: Option<String>) {
+    let mut kept = Book::load(book).expect("book");
+    kept.approve(Peer {
+        device: other.config.device.clone(),
+        name: other.config.name.clone(),
+        key: hex(&other.config.identity.public),
+        address,
+        since: now(),
+    });
+    kept.save(book).expect("saved");
+}
+
+async fn joined(a: &Pc, b: &Pc, address: &str) {
+    let (_, secret) = Invite::make(&a.config.invite, now() + 600).expect("invite");
+    let code = Code {
+        key: a.config.identity.public,
+        secret,
+        address: None,
+    };
+    join(
+        &b.config.identity,
+        &hello(b),
+        &code,
+        address,
+        &b.config.book,
+    )
+    .await
+    .expect("joined");
+    until("a approves b", || {
+        approved(&a.config.book, &b.config.identity.public)
+    })
+    .await;
+}
+
+fn filler() -> Value {
+    json!({ "kind": "filler", "text": "도".repeat(400) })
+}
+
+#[tokio::test]
+async fn a_pc_that_stops_reading_is_unlinked_and_sending_to_it_says_false() {
+    let a = pc("stuck", "a", true);
+    let b = pc("stuck", "b", false);
+    let (a_hub, _a_heard) = Hub::start(a.config.clone()).await.expect("a started");
+    let address = a_hub.listening().expect("listening").to_string();
+    joined(&a, &b, &address).await;
+    let stream = TcpStream::connect(&address).await.expect("connected");
+    let _unread = wire::dial(
+        stream,
+        &b.config.identity,
+        &a.config.identity.public,
+        Start::Link,
+        &hello(&b),
+    )
+    .await
+    .expect("dialed");
+    until("a links b", || a_hub.linked().len() == 1).await;
+    let b_key = hex(&b.config.identity.public);
+
+    let mut queued = 0;
+    while queued < 100_000 && a_hub.send(&b_key, filler()) {
+        queued += 1;
+        tokio::task::yield_now().await;
+    }
+
+    assert!(
+        queued > wire::QUEUE_COUNT,
+        "the socket and the queue both filled"
+    );
+    assert!(
+        queued < 100_000,
+        "a PC that stops reading is not queued for forever"
+    );
+    assert!(a_hub.linked().is_empty());
+    assert!(!a_hub.send(&b_key, filler()));
+    until("a marks b unlinked", || {
+        std::fs::read_to_string(&a.config.seen)
+            .ok()
+            .and_then(|text| serde_json::from_str::<Seen>(&text).ok())
+            .is_some_and(|seen| seen.peers.get(&b_key).is_some_and(|peer| !peer.linked))
+    })
+    .await;
+
+    for folder in [a.folder, b.folder] {
+        let _ = std::fs::remove_dir_all(folder);
+    }
+}
+
+#[tokio::test]
+async fn a_pc_that_keeps_reading_stays_linked_through_more_messages_than_a_queue_holds() {
+    let a = pc("steady", "a", true);
+    let b = pc("steady", "b", false);
+    let (a_hub, _a_heard) = Hub::start(a.config.clone()).await.expect("a started");
+    let address = a_hub.listening().expect("listening").to_string();
+    joined(&a, &b, &address).await;
+    let (b_hub, mut b_heard) = Hub::start(b.config.clone()).await.expect("b started");
+    until("the two link", || {
+        a_hub.linked().len() == 1 && b_hub.linked().len() == 1
+    })
+    .await;
+    let b_key = hex(&b.config.identity.public);
+    let total = 3 * wire::QUEUE_COUNT;
+
+    for _ in 0..total {
+        assert!(a_hub.send(&b_key, filler()));
+        tokio::task::yield_now().await;
+    }
+
+    let mut heard = 0;
+    while heard < total {
+        let message = time::timeout(Duration::from_secs(10), b_heard.recv())
+            .await
+            .expect("heard in time")
+            .expect("heard");
+        if message.message["kind"] == "filler" {
+            heard += 1;
+        }
+    }
+    assert_eq!(a_hub.linked().len(), 1);
+
+    for folder in [a.folder, b.folder] {
+        let _ = std::fs::remove_dir_all(folder);
+    }
+}
+
+#[test]
+fn redials_wait_twice_as_long_after_each_failure_up_to_a_minute() {
+    let now = time::Instant::now();
+    for random in [0, 12_345_678_901, u64::MAX] {
+        let mut previous = None;
+        for longest in [2, 4, 8, 16, 32, 60, 60] {
+            let redial = Redial::after(previous, now, random);
+            let waited = redial.at - now;
+            let longest = Duration::from_secs(longest);
+            assert!(
+                waited >= longest / 2 && waited <= longest,
+                "{waited:?} for {longest:?}"
+            );
+            previous = Some(redial);
+        }
+    }
+}
+
+#[test]
+fn redials_are_spread_between_half_and_all_of_the_wait() {
+    let wait = Duration::from_secs(8);
+
+    let spreads: HashSet<Duration> = [0, 1, 1_000_000_007, u64::MAX / 3, u64::MAX]
+        .into_iter()
+        .map(|random| spread(wait, random))
+        .collect();
+
+    assert_eq!(spread(wait, 0), wait / 2);
+    assert!(spreads.len() > 1);
+    assert!(
+        spreads
+            .iter()
+            .all(|waited| *waited >= wait / 2 && *waited <= wait)
+    );
+}
+
+#[tokio::test]
+async fn a_pc_that_was_unreachable_is_linked_soon_after_it_starts_listening() {
+    let a = pc("late", "a", false);
+    let b = pc("late", "b", false);
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .expect("bound")
+        .local_addr()
+        .expect("address")
+        .port();
+    let a_config = HubConfig {
+        listen: Some(SocketAddr::from(([127, 0, 0, 1], port))),
+        ..a.config.clone()
+    };
+    approve(&a.config.book, &b, None);
+    approve(&b.config.book, &a, Some(format!("127.0.0.1:{port}")));
+    let (b_hub, _b_heard) = Hub::start(b.config.clone()).await.expect("b started");
+    time::sleep(Duration::from_millis(300)).await;
+    assert!(b_hub.linked().is_empty());
+
+    let (a_hub, _a_heard) = Hub::start(a_config).await.expect("a started");
+
+    until("b dials a again", || {
+        a_hub.linked().len() == 1 && b_hub.linked().len() == 1
+    })
+    .await;
+
+    for folder in [a.folder, b.folder] {
+        let _ = std::fs::remove_dir_all(folder);
+    }
+}
+
+#[test]
+fn a_line_taken_out_of_the_hub_hangs_up_and_takes_no_more() {
+    let (outbox, _outgoing) = wire::outbox();
+    let linked = Linked {
+        id: 1,
+        dialed_by: [0; KEY],
+        device: String::from("노트북"),
+        outbox: outbox.clone(),
+    };
+
+    drop(linked);
+
+    assert!(!outbox.put(Arc::from(&b"{}"[..])));
+}

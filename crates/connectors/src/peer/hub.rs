@@ -35,10 +35,15 @@ use crate::peer::unhex;
 use crate::peer::wire;
 use crate::peer::wire::Hello;
 use crate::peer::wire::Line;
+use crate::peer::wire::Outbox;
 use crate::peer::wire::Start;
 use crate::peer::write_privately;
 
-const DIAL_EVERY: Duration = Duration::from_secs(5);
+const DIAL_TICK: Duration = Duration::from_millis(500);
+const REDIAL_FIRST: Duration = Duration::from_secs(2);
+const REDIAL_LONGEST: Duration = Duration::from_secs(60);
+const STEADY: Duration = Duration::from_secs(60);
+const BOOK_EVERY: u32 = 10;
 const DIAL_WAIT: Duration = Duration::from_secs(5);
 const BOOK: &str = "book";
 const GREETING: usize = 16;
@@ -82,7 +87,37 @@ struct Linked {
     id: u64,
     dialed_by: [u8; KEY],
     device: String,
-    send: mpsc::UnboundedSender<Value>,
+    outbox: Outbox,
+}
+
+impl Drop for Linked {
+    fn drop(&mut self) {
+        self.outbox.hang_up();
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Redial {
+    wait: Duration,
+    at: time::Instant,
+}
+
+impl Redial {
+    fn after(previous: Option<Self>, now: time::Instant, random: u64) -> Self {
+        let wait = previous.map_or(REDIAL_FIRST, |previous| {
+            previous.wait.saturating_mul(2).min(REDIAL_LONGEST)
+        });
+        Self {
+            wait,
+            at: now + spread(wait, random),
+        }
+    }
+}
+
+fn spread(wait: Duration, random: u64) -> Duration {
+    let half = wait / 2;
+    let room = u64::try_from(half.as_nanos()).unwrap_or(u64::MAX);
+    half + Duration::from_nanos(random % room.saturating_add(1))
 }
 
 /// The lines to the other PCs.
@@ -92,6 +127,7 @@ pub struct Hub {
     own: String,
     lines: Mutex<HashMap<String, Linked>>,
     dialing: Mutex<HashSet<String>>,
+    redials: Mutex<HashMap<(String, String), Redial>>,
     seen: Mutex<Seen>,
     heard: mpsc::UnboundedSender<Heard>,
     next: AtomicU64,
@@ -131,6 +167,7 @@ impl Hub {
             config,
             lines: Mutex::new(HashMap::new()),
             dialing: Mutex::new(HashSet::new()),
+            redials: Mutex::new(HashMap::new()),
             seen: Mutex::new(seen),
             heard,
             next: AtomicU64::new(1),
@@ -147,20 +184,33 @@ impl Hub {
         Ok((hub, hearing))
     }
 
-    /// Sends `message` to the PC with `key`, if it is linked now.
+    /// Queues `message` for the PC with `key` without waiting, and says whether it was queued. A
+    /// PC too far behind to take it is unlinked, so it links again and gets whole copies.
     pub fn send(&self, key: &str, message: Value) -> bool {
+        let Some(message) = encoded(&message) else {
+            return false;
+        };
+        let mut lines = self.lines.lock().expect("unpoisoned");
+        let Some(line) = lines.get(key) else {
+            return false;
+        };
+        if line.outbox.put(message) {
+            return true;
+        }
+        lines.remove(key);
+        false
+    }
+
+    /// Queues `message` for every linked PC without waiting. A PC too far behind to take it is
+    /// unlinked, as with `send`.
+    pub fn broadcast(&self, message: &Value) {
+        let Some(message) = encoded(message) else {
+            return;
+        };
         self.lines
             .lock()
             .expect("unpoisoned")
-            .get(key)
-            .is_some_and(|line| line.send.send(message).is_ok())
-    }
-
-    /// Sends `message` to every linked PC.
-    pub fn broadcast(&self, message: &Value) {
-        for line in self.lines.lock().expect("unpoisoned").values() {
-            let _ = line.send.send(message.clone());
-        }
+            .retain(|_, line| line.outbox.put(Arc::clone(&message)));
     }
 
     /// What the owner calls the PC with `key`, this one included.
@@ -261,12 +311,12 @@ impl Hub {
             }
             *shared = Some(book.clone());
         }
-        let message = json!({ "kind": BOOK, "book": book });
-        for (key, line) in self.lines.lock().expect("unpoisoned").iter() {
-            if Some(key.as_str()) != except {
-                let _ = line.send.send(message.clone());
-            }
-        }
+        let Some(message) = encoded(&json!({ "kind": BOOK, "book": book })) else {
+            return;
+        };
+        self.lines.lock().expect("unpoisoned").retain(|key, line| {
+            Some(key.as_str()) == except || line.outbox.put(Arc::clone(&message))
+        });
     }
 
     async fn listen(self: Arc<Self>, listener: TcpListener) {
@@ -333,12 +383,27 @@ impl Hub {
     }
 
     async fn dial_all(self: Arc<Self>) {
-        let mut every = time::interval(DIAL_EVERY);
+        let mut every = time::interval(DIAL_TICK);
+        let mut ticks = 0_u32;
         loop {
             every.tick().await;
-            let book = self.book();
-            self.drop_unapproved(&book);
-            self.share_changed(&book, None);
+            ticks = ticks.wrapping_add(1);
+            let book = if ticks % BOOK_EVERY == 1 {
+                let book = self.book();
+                self.drop_unapproved(&book);
+                self.share_changed(&book, None);
+                book
+            } else {
+                self.kept.lock().expect("unpoisoned").clone()
+            };
+            self.redials
+                .lock()
+                .expect("unpoisoned")
+                .retain(|(key, address), _| {
+                    book.find(key)
+                        .is_some_and(|peer| peer.address.as_deref() == Some(address.as_str()))
+                });
+            let now = time::Instant::now();
             for peer in &book.peers {
                 let Some(address) = peer.address.clone() else {
                     continue;
@@ -349,6 +414,12 @@ impl Hub {
                         .lock()
                         .expect("unpoisoned")
                         .contains_key(&peer.key)
+                    || self
+                        .redials
+                        .lock()
+                        .expect("unpoisoned")
+                        .get(&(peer.key.clone(), address.clone()))
+                        .is_some_and(|redial| redial.at > now)
                     || !self
                         .dialing
                         .lock()
@@ -360,19 +431,29 @@ impl Hub {
                 let hub = Arc::clone(&self);
                 let key = peer.key.clone();
                 tokio::spawn(async move {
-                    hub.dial(&key, &address).await;
+                    if !hub.dial(&key, &address).await {
+                        hub.wait_longer(&key, &address);
+                    }
                     hub.dialing.lock().expect("unpoisoned").remove(&key);
                 });
             }
         }
     }
 
-    async fn dial(self: &Arc<Self>, key: &str, address: &str) {
+    fn wait_longer(&self, key: &str, address: &str) {
+        let mut redials = self.redials.lock().expect("unpoisoned");
+        let place = (key.to_owned(), address.to_owned());
+        let previous = redials.get(&place).copied();
+        let redial = Redial::after(previous, time::Instant::now(), random_or_zero());
+        redials.insert(place, redial);
+    }
+
+    async fn dial(self: &Arc<Self>, key: &str, address: &str) -> bool {
         let Some(their) = unhex(key).and_then(|bytes| <[u8; KEY]>::try_from(bytes).ok()) else {
-            return;
+            return false;
         };
         let Ok(Ok(stream)) = time::timeout(DIAL_WAIT, TcpStream::connect(address)).await else {
-            return;
+            return false;
         };
         let Ok(line) = wire::dial(
             stream,
@@ -383,10 +464,11 @@ impl Hub {
         )
         .await
         else {
-            return;
+            return false;
         };
         let dialer = self.config.identity.public;
         Arc::clone(self).take(line, dialer).await;
+        true
     }
 
     fn drop_unapproved(&self, book: &Book) {
@@ -402,7 +484,7 @@ impl Hub {
             return;
         }
         let id = self.next.fetch_add(1, Ordering::Relaxed);
-        let (send, sent) = mpsc::unbounded_channel();
+        let (outbox, outgoing) = wire::outbox();
         let preferred = self.config.identity.public.min(line.key);
         {
             let mut lines = self.lines.lock().expect("unpoisoned");
@@ -418,15 +500,18 @@ impl Hub {
                     id,
                     dialed_by,
                     device: line.hello.device.clone(),
-                    send: send.clone(),
+                    outbox: outbox.clone(),
                 },
             );
         }
+        let began = time::Instant::now();
         let book = self
             .edit_book(|book| book.moved(&key, &line.hello))
             .unwrap_or_else(|| self.book());
-        let _ = send.send(json!({ "kind": BOOK, "book": book }));
-        drop(send);
+        if let Some(message) = encoded(&json!({ "kind": BOOK, "book": book })) {
+            outbox.put(message);
+        }
+        drop(outbox);
         self.mark(&key, true);
         let device = line.hello.device.clone();
         let _ = self.heard.send(Heard {
@@ -435,7 +520,7 @@ impl Hub {
             message: json!({ "kind": "linked" }),
         });
         let (heard_tx, mut heard) = mpsc::unbounded_channel::<Value>();
-        let carried = tokio::spawn(line.carry(sent, heard_tx));
+        let carried = tokio::spawn(line.carry(outgoing, heard_tx));
         while let Some(message) = heard.recv().await {
             if message.get("kind").and_then(Value::as_str) == Some(BOOK) {
                 self.hear_book(&key, &message);
@@ -459,6 +544,22 @@ impl Hub {
         };
         if !still {
             self.mark(&key, false);
+        }
+        if began.elapsed() >= STEADY {
+            self.redials
+                .lock()
+                .expect("unpoisoned")
+                .retain(|(known, _), _| *known != key);
+        } else {
+            let address = self
+                .kept
+                .lock()
+                .expect("unpoisoned")
+                .find(&key)
+                .and_then(|peer| peer.address.clone());
+            if let Some(address) = address {
+                self.wait_longer(&key, &address);
+            }
         }
     }
 
@@ -490,6 +591,16 @@ impl Hub {
             .map_err(|error| error.to_string())?;
         write_privately(&self.config.seen, text.as_bytes())
     }
+}
+
+fn encoded(message: &Value) -> Option<Arc<[u8]>> {
+    wire::encode(message)
+        .inspect_err(|error| eprintln!("dotori: not sent to the other PCs: {error}"))
+        .ok()
+}
+
+fn random_or_zero() -> u64 {
+    getrandom::u64().unwrap_or(0)
 }
 
 /// Joins the PC that handed out `code`, reached at `address`, and approves it in `book`. The
