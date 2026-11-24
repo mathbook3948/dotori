@@ -426,6 +426,7 @@ pub(crate) async fn serve(
         };
         route.elsewhere();
         agent.shutdown().await;
+        asking.lapse_waiting();
         match ended {
             Some(stopped) => break stopped,
             None => eprintln!("dotori: another PC runs the assistant now"),

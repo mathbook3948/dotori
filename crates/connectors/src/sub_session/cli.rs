@@ -24,6 +24,7 @@ use super::SUB_SESSION_SYSTEM;
 const TOKEN_VARIABLE: &str = "DOTORI_MCP_TOKEN";
 const SHOWN_ERROR: usize = 2000;
 const TEXT_FILE_BUSY: i32 = if cfg!(unix) { 26 } else { -1 };
+const PRIVATE: [&str; 2] = ["AppData", "Library"];
 const BUSY_TRIES: u32 = 20;
 const BUSY_WAIT: std::time::Duration = std::time::Duration::from_millis(50);
 
@@ -249,31 +250,45 @@ impl CliRunner {
             .ok()
             .filter(|folder| folder.is_dir())
             .ok_or_else(|| format!("{shown} is not a folder on this PC"))?;
+        let own = self.folder.canonicalize().ok();
+        if own.as_ref().is_some_and(|own| folder.starts_with(own)) {
+            return Ok(plain(folder));
+        }
         let hidden = folder.components().any(|part| match part {
             std::path::Component::Normal(name) => name.to_string_lossy().starts_with('.'),
             _ => false,
         });
-        let home = ["HOME", "USERPROFILE"]
+        let private = ["HOME", "USERPROFILE"]
             .into_iter()
             .filter_map(std::env::var_os)
             .filter_map(|home| PathBuf::from(home).canonicalize().ok())
-            .any(|home| home == folder);
-        let own = self.folder.canonicalize().ok();
+            .any(|home| {
+                home.starts_with(&folder)
+                    || PRIVATE
+                        .iter()
+                        .any(|name| folder.starts_with(home.join(name)))
+            });
         let dotori = self
             .folder
             .parent()
             .and_then(|root| root.canonicalize().ok())
-            .is_some_and(|root| {
-                folder.starts_with(&root)
-                    && !own.as_ref().is_some_and(|own| folder.starts_with(own))
-            });
-        if hidden || home || dotori || folder.parent().is_none() {
+            .is_some_and(|root| folder.starts_with(&root));
+        if hidden || private || dotori || folder.parent().is_none() {
             return Err(format!(
                 "{shown} is not a folder a coding agent may work in: pick the project folder itself"
             ));
         }
-        Ok(folder)
+        Ok(plain(folder))
     }
+}
+
+fn plain(folder: PathBuf) -> PathBuf {
+    let stripped = folder
+        .to_string_lossy()
+        .strip_prefix(r"\\?\")
+        .filter(|rest| !rest.starts_with("UNC\\"))
+        .map(PathBuf::from);
+    stripped.unwrap_or(folder)
 }
 
 impl SubSessionRunner for CliRunner {
