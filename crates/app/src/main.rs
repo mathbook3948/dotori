@@ -42,7 +42,7 @@ async fn main() -> ExitCode {
         Err(error) => return fail(&error),
     };
     let result = match command.as_deref() {
-        None | Some("daemon") if home::desktop() => tray::run(home).await,
+        None if home::desktop() => tray::run(home).await,
         None | Some("daemon") => daemon::run(home).await,
         Some("chat") => chat::run(home).await,
         Some("mcp") => tools::serve(home).await,
