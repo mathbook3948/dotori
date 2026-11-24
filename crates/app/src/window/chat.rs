@@ -30,10 +30,12 @@ use crate::link::Update;
 use crate::screen_link::ScreenLink;
 use crate::window::input::Submit;
 use crate::window::input::TextInput;
+use crate::window::parts::MONO;
 use crate::window::parts::header;
 use crate::window::parts::logo;
 use crate::window::parts::prose;
 use crate::window::parts::status;
+use crate::window::rich::rich;
 use crate::window::screen::ScreenView;
 use crate::window::theme::Theme;
 use crate::window::when::Mark;
@@ -324,7 +326,7 @@ impl ChatView {
                                 .border_1()
                                 .border_color(theme.line)
                                 .shadow_xs()
-                                .child(prose(text)),
+                                .child(rich(text, theme)),
                         )
                         .child(self.meta(theme, n, text, mark, false, cx)),
                 ),
@@ -365,7 +367,7 @@ impl ChatView {
                                 .py_2()
                                 .rounded_lg()
                                 .bg(theme.surface)
-                                .font_family("monospace")
+                                .font_family(MONO)
                                 .text_sm()
                                 .child(prose(&output)),
                         )
@@ -623,7 +625,7 @@ impl ChatView {
                         .when(own.is_none(), |row| {
                             row.child(
                                 div()
-                                    .font_family("monospace")
+                                    .font_family(MONO)
                                     .text_color(theme.text)
                                     .child(SharedString::from(name.to_owned())),
                             )
@@ -656,9 +658,7 @@ impl ChatView {
                                     div()
                                         .flex_1()
                                         .min_w_0()
-                                        .when(code, |value| {
-                                            value.font_family("monospace").text_sm()
-                                        })
+                                        .when(code, |value| value.font_family(MONO).text_sm())
                                         .child(prose(&value)),
                                 )
                         }))
