@@ -50,6 +50,7 @@ use crate::logins::LoginFiles;
 use crate::main_session;
 use crate::main_session::AgentApp;
 use crate::main_session::Fenced;
+use crate::main_session::FencedTools;
 use crate::main_session::Linked;
 use crate::main_session::MAIN_JOB;
 use crate::main_session::Route;
@@ -397,7 +398,10 @@ pub(crate) async fn serve(
             }),
             channels,
             model: Arc::clone(&model),
-            toolbox: Arc::clone(&toolbox),
+            toolbox: Arc::new(FencedTools {
+                tools: Arc::clone(&toolbox),
+                linked: linked.clone(),
+            }),
             sub_sessions: Arc::clone(&sub_sessions),
             records: Arc::clone(&records),
         };
