@@ -13,6 +13,7 @@ mod main_session;
 mod notes;
 mod peers;
 mod replace;
+mod routines;
 mod screen_link;
 mod settings;
 mod settings_copies;

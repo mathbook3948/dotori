@@ -21,6 +21,7 @@ use crate::window::input::TextInput;
 use crate::window::parts::header;
 use crate::window::parts::prose;
 use crate::window::pcs::PcsView;
+use crate::window::routines::RoutinesView;
 use crate::window::theme::Theme;
 
 /// The settings window. It writes `settings.toml`, which the daemon reads when it starts.
@@ -35,6 +36,7 @@ pub(crate) struct SettingsView {
     other: Form,
     note: Option<Note>,
     pcs: Entity<PcsView>,
+    routines: Entity<RoutinesView>,
 }
 
 #[derive(Clone)]
@@ -64,8 +66,10 @@ impl SettingsView {
             let settings = settings.clone();
             cx.new(|cx| PcsView::new(home, settings, cx))
         };
+        let routines = cx.new(|cx| RoutinesView::new(&home, cx));
         Self {
             pcs,
+            routines,
             home,
             earlier: settings,
             openai_compatible: form.openai_compatible,
@@ -291,6 +295,8 @@ impl Render for SettingsView {
                             )
                             .child(fields),
                     )
+                    .child(div().h_4())
+                    .child(self.routines.clone())
                     .child(div().h_4())
                     .child(self.pcs.clone()),
             )

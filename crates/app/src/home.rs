@@ -95,6 +95,11 @@ impl Home {
         self.root.join("notes.sqlite3")
     }
 
+    /// What the owner asked dotori to do at set times.
+    pub(crate) fn routines(&self) -> PathBuf {
+        self.root.join("routines.sqlite3")
+    }
+
     /// The keyword index over the raw record. It can always be made again from the record.
     pub(crate) fn search_index(&self) -> PathBuf {
         self.root.join("search.sqlite3")

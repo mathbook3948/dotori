@@ -25,6 +25,14 @@ fn notes() -> Arc<Notes> {
     Notes::new(folder.join("notes.sqlite3"))
 }
 
+fn routines() -> Arc<Routines> {
+    let n = NEXT.fetch_add(1, Ordering::SeqCst);
+    let folder =
+        std::env::temp_dir().join(format!("dotori-notes-routines-{}-{n}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&folder);
+    Routines::new(folder.join("routines.sqlite3"))
+}
+
 fn heard(role: Role) -> Entry {
     Entry::Heard {
         thread: ThreadRef::new(0),
@@ -69,6 +77,7 @@ fn call(name: &str, input: Value) -> ToolCall {
 async fn the_owner_can_keep_and_drop_notes_and_the_model_sees_them() {
     let notes = notes();
     let tools = MainTools {
+        routines: routines(),
         notes: Arc::clone(&notes),
         shared: Arc::new(Nothing),
     };
@@ -105,6 +114,7 @@ async fn the_owner_can_keep_and_drop_notes_and_the_model_sees_them() {
 async fn notes_cannot_change_after_someone_else_spoke_last() {
     let notes = notes();
     let tools = MainTools {
+        routines: routines(),
         notes: Arc::clone(&notes),
         shared: Arc::new(Nothing),
     };
@@ -142,16 +152,17 @@ async fn notes_are_limited_in_length_and_number() {
 #[test]
 fn the_tools_come_before_the_shared_ones() {
     let tools = MainTools {
+        routines: routines(),
         notes: notes(),
         shared: Arc::new(Nothing),
     };
     let names: Vec<String> = tools.specs().into_iter().map(|spec| spec.name).collect();
-    assert_eq!(names, [REMEMBER, FORGET]);
+    assert_eq!(names, [REMEMBER, FORGET, routines::ADD, routines::REMOVE]);
 
     struct Clashing;
     impl Toolbox for Clashing {
         fn specs(&self) -> Vec<ToolSpec> {
-            ["remember", "webfetch"]
+            ["remember", "routine_add", "webfetch"]
                 .map(|name| ToolSpec {
                     name: String::from(name),
                     description: String::new(),
@@ -165,11 +176,21 @@ fn the_tools_come_before_the_shared_ones() {
         }
     }
     let clashing = MainTools {
+        routines: routines(),
         notes: notes(),
         shared: Arc::new(Clashing),
     };
     let names: Vec<String> = clashing.specs().into_iter().map(|spec| spec.name).collect();
-    assert_eq!(names, [REMEMBER, FORGET, "webfetch"]);
+    assert_eq!(
+        names,
+        [
+            REMEMBER,
+            FORGET,
+            routines::ADD,
+            routines::REMOVE,
+            "webfetch"
+        ]
+    );
 }
 
 fn acted(name: &str, id: &str) -> Entry {
@@ -272,4 +293,73 @@ async fn notes_changed_later_on_another_pc_replace_these_and_older_ones_do_not()
             String::from("and more")
         )]
     );
+}
+
+#[tokio::test]
+async fn routines_follow_the_owner_like_notes_and_the_model_sees_both() {
+    let notes = notes();
+    let routines = routines();
+    let tools = MainTools {
+        routines: Arc::clone(&routines),
+        notes: Arc::clone(&notes),
+        shared: Arc::new(Nothing),
+    };
+    let wish = json!({ "name": "아침", "time": "08:00", "task": "일정 알려줘" });
+
+    notes.heard(&[heard(Role::Owner), heard(Role::Other)]);
+    let refused = tools
+        .run(call(routines::ADD, wish.clone()))
+        .await
+        .expect_err("refused");
+    assert!(
+        refused.detail.contains("only the owner"),
+        "{}",
+        refused.detail
+    );
+
+    notes.heard(&[heard(Role::Owner)]);
+    tools.run(call(routines::ADD, wish)).await.expect("set up");
+    tools
+        .run(call(REMEMBER, json!({ "text": "커피는 아이스" })))
+        .await
+        .expect("kept");
+
+    struct Seen(Mutex<Option<String>>);
+    impl Model for Seen {
+        fn complete(&self, request: ModelRequest) -> BoxFuture<'_, Result<ModelReply, ModelError>> {
+            *self.0.lock().expect("unpoisoned") = request.context;
+            Box::pin(async {
+                Ok(ModelReply {
+                    actions: Vec::new(),
+                    trace: None,
+                })
+            })
+        }
+    }
+    let seen = Arc::new(Seen(Mutex::new(None)));
+    let noted = Noted {
+        model: Arc::clone(&seen) as Arc<dyn Model>,
+        notes: Arc::clone(&notes),
+        routines: Arc::clone(&routines),
+    };
+    noted
+        .complete(ModelRequest {
+            conversation: vec![heard(Role::Owner)],
+            tools: Vec::new(),
+            context: None,
+        })
+        .await
+        .expect("answered");
+    let context = seen.0.lock().expect("unpoisoned").clone().expect("context");
+    assert!(context.contains("[1] 커피는 아이스"), "{context}");
+    assert!(
+        context.contains("[1] 아침, every day at 08:00: 일정 알려줘"),
+        "{context}"
+    );
+
+    tools
+        .run(call(routines::REMOVE, json!({ "id": 1 })))
+        .await
+        .expect("removed");
+    assert_eq!(routines.context(), None);
 }

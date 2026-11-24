@@ -670,6 +670,7 @@ fn channel_name(channel: &str) -> String {
         "slack" => String::from("Slack"),
         "telegram" => String::from("Telegram"),
         "discord" => String::from("Discord"),
+        "routine" => String::from("루틴"),
         other => other.to_owned(),
     }
 }

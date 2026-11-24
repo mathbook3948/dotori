@@ -55,6 +55,9 @@ use crate::notes::MainTools;
 use crate::notes::Noted;
 use crate::notes::Notes;
 use crate::peers;
+use crate::routines;
+use crate::routines::RoutineChannel;
+use crate::routines::Routines;
 use crate::settings::RunnerChoice;
 use crate::settings::Settings;
 use crate::settings::environment;
@@ -103,13 +106,16 @@ pub(crate) async fn serve(
     let sub_sessions = sub_session_runner(&home, &settings, &toolbox, shared)?;
     let records = open_record(&home).await?;
     let notes = Notes::new(home.notes());
+    let routines = Routines::new(home.routines());
     let model: Arc<dyn Model> = Arc::new(Noted {
         model,
         notes: Arc::clone(&notes),
+        routines: Arc::clone(&routines),
     });
     let browser = BrowserRoute::new(toolbox);
     let toolbox: Arc<dyn Toolbox> = Arc::new(MainTools {
         notes: Arc::clone(&notes),
+        routines: Arc::clone(&routines),
         shared: Arc::clone(&browser) as Arc<dyn Toolbox>,
     });
     let token = door::token()?;
@@ -176,6 +182,10 @@ pub(crate) async fn serve(
         let app = Arc::clone(&app);
         let route = Arc::clone(&route);
         tokio::spawn(notes::share(Arc::clone(&notes), Arc::clone(&linked.hub)));
+        tokio::spawn(routines::share(
+            Arc::clone(&routines),
+            Arc::clone(&linked.hub),
+        ));
         let (words_tx, mut words) = mpsc::unbounded_channel::<Heard>();
         {
             let linked = linked.clone();
@@ -202,6 +212,7 @@ pub(crate) async fn serve(
             let linked = linked.clone();
             tokio::spawn(async move { settings_copies.share(linked).await });
         }
+        let routines = Arc::clone(&routines);
         tokio::spawn(async move {
             while let Some(heard) = heard.recv().await {
                 linked.keeper.hear(&heard);
@@ -218,6 +229,9 @@ pub(crate) async fn serve(
                     continue;
                 }
                 if notes::hear(&notes, &linked.hub, &heard) {
+                    continue;
+                }
+                if routines::hear(&routines, &linked.hub, &heard) {
                     continue;
                 }
                 if copies.hear(&heard).await {
@@ -302,12 +316,12 @@ pub(crate) async fn serve(
                 continue;
             }
         }
-        let channels = settings
-            .channels(environment)
-            .unwrap_or_else(|error| {
-                eprintln!("dotori: Slack is off: {error}");
-                Vec::new()
-            })
+        let mut channels = settings.channels(environment).unwrap_or_else(|error| {
+            eprintln!("dotori: Slack is off: {error}");
+            Vec::new()
+        });
+        channels.push(Arc::new(RoutineChannel::new(Arc::clone(&routines))) as Arc<dyn Channel>);
+        let channels = channels
             .into_iter()
             .map(|channel| {
                 Arc::new(Fenced {
