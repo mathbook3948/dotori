@@ -1,5 +1,6 @@
 mod chat;
 mod input;
+mod notes;
 mod parts;
 mod pcs;
 mod routines;

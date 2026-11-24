@@ -374,3 +374,24 @@ fn what_came_of_a_call_the_owner_allowed_does_not_open_the_notes() {
     assert!(owner_asked(&[heard(Role::Owner)]));
     assert!(!owner_asked(&[heard(Role::Owner), from_decision]));
 }
+
+#[test]
+fn the_owner_can_keep_and_drop_notes_by_hand_and_the_model_sees_it_at_once() {
+    let notes = notes();
+    assert_eq!(notes.context(), None);
+
+    let id = notes.keep("  커피는\n아이스  ").expect("kept");
+    let other = Notes::new(notes.path.clone());
+
+    assert!(
+        other
+            .context()
+            .expect("seen elsewhere")
+            .ends_with("[1] 커피는 아이스"),
+        "a second handle on the same file sees the note"
+    );
+    assert!(notes.keep(" ").is_err());
+    other.drop_note(id).expect("dropped");
+    assert_eq!(notes.context(), None);
+    assert!(notes.drop_note(id).is_err());
+}
