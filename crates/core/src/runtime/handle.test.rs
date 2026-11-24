@@ -1121,3 +1121,72 @@ fn a_result_another_pc_recorded_is_shown_but_not_recorded_again_and_a_stray_one_
         );
     });
 }
+
+#[test]
+fn a_result_already_copied_here_but_not_answered_yet_still_wakes_the_agent() {
+    block_on(async {
+        let research = SubSessionSpec {
+            title: String::from("research"),
+            brief: String::from("look into it"),
+            folder: None,
+        };
+        let outcome = SubSessionOutcome::Finished(String::from("from the other PC"));
+        let store = Arc::new(MemoryStore {
+            elsewhere: vec![0, 1],
+            ..MemoryStore::default()
+        });
+        store.records.lock().expect("unpoisoned").extend([
+            record(Entry::Acted {
+                actions: vec![Action::Delegate(research.clone())],
+                answered: 0,
+                trace: None,
+            }),
+            record(Entry::SubSessionReturned {
+                spec: research.clone(),
+                outcome: outcome.clone(),
+            }),
+        ]);
+        let (app, _probe) = FakeChannel::new("app");
+        let (asked_tx, mut asked) = mpsc::unbounded_channel();
+        let mut ports = ports(app, Vec::new());
+        ports.model = Arc::new(model(move |request| {
+            let _ = asked_tx.send(request);
+            silence()
+        }));
+        ports.records = Arc::clone(&store) as _;
+        let agent = Agent::spawn(config(Duration::from_secs(1)), ports)
+            .await
+            .expect("valid");
+        let returns = agent.returns();
+
+        assert_eq!(
+            returns
+                .deliver(
+                    research.clone(),
+                    SubSessionOutcome::Finished(String::from("another result")),
+                    false
+                )
+                .await,
+            Delivered::NotOpen
+        );
+        assert_eq!(
+            returns.deliver(research, outcome, false).await,
+            Delivered::Taken
+        );
+        let request = next(&mut asked).await;
+        agent.shutdown().await;
+
+        assert!(matches!(
+            sub_session_outcome(&request),
+            Some(SubSessionOutcome::Finished(text)) if text == "from the other PC"
+        ));
+        assert_eq!(
+            stored(&store)
+                .iter()
+                .filter(|entry| matches!(entry, Entry::SubSessionReturned { .. }))
+                .count(),
+            1,
+            "the result is not recorded again"
+        );
+    });
+}

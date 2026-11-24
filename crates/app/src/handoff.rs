@@ -37,7 +37,7 @@ const FORWARD_TRIES: usize = 120;
 /// after recording the result here as the PC that started it.
 #[derive(Default)]
 pub(crate) struct Handoff {
-    running: Mutex<Vec<(u64, SubSessionSpec, AbortHandle)>>,
+    running: Mutex<Vec<(u64, SubSessionSpec, [AbortHandle; 2])>>,
     next: AtomicU64,
     current: Mutex<Option<Returns>>,
     peers: OnceLock<(Linked, Arc<dyn RecordStore>)>,
@@ -74,8 +74,10 @@ impl Handoff {
 
     /// Ends every sub-session still running. Call after the agent shut down.
     pub(crate) fn stop_all(&self) {
-        for (_, _, task) in self.running.lock().expect("unpoisoned").drain(..) {
-            task.abort();
+        for (_, _, tasks) in self.running.lock().expect("unpoisoned").drain(..) {
+            for task in tasks {
+                task.abort();
+            }
         }
     }
 
@@ -158,17 +160,18 @@ impl Handoff {
         let handoff = Arc::clone(self);
         let running = spec.clone();
         let mut held = self.running.lock().expect("unpoisoned");
+        let work = {
+            let spec = spec.clone();
+            tokio::spawn(async move { inner.run(spec).await })
+        };
+        let stops = work.abort_handle();
         let task = tokio::spawn(async move {
-            let ran = {
-                let spec = spec.clone();
-                tokio::spawn(async move { inner.run(spec).await }).await
-            };
-            let outcome = ran.unwrap_or_else(|error| {
+            let outcome = work.await.unwrap_or_else(|error| {
                 SubSessionOutcome::Failed(format!("the sub-session broke down: {error}"))
             });
             handoff.settle(id, spec, outcome).await;
         });
-        held.push((id, running, task.abort_handle()));
+        held.push((id, running, [task.abort_handle(), stops]));
     }
 }
 

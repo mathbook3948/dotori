@@ -10,7 +10,7 @@ pub struct SubSessionSpec {
 }
 
 /// The only thing that flows back to the main session.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SubSessionOutcome {
     Finished(String),
     Failed(String),

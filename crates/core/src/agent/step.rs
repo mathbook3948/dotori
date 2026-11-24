@@ -240,6 +240,11 @@ fn on_returned(
         .map(|(id, _)| *id)
         .min();
     if started.is_none() && !still_open(&state.conversation, &spec) {
+        if !record && unanswered(&state.conversation, &spec, &outcome) {
+            let mut effects = vec![Effect::Acknowledge(ack, true)];
+            effects.extend(absorb(state, Arrival::Joins));
+            return effects;
+        }
         return vec![Effect::Acknowledge(ack, false)];
     }
     if let Some(id) = started {
@@ -254,6 +259,16 @@ fn on_returned(
     let mut effects = vec![Effect::Acknowledge(ack, true)];
     effects.extend(absorb(state, Arrival::Joins));
     effects
+}
+
+fn unanswered(conversation: &[Entry], spec: &SubSessionSpec, outcome: &SubSessionOutcome) -> bool {
+    conversation
+        .iter()
+        .rev()
+        .take_while(|entry| !matches!(entry, Entry::Acted { .. }))
+        .any(|entry| {
+            matches!(entry, Entry::SubSessionReturned { spec: returned, outcome: came } if returned == spec && came == outcome)
+        })
 }
 
 fn still_open(conversation: &[Entry], spec: &SubSessionSpec) -> bool {

@@ -95,3 +95,34 @@ async fn a_runner_that_breaks_still_ends_with_a_result() {
     handoff.quit();
     handoff.stop_all();
 }
+
+struct Slow(Arc<AtomicBool>);
+
+impl SubSessionRunner for Slow {
+    fn run(&self, _spec: SubSessionSpec) -> BoxFuture<'_, SubSessionOutcome> {
+        Box::pin(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            self.0.store(true, Ordering::SeqCst);
+            SubSessionOutcome::Finished(String::from("done"))
+        })
+    }
+}
+
+#[tokio::test]
+async fn quitting_stops_the_work_itself() {
+    let handoff = Arc::new(Handoff::default());
+    let finished = Arc::new(AtomicBool::new(false));
+    let runner = HandedOff {
+        handoff: Arc::clone(&handoff),
+        inner: Arc::new(Slow(Arc::clone(&finished))),
+    };
+
+    let _waiting = runner.run(spec("slow"));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    handoff.quit();
+    handoff.stop_all();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    assert!(!finished.load(Ordering::SeqCst), "the work stopped");
+    assert!(handoff.running().is_empty());
+}
