@@ -68,7 +68,7 @@ talk)
   {
     for message in "$@"; do
       printf '%s\n' "$message"
-      sleep 3
+      sleep 6
     done
   } | env -u DISPLAY DOTORI_HOME="$home" "$dotori" chat
   ;;
