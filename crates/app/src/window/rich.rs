@@ -9,6 +9,7 @@ use gpui::prelude::*;
 use gpui::px;
 
 use crate::window::parts::MONO;
+use crate::window::parts::SPACE;
 use crate::window::parts::prose;
 use crate::window::theme::Theme;
 
@@ -40,17 +41,17 @@ pub(crate) enum Block {
 /// Splits a reply into the blocks it is drawn as.
 pub(crate) fn blocks(text: &str) -> Vec<Block> {
     let mut blocks = Vec::new();
-    let mut fenced: Option<Vec<String>> = None;
+    let mut fenced: Option<(String, Vec<String>)> = None;
     for line in text.split('\n') {
         let line = line.trim_end_matches('\r').replace('\t', "    ");
-        if line.trim_start().starts_with("```") {
+        if fence(&line) {
             match fenced.take() {
-                Some(code) => blocks.push(Block::Code(code)),
-                None => fenced = Some(Vec::new()),
+                Some((_, code)) => blocks.push(Block::Code(code)),
+                None => fenced = Some((line, Vec::new())),
             }
             continue;
         }
-        if let Some(code) = fenced.as_mut() {
+        if let Some((_, code)) = fenced.as_mut() {
             code.push(line);
             continue;
         }
@@ -62,8 +63,10 @@ pub(crate) fn blocks(text: &str) -> Vec<Block> {
         }
         blocks.push(block(&line));
     }
-    if let Some(code) = fenced {
-        blocks.push(Block::Code(code));
+    match fenced {
+        Some((opened, code)) if code.is_empty() => blocks.push(Block::Line(words(&opened))),
+        Some((_, code)) => blocks.push(Block::Code(code)),
+        None => {}
     }
     while matches!(blocks.last(), Some(Block::Gap)) {
         blocks.pop();
@@ -71,11 +74,20 @@ pub(crate) fn blocks(text: &str) -> Vec<Block> {
     blocks
 }
 
+fn fence(line: &str) -> bool {
+    line.trim_start()
+        .strip_prefix("```")
+        .is_some_and(|tag| !tag.contains('`'))
+}
+
 fn block(line: &str) -> Block {
-    let body = line.trim_start();
+    let body = line.trim_start_matches(' ');
     let indent = line.len() - body.len();
     let hashes = body.chars().take_while(|c| *c == '#').count();
-    if (1..=3).contains(&hashes) && body[hashes..].starts_with(' ') {
+    if (1..=3).contains(&hashes)
+        && body[hashes..].starts_with(' ')
+        && !body[hashes..].trim().is_empty()
+    {
         return Block::Heading(words(body[hashes..].trim()));
     }
     let depth = (indent / 2).min(MAX_DEPTH);
@@ -106,8 +118,11 @@ fn block(line: &str) -> Block {
 /// Splits a line at its spaces into words, reading `**bold**` and `` `code` `` marks. Code keeps
 /// its spaces inside one word. A mark without its pair is left as written.
 pub(crate) fn words(line: &str) -> Vec<Word> {
-    let marks_bold = line.matches("**").count().is_multiple_of(2);
     let marks_code = line.matches('`').count().is_multiple_of(2);
+    let marks_bold = outside_code(line, marks_code)
+        .matches("**")
+        .count()
+        .is_multiple_of(2);
     let mut words: Vec<Word> = vec![Vec::new()];
     let mut bold = false;
     let mut code = false;
@@ -139,6 +154,13 @@ pub(crate) fn words(line: &str) -> Vec<Word> {
         }
     }
     words
+}
+
+fn outside_code(line: &str, marks_code: bool) -> String {
+    if !marks_code {
+        return line.to_owned();
+    }
+    line.split('`').step_by(2).collect::<Vec<_>>().join(" ")
 }
 
 /// A reply drawn block by block.
@@ -189,31 +211,37 @@ fn line(words: &[Word], theme: &Theme) -> Div {
         .flex_wrap()
         .gap_x(px(SPACE))
         .children(words.iter().map(|word| {
-            if word.is_empty() {
-                return div().w(px(0.));
+            match word.as_slice() {
+                [] => div().w(px(0.)),
+                [run] => drawn(run, theme),
+                runs => div()
+                    .flex()
+                    .items_start()
+                    .min_w_0()
+                    .children(runs.iter().map(|run| drawn(run, theme))),
             }
-            div().flex().min_w_0().children(word.iter().map(|run| {
-                let drawn = div().child(SharedString::from(run.text.clone()));
-                let drawn = if run.bold {
-                    drawn.font_weight(FontWeight::BOLD)
-                } else {
-                    drawn
-                };
-                if run.code {
-                    drawn
-                        .px(px(3.))
-                        .rounded_sm()
-                        .bg(theme.canvas)
-                        .font_family(MONO)
-                        .text_sm()
-                } else {
-                    drawn
-                }
-            }))
         }))
 }
 
-const SPACE: f32 = 4.;
+fn drawn(run: &Run, theme: &Theme) -> Div {
+    let drawn = div().min_w_0().child(SharedString::from(run.text.clone()));
+    let drawn = if run.bold {
+        drawn.font_weight(FontWeight::BOLD)
+    } else {
+        drawn
+    };
+    if run.code {
+        drawn
+            .px(px(3.))
+            .rounded_sm()
+            .bg(theme.canvas)
+            .font_family(MONO)
+            .text_sm()
+    } else {
+        drawn
+    }
+}
+
 const INDENT: f32 = 16.;
 const MAX_DEPTH: usize = 3;
 

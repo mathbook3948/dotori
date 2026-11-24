@@ -113,3 +113,30 @@ fn a_line_that_only_looks_like_a_list_or_heading_stays_a_line() {
         ]
     );
 }
+
+#[test]
+fn bold_marks_inside_code_are_not_counted_and_a_one_line_fence_is_text() {
+    assert_eq!(
+        words("`a**b` 와 **굵게**"),
+        [vec![code("a**b")], vec![plain("와")], vec![bold("굵게")]]
+    );
+    assert_eq!(
+        blocks("```ls -la```\n다음 줄"),
+        [
+            Block::Line(vec![vec![code("ls -la")]]),
+            Block::Line(vec![vec![plain("다음")], vec![plain("줄")]]),
+        ]
+    );
+    assert_eq!(blocks("```"), [Block::Line(vec![vec![plain("```")]])]);
+}
+
+#[test]
+fn only_ascii_spaces_indent_an_item_and_an_empty_heading_stays_a_line() {
+    assert_eq!(
+        blocks("\u{3000}- 항목\n#   "),
+        [
+            Block::Line(vec![vec![plain("\u{3000}-")], vec![plain("항목")]]),
+            Block::Line(vec![vec![plain("#")]]),
+        ]
+    );
+}

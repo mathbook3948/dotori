@@ -91,7 +91,8 @@ pub(crate) fn prose(text: &str) -> Div {
         }))
 }
 
-const SPACE: f32 = 4.;
+/// The gap drawn for a space between words.
+pub(crate) const SPACE: f32 = 4.;
 
 /// The fixed-width font for code and commands. GPUI looks fonts up by family name, so a generic
 /// name such as `monospace` falls back to the proportional font.
