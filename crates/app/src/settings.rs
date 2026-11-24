@@ -81,6 +81,25 @@ pub(crate) struct RelaySettings {
     pub(crate) args: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) tools: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) confirm: Vec<String>,
+}
+
+/// Which tools wait for the owner's OK.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Asked {
+    tools: Vec<String>,
+    servers: Vec<String>,
+}
+
+impl Asked {
+    pub(crate) fn needs(&self, tool: &str) -> bool {
+        self.tools.iter().any(|asked| asked == tool)
+            || self
+                .servers
+                .iter()
+                .any(|server| tool.starts_with(server.as_str()))
+    }
 }
 
 /// How memory is searched. Without embeddings it matches words only.
@@ -481,6 +500,22 @@ impl Settings {
 
     /// The MCP servers to relay, reading tokens through `key`. A server set up wrong is named
     /// in the second list and left out.
+    /// The relayed tools the owner must allow before each call, by the name the model sees.
+    /// `"*"` stands for every tool of its server.
+    pub(crate) fn asked(&self) -> Asked {
+        let mut asked = Asked::default();
+        for server in &self.mcp {
+            for tool in &server.confirm {
+                if tool == "*" {
+                    asked.servers.push(format!("{}__", server.name));
+                } else {
+                    asked.tools.push(format!("{}__{tool}", server.name));
+                }
+            }
+        }
+        asked
+    }
+
     pub(crate) fn relays(
         &self,
         key: impl Fn(&str) -> Option<String>,

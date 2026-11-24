@@ -1,5 +1,6 @@
 mod browser_route;
 mod chat;
+mod confirm;
 mod daemon;
 mod device;
 mod door;

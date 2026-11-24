@@ -33,6 +33,8 @@ use dotori_core::tool::Toolbox;
 
 use crate::browser_route::BROWSER_JOB;
 use crate::browser_route::BrowserRoute;
+use crate::confirm;
+use crate::confirm::Asking;
 use crate::device;
 use crate::door;
 use crate::door::Door;
@@ -113,14 +115,19 @@ pub(crate) async fn serve(
         routines: Arc::clone(&routines),
     });
     let browser = BrowserRoute::new(toolbox);
-    let toolbox: Arc<dyn Toolbox> = Arc::new(MainTools {
-        notes: Arc::clone(&notes),
-        routines: Arc::clone(&routines),
-        shared: Arc::clone(&browser) as Arc<dyn Toolbox>,
-    });
     let token = door::token()?;
     let (app, address) = AppChannel::bind(token.clone()).map_err(|error| error.to_string())?;
     let app = Arc::new(app);
+    let asking = Arc::new(Asking::new(
+        settings.asked(),
+        Arc::clone(&browser) as Arc<dyn Toolbox>,
+        Arc::clone(&app),
+    ));
+    let toolbox: Arc<dyn Toolbox> = Arc::new(MainTools {
+        notes: Arc::clone(&notes),
+        routines: Arc::clone(&routines),
+        shared: Arc::clone(&asking) as Arc<dyn Toolbox>,
+    });
     match records.load().await {
         Ok(earlier) => app.show_earlier(&history::lines(&earlier)),
         Err(error) => eprintln!("dotori: the earlier conversation cannot be shown: {error}"),
@@ -178,6 +185,29 @@ pub(crate) async fn serve(
         });
     }
     let route = Route::new(linked.clone());
+    let (decide_tx, mut decisions) = mpsc::unbounded_channel::<(u64, bool)>();
+    {
+        let mut clicked = app.decisions();
+        let decide_tx = decide_tx.clone();
+        tokio::spawn(async move {
+            while let Some(decision) = clicked.recv().await {
+                if decide_tx.send(decision).is_err() {
+                    return;
+                }
+            }
+        });
+    }
+    {
+        let asking = Arc::clone(&asking);
+        let app = Arc::clone(&app);
+        let route = Arc::clone(&route);
+        let linked = linked.clone();
+        tokio::spawn(async move {
+            while let Some((id, ok)) = decisions.recv().await {
+                confirm::decided(&asking, &app, route.as_ref(), linked.as_ref(), id, ok).await;
+            }
+        });
+    }
     if let (Some(linked), Some((mut heard, copies))) = (linked.clone(), heard) {
         let app = Arc::clone(&app);
         let route = Arc::clone(&route);
@@ -216,6 +246,10 @@ pub(crate) async fn serve(
         tokio::spawn(async move {
             while let Some(heard) = heard.recv().await {
                 linked.keeper.hear(&heard);
+                if let Some(decision) = confirm::heard(&heard) {
+                    let _ = decide_tx.send(decision);
+                    continue;
+                }
                 if settings_copies.hear(&linked, &heard) {
                     continue;
                 }

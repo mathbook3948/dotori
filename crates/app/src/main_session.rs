@@ -37,11 +37,11 @@ pub(crate) struct Linked {
 }
 
 impl Linked {
-    fn runs_main(&self) -> bool {
+    pub(crate) fn runs_main(&self) -> bool {
         self.keeper.holds(MAIN_JOB)
     }
 
-    fn main_pc(&self) -> Option<String> {
+    pub(crate) fn main_pc(&self) -> Option<String> {
         self.keeper
             .watch(MAIN_JOB)
             .and_then(|holder| holder.borrow().clone())

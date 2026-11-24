@@ -34,6 +34,7 @@ use tokio::net::TcpStream;
 use tokio::net::tcp::OwnedReadHalf;
 use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::RecvError;
+use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tokio::task::JoinSet;
 use tokio::time;
@@ -58,7 +59,14 @@ pub struct Hello {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum FromWindow {
-    Say { text: String },
+    Say {
+        text: String,
+    },
+    /// The owner allows (`ok`) or declines a call dotori asked about.
+    Decide {
+        id: u64,
+        ok: bool,
+    },
 }
 
 /// What the daemon sends to every window, one JSON object per line.
@@ -95,6 +103,16 @@ pub enum ToWindow {
     Answering { pc: String, here: bool },
     /// No other PC is linked any more, so there is no PC to name.
     Alone,
+    /// dotori wants to call a tool that acts toward other people, and waits for the owner.
+    Ask {
+        id: u64,
+        tool: String,
+        input: String,
+        #[serde(default)]
+        at: i64,
+    },
+    /// The owner allowed or declined what dotori asked about.
+    Decided { id: u64, ok: bool },
     /// Which of the owner's PCs holds the browser now. Sent only while PCs are linked, and never
     /// kept in the conversation.
     BrowserAt { pc: String, here: bool },
@@ -116,6 +134,7 @@ struct Hub {
     next_id: AtomicU64,
     answering: watch::Sender<Option<String>>,
     browser: watch::Sender<Option<String>>,
+    decisions: Mutex<Option<mpsc::UnboundedSender<(u64, bool)>>>,
 }
 
 /// One line every window shows, and the other PC whose window it came from, if it did.
@@ -142,6 +161,7 @@ impl AppChannel {
                 next_id: AtomicU64::new(0),
                 answering: watch::channel(None).0,
                 browser: watch::channel(None).0,
+                decisions: Mutex::new(None),
             }),
         };
         Ok((channel, address))
@@ -192,6 +212,32 @@ impl AppChannel {
         }) {
             self.hub.publish_line(line.to_owned(), None);
         }
+    }
+
+    /// Shows every window a call dotori wants the owner to allow first.
+    pub fn ask(&self, id: u64, tool: String, input: String) {
+        self.hub.publish(&ToWindow::Ask {
+            id,
+            tool,
+            input,
+            at: now_ms(),
+        });
+    }
+
+    /// Shows every window what the owner decided about the call `id`.
+    pub fn decided(&self, id: u64, ok: bool) {
+        self.hub.publish(&ToWindow::Decided { id, ok });
+    }
+
+    /// What the owner decides in the windows here, from now on. Only the last caller hears.
+    pub fn decisions(&self) -> mpsc::UnboundedReceiver<(u64, bool)> {
+        let (decisions, heard) = mpsc::unbounded_channel();
+        *self
+            .hub
+            .decisions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(decisions);
+        heard
     }
 
     /// Puts lines said before dotori started ahead of everything windows are shown, without
@@ -388,8 +434,20 @@ async fn serve(stream: TcpStream, token: String, hub: Arc<Hub>, inbox: Arc<dyn I
     };
     let receiving = async {
         while let Ok(true) = next_line(&mut reader, &mut line).await {
-            let Ok(FromWindow::Say { text }) = serde_json::from_slice::<FromWindow>(&line) else {
-                continue;
+            let text = match serde_json::from_slice::<FromWindow>(&line) {
+                Ok(FromWindow::Say { text }) => text,
+                Ok(FromWindow::Decide { id, ok }) => {
+                    if let Some(decisions) = hub
+                        .decisions
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .as_ref()
+                    {
+                        let _ = decisions.send((id, ok));
+                    }
+                    continue;
+                }
+                Err(_) => continue,
             };
             let Ok(content) = Content::parse(text.clone()) else {
                 continue;

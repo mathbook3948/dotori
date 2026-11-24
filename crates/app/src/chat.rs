@@ -1,5 +1,6 @@
 use std::cell::Cell;
 
+use dotori_connectors::channel::app::FromWindow;
 use dotori_connectors::channel::app::ToWindow;
 use tokio::io::AsyncBufReadExt;
 use tokio::io::BufReader;
@@ -45,7 +46,7 @@ pub(crate) async fn run(home: Home) -> Result<(), String> {
                 eprintln!("(not connected; not sent)");
                 continue;
             }
-            if link.say.send(text).is_err() {
+            if link.say.send(FromWindow::Say { text }).is_err() {
                 break;
             }
         }
@@ -71,6 +72,11 @@ pub(crate) fn shown(event: &ToWindow) -> String {
         ToWindow::Answering { pc, here: true } => format!("(dotori answers on this PC, {pc})"),
         ToWindow::Answering { pc, here: false } => format!("(dotori answers on {pc})"),
         ToWindow::Alone => String::from("(no other PC is linked)"),
+        ToWindow::Ask { tool, input, .. } => {
+            format!("(dotori asks to run {tool} with {input}; answer in the chat window)")
+        }
+        ToWindow::Decided { ok: true, .. } => String::from("(you allowed it)"),
+        ToWindow::Decided { ok: false, .. } => String::from("(you declined it)"),
         ToWindow::BrowserAt { pc, here: true } => format!("(the browser is on this PC, {pc})"),
         ToWindow::BrowserAt { pc, here: false } => format!("(the browser is on {pc})"),
     }

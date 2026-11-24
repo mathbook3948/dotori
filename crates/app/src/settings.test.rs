@@ -365,3 +365,21 @@ fn the_slack_form_refuses_a_missing_owner_and_a_pasted_token() {
     let refused = form.settings().expect_err("a token is not a name");
     assert!(refused.contains("환경 변수"), "{refused}");
 }
+
+#[test]
+fn relayed_tools_the_owner_listed_wait_for_their_ok() {
+    let settings = parse(
+        "[[mcp]]\nname = \"mail\"\ncommand = \"mail-mcp\"\nconfirm = [\"send\"]\n\n\
+         [[mcp]]\nname = \"chat\"\nurl = \"https://chat.example/mcp\"\nconfirm = [\"*\"]\n\n\
+         [[mcp]]\nname = \"notes\"\ncommand = \"notes-mcp\"",
+    )
+    .expect("parsed");
+
+    let asked = settings.asked();
+
+    assert!(asked.needs("mail__send"));
+    assert!(!asked.needs("mail__read"));
+    assert!(asked.needs("chat__post"));
+    assert!(!asked.needs("notes__write"));
+    assert!(!asked.needs("send"));
+}
