@@ -48,7 +48,16 @@ pub(crate) fn step(state: &mut AgentState, event: Event) -> Vec<Effect> {
             result,
         } => on_delivery_done(state, thread, place, text, result),
         Event::ChannelEnded { channel, result } => on_channel_ended(state, channel, result),
-        Event::Shutdown => on_shutdown(state),
+        Event::SubSessionReturned { spec, outcome } => {
+            state
+                .conversation
+                .push(Entry::SubSessionReturned { spec, outcome });
+            absorb(state, Arrival::Joins)
+        }
+        Event::Shutdown { handing_off } => {
+            state.handing_off |= handing_off;
+            on_shutdown(state)
+        }
     }
 }
 
@@ -218,6 +227,10 @@ fn on_channel_ended(
 }
 
 fn stop(state: &mut AgentState) -> Effect {
+    if state.handing_off {
+        state.sub_sessions.clear();
+        return Effect::Stop;
+    }
     let mut stopped: Vec<(SubSessionId, SubSessionSpec)> = state.sub_sessions.drain().collect();
     stopped.sort_by_key(|(id, _)| *id);
     for (_, spec) in stopped {

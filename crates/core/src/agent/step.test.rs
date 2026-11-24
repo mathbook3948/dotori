@@ -96,7 +96,7 @@ impl Harness {
     }
 
     fn shut_down(&mut self) {
-        self.feed(Event::Shutdown);
+        self.feed(Event::Shutdown { handing_off: false });
     }
 
     fn answer(&mut self, call: CallId, result: Result<ModelReply, ModelError>) {

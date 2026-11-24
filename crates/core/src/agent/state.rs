@@ -27,6 +27,7 @@ pub(crate) struct AgentState {
     pub(crate) sub_sessions: HashMap<SubSessionId, SubSessionSpec>,
     pub(crate) seen: Seen,
     pub(crate) ids: Ids,
+    pub(crate) handing_off: bool,
 }
 
 impl AgentState {
@@ -34,12 +35,15 @@ impl AgentState {
     /// arrival order, so every recorded `ThreadRef` points at the same place, and recent
     /// message ids are seen again. Work this PC started that was running when it stopped never
     /// returns, so it gets a result that says so, appended after the loaded entries. Each entry
-    /// comes with whether this PC made it; work another PC started, and results another PC
-    /// recorded, are left to that PC.
+    /// comes with whether this PC made it; work another PC started is left to that PC. A
+    /// sub-session's result closes it wherever it was recorded, since a handed-off result is
+    /// recorded by the PC running the main session. Sub-sessions in `running` still run here and
+    /// are not closed.
     pub(crate) fn resume(
         wiring: Wiring,
         seen_capacity: NonZeroUsize,
         marked: Vec<(Entry, bool)>,
+        running: Vec<SubSessionSpec>,
     ) -> Self {
         let mut state = Self::new(wiring, seen_capacity);
         let mut tools = Vec::new();
@@ -66,12 +70,17 @@ impl AgentState {
                 Entry::ToolReturned { call, .. } if mine => {
                     tools.retain(|running| running != call);
                 }
-                Entry::SubSessionReturned { spec, .. } if mine => {
+                Entry::SubSessionReturned { spec, .. } => {
                     if let Some(index) = delegated.iter().position(|running| running == spec) {
                         delegated.remove(index);
                     }
                 }
                 _ => {}
+            }
+        }
+        for spec in running {
+            if let Some(index) = delegated.iter().position(|open| *open == spec) {
+                delegated.remove(index);
             }
         }
         state.conversation = marked.into_iter().map(|(entry, _)| entry).collect();
@@ -102,6 +111,7 @@ impl AgentState {
             sub_sessions: HashMap::new(),
             seen: Seen::new(seen_capacity),
             ids: Ids::default(),
+            handing_off: false,
         }
     }
 }

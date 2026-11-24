@@ -910,7 +910,7 @@ fn a_sub_session_still_running_when_the_main_session_stops_is_recorded_as_stoppe
 }
 
 #[test]
-fn a_result_another_pc_recorded_does_not_close_work_started_here() {
+fn a_result_the_main_pc_recorded_closes_a_sub_session_handed_off_to_it() {
     block_on(async {
         let research = SubSessionSpec {
             title: String::from("research"),
@@ -929,7 +929,7 @@ fn a_result_another_pc_recorded_does_not_close_work_started_here() {
             }),
             record(Entry::SubSessionReturned {
                 spec: research,
-                outcome: SubSessionOutcome::Finished(String::from("theirs")),
+                outcome: SubSessionOutcome::Finished(String::from("found it")),
             }),
         ]);
         let (app, probe) = FakeChannel::new("app");
@@ -948,19 +948,92 @@ fn a_result_another_pc_recorded_does_not_close_work_started_here() {
         let request = next(&mut asked).await;
         agent.shutdown().await;
 
-        let stopped = request
-            .conversation
-            .iter()
-            .filter(|entry| {
-                matches!(
-                    entry,
-                    Entry::SubSessionReturned {
-                        outcome: SubSessionOutcome::Failed(_),
-                        ..
-                    }
+        assert!(
+            matches!(sub_session_outcome(&request), Some(SubSessionOutcome::Finished(text)) if text == "found it"),
+            "the real result stands and nothing is closed again"
+        );
+    });
+}
+
+#[test]
+fn handing_off_leaves_running_sub_sessions_open_and_their_results_come_in_later() {
+    block_on(async {
+        let long = SubSessionSpec {
+            title: String::from("long"),
+            brief: String::from("take your time"),
+            folder: None,
+        };
+        let store = Arc::new(MemoryStore::default());
+        let (app, probe) = FakeChannel::new("app");
+        let mut first = ports(app, Vec::new());
+        let asked = Arc::new(AtomicUsize::new(0));
+        let counting = Arc::clone(&asked);
+        let delegated = long.clone();
+        first.model = Arc::new(model(move |_| {
+            if counting.fetch_add(1, Ordering::SeqCst) == 0 {
+                ModelReply {
+                    actions: vec![Action::Delegate(delegated.clone())],
+                    trace: None,
+                }
+            } else {
+                silence()
+            }
+        }));
+        let (started_tx, mut started) = mpsc::unbounded_channel();
+        first.sub_sessions = Arc::new(FnSubSessions(Box::new(move |_| {
+            let _ = started_tx.send(());
+            Box::pin(std::future::pending())
+        })));
+        first.records = Arc::clone(&store) as _;
+        let agent = Agent::spawn(config(Duration::from_secs(1)), first)
+            .await
+            .expect("valid");
+        owner_says(&probe, "m1", "start the long job");
+        time::timeout(Duration::from_secs(5), started.recv())
+            .await
+            .expect("started in time");
+
+        agent.hand_off().await;
+        assert!(
+            !stored(&store)
+                .iter()
+                .any(|entry| matches!(entry, Entry::SubSessionReturned { .. })),
+            "a handed-off sub-session is not recorded as stopped"
+        );
+
+        let (app, probe) = FakeChannel::new("app");
+        let (asked_tx, mut asked) = mpsc::unbounded_channel();
+        let mut ports = ports(app, Vec::new());
+        ports.model = Arc::new(model(move |request| {
+            let _ = asked_tx.send(request);
+            silence()
+        }));
+        ports.records = Arc::clone(&store) as _;
+        let agent =
+            Agent::spawn_continuing(config(Duration::from_secs(1)), ports, vec![long.clone()])
+                .await
+                .expect("valid");
+        assert!(
+            agent
+                .returns()
+                .deliver(
+                    long,
+                    SubSessionOutcome::Finished(String::from("done at last"))
                 )
-            })
+                .await
+        );
+        let request = next(&mut asked).await;
+        drop(probe);
+        agent.shutdown().await;
+
+        assert!(
+            matches!(sub_session_outcome(&request), Some(SubSessionOutcome::Finished(text)) if text == "done at last"),
+            "the late result is the only one"
+        );
+        let results = stored(&store)
+            .iter()
+            .filter(|entry| matches!(entry, Entry::SubSessionReturned { .. }))
             .count();
-        assert_eq!(stopped, 1, "this PC still closes its own delegation");
+        assert_eq!(results, 1);
     });
 }
