@@ -39,6 +39,7 @@ const RUN_WAIT: Duration = Duration::from_secs(100);
 const WIDTH: u32 = 1280;
 const HEIGHT: u32 = 800;
 const WORLD: &str = "dotori";
+const AUTH_WAIT: Duration = Duration::from_secs(120);
 const LOGINS_EVERY: Duration = Duration::from_secs(60);
 
 /// How the browser runs. The profile folder keeps logins between runs. Without an executable,
@@ -203,6 +204,9 @@ impl Browser {
                     self.screen.update(json!({ "mode": "idle", "error": null }));
                     Ok(())
                 }
+                Ask::Input(input) if input.get("kind").and_then(Value::as_str) == Some("auth") => {
+                    self.auth(&input).await
+                }
                 Ask::Input(input) => {
                     if self.owner.lock().await.is_some() {
                         self.owner_input(&input).await
@@ -276,6 +280,30 @@ impl Browser {
             cdp.send(method, params, Some(&session)).await?;
         }
         Ok(())
+    }
+
+    async fn auth(&self, input: &Value) -> Result<(), String> {
+        let picker = self.screen.state.lock().expect("unpoisoned")["picker"].clone();
+        if picker.get("kind").and_then(Value::as_str) != Some("auth") {
+            return Ok(());
+        }
+        self.screen.update(json!({ "picker": null, "asked": null }));
+        let shown = self.shown.lock().expect("unpoisoned").clone();
+        let Some(Shown { cdp, .. }) = shown else {
+            return Ok(());
+        };
+        let given = match (
+            input.get("username").and_then(Value::as_str),
+            input.get("password").and_then(Value::as_str),
+        ) {
+            (Some(username), Some(password))
+                if input.get("cancel").and_then(Value::as_bool) != Some(true) =>
+            {
+                Some((username, password))
+            }
+            _ => None,
+        };
+        answer_auth(&cdp, &picker, given).await
     }
 
     async fn pick(&self, cdp: &Cdp, session: &str, input: &Value) -> Result<(), String> {
@@ -510,7 +538,10 @@ impl Browser {
         page("Page.enable", json!({})).await?;
         page(
             "Fetch.enable",
-            json!({ "patterns": [{ "resourceType": "Document", "requestStage": "Request" }] }),
+            json!({
+                "patterns": [{ "resourceType": "Document", "requestStage": "Request" }],
+                "handleAuthRequests": true,
+            }),
         )
         .await?;
         let version = cdp.send("Browser.getVersion", json!({}), None).await?;
@@ -856,6 +887,44 @@ async fn watch(
                 }
                 None
             }
+            Some("Fetch.authRequired") => {
+                let request = params.get("requestId").cloned().unwrap_or(Value::Null);
+                let challenge = params.get("authChallenge").cloned().unwrap_or(Value::Null);
+                let origin = challenge
+                    .get("origin")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned();
+                screen.update(json!({
+                    "picker": {
+                        "kind": "auth",
+                        "request": request,
+                        "session": session,
+                        "origin": origin,
+                        "realm": challenge.get("realm").cloned().unwrap_or(Value::Null),
+                    },
+                    "asked": format!("{origin}에 로그인해야 해요"),
+                }));
+                let screen = Arc::clone(&screen);
+                let cdp = Arc::clone(&cdp);
+                let session = session.map(str::to_owned);
+                tokio::spawn(async move {
+                    time::sleep(AUTH_WAIT).await;
+                    let still = screen.state.lock().expect("unpoisoned")["picker"]
+                        .get("request")
+                        .is_some_and(|waiting| *waiting == request);
+                    if still {
+                        screen.update(json!({ "picker": null }));
+                        let _ = answer_auth(
+                            &cdp,
+                            &json!({ "request": request, "session": session }),
+                            None,
+                        )
+                        .await;
+                    }
+                });
+                None
+            }
             Some("Fetch.requestPaused") => {
                 let id = params.get("requestId").cloned().unwrap_or(Value::Null);
                 let url = params
@@ -876,6 +945,27 @@ async fn watch(
             let _ = cdp.send(method, params, session).await;
         }
     }
+}
+
+async fn answer_auth(cdp: &Cdp, picker: &Value, given: Option<(&str, &str)>) -> Result<(), String> {
+    let response = match given {
+        Some((username, password)) => json!({
+            "response": "ProvideCredentials",
+            "username": username,
+            "password": password,
+        }),
+        None => json!({ "response": "CancelAuth" }),
+    };
+    cdp.send(
+        "Fetch.continueWithAuth",
+        json!({
+            "requestId": picker.get("request").cloned().unwrap_or(Value::Null),
+            "authChallengeResponse": response,
+        }),
+        picker.get("session").and_then(Value::as_str),
+    )
+    .await
+    .map(drop)
 }
 
 /// Whether a page may be loaded from `url`, by the same rule as webfetch.
@@ -1227,7 +1317,10 @@ async fn follow_popup(
     };
     page(
         "Fetch.enable",
-        json!({ "patterns": [{ "resourceType": "Document", "requestStage": "Request" }] }),
+        json!({
+            "patterns": [{ "resourceType": "Document", "requestStage": "Request" }],
+            "handleAuthRequests": true,
+        }),
     )
     .await?;
     page("Runtime.runIfWaitingForDebugger", json!({})).await?;

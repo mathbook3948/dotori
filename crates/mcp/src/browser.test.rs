@@ -671,3 +671,54 @@ async fn a_frame_from_the_same_page_is_read_and_one_from_elsewhere_is_named() {
     let body = shown.split_once("\n\n").expect("a body").1;
     assert!(!body.contains("Secret"), "{body}");
 }
+
+#[tokio::test]
+#[ignore = "starts a real Chrome and reaches httpbin.org"]
+async fn a_page_that_asks_for_a_login_waits_for_the_owners_answer() {
+    let browser = browser();
+    let running = browser.page().await.expect("started");
+    let cdp = Arc::clone(&running.cdp);
+    let session = running.session.clone();
+    let going = tokio::spawn(async move {
+        cdp.send(
+            "Page.navigate",
+            json!({ "url": "https://httpbin.org/basic-auth/owner/secret" }),
+            Some(&session),
+        )
+        .await
+    });
+    let mut asked = Value::Null;
+    for _ in 0..100 {
+        asked = browser.screen.state.lock().expect("unpoisoned")["picker"].clone();
+        if asked.get("kind").and_then(Value::as_str) == Some("auth") {
+            break;
+        }
+        time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(asked["origin"], "https://httpbin.org", "{asked}");
+    let notice = browser.screen.state.lock().expect("unpoisoned")["asked"].clone();
+    assert!(
+        notice
+            .as_str()
+            .is_some_and(|said| said.contains("httpbin.org"))
+    );
+
+    browser
+        .auth(&json!({ "kind": "auth", "username": "owner", "password": "secret" }))
+        .await
+        .expect("answered");
+    going.await.expect("joined").expect("navigated");
+    let page = Page { running: &running };
+    page.settle().await.expect("settled");
+
+    let body = page
+        .evaluate("document.body.innerText")
+        .await
+        .expect("read");
+    assert!(
+        body.as_str()
+            .is_some_and(|text| text.contains("\"authenticated\": true")),
+        "{body}"
+    );
+    assert!(browser.screen.state.lock().expect("unpoisoned")["picker"].is_null());
+}
