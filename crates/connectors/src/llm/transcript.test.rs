@@ -353,3 +353,93 @@ fn a_private_reply_is_replayed_with_its_flag() {
         serde_json::json!({ "thread": 1, "text": "psst", "privately": true })
     );
 }
+
+fn long(count: u32) -> Vec<Entry> {
+    let mut conversation = Vec::new();
+    talk(&mut conversation, count);
+    conversation
+}
+
+fn talk(conversation: &mut Vec<Entry>, count: u32) {
+    let words = "가".repeat(9_000);
+    for n in 0..count {
+        conversation.push(heard(0, &format!("{n} {words}")));
+        conversation.push(acted(conversation.len(), vec![say(0, "ok")], None));
+    }
+}
+
+#[test]
+fn a_short_conversation_is_carried_whole() {
+    let conversation = long(10);
+
+    assert_eq!(start(&conversation), 0);
+    let turns = build(&conversation, "anthropic");
+    assert!(notes(&turns[0])[0].starts_with("<message"));
+}
+
+#[test]
+fn a_long_conversation_leaves_out_its_start_and_says_so() {
+    let conversation = long(60);
+
+    let from = start(&conversation);
+    let carried: usize = conversation[from..].iter().map(weight).sum();
+
+    assert!(from > 0);
+    assert!(matches!(conversation[from], Entry::Heard { .. }));
+    assert!(carried <= KEPT);
+    let turns = build(&conversation, "anthropic");
+    assert!(notes(&turns[0])[0].starts_with("<earlier_conversation_left_out>"));
+    assert!(notes(&turns[0])[1].starts_with(&format!(
+        "<message thread=\"0\" channel=\"app\" place=\"main\" from=\"Me\" role=\"owner\">\n{} ",
+        from / 2
+    )));
+}
+
+#[test]
+fn the_start_moves_in_steps_so_most_requests_share_their_beginning() {
+    let mut conversation = long(60);
+    let first = start(&conversation);
+
+    conversation.push(heard(0, "짧은 말"));
+    conversation.push(acted(conversation.len(), vec![say(0, "ok")], None));
+    assert_eq!(start(&conversation), first);
+
+    talk(&mut conversation, 12);
+    assert!(start(&conversation) > first);
+}
+
+#[test]
+fn a_reply_to_something_left_out_comes_first() {
+    let mut conversation = long(60);
+    let from = start(&conversation);
+    conversation.insert(from + 1, acted(from - 2, vec![say(0, "late")], None));
+
+    let turns = build(&conversation, "anthropic");
+
+    assert!(notes(&turns[0])[0].starts_with("<earlier_conversation_left_out>"));
+    assert!(matches!(turns[1], Turn::Assistant(_)));
+}
+
+#[test]
+fn the_newest_message_is_carried_however_long_it_is() {
+    let mut conversation = long(3);
+    let huge = "나".repeat(KEPT + STEP);
+    conversation.push(heard(0, &huge));
+
+    let from = start(&conversation);
+
+    assert_eq!(from, conversation.len() - 1);
+    let turns = build(&conversation, "anthropic");
+    assert!(notes(&turns[0])[1].contains(&huge));
+}
+
+#[test]
+fn without_a_message_after_the_cut_the_last_message_starts_it() {
+    let mut conversation = long(40);
+    let last = conversation.len();
+    conversation.push(heard(0, "마지막 말"));
+    conversation.push(acted(last + 1, vec![tool("t1")], None));
+    conversation.push(returned("t1", Ok(&"다".repeat(KEPT + STEP))));
+
+    assert_eq!(start(&conversation), last);
+}

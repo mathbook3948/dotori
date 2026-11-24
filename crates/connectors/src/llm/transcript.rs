@@ -17,6 +17,15 @@ const SAID: &str = "Queued for delivery. A failure arrives as a message of its o
 const DELEGATED: &str = "Started. The result arrives as a message of its own.";
 const LOST: &str = "No result was recorded for this call.";
 const NOTHING_NEW: &str = "Nothing new has happened.";
+const LEFT_OUT: &str = "<earlier_conversation_left_out>The start of this conversation is not \
+                        shown, to keep it short. Search memory for what was said \
+                        before.</earlier_conversation_left_out>";
+/// About how many characters of the conversation a request carries at most.
+pub(crate) const KEPT: usize = 300_000;
+/// How far the start of what is carried moves at a time, so the start of the conversation stays
+/// the same between most requests and the provider can reuse its cache.
+pub(crate) const STEP: usize = 100_000;
+const SMALL: usize = 200;
 
 /// The conversation as alternating turns, each reply placed right after what it answered.
 #[derive(Debug, PartialEq)]
@@ -55,26 +64,82 @@ impl PartialEq for Said {
 }
 
 pub(crate) fn build(conversation: &[Entry], provider: &str) -> Vec<Turn> {
+    let start = start(conversation);
     let mut builder = Builder::default();
-    for index in order(conversation) {
+    if start > 0 {
+        builder.notes.push(String::from(LEFT_OUT));
+    }
+    for index in order(conversation, start) {
         builder.add(index, &conversation[index], provider);
     }
     builder.finish()
 }
 
-fn order(conversation: &[Entry]) -> Vec<usize> {
+fn start(conversation: &[Entry]) -> usize {
+    let total: usize = conversation.iter().map(weight).sum();
+    if total <= KEPT {
+        return 0;
+    }
+    let cut = (total - KEPT).div_ceil(STEP) * STEP;
+    let mut before = 0;
+    let mut last_heard = 0;
+    for (index, entry) in conversation.iter().enumerate() {
+        if matches!(entry, Entry::Heard { .. }) {
+            if before >= cut {
+                return index;
+            }
+            last_heard = index;
+        }
+        before += weight(entry);
+    }
+    last_heard
+}
+
+fn weight(entry: &Entry) -> usize {
+    SMALL
+        + match entry {
+            Entry::Heard { message, .. } => chars(message.content.as_str()),
+            Entry::Acted { actions, trace, .. } => match trace {
+                Some(trace) => chars(&trace.data),
+                None => actions
+                    .iter()
+                    .map(|action| match action {
+                        Action::Say { text, .. } => chars(text),
+                        Action::UseTool(call) => chars(&call.input),
+                        Action::Delegate(spec) => chars(&spec.brief),
+                    })
+                    .sum(),
+            },
+            Entry::ToolReturned { result, .. } => match result {
+                Ok(output) => chars(output),
+                Err(error) => chars(&error.detail),
+            },
+            Entry::SubSessionReturned { outcome, .. } => match outcome {
+                SubSessionOutcome::Finished(text) | SubSessionOutcome::Failed(text) => chars(text),
+            },
+            Entry::DeliveryFailed { text, .. } => chars(text),
+            _ => 0,
+        }
+}
+
+fn chars(text: &str) -> usize {
+    text.chars().count()
+}
+
+fn order(conversation: &[Entry], start: usize) -> Vec<usize> {
     let mut replies: Vec<(usize, usize)> = conversation
         .iter()
         .enumerate()
+        .skip(start)
         .filter_map(|(index, entry)| match entry {
-            Entry::Acted { answered, .. } => Some(((*answered).min(index), index)),
+            Entry::Acted { answered, .. } => Some(((*answered).clamp(start, index), index)),
             _ => None,
         })
         .collect();
     replies.sort();
     let mut replies = replies.into_iter().peekable();
-    let mut order = Vec::with_capacity(conversation.len());
-    for (index, entry) in conversation.iter().enumerate() {
+    let mut order = Vec::with_capacity(conversation.len() - start);
+    for (index, entry) in conversation.iter().enumerate().skip(start) {
         while let Some((_, reply)) = replies.next_if(|(answered, _)| *answered <= index) {
             order.push(reply);
         }
