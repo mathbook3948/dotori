@@ -8,6 +8,8 @@ Cargo.lock
 Cargo.toml
 LICENSE-APACHE
 LICENSE-MIT
+README.ko.md
+README.md
 crates
 deny.toml
 docs
