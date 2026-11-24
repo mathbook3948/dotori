@@ -12,6 +12,8 @@ use gpui::prelude::*;
 use crate::home::Home;
 use crate::notes::MAX_NOTES;
 use crate::notes::Notes;
+use crate::window::identity::Particle;
+use crate::window::identity::called;
 use crate::window::parts::prose;
 use crate::window::theme::Theme;
 
@@ -141,7 +143,8 @@ impl Render for NotesView {
                             .child("메모"),
                     )
                     .child(div().text_xs().text_color(theme.muted).child(format!(
-                        "dotori가 답할 때마다 기억하는 말이에요. 채팅창에서 부탁하면 더해지고, 여기서는 지울 수 있어요. ({}/{MAX_NOTES})",
+                        "{} 답할 때마다 기억하는 말이에요. 채팅창에서 부탁하면 더해지고, 여기서는 지울 수 있어요. ({}/{MAX_NOTES})",
+                        called(Particle::Subject),
                         self.shown.len()
                     ))),
             )

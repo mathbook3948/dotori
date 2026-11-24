@@ -55,6 +55,8 @@ use crate::link::Update;
 use crate::screen_link::ScreenLink;
 use crate::window::browser;
 use crate::window::browser::BrowserWindow;
+use crate::window::identity::Particle;
+use crate::window::identity::called;
 use crate::window::input::Submit;
 use crate::window::input::TextInput;
 use crate::window::motion::FOLLOW;
@@ -167,7 +169,7 @@ impl ChatView {
             link: LinkState::Connecting,
             answering: None,
             browser_at: None,
-            input: cx.new(|cx| TextInput::multiline("dotori에게 말하기", cx)),
+            input: cx.new(|cx| TextInput::multiline(say_to(), cx)),
             say,
             scroll: ScrollHandle::new(),
             zone: TimeZone::system(),
@@ -728,11 +730,15 @@ impl ChatView {
                         })
                         .when(tool != "erase_records", |hint| {
                             hint.text_color(theme.muted).child(match tool {
-                                "run_shell" => "허락하면 dotori가 이 명령을 바로 실행해요",
-                                "write_file" | "edit_file" => {
-                                    "허락하면 dotori가 파일을 바로 바꿔요"
-                                }
-                                _ => "허락하면 바로 실행해요",
+                                "run_shell" => format!(
+                                    "허락하면 {} 이 명령을 바로 실행해요",
+                                    called(Particle::Subject)
+                                ),
+                                "write_file" | "edit_file" => format!(
+                                    "허락하면 {} 파일을 바로 바꿔요",
+                                    called(Particle::Subject)
+                                ),
+                                _ => String::from("허락하면 바로 실행해요"),
                             })
                         }),
                 )
@@ -761,7 +767,10 @@ impl ChatView {
                             div()
                                 .flex_1()
                                 .font_weight(FontWeight::SEMIBOLD)
-                                .child("dotori가 이 일을 해도 될지 물어요"),
+                                .child(format!(
+                                    "{} 이 일을 해도 될지 물어요",
+                                    called(Particle::Subject)
+                                )),
                         )
                         .children(self.meta(theme, n, input, mark, cx)),
                 )
@@ -1039,7 +1048,10 @@ impl ChatView {
                     .child(
                         div()
                             .text_color(theme.muted)
-                            .child(prose("다 하면 \"다 했어요\"를 누르거나 브라우저 창을 닫아 주세요. dotori가 이어서 할게요.")),
+                            .child(prose(&format!(
+                                "다 하면 \"다 했어요\"를 누르거나 브라우저 창을 닫아 주세요. {} 이어서 할게요.",
+                                called(Particle::Subject)
+                            ))),
                     )
                     .child(
                         div()
@@ -1307,6 +1319,8 @@ impl Focusable for ChatView {
 impl Render for ChatView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(window).glass();
+        self.input
+            .update(cx, |input, cx| input.set_placeholder(say_to(), cx));
         self.entered
             .retain(|_, at| MESSAGE_ENTER.moving(at.elapsed()));
         let following = self.step_follow();
@@ -1593,6 +1607,10 @@ impl Render for WorkingView {
             )
             .with_animation("working", MESSAGE_ENTER.animation(), entering)
     }
+}
+
+fn say_to() -> SharedString {
+    SharedString::from(format!("{} 말하기", called(Particle::To)))
 }
 
 fn empty(theme: &Theme) -> impl IntoElement {

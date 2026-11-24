@@ -95,6 +95,11 @@ impl Home {
         self.root.join("notes.sqlite3")
     }
 
+    /// The pictures the owner gave the assistant, each named by its contents.
+    pub(crate) fn icons(&self) -> PathBuf {
+        self.root.join("icons")
+    }
+
     /// What the owner asked dotori to do at set times.
     pub(crate) fn routines(&self) -> PathBuf {
         self.root.join("routines.sqlite3")

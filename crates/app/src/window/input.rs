@@ -386,11 +386,11 @@ impl TextInput {
     }
 
     /// A field of one line.
-    pub(crate) fn new(placeholder: &'static str, cx: &mut Context<Self>) -> Self {
+    pub(crate) fn new(placeholder: impl Into<SharedString>, cx: &mut Context<Self>) -> Self {
         Self {
             focus_handle: cx.focus_handle(),
             content: SharedString::default(),
-            placeholder: SharedString::new_static(placeholder),
+            placeholder: placeholder.into(),
             selected_range: 0..0,
             selection_reversed: false,
             marked_range: None,
@@ -407,7 +407,7 @@ impl TextInput {
 
     /// A field of one line that shows a dot for each character, for a password. It never hands
     /// the input method the real text.
-    pub(crate) fn masked(placeholder: &'static str, cx: &mut Context<Self>) -> Self {
+    pub(crate) fn masked(placeholder: impl Into<SharedString>, cx: &mut Context<Self>) -> Self {
         Self {
             masked: true,
             ..Self::new(placeholder, cx)
@@ -437,10 +437,18 @@ impl TextInput {
 
     /// A field that grows to several lines as the text wraps, and takes a line break on
     /// Shift+Enter.
-    pub(crate) fn multiline(placeholder: &'static str, cx: &mut Context<Self>) -> Self {
+    pub(crate) fn multiline(placeholder: impl Into<SharedString>, cx: &mut Context<Self>) -> Self {
         Self {
             multiline: true,
             ..Self::new(placeholder, cx)
+        }
+    }
+
+    /// Shows `placeholder` while the field is empty, from now on.
+    pub(crate) fn set_placeholder(&mut self, placeholder: SharedString, cx: &mut Context<Self>) {
+        if self.placeholder != placeholder {
+            self.placeholder = placeholder;
+            cx.notify();
         }
     }
 

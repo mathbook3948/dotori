@@ -546,3 +546,26 @@ fn the_discord_form_needs_a_snowflake_owner_and_a_variable_name() {
     assert_eq!(DiscordForm::of(Some(&section)), form);
     assert_eq!(DiscordForm::default().settings(), Ok(None));
 }
+
+#[test]
+fn the_assistant_is_told_the_name_the_owner_gave_it() {
+    let settings = Settings {
+        assistant: Some(AssistantSettings {
+            name: Some(String::from("별")),
+            icon: None,
+        }),
+        ..Settings::default()
+    };
+
+    let told = settings.named(DEFAULT_SYSTEM);
+
+    assert!(
+        told.starts_with("You are 별, a personal assistant"),
+        "{told}"
+    );
+    assert!(
+        settings
+            .named(SUB_SESSION_SYSTEM)
+            .contains("sub-session of 별,")
+    );
+}

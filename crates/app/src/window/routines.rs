@@ -18,6 +18,8 @@ use gpui::px;
 use crate::home::Home;
 use crate::routines::Routine;
 use crate::routines::Routines;
+use crate::window::identity::Particle;
+use crate::window::identity::called;
 use crate::window::input::Submit;
 use crate::window::input::TextInput;
 use crate::window::parts::prose;
@@ -320,9 +322,10 @@ impl Render for RoutinesView {
                             .font_weight(FontWeight::SEMIBOLD)
                             .child("루틴"),
                     )
-                    .child(div().text_xs().text_color(theme.muted).child(
-                        "정해 둔 시간에 dotori가 알아서 하는 일이에요. 결과는 채팅창에 보여요.",
-                    )),
+                    .child(div().text_xs().text_color(theme.muted).child(format!(
+                        "정해 둔 시간에 {} 알아서 하는 일이에요. 결과는 채팅창에 보여요.",
+                        called(Particle::Subject)
+                    ))),
             )
             .child(self.zone_row(&theme, window, cx))
             .child(list)

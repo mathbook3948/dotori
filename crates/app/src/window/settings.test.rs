@@ -67,7 +67,7 @@ fn a_pasted_key_goes_into_the_vault_and_can_be_forgotten(cx: &mut TestAppContext
         "the key never reaches the settings file"
     );
 
-    click(cx, "forget-ANTHROPIC_API_KEY");
+    view.update(cx, |view, cx| view.forget(ANTHROPIC_KEY, cx));
 
     assert_eq!(vault.get(ANTHROPIC_KEY).expect("read"), None);
     let _ = std::fs::remove_dir_all(&root);
@@ -120,7 +120,7 @@ fn forgetting_the_key_dotori_named_lets_the_model_go_without_one(cx: &mut TestAp
             .is_ok()
     );
 
-    click(cx, "forget-DOTORI_MODEL_API_KEY");
+    view.update(cx, |view, cx| view.forget(MODEL_KEY, cx));
 
     let keyless = Settings::load(&root.join("settings.toml")).expect("loaded");
     assert!(
@@ -128,4 +128,54 @@ fn forgetting_the_key_dotori_named_lets_the_model_go_without_one(cx: &mut TestAp
         "no key name is left behind"
     );
     let _ = std::fs::remove_dir_all(&root);
+}
+
+#[gpui::test]
+fn the_owner_names_the_assistant_and_gives_it_a_picture(cx: &mut TestAppContext) {
+    let root = std::env::temp_dir().join(format!("dotori-identity-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("a home");
+    std::fs::write(root.join("settings.toml"), "").expect("settings");
+    let home = Home { root: root.clone() };
+    let icons = home.icons();
+    let settings = Settings::load(&home.settings()).expect("loaded");
+    let (view, cx) = cx.add_window_view(|_, cx| SettingsView::new(home, settings, cx));
+    cx.run_until_parked();
+    let mut png = Vec::new();
+    image::DynamicImage::new_rgba8(40, 30)
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .expect("a picture");
+
+    view.update(cx, |view, cx| {
+        view.name
+            .update(cx, |input, cx| input.set_text("도토리", cx));
+        view.use_icon(icons::keep(&icons, &png), cx);
+    });
+    click(cx, "save");
+
+    let kept = Settings::load(&root.join("settings.toml"))
+        .expect("loaded")
+        .assistant
+        .expect("an assistant section");
+    assert_eq!(kept.name.as_deref(), Some("도토리"));
+    let icon = kept.icon.expect("a picture");
+    assert!(icons::path(&icons, &icon).is_some());
+
+    click(cx, "icon-default");
+
+    let back = Settings::load(&root.join("settings.toml"))
+        .expect("loaded")
+        .assistant
+        .expect("still named");
+    assert_eq!(back.icon, None);
+    assert_eq!(back.name.as_deref(), Some("도토리"));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_name_longer_than_allowed_is_refused() {
+    let long = "가".repeat(ASSISTANT_NAME_LONGEST + 1);
+
+    assert!(assistant_named(None, &long).is_err());
+    assert_eq!(assistant_named(None, ASSISTANT_NAME).expect("fine"), None);
 }

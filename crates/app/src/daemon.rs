@@ -58,6 +58,7 @@ use crate::handoff::HandedOff;
 use crate::handoff::Handoff;
 use crate::history;
 use crate::home::Home;
+use crate::icons;
 use crate::idle::NoTools;
 use crate::lock::DaemonLock;
 use crate::logins;
@@ -334,6 +335,8 @@ pub(crate) async fn serve(
             let linked = linked.clone();
             tokio::spawn(vault::share(vault, linked));
         }
+        tokio::spawn(icons::share(home.icons(), home.settings(), linked.clone()));
+        let (icon_folder, settings_path) = (home.icons(), home.settings());
         let vault = Arc::clone(&vault);
         let routines = Arc::clone(&routines);
         let handoff = Arc::clone(&handoff);
@@ -353,6 +356,9 @@ pub(crate) async fn serve(
                     continue;
                 }
                 if vault::hear(&vault, &linked, &heard) {
+                    continue;
+                }
+                if icons::hear(&icon_folder, &settings_path, &linked, &heard) {
                     continue;
                 }
                 if vectors.as_ref().is_some_and(|vectors| vectors.hear(&heard)) {

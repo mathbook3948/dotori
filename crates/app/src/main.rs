@@ -10,6 +10,7 @@ mod forget;
 mod handoff;
 mod history;
 mod home;
+mod icons;
 mod idle;
 mod link;
 mod lock;

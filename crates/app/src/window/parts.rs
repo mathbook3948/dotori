@@ -11,18 +11,23 @@ use gpui::img;
 use gpui::prelude::*;
 use gpui::px;
 
+use crate::window::identity;
 use crate::window::theme::Theme;
 use crate::window::themes::LOGO;
 
-/// dotori's acorn, in the logo's colors for `theme`.
+/// The assistant's picture: the one the owner gave it, cut round, or else dotori's acorn in the
+/// logo's colors for `theme`.
 pub(crate) fn logo(theme: &Theme, size: f32) -> Img {
-    img(if theme.is_dark() {
-        DARK_LOGO
-    } else {
-        LIGHT_LOGO
-    })
-    .flex_none()
-    .size(px(size))
+    match identity::icon() {
+        Some(icon) => img(icon).flex_none().size(px(size)).rounded_full(),
+        None => img(if theme.is_dark() {
+            DARK_LOGO
+        } else {
+            LIGHT_LOGO
+        })
+        .flex_none()
+        .size(px(size)),
+    }
 }
 
 /// The windows' own images: the logo in a light and a dark look. GPUI loads an image named this
