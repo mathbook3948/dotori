@@ -585,7 +585,7 @@ impl SettingsView {
             theme,
             &[
                 "discord.com/developers/applications에서 앱을 만들고 Bot 메뉴에서 토큰을 받아요. 같은 화면에서 Message Content Intent를 켜요.",
-                "OAuth2 URL Generator에서 bot 범위와 Send Messages, Read Message History 권한을 골라 내 서버에 봇을 초대해요.",
+                "OAuth2 URL Generator에서 bot 범위와 View Channels, Send Messages, Read Message History 권한을 골라 내 서버에 봇을 초대해요.",
                 "토큰을 아래 이름의 환경 변수에 넣고 dotori를 다시 시작해요. 토큰은 파일에 저장하지 않아요.",
             ],
         ))

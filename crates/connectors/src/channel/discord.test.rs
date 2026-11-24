@@ -24,6 +24,13 @@ impl Inbox for Collect {
     }
 }
 
+fn bot() -> Bot {
+    Bot {
+        id: String::from(BOT),
+        roles: HashSet::from([String::from("888")]),
+    }
+}
+
 fn message(author: &str, guild: Option<&str>, content: &str) -> Value {
     let mut message = json!({
         "id": "500",
@@ -105,39 +112,39 @@ fn ready() -> Value {
 
 #[test]
 fn the_owners_direct_messages_are_heard_and_nobody_elses() {
-    let heard = read(&message(OWNER, None, "안녕"), OWNER, BOT).expect("heard");
+    let heard = read(&message(OWNER, None, "안녕"), OWNER, &bot()).expect("heard");
     assert_eq!(heard.place, "300");
     assert_eq!(heard.id, "300:500");
     assert_eq!(heard.server, None);
     assert_eq!(heard.name, "Yuno");
     assert_eq!(heard.text, "안녕");
 
-    assert_eq!(read(&message("222", None, "안녕"), OWNER, BOT), None);
-    let mut bot = message(OWNER, None, "안녕");
-    bot["author"]["bot"] = json!(true);
-    assert_eq!(read(&bot, OWNER, BOT), None);
+    assert_eq!(read(&message("222", None, "안녕"), OWNER, &bot()), None);
+    let mut from_bot = message(OWNER, None, "안녕");
+    from_bot["author"]["bot"] = json!(true);
+    assert_eq!(read(&from_bot, OWNER, &bot()), None);
     let mut hooked = message(OWNER, None, "안녕");
     hooked["webhook_id"] = json!("77");
-    assert_eq!(read(&hooked, OWNER, BOT), None);
+    assert_eq!(read(&hooked, OWNER, &bot()), None);
     let mut forwarded = message(OWNER, None, "");
     forwarded["message_snapshots"] = json!([{ "message": { "content": "다른 사람 말" } }]);
-    assert_eq!(read(&forwarded, OWNER, BOT), None);
+    assert_eq!(read(&forwarded, OWNER, &bot()), None);
     let mut joined = message(OWNER, None, "");
     joined["type"] = json!(7);
-    assert_eq!(read(&joined, OWNER, BOT), None);
+    assert_eq!(read(&joined, OWNER, &bot()), None);
 }
 
 #[test]
 fn in_a_server_only_a_mention_or_an_answer_to_the_bot_is_heard() {
     assert_eq!(
-        read(&message(OWNER, Some("1"), "그냥 말"), OWNER, BOT),
+        read(&message(OWNER, Some("1"), "그냥 말"), OWNER, &bot()),
         None
     );
 
     let mentioned = read(
         &message(OWNER, Some("1"), "<@999> 내일 일정 <@!999>"),
         OWNER,
-        BOT,
+        &bot(),
     )
     .expect("heard");
     assert_eq!(mentioned.text, "내일 일정");
@@ -147,18 +154,25 @@ fn in_a_server_only_a_mention_or_an_answer_to_the_bot_is_heard() {
     let mut answer = message(OWNER, Some("1"), "고마워");
     answer["type"] = json!(19);
     answer["referenced_message"] = json!({ "author": { "id": BOT } });
-    assert_eq!(read(&answer, OWNER, BOT).expect("heard").text, "고마워");
+    assert_eq!(read(&answer, OWNER, &bot()).expect("heard").text, "고마워");
 
     let mut nick = message(OWNER, Some("1"), "<@999> 안녕");
     nick["member"] = json!({ "nick": "도토리 주인" });
-    assert_eq!(read(&nick, OWNER, BOT).expect("heard").name, "도토리 주인");
+    assert_eq!(
+        read(&nick, OWNER, &bot()).expect("heard").name,
+        "도토리 주인"
+    );
 
     assert_eq!(
-        read(&message(OWNER, Some("1"), "<@9990> 안녕"), OWNER, BOT),
+        read(&message(OWNER, Some("1"), "<@9990> 안녕"), OWNER, &bot()),
         None
     );
     assert_eq!(
-        read(&message(OWNER, Some("1"), "<@999> 안녕"), OWNER, ""),
+        read(
+            &message(OWNER, Some("1"), "<@999> 안녕"),
+            OWNER,
+            &Bot::default()
+        ),
         None
     );
 }
@@ -198,9 +212,14 @@ fn the_config_hides_its_token() {
 async fn the_owners_mention_reaches_the_inbox_and_heartbeats_keep_the_gateway() {
     let stranger = json!({ "op": 0, "s": 2, "t": "MESSAGE_CREATE",
         "d": message("222", Some("1"), "<@999> 나도") });
-    let mention = json!({ "op": 0, "s": 3, "t": "MESSAGE_CREATE",
-        "d": message(OWNER, Some("1"), "<@999> 안녕") });
-    let (socket, mut heard) = gateway(vec![ready(), stranger, mention], None).await;
+    let server = json!({ "op": 0, "s": 3, "t": "GUILD_CREATE", "d": { "id": "1", "roles": [
+        { "id": "1", "name": "@everyone" },
+        { "id": "888", "name": "dotori", "tags": { "bot_id": BOT } },
+    ] } });
+    let mut by_role = message(OWNER, Some("1"), "<@&888> 안녕");
+    by_role["mention_roles"] = json!(["888"]);
+    let mention = json!({ "op": 0, "s": 4, "t": "MESSAGE_CREATE", "d": by_role });
+    let (socket, mut heard) = gateway(vec![ready(), stranger, server, mention], None).await;
     let (base, mut requests) = mock::serve(vec![
         (200, leaked(format!(r#"{{"url":"{socket}"}}"#))),
         (200, r#"{"id":"1","approximate_member_count":40}"#),
@@ -225,7 +244,9 @@ async fn the_owners_mention_reaches_the_inbox_and_heartbeats_keep_the_gateway() 
     assert_eq!(incoming.content.as_str(), "안녕");
     assert_eq!(
         incoming.audience,
-        Audience::Anyone(String::from("this Discord server and its 39 members"))
+        Audience::Anyone(String::from(
+            "this Discord server, which has about 40 members"
+        ))
     );
 
     let identify = time::timeout(WAIT, heard.recv())
@@ -239,7 +260,7 @@ async fn the_owners_mention_reaches_the_inbox_and_heartbeats_keep_the_gateway() 
         .await
         .expect("in time")
         .expect("heartbeat");
-    assert_eq!(beat, json!({ "op": 1, "d": 3 }));
+    assert_eq!(beat, json!({ "op": 1, "d": 4 }));
     let again = time::timeout(WAIT, heard.recv())
         .await
         .expect("in time")
@@ -399,4 +420,64 @@ async fn a_gateway_that_asks_to_reconnect_is_resumed_where_it_left_off() {
         resumed,
         json!({ "op": 6, "d": { "token": "bot-token", "session_id": "s1", "seq": 2 } })
     );
+}
+
+#[test]
+fn the_bots_role_or_a_ping_in_a_reply_counts_as_calling_it() {
+    let mut role = message(OWNER, Some("1"), "<@&888> 오늘 날씨");
+    role["mention_roles"] = json!(["888"]);
+    assert_eq!(read(&role, OWNER, &bot()).expect("heard").text, "오늘 날씨");
+
+    let mut other_role = message(OWNER, Some("1"), "<@&777> 다들 안녕");
+    other_role["mention_roles"] = json!(["777"]);
+    assert_eq!(read(&other_role, OWNER, &bot()), None);
+
+    let mut pinged = message(OWNER, Some("1"), "그거 다시");
+    pinged["type"] = json!(19);
+    pinged["referenced_message"] = Value::Null;
+    pinged["mentions"] = json!([{ "id": BOT }]);
+    assert_eq!(
+        read(&pinged, OWNER, &bot()).expect("heard").text,
+        "그거 다시"
+    );
+}
+
+#[tokio::test]
+async fn a_server_with_only_the_owner_and_the_bot_is_still_not_private() {
+    let (base, _requests) =
+        mock::serve(vec![(200, r#"{"id":"1","approximate_member_count":2}"#)]).await;
+    let mut config = DiscordConfig::new("bot-token", OWNER);
+    config.api_base = base;
+    let channel = DiscordChannel::new(config).expect("built");
+
+    let audience = channel.audience("1").await;
+
+    assert!(matches!(audience, Audience::Anyone(_)), "{audience:?}");
+}
+
+#[tokio::test]
+async fn a_rate_limited_answer_waits_and_tries_again() {
+    let limited = r#"{"message":"You are being rate limited.","retry_after":0.05,"global":false}"#;
+    let (base, mut requests) = mock::serve(vec![
+        (429, limited),
+        (429, limited),
+        (200, r#"{"id":"600"}"#),
+    ])
+    .await;
+    let mut config = DiscordConfig::new("bot-token", OWNER);
+    config.api_base = base;
+    let channel = DiscordChannel::new(config).expect("built");
+
+    time::timeout(
+        WAIT,
+        channel.deliver(Place::new("300"), String::from("안녕")),
+    )
+    .await
+    .expect("in time")
+    .expect("delivered");
+
+    for _ in 0..3 {
+        let tried = requests.recv().await.expect("tried");
+        assert!(tried.head.starts_with("POST /channels/300/messages"));
+    }
 }

@@ -3,6 +3,7 @@
 //! was said. Nobody else is heard.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fmt;
 use std::mem;
 use std::sync::Arc;
@@ -28,9 +29,11 @@ use reqwest::Method;
 use reqwest::StatusCode;
 use reqwest::header::AUTHORIZATION;
 use reqwest::header::CONTENT_TYPE;
+use reqwest::header::RETRY_AFTER;
 use serde_json::Value;
 use serde_json::json;
 use tokio::time;
+use tokio::time::MissedTickBehavior;
 use tokio_tungstenite::tungstenite::Message;
 
 /// The channel id of Discord.
@@ -49,6 +52,7 @@ const PIECE: usize = 2000;
 const SERVER_WAIT: Duration = Duration::from_secs(5);
 const SERVER_FRESH: Duration = Duration::from_secs(10 * 60);
 const SERVERS_KEPT: usize = 256;
+const SEND_TRIES: usize = 4;
 const UNCOUNTED: &str = "this Discord server, whose members could not be counted";
 
 /// What the Discord channel needs. The owner is the one Discord user id whose messages are
@@ -114,6 +118,14 @@ struct Session {
     seq: Option<u64>,
 }
 
+/// Who the bot is: its user id and, in each server, the role Discord made for it, which the
+/// owner may mention in its place.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Bot {
+    pub(crate) id: String,
+    pub(crate) roles: HashSet<String>,
+}
+
 /// One message the owner sent the bot.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Arrived {
@@ -157,6 +169,13 @@ impl DiscordChannel {
             Failed::Passing(format!("{path} unreachable: {}", error.without_url()), None)
         })?;
         let status = response.status();
+        let waited = response
+            .headers()
+            .get(RETRY_AFTER)
+            .and_then(|after| after.to_str().ok())
+            .and_then(|after| after.trim().parse::<f64>().ok())
+            .filter(|seconds| seconds.is_finite() && *seconds >= 0.0)
+            .map(Duration::from_secs_f64);
         let text = response.text().await.map_err(|error| {
             Failed::Passing(
                 format!("{path} answered oddly: {}", error.without_url()),
@@ -166,8 +185,16 @@ impl DiscordChannel {
         let reply: Value = if text.trim().is_empty() {
             Value::Null
         } else {
-            serde_json::from_str(&text)
-                .map_err(|error| Failed::Passing(format!("{path} answered oddly: {error}"), None))?
+            match serde_json::from_str(&text) {
+                Ok(reply) => reply,
+                Err(_) if !status.is_success() => Value::Null,
+                Err(error) => {
+                    return Err(Failed::Passing(
+                        format!("{path} answered oddly: {error}"),
+                        None,
+                    ));
+                }
+            }
         };
         if status.is_success() {
             return Ok(reply);
@@ -186,14 +213,15 @@ impl DiscordChannel {
             .get("retry_after")
             .and_then(Value::as_f64)
             .filter(|seconds| seconds.is_finite() && *seconds >= 0.0)
-            .map(Duration::from_secs_f64);
+            .map(Duration::from_secs_f64)
+            .or(waited);
         Err(Failed::Passing(detail, after))
     }
 
     async fn listen(&self, inbox: Arc<dyn Inbox>) -> Result<(), ChannelError> {
         let mut wait = FIRST_WAIT;
         let mut session: Option<Session> = None;
-        let mut bot = String::new();
+        let mut bot = Bot::default();
         loop {
             let started = Instant::now();
             match self.session(&mut session, &mut bot, inbox.as_ref()).await {
@@ -221,7 +249,7 @@ impl DiscordChannel {
     async fn session(
         &self,
         session: &mut Option<Session>,
-        bot: &mut String,
+        bot: &mut Bot,
         inbox: &dyn Inbox,
     ) -> Result<Ended, Failed> {
         let url = match session {
@@ -278,6 +306,7 @@ impl DiscordChannel {
             .await
             .map_err(gone)?;
         let mut beat = time::interval_at(time::Instant::now() + every / 2, every);
+        beat.set_missed_tick_behavior(MissedTickBehavior::Delay);
         let mut answered = true;
         loop {
             let frame = tokio::select! {
@@ -336,7 +365,7 @@ impl DiscordChannel {
             let data = event.get("d").unwrap_or(&Value::Null);
             match event.get("t").and_then(Value::as_str) {
                 Some("READY") => {
-                    *bot = data
+                    bot.id = data
                         .pointer("/user/id")
                         .and_then(Value::as_str)
                         .unwrap_or_default()
@@ -354,6 +383,22 @@ impl DiscordChannel {
                             .to_owned(),
                         seq: event.get("s").and_then(Value::as_u64),
                     });
+                }
+                Some("GUILD_CREATE" | "GUILD_ROLE_CREATE" | "GUILD_ROLE_UPDATE") => {
+                    let roles = data
+                        .get("roles")
+                        .and_then(Value::as_array)
+                        .cloned()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .chain(data.get("role").cloned());
+                    for role in roles {
+                        if role.pointer("/tags/bot_id").and_then(Value::as_str) == Some(&bot.id)
+                            && let Some(id) = role.get("id").and_then(Value::as_str)
+                        {
+                            bot.roles.insert(id.to_owned());
+                        }
+                    }
                 }
                 Some("MESSAGE_CREATE") => {
                     let Some(arrived) = read(data, &self.owner, bot) else {
@@ -407,12 +452,9 @@ impl DiscordChannel {
         let Some(count) = counted else {
             return Audience::Anyone(String::from(UNCOUNTED));
         };
-        let others = count.saturating_sub(1);
-        let audience = if others <= 1 {
-            Audience::Owner
-        } else {
-            Audience::Anyone(format!("this Discord server and its {others} members"))
-        };
+        let audience = Audience::Anyone(format!(
+            "this Discord server, which has about {count} members"
+        ));
         let mut servers = self.servers.lock().expect("unpoisoned");
         if servers.len() >= SERVERS_KEPT {
             servers.clear();
@@ -443,12 +485,15 @@ impl DiscordChannel {
 
     async fn send(&self, channel: &str, body: Value) -> Result<(), Failed> {
         let path = format!("/channels/{channel}/messages");
-        match self.call(Method::POST, &path, Some(body.clone())).await {
-            Err(Failed::Passing(_, Some(after))) if after <= MAX_WAIT => {
-                time::sleep(after).await;
-                self.call(Method::POST, &path, Some(body)).await.map(drop)
+        let mut tries = 1;
+        loop {
+            match self.call(Method::POST, &path, Some(body.clone())).await {
+                Err(Failed::Passing(_, Some(after))) if after <= MAX_WAIT && tries < SEND_TRIES => {
+                    tries += 1;
+                    time::sleep(after).await;
+                }
+                done => return done.map(drop),
             }
-            done => done.map(drop),
         }
     }
 }
@@ -478,9 +523,9 @@ async fn pause(wait: Duration, after: Option<Duration>) -> Duration {
 }
 
 /// The owner's message in a `MESSAGE_CREATE`, if it is one the assistant should hear: any text
-/// in a direct message, and in a server only text that mentions the bot or answers it. Forwarded
-/// text, webhooks and other bots are not heard.
-pub(crate) fn read(message: &Value, owner: &str, bot: &str) -> Option<Arrived> {
+/// in a direct message, and in a server only text that mentions the bot, or its role, or answers
+/// it. Forwarded text, webhooks and other bots are not heard.
+pub(crate) fn read(message: &Value, owner: &str, bot: &Bot) -> Option<Arrived> {
     let author = message.get("author")?;
     if author.get("id").and_then(Value::as_str)? != owner
         || author.get("bot").and_then(Value::as_bool) == Some(true)
@@ -519,14 +564,26 @@ pub(crate) fn read(message: &Value, owner: &str, bot: &str) -> Option<Arrived> {
             text: text.to_owned(),
         });
     };
-    if bot.is_empty() {
+    if bot.id.is_empty() {
         return None;
     }
-    let (mentioned, rest) = without_mention(text, bot);
+    let listed = |field: &str, wanted: &dyn Fn(&Value) -> bool| {
+        message
+            .get(field)
+            .and_then(Value::as_array)
+            .is_some_and(|listed| listed.iter().any(wanted))
+    };
+    let named = listed("mentions", &|user| {
+        user.get("id").and_then(Value::as_str) == Some(bot.id.as_str())
+    }) || listed("mention_roles", &|role| {
+        role.as_str().is_some_and(|role| bot.roles.contains(role))
+    });
+    let (written, rest) = without_mention(text, bot);
+    let mentioned = named || written;
     let answered = message
         .pointer("/referenced_message/author/id")
         .and_then(Value::as_str)
-        == Some(bot);
+        == Some(bot.id.as_str());
     if !mentioned && !answered {
         return None;
     }
@@ -539,10 +596,13 @@ pub(crate) fn read(message: &Value, owner: &str, bot: &str) -> Option<Arrived> {
     })
 }
 
-fn without_mention(text: &str, bot: &str) -> (bool, String) {
+fn without_mention(text: &str, bot: &Bot) -> (bool, String) {
     let mut found = false;
     let mut kept = text.to_owned();
-    for token in [format!("<@{bot}>"), format!("<@!{bot}>")] {
+    let tokens = [format!("<@{}>", bot.id), format!("<@!{}>", bot.id)]
+        .into_iter()
+        .chain(bot.roles.iter().map(|role| format!("<@&{role}>")));
+    for token in tokens {
         if kept.contains(&token) {
             found = true;
             kept = kept.replace(&token, " ");
