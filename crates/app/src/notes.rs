@@ -39,8 +39,8 @@ use crate::routines;
 use crate::routines::Routines;
 use crate::versioned;
 
-const REMEMBER: &str = "remember";
-const FORGET: &str = "forget";
+const REMEMBER: &str = "add_note";
+const FORGET: &str = "remove_note";
 const OWNER_TOOLS: [&str; 4] = [REMEMBER, FORGET, routines::ADD, routines::REMOVE];
 pub(crate) const MAX_NOTES: i64 = 50;
 const LOOK_EVERY: Duration = Duration::from_secs(20);
@@ -142,6 +142,11 @@ impl Notes {
     }
 
     /// Takes another PC's notes in place of these if they changed later. Says whether they did.
+    ///
+    /// The whole copy wins, not each change, on purpose. dotori serves one person, who changes
+    /// these from one PC at a time, so two PCs changing them in the same moment does not happen
+    /// in practice. Merging change by change would add a log and conflict rules for a case that
+    /// does not occur.
     pub(crate) fn take(&self, copy: &NotesCopy) -> Result<bool, String> {
         let taken = self.with(|connection| {
             if copy.changed_ms <= changed_ms(connection)? {

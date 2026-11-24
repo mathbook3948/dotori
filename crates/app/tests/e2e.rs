@@ -195,9 +195,11 @@ fn routines_named(home: &Path, name: &str) -> i64 {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_owner_talks_to_dotori_and_decides_on_a_command() {
     let command = "echo e2e";
+    let tools = std::sync::Arc::default();
     let model = model::start(Script {
         command: command.to_owned(),
         think: Duration::from_millis(200),
+        tools: std::sync::Arc::clone(&tools),
     })
     .await;
     let home = home("decide");
@@ -222,6 +224,16 @@ async fn the_owner_talks_to_dotori_and_decides_on_a_command() {
         })
         .await;
     window.reply(model::REMINDED).await;
+    let named: Vec<String> = tools.lock().expect("tools").clone();
+    assert!(named.len() > 5, "dotori offers its tools: {named:?}");
+    let misnamed: Vec<&String> = named
+        .iter()
+        .filter(|name| !dotori_core::tool::well_named(name))
+        .collect();
+    assert!(
+        misnamed.is_empty(),
+        "tools must be named verb_object: {misnamed:?}"
+    );
     assert_eq!(routines_named(&home, "치과 알림"), 1);
 
     window.say("이번 주 일정 정리해 줘").await;

@@ -170,8 +170,8 @@ async fn guarded_tools_join_the_others_and_run_where_they_are() {
     );
     assert_eq!(counting.0.load(Ordering::SeqCst), 0);
     assert_eq!(
-        guarded.run(call("webfetch")).await.expect("ran"),
-        "ran webfetch"
+        guarded.run(call("fetch_url")).await.expect("ran"),
+        "ran fetch_url"
     );
 }
 

@@ -1,0 +1,20 @@
+id: no-status-dots
+language: rust
+severity: error
+message: The windows never show a state with a colored dot. Say the state in words, as DESIGN.md asks.
+note: |
+  A small round div such as `.size(px(6.)).rounded_full().bg(...)` reads as a status dot.
+  Drop it and color the words instead, or use a text mark such as "•" for a list.
+files:
+  - crates/app/src/window/**/*.rs
+rule:
+  kind: call_expression
+  any:
+    - regex: \.size\(px\([1-9]\.\)\)\s*\.rounded_full\(\)
+    - regex: \.rounded_full\(\)\s*\.size\(px\([1-9]\.\)\)
+  not:
+    inside:
+      kind: call_expression
+      any:
+        - regex: \.size\(px\([1-9]\.\)\)\s*\.rounded_full\(\)
+        - regex: \.rounded_full\(\)\s*\.size\(px\([1-9]\.\)\)

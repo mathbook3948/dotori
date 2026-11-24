@@ -3,6 +3,9 @@ rust = { version = "1.100.0", components = "rustfmt,clippy" }
 ast-grep = "0.51.3"
 cargo-deny = "0.22.0"
 
+[hooks]
+postinstall = "git config core.hooksPath .githooks"
+
 [tasks.check]
 description = "Format, lint, test, and guard checks"
 run = [
@@ -14,6 +17,7 @@ run = [
   "cargo run --quiet --package xtask -- core-deps",
   "cargo run --quiet --package xtask -- root-entries",
   "cargo run --quiet --package xtask -- docs",
+  "cargo run --quiet --package xtask -- hooks",
   "cargo run --quiet --package xtask -- sql-schema",
   "cargo run --quiet --package xtask -- design-tokens",
   "cargo deny check licenses",

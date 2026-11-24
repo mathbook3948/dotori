@@ -24,7 +24,6 @@ use tokio::time;
 use crate::main_session::Linked;
 
 pub(crate) const BROWSER_JOB: &str = "browser";
-const BROWSER_TOOLS: &str = "browser_";
 const ANSWER_WAIT: Duration = Duration::from_secs(150);
 
 type Waiting = HashMap<u64, (String, oneshot::Sender<Result<String, String>>)>;
@@ -78,7 +77,7 @@ impl BrowserRoute {
     }
 
     fn browser_pc(&self, name: &str) -> Where<'_> {
-        if !name.starts_with(BROWSER_TOOLS) {
+        if !dotori_mcp::browser::TOOLS.contains(&name) {
             return Where::Here;
         }
         let Some(linked) = self.linked.get() else {
@@ -219,7 +218,7 @@ impl BrowserRoute {
             .get("name")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        let result = if !name.starts_with(BROWSER_TOOLS) {
+        let result = if !dotori_mcp::browser::TOOLS.contains(&name) {
             Err(String::from("only browser tools are run for another PC"))
         } else if linked.main_pc().as_deref() != Some(heard.key.as_str()) {
             Err(String::from(
