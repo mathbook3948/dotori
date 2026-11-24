@@ -260,3 +260,32 @@ fn a_set_environment_variable_wins_over_the_vault() {
     assert_eq!(read("PATH"), std::env::var("PATH").ok());
     let _ = std::fs::remove_dir_all(&folder);
 }
+
+#[test]
+fn a_message_from_another_pc_never_empties_a_vault_that_lost_its_key() {
+    let folder = folder();
+    vault(&folder).set("A", "one", 10).expect("kept");
+    std::fs::remove_file(folder.join("vault.key")).expect("lost the key");
+    let vault = vault(&folder);
+
+    let took = vault.take(&[copy("B", Some("two"), 20)], 30);
+
+    assert!(took.expect_err("no key").contains("give the keys again"));
+    assert_eq!(vault.names().expect("names"), vec!["A"]);
+    assert!(!folder.join("vault.key").exists());
+    let _ = std::fs::remove_dir_all(&folder);
+}
+
+#[test]
+fn a_full_vault_takes_no_new_name_but_still_removes() {
+    let folder = folder();
+    let vault = vault(&folder);
+    for n in 0..MAX_SECRETS {
+        vault.set(&format!("K{n}"), "v", 10).expect("kept");
+    }
+
+    assert!(vault.set("ONE_MORE", "v", 20).is_err());
+    vault.remove("K0", 30).expect("removed");
+    vault.set("ONE_MORE", "v", 40).expect("room again");
+    let _ = std::fs::remove_dir_all(&folder);
+}

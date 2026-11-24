@@ -56,6 +56,15 @@ CREATE TABLE IF NOT EXISTS meta (\
     value INTEGER NOT NULL\
 );";
 const CHECK: &str = "key";
+const VAULT_ID: &str = "vault_id";
+const KEY_PLACE: &str = "key_place";
+const KEPT_IN_FILE: i64 = 1;
+const KEPT_IN_KEYCHAIN: i64 = 2;
+const ROOM: &str = "WHERE (SELECT COUNT(*) FROM secrets WHERE sealed IS NOT NULL) < ?4 \
+    OR ?2 IS NULL OR EXISTS (SELECT 1 FROM secrets WHERE name = ?1)";
+const UPSERT: &str = "ON CONFLICT (name) DO UPDATE SET sealed = excluded.sealed, \
+    changed_ms = MAX(excluded.changed_ms, secrets.changed_ms + 1)";
+const LOCK_WAIT: Duration = Duration::from_secs(10);
 const CHECK_TEXT: &str = "dotori vault";
 const KEYCHAIN_SERVICE: &str = "dotori";
 const KEY_BYTES: usize = 32;
@@ -78,6 +87,13 @@ pub(crate) struct SecretCopy {
     pub(crate) changed_ms: i64,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Make {
+    Never,
+    New,
+    Recover,
+}
+
 enum Found {
     Key(Key),
     Gone,
@@ -88,7 +104,7 @@ enum Found {
 #[derive(Debug)]
 pub(crate) struct Vault {
     path: PathBuf,
-    keychain: Option<String>,
+    keychain: bool,
     key_file: PathBuf,
     lock_file: PathBuf,
     held: Mutex<Option<Connection>>,
@@ -99,19 +115,16 @@ impl Vault {
     /// The vault of the dotori home at `root`, opened with a key from the keychain, or from
     /// `vault.key` there when the keychain cannot keep one. Tests never touch the keychain.
     pub(crate) fn new(root: &Path) -> Self {
-        Self::at(
-            root,
-            (!cfg!(test)).then(|| format!("vault {}", root.display())),
-        )
+        Self::at(root, !cfg!(test))
     }
 
     /// A vault whose key is kept in `vault.key` in `root` and never in the keychain, for tests.
     #[cfg(test)]
     pub(crate) fn without_keychain(root: &Path) -> Self {
-        Self::at(root, None)
+        Self::at(root, false)
     }
 
-    fn at(root: &Path, keychain: Option<String>) -> Self {
+    fn at(root: &Path, keychain: bool) -> Self {
         Self {
             path: root.join("vault.sqlite3"),
             keychain,
@@ -153,7 +166,7 @@ impl Vault {
         let Some(sealed) = sealed else {
             return Ok(None);
         };
-        let key = self.key(false)?;
+        let key = self.key(Make::Never)?;
         open(&key, name, &sealed).map(Some)
     }
 
@@ -171,7 +184,9 @@ impl Vault {
         })
     }
 
-    /// Keeps `value` under `name`, in place of what was there.
+    /// Keeps `value` under `name`, in place of what was there. When the owner gives a key on a
+    /// PC that lost the key of its vault, the values that no longer open are emptied here only,
+    /// so the other PCs fill them back.
     pub(crate) fn set(&self, name: &str, value: &str, now_ms: i64) -> Result<(), String> {
         let name = checked_name(name)?;
         let value = value.trim();
@@ -181,7 +196,7 @@ impl Vault {
         if value.len() > MAX_VALUE {
             return Err(format!("a value is at most {MAX_VALUE} bytes"));
         }
-        let key = self.key(true)?;
+        let key = self.key(Make::Recover)?;
         let sealed = seal(&key, name, value)?;
         self.write(name, Some(&sealed), now_ms)
     }
@@ -193,28 +208,19 @@ impl Vault {
     }
 
     fn write(&self, name: &str, sealed: Option<&[u8]>, now_ms: i64) -> Result<(), String> {
-        let full = self.with(|connection| {
-            let all = connection.unchecked_transaction()?;
-            let count: i64 = all.query_row("SELECT COUNT(*) FROM secrets", [], |row| row.get(0))?;
-            let known: bool = all.query_row(
-                "SELECT EXISTS (SELECT 1 FROM secrets WHERE name = ?1)",
-                [name],
-                |row| row.get(0),
-            )?;
-            if count >= MAX_SECRETS && !known {
-                return Ok(true);
-            }
-            all.execute(
-                "INSERT INTO secrets (name, sealed, changed_ms) VALUES (?1, ?2, ?3) \
-                 ON CONFLICT (name) DO UPDATE SET sealed = excluded.sealed, \
-                 changed_ms = MAX(excluded.changed_ms, secrets.changed_ms + 1)",
-                params![name, sealed, now_ms],
-            )?;
-            bump(&all)?;
-            all.commit()?;
-            Ok(false)
+        let written = self.with(|connection| {
+            immediate(connection, |connection| {
+                let written = connection.execute(
+                    &format!("INSERT INTO secrets (name, sealed, changed_ms) SELECT ?1, ?2, ?3 {ROOM} {UPSERT}"),
+                    params![name, sealed, now_ms, MAX_SECRETS],
+                )?;
+                if written > 0 {
+                    bump(connection)?;
+                }
+                Ok(written)
+            })
         })?;
-        if full {
+        if written == 0 {
             return Err(format!("the vault keeps at most {MAX_SECRETS} names"));
         }
         Ok(())
@@ -250,23 +256,24 @@ impl Vault {
                 .collect()
         })?;
         let key = if rows.iter().any(|(_, sealed, _)| sealed.is_some()) {
-            Some(self.key(false)?)
+            Some(self.key(Make::Never)?)
         } else {
             None
         };
-        rows.into_iter()
-            .map(|(name, sealed, changed_ms)| {
+        Ok(rows
+            .into_iter()
+            .filter_map(|(name, sealed, changed_ms)| {
                 let value = match (sealed, &key) {
-                    (Some(sealed), Some(key)) => Some(open(key, &name, &sealed)?),
+                    (Some(sealed), Some(key)) => Some(open(key, &name, &sealed).ok()?),
                     _ => None,
                 };
-                Ok(SecretCopy {
+                Some(SecretCopy {
                     name,
                     value,
                     changed_ms,
                 })
             })
-            .collect()
+            .collect())
     }
 
     /// Takes each secret another PC changed later than this one. A secret dated more than a day
@@ -275,7 +282,6 @@ impl Vault {
         let latest = now_ms.saturating_add(FUTURE_TAKEN);
         let wanted: Vec<(&str, &SecretCopy)> = copies
             .iter()
-            .take(usize::try_from(MAX_SECRETS).unwrap_or(usize::MAX))
             .filter(|copy| copy.changed_ms > 0 && copy.changed_ms <= latest)
             .filter(|copy| {
                 copy.value
@@ -283,12 +289,13 @@ impl Vault {
                     .is_none_or(|value| !value.trim().is_empty() && value.len() <= MAX_VALUE)
             })
             .filter_map(|copy| Some((checked_name(&copy.name).ok()?, copy)))
+            .take(usize::try_from(MAX_SECRETS).unwrap_or(usize::MAX))
             .collect();
         if wanted.is_empty() {
             return Ok(false);
         }
         let key = if wanted.iter().any(|(_, copy)| copy.value.is_some()) {
-            Some(self.key(true)?)
+            Some(self.key(Make::New)?)
         } else {
             None
         };
@@ -300,69 +307,98 @@ impl Vault {
             })
             .collect::<Result<Vec<Option<Vec<u8>>>, String>>()?;
         self.with(|connection| {
-            let all = connection.unchecked_transaction()?;
-            let mut taken = 0;
-            for ((name, copy), sealed) in wanted.iter().zip(&sealed) {
-                taken += all.execute(
-                    "INSERT INTO secrets (name, sealed, changed_ms) \
-                     SELECT ?1, ?2, ?3 \
-                     WHERE (SELECT COUNT(*) FROM secrets) < ?4 \
-                     OR EXISTS (SELECT 1 FROM secrets WHERE name = ?1) \
-                     ON CONFLICT (name) DO UPDATE SET sealed = excluded.sealed, \
-                     changed_ms = excluded.changed_ms \
-                     WHERE excluded.changed_ms > secrets.changed_ms",
-                    params![name, sealed, copy.changed_ms, MAX_SECRETS],
-                )?;
-            }
-            if taken > 0 {
-                bump(&all)?;
-            }
-            all.commit()?;
-            Ok(taken > 0)
+            immediate(connection, |connection| {
+                let mut taken = 0;
+                for ((name, copy), sealed) in wanted.iter().zip(&sealed) {
+                    taken += connection.execute(
+                        &format!(
+                            "INSERT INTO secrets (name, sealed, changed_ms) SELECT ?1, ?2, ?3 {ROOM} \
+                             ON CONFLICT (name) DO UPDATE SET sealed = excluded.sealed, \
+                             changed_ms = excluded.changed_ms \
+                             WHERE excluded.changed_ms > secrets.changed_ms"
+                        ),
+                        params![name, sealed, copy.changed_ms, MAX_SECRETS],
+                    )?;
+                }
+                if taken > 0 {
+                    bump(connection)?;
+                }
+                Ok(taken > 0)
+            })
         })
     }
 
-    fn key(&self, create: bool) -> Result<Key, String> {
+    fn key(&self, make: Make) -> Result<Key, String> {
         let mut held = self.key.lock().expect("unpoisoned");
         if let Some(key) = *held {
-            if self.checked(&key)? {
+            if self.confirmed(&key)? {
                 return Ok(key);
             }
             *held = None;
         }
-        let found = self.find_key();
-        let key = match found {
-            Found::Key(key) if self.checked(&key)? => {
-                self.mark(&key)?;
-                key
+        let key = match self.find_key()? {
+            Found::Key(key) if self.confirmed(&key)? => key,
+            _ => {
+                let lock = self.lock()?;
+                let found = self.key_locked(make);
+                drop(lock);
+                found?
             }
-            Found::Key(_) => {
-                return Err(String::from(
-                    "the vault key here does not open this vault; it was made with another key",
-                ));
-            }
-            Found::Gone | Found::Unreadable(_) if create => self.make_key()?,
-            Found::Gone => {
-                return Err(String::from(
-                    "the key that opens the vault is gone; give the keys again in the settings window",
-                ));
-            }
-            Found::Unreadable(error) => return Err(error),
         };
         *held = Some(key);
         Ok(key)
     }
 
-    fn find_key(&self) -> Found {
+    fn key_locked(&self, make: Make) -> Result<Key, String> {
+        let check = self.check()?;
+        match (self.find_key()?, &check, make) {
+            (Found::Key(key), Some(_), _) if self.confirmed(&key)? => Ok(key),
+            (Found::Key(_), Some(_), _) => Err(String::from(
+                "the vault key here does not open this vault; it was made with another key",
+            )),
+            (Found::Key(key), None, _) => {
+                self.mark(&key)?;
+                Ok(key)
+            }
+            (Found::Unreadable(error), Some(_), _) => Err(error),
+            (Found::Gone | Found::Unreadable(_), _, Make::Never)
+            | (Found::Gone, Some(_), Make::New) => Err(String::from(
+                "the key that opens the vault is gone; give the keys again in the settings window",
+            )),
+            (Found::Gone, Some(_), Make::Recover) => {
+                self.forget_unreadable()?;
+                self.make_key()
+            }
+            (Found::Gone | Found::Unreadable(_), None, Make::New | Make::Recover) => {
+                self.make_key()
+            }
+        }
+    }
+
+    fn find_key(&self) -> Result<Found, String> {
         match read_key_file(&self.key_file) {
-            Ok(Some(key)) => return Found::Key(key),
+            Ok(Some(key)) => return Ok(Found::Key(key)),
             Ok(None) => {}
-            Err(error) => return Found::Unreadable(error),
+            Err(error) => return Ok(Found::Unreadable(error)),
         }
-        match &self.keychain {
-            Some(account) => read_keychain(account),
-            None => Found::Gone,
+        let (Some(id), Some(KEPT_IN_KEYCHAIN)) = (self.meta(VAULT_ID)?, self.meta(KEY_PLACE)?)
+        else {
+            return Ok(Found::Gone);
+        };
+        if !self.keychain {
+            return Ok(Found::Gone);
         }
+        Ok(read_keychain(&account(id)))
+    }
+
+    fn meta(&self, key: &str) -> Result<Option<i64>, String> {
+        self.with(|connection| {
+            connection
+                .query_row("SELECT value FROM meta WHERE key = ?1", [key], |row| {
+                    row.get(0)
+                })
+                .optional()
+        })
     }
 
     fn check(&self) -> Result<Option<Vec<u8>>, String> {
@@ -377,42 +413,35 @@ impl Vault {
         })
     }
 
-    fn checked(&self, key: &Key) -> Result<bool, String> {
+    fn confirmed(&self, key: &Key) -> Result<bool, String> {
         Ok(self
             .check()?
-            .is_none_or(|sealed| open(key, CHECK, &sealed).is_ok_and(|text| text == CHECK_TEXT)))
+            .is_some_and(|sealed| open(key, CHECK, &sealed).is_ok_and(|text| text == CHECK_TEXT)))
     }
 
     fn make_key(&self) -> Result<Key, String> {
-        let lock = self.lock()?;
-        let made = self.make_key_locked();
-        drop(lock);
-        made
-    }
-
-    fn make_key_locked(&self) -> Result<Key, String> {
-        let found = self.find_key();
-        let check = self.check()?;
-        match (found, check) {
-            (Found::Key(key), _) if self.checked(&key)? => return Ok(key),
-            (Found::Key(_), _) => {
-                return Err(String::from(
-                    "the vault key here does not open this vault; it was made with another key",
-                ));
-            }
-            (Found::Unreadable(error), Some(_)) => return Err(error),
-            (Found::Gone, Some(_)) => self.forget_unreadable()?,
-            (Found::Gone | Found::Unreadable(_), None) => {}
-        }
         let mut key = [0_u8; KEY_BYTES];
         getrandom::fill(&mut key).map_err(|error| format!("no random source: {error}"))?;
-        let in_keychain = self
-            .keychain
-            .as_deref()
-            .is_some_and(|account| write_keychain(account, &key));
-        if !in_keychain {
+        let mut id = [0_u8; 8];
+        getrandom::fill(&mut id).map_err(|error| format!("no random source: {error}"))?;
+        let id = i64::from_le_bytes(id) & i64::MAX;
+        let place = if self.keychain && write_keychain(&account(id), &key) {
+            KEPT_IN_KEYCHAIN
+        } else {
             write_key_file(&self.key_file, &key)?;
-        }
+            KEPT_IN_FILE
+        };
+        self.with(|connection| {
+            immediate(connection, |connection| {
+                for (key, value) in [(VAULT_ID, id), (KEY_PLACE, place)] {
+                    connection.execute(
+                        "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)",
+                        params![key, value],
+                    )?;
+                }
+                Ok(())
+            })
+        })?;
         self.mark(&key)?;
         Ok(key)
     }
@@ -430,14 +459,14 @@ impl Vault {
 
     fn forget_unreadable(&self) -> Result<(), String> {
         self.with(|connection| {
-            let all = connection.unchecked_transaction()?;
-            all.execute(
-                "UPDATE secrets SET sealed = NULL, changed_ms = 0 WHERE sealed IS NOT NULL",
-                [],
-            )?;
-            all.execute("DELETE FROM checks", [])?;
-            bump(&all)?;
-            all.commit()
+            immediate(connection, |connection| {
+                connection.execute(
+                    "UPDATE secrets SET sealed = NULL, changed_ms = 0 WHERE sealed IS NOT NULL",
+                    [],
+                )?;
+                connection.execute("DELETE FROM checks", [])?;
+                bump(connection)
+            })
         })
     }
 
@@ -452,9 +481,44 @@ impl Vault {
             .write(true)
             .open(&self.lock_file)
             .map_err(fail)?;
-        file.lock().map_err(fail)?;
-        Ok(file)
+        let waited = std::time::Instant::now();
+        loop {
+            match file.try_lock() {
+                Ok(()) => return Ok(file),
+                Err(std::fs::TryLockError::WouldBlock) if waited.elapsed() < LOCK_WAIT => {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Err(std::fs::TryLockError::WouldBlock) => {
+                    return Err(format!(
+                        "{} stays locked by another dotori",
+                        self.lock_file.display()
+                    ));
+                }
+                Err(std::fs::TryLockError::Error(error)) => return Err(fail(error)),
+            }
+        }
     }
+}
+
+fn immediate<T>(
+    connection: &Connection,
+    work: impl FnOnce(&Connection) -> rusqlite::Result<T>,
+) -> rusqlite::Result<T> {
+    connection.execute_batch("BEGIN IMMEDIATE")?;
+    match work(connection) {
+        Ok(done) => {
+            connection.execute_batch("COMMIT")?;
+            Ok(done)
+        }
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK");
+            Err(error)
+        }
+    }
+}
+
+fn account(id: i64) -> String {
+    format!("vault {id}")
 }
 
 fn bump(connection: &Connection) -> rusqlite::Result<()> {
@@ -534,9 +598,17 @@ fn write_key_file(file: &Path, key: &Key) -> Result<(), String> {
         .and_then(|()| out.sync_all())
         .map_err(fail)?;
     drop(out);
-    let linked = std::fs::hard_link(&draft, file);
-    let _ = std::fs::remove_file(&draft);
-    linked.map_err(fail)
+    match std::fs::hard_link(&draft, file) {
+        Ok(()) => {
+            let _ = std::fs::remove_file(&draft);
+            Ok(())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            let _ = std::fs::remove_file(&draft);
+            Err(fail(error))
+        }
+        Err(_) => std::fs::rename(&draft, file).map_err(fail),
+    }
 }
 
 fn read_keychain(account: &str) -> Found {

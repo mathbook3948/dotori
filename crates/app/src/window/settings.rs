@@ -21,6 +21,7 @@ use crate::settings::DISCORD_KEY;
 use crate::settings::DiscordForm;
 use crate::settings::Form;
 use crate::settings::MODEL_KEY;
+use crate::settings::ModelSettings;
 use crate::settings::SLACK_APP_KEY;
 use crate::settings::SLACK_BOT_KEY;
 use crate::settings::Settings;
@@ -258,7 +259,12 @@ impl SettingsView {
         let saved = wanted.and_then(|settings| {
             let before = mem::replace(&mut self.api_key_env, api_key_env);
             if let Err(error) = self.keep_secrets(cx) {
-                self.api_key_env = before;
+                let kept_model_key = self
+                    .api_key_name()
+                    .is_some_and(|name| self.vault.names().unwrap_or_default().contains(&name));
+                if !kept_model_key {
+                    self.api_key_env = before;
+                }
                 return Err(error);
             }
             settings.save_parts(
@@ -544,11 +550,29 @@ impl SettingsView {
                 Some((input.clone(), name?, value)).filter(|(_, _, value)| !value.is_empty())
             })
             .collect();
-        for (input, name, value) in typed {
+        for (_, name, value) in &typed {
             self.vault
-                .set(&name, &value, now_ms())
+                .set(name, value, now_ms())
                 .map_err(|error| vault_failed("넣지", &error))?;
+        }
+        for (input, _, _) in typed {
             input.update(cx, |input, cx| input.set_text("", cx));
+        }
+        Ok(())
+    }
+
+    fn forget_model_key_name(&mut self, name: &str) -> Result<(), String> {
+        if name != MODEL_KEY || self.api_key_env.as_deref() != Some(MODEL_KEY) {
+            return Ok(());
+        }
+        self.api_key_env = None;
+        let mut settings = Settings::load(&self.home.settings())?;
+        if let ModelSettings::OpenaiCompatible { api_key_env, .. } = &mut settings.model
+            && api_key_env.as_deref() == Some(MODEL_KEY)
+        {
+            *api_key_env = None;
+            settings.save_parts(&self.home.settings(), &["model"])?;
+            self.earlier.model = settings.model;
         }
         Ok(())
     }
@@ -557,7 +581,8 @@ impl SettingsView {
         let forgot = self
             .vault
             .remove(name, now_ms())
-            .map_err(|error| vault_failed("지우지", &error));
+            .map_err(|error| vault_failed("지우지", &error))
+            .and_then(|()| self.forget_model_key_name(name));
         self.kept = self.vault.names().unwrap_or_default();
         self.note = forgot
             .err()
@@ -593,10 +618,7 @@ impl SettingsView {
             )
         } else if kept {
             (theme.ok, theme.ok_soft, "금고에 안전하게 보관돼 있어요")
-        } else if name
-            .as_deref()
-            .is_none_or(|name| self.openai_compatible && name == MODEL_KEY)
-        {
+        } else if name.is_none() {
             (theme.muted, theme.bubble, "키가 필요 없으면 비워 둬요")
         } else {
             (theme.warn, theme.warn_soft, "아직 넣지 않았어요")

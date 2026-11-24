@@ -40,7 +40,7 @@ pub(crate) const DISCORD_KEY: &str = "DISCORD_BOT_TOKEN";
 pub(crate) const SLACK_BOT_KEY: &str = "SLACK_BOT_TOKEN";
 /// The name an OpenAI-compatible API key is kept under once the owner gives one in the settings
 /// window, when the settings named none. It is dotori's own, so no key set for another tool is
-/// sent in its place, and with no value under it the model goes without a key.
+/// sent in its place.
 pub(crate) const MODEL_KEY: &str = "DOTORI_MODEL_API_KEY";
 
 /// What the user sets in `settings.toml`. A missing file means every default.
@@ -642,11 +642,9 @@ impl Settings {
             } => {
                 let mut config = OpenAiConfig::new(base_url.clone(), model.clone());
                 if let Some(variable) = api_key_env {
-                    config.api_key = match key(variable) {
-                        Some(api_key) => Some(api_key),
-                        None if variable == MODEL_KEY => None,
-                        None => return Err(format!("set {variable} to your API key")),
-                    };
+                    config.api_key = Some(
+                        key(variable).ok_or_else(|| format!("set {variable} to your API key"))?,
+                    );
                 }
                 config.max_tokens = *max_tokens;
                 if let Some(system) = system {

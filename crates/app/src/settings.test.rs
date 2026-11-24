@@ -546,19 +546,3 @@ fn the_discord_form_needs_a_snowflake_owner_and_a_variable_name() {
     assert_eq!(DiscordForm::of(Some(&section)), form);
     assert_eq!(DiscordForm::default().settings(), Ok(None));
 }
-
-#[test]
-fn a_model_key_dotori_named_may_be_missing_and_another_may_not() {
-    let model = |name: &str| Settings {
-        model: ModelSettings::OpenaiCompatible {
-            base_url: String::from("http://127.0.0.1:1/v1"),
-            model: String::from("m"),
-            api_key_env: Some(name.to_owned()),
-            max_tokens: None,
-        },
-        ..Settings::default()
-    };
-
-    assert!(model(MODEL_KEY).model(|_| None).is_ok());
-    assert!(model("SOME_OTHER_KEY").model(|_| None).is_err());
-}
