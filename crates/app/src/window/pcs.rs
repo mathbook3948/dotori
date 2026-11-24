@@ -30,6 +30,7 @@ use crate::home::Home;
 use crate::peers;
 use crate::settings::Settings;
 use crate::window::input::TextInput;
+use crate::window::parts::MONO;
 use crate::window::parts::prose;
 use crate::window::theme::Theme;
 
@@ -304,7 +305,7 @@ impl Render for PcsView {
                                 .bg(theme.canvas)
                                 .border_1()
                                 .border_color(theme.accent)
-                                .font_family("monospace")
+                                .font_family(MONO)
                                 .text_xs()
                                 .child(prose(code)),
                         )

@@ -3,6 +3,7 @@ mod input;
 mod notes;
 mod parts;
 mod pcs;
+mod rich;
 mod routines;
 mod screen;
 mod settings;
