@@ -22,7 +22,7 @@
     return el.getAttribute('role') || tag;
   };
   const lines = [];
-  const walk = (node) => {
+  const walk = (node, framed) => {
     if (node.nodeType === Node.TEXT_NODE) {
       const text = node.textContent.replace(/\s+/g, ' ').trim();
       if (text) lines.push(text);
@@ -34,10 +34,26 @@
     if (['script', 'style', 'noscript', 'template', 'svg', 'head'].includes(tag)) return;
     if (hidden(el)) return;
     if (tag === 'iframe') {
-      lines.push('[frame: ' + (el.title || el.src || 'unnamed') + ', not read]');
+      const name = el.title || el.src || 'unnamed';
+      const inner = el.contentDocument && el.contentDocument.body;
+      if (framed) {
+        lines.push('[frame: ' + name + ', inside a frame, not read]');
+        return;
+      }
+      if (!inner) {
+        lines.push('[frame: ' + name + ', not read]');
+        return;
+      }
+      lines.push('[frame: ' + name + ']');
+      for (const child of inner.childNodes) walk(child, true);
+      lines.push('[end of frame]');
       return;
     }
-    if (el.matches(interactive) && !seen.has(el)) {
+    if (framed && el.matches(interactive)) {
+      lines.push('- ' + kind(el) + ': ' + label(el));
+      if (tag !== 'select') return;
+    }
+    if (!framed && el.matches(interactive) && !seen.has(el)) {
       seen.add(el);
       const ref = next++;
       refs.set(ref, el);
@@ -52,13 +68,14 @@
       lines.push('#'.repeat(Number(tag[1])) + ' ' + label(el));
       return;
     }
-    for (const child of el.childNodes) walk(child);
-    if (el.shadowRoot) for (const child of el.shadowRoot.childNodes) walk(child);
+    for (const child of el.childNodes) walk(child, framed);
+    if (el.shadowRoot) for (const child of el.shadowRoot.childNodes) walk(child, framed);
   };
-  walk(document.body || document.documentElement);
+  walk(document.body || document.documentElement, false);
   const merged = [];
   for (const line of lines) {
-    if (merged.length && !line.startsWith('[') && !line.startsWith('#') && !merged[merged.length - 1].startsWith('[') && !merged[merged.length - 1].startsWith('#')) {
+    const apart = (text) => text.startsWith('[') || text.startsWith('#') || text.startsWith('- ');
+    if (merged.length && !apart(line) && !apart(merged[merged.length - 1])) {
       merged[merged.length - 1] += ' ' + line;
     } else {
       merged.push(line);
