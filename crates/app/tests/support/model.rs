@@ -15,6 +15,7 @@ use tokio::net::TcpStream;
 pub struct Script {
     pub command: String,
     pub think: std::time::Duration,
+    pub tools: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 /// Set to a file path to keep each last message and answer there, one JSON object per line.
@@ -69,6 +70,18 @@ async fn serve(mut stream: TcpStream, script: &Script) -> std::io::Result<()> {
         }
     };
     let asked: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+    let names = asked["tools"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|tool| tool["function"]["name"].as_str().map(str::to_owned));
+    if let Ok(mut seen) = script.tools.lock() {
+        for name in names {
+            if !seen.contains(&name) {
+                seen.push(name);
+            }
+        }
+    }
     tokio::time::sleep(script.think).await;
     let message = answer(&asked, script);
     if let Some(log) = std::env::var_os(LOG) {
@@ -119,8 +132,8 @@ pub fn answer(asked: &Value, script: &Script) -> Value {
                 .find_map(|message| message["tool_calls"].as_array()?.last().cloned())
                 .and_then(|call| call["function"]["name"].as_str().map(str::to_owned));
             match called.as_deref() {
-                Some("routine_add") => to_owner(REMINDED),
-                Some("memory_search") => to_owner(LISTED),
+                Some("add_routine") => to_owner(REMINDED),
+                Some("search_memory") => to_owner(LISTED),
                 _ => done(),
             }
         }
@@ -137,7 +150,7 @@ pub fn answer(asked: &Value, script: &Script) -> Value {
             };
             if said.text.contains("치과") {
                 return call(
-                    "routine_add",
+                    "add_routine",
                     json!({
                         "name": "치과 알림",
                         "task": "오전 10시 30분 치과 예약을 알려 주기",
@@ -147,7 +160,7 @@ pub fn answer(asked: &Value, script: &Script) -> Value {
                 );
             }
             if said.text.contains("일정") {
-                return call("memory_search", json!({ "query": "이번 주 일정" }));
+                return call("search_memory", json!({ "query": "이번 주 일정" }));
             }
             if said.text.contains("실행") || said.text.contains("옮겨") {
                 return call("run_shell", json!({ "command": script.command }));

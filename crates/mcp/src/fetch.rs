@@ -105,7 +105,7 @@ impl WebFetch {
 
 impl Tool for WebFetch {
     fn name(&self) -> &str {
-        "webfetch"
+        "fetch_url"
     }
 
     fn description(&self) -> &str {

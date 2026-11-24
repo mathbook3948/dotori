@@ -722,11 +722,11 @@ impl ChatView {
                     div()
                         .flex_1()
                         .text_xs()
-                        .when(tool == "memory_forget", |hint| {
+                        .when(tool == "erase_records", |hint| {
                             hint.text_color(theme.danger)
                                 .child("허락하면 모든 PC에서 지워요. 되돌릴 수 없어요")
                         })
-                        .when(tool != "memory_forget", |hint| {
+                        .when(tool != "erase_records", |hint| {
                             hint.text_color(theme.muted).child(match tool {
                                 "run_shell" => "허락하면 dotori가 이 명령을 바로 실행해요",
                                 "write_file" | "edit_file" => {
@@ -1770,7 +1770,7 @@ pub(crate) fn own_tool(tool: &str) -> Option<&'static str> {
         "run_shell" => Some("명령 실행"),
         "write_file" => Some("파일 쓰기"),
         "edit_file" => Some("파일 고치기"),
-        "memory_forget" => Some("기록 지우기"),
+        "erase_records" => Some("기록 지우기"),
         _ => None,
     }
 }
@@ -1796,7 +1796,7 @@ const HIDDEN_FIELDS: [&str; 2] = ["records", "carriers"];
 /// The fields of a waiting call as the card shows them, and whether any was shortened. A forget
 /// shows what the records say, not their numbers.
 pub(crate) fn asked_fields(tool: &str, input: &str, whole: bool) -> (Vec<(String, String)>, bool) {
-    let hidden: &[&str] = if tool == "memory_forget" {
+    let hidden: &[&str] = if tool == "erase_records" {
         &HIDDEN_FIELDS
     } else {
         &[]

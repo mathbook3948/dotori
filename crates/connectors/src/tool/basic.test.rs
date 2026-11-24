@@ -12,7 +12,7 @@ struct Nothing;
 impl Toolbox for Nothing {
     fn specs(&self) -> Vec<ToolSpec> {
         vec![ToolSpec {
-            name: String::from("webfetch"),
+            name: String::from("fetch_url"),
             description: String::new(),
             input_schema: String::from("{}"),
         }]
@@ -171,11 +171,11 @@ async fn other_tools_pass_through_and_the_basic_ones_come_first() {
     let names: Vec<String> = tools.specs().into_iter().map(|spec| spec.name).collect();
     assert_eq!(
         names,
-        [READ_FILE, WRITE_FILE, EDIT_FILE, RUN_SHELL, "webfetch"]
+        [READ_FILE, WRITE_FILE, EDIT_FILE, RUN_SHELL, "fetch_url"]
     );
     assert_eq!(
-        run(&tools, "webfetch", json!({})).await.expect("ran"),
-        "rest ran webfetch"
+        run(&tools, "fetch_url", json!({})).await.expect("ran"),
+        "rest ran fetch_url"
     );
     assert!(run(&tools, READ_FILE, json!({ "path": "" })).await.is_err());
     assert!(

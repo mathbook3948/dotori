@@ -37,7 +37,10 @@ async fn in_page(running: &Running, expression: &str) -> Value {
 fn every_tool_has_a_distinct_name_and_an_object_schema() {
     let tools = browser().tools();
     let names: Vec<&str> = tools.iter().map(|tool| tool.name()).collect();
-    assert_eq!(names, ["browser_run", "browser_read", "browser_ask_owner"]);
+    assert_eq!(
+        names,
+        ["run_in_browser", "read_page", "ask_owner_in_browser"]
+    );
     for tool in &tools {
         assert_eq!(tool.input_schema()["type"], "object", "{}", tool.name());
     }

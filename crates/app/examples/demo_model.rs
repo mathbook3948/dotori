@@ -14,6 +14,7 @@ async fn main() {
     let address = model::start(model::Script {
         command: String::from("mv ~/Downloads/*.pdf ~/Documents/영수증/"),
         think: std::time::Duration::from_millis(1500),
+        tools: std::sync::Arc::default(),
     })
     .await;
     std::fs::write(&port_file, address.port().to_string()).expect("port written");
