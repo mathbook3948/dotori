@@ -56,12 +56,14 @@ const DAYS: [(&str, &str, Weekday); 7] = [
 ];
 const WEEKDAYS: u8 = 0b001_1111;
 const WEEKEND: u8 = 0b110_0000;
-const VERSION: i64 = 1;
+const VERSION: i64 = 2;
 const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS routines (\
     id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, time TEXT NOT NULL, \
     days INTEGER NOT NULL, date TEXT, task TEXT NOT NULL, made_ms INTEGER NOT NULL, \
     fired_ms INTEGER NOT NULL); \
-    CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL)";
+    CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL); \
+    CREATE TABLE IF NOT EXISTS options (key TEXT PRIMARY KEY, value TEXT NOT NULL)";
+const ZONE: &str = "zone";
 
 /// One routine. `days` has a bit for each weekday from Monday, and none means every day. A
 /// routine with a `date` happens once, on that day, and is gone after.
@@ -82,6 +84,8 @@ pub(crate) struct Routine {
 pub(crate) struct RoutinesCopy {
     pub(crate) changed_ms: i64,
     pub(crate) routines: Vec<Routine>,
+    #[serde(default)]
+    pub(crate) zone: Option<String>,
 }
 
 impl Routine {
@@ -240,8 +244,10 @@ impl Routines {
                 )
             })
             .collect();
+        let zone = self.zone();
+        let zone = zone.iana_name().unwrap_or("this PC's time zone");
         Some(format!(
-            "Routines the owner set up. When one is due, its task arrives as a message on the \
+            "Routines the owner set up, at times in {zone}. When one is due, its task arrives as a message on the \
              `routine` channel, in a thread named after the routine: do the task then and say \
              the result in that thread, which the owner reads in the chat window. Use \
              `remove_routine` with a routine's number when the owner asks to drop it.\n{}",
@@ -310,7 +316,7 @@ impl Routines {
         };
         if wished.date.is_some()
             && let Ok(now) = Timestamp::from_millisecond(now_ms)
-            && wished.last_slot(&TimeZone::system(), now).is_some()
+            && wished.last_slot(&self.zone(), now).is_some()
         {
             return Err(String::from("that date and time has already passed"));
         }
@@ -386,6 +392,36 @@ impl Routines {
         Ok(())
     }
 
+    /// The time zone every PC reads routine times in, as the owner set it, if they did.
+    pub(crate) fn zone_name(&self) -> Result<Option<String>, String> {
+        self.with(|connection| {
+            connection
+                .query_row("SELECT value FROM options WHERE key = ?1", [ZONE], |row| {
+                    row.get(0)
+                })
+                .optional()
+        })
+    }
+
+    /// The time zone routine times are read in: the one the owner set, or else this PC's.
+    pub(crate) fn zone(&self) -> TimeZone {
+        self.zone_name()
+            .ok()
+            .flatten()
+            .and_then(|name| TimeZone::get(&name).ok())
+            .unwrap_or_else(TimeZone::system)
+    }
+
+    /// Sets the time zone every PC reads routine times in, such as `Asia/Seoul`, or with `None`
+    /// goes back to each PC's own. The other PCs get it with the routines.
+    pub(crate) fn set_zone(&self, name: Option<&str>, now_ms: i64) -> Result<(), String> {
+        if let Some(name) = name {
+            TimeZone::get(name).map_err(|_| format!("`{name}` is not a time zone"))?;
+        }
+        self.with(|connection| write_zone(connection, name))?;
+        self.touched(now_ms)
+    }
+
     /// Every routine, for the other PCs.
     pub(crate) fn copy(&self) -> Result<RoutinesCopy, String> {
         let routines = self.list()?;
@@ -402,6 +438,7 @@ impl Routines {
         Ok(RoutinesCopy {
             changed_ms,
             routines,
+            zone: self.zone_name()?,
         })
     }
 
@@ -446,6 +483,7 @@ impl Routines {
                 "INSERT OR REPLACE INTO meta (key, value) VALUES ('changed_ms', ?1)",
                 [copy.changed_ms],
             )?;
+            write_zone(&swap, copy.zone.as_deref())?;
             swap.commit()?;
             Ok(true)
         })
@@ -475,11 +513,11 @@ impl Channel for RoutineChannel {
 
     fn run(&self, inbox: Arc<dyn Inbox>) -> BoxFuture<'_, Result<(), ChannelError>> {
         Box::pin(async move {
-            let zone = TimeZone::system();
             let mut every = time::interval(LOOK_EVERY);
             loop {
                 every.tick().await;
                 let now = Timestamp::now();
+                let zone = self.routines.zone();
                 let routines = match self.routines.list() {
                     Ok(routines) => routines,
                     Err(error) => {
@@ -614,6 +652,17 @@ fn one_line(text: &str) -> String {
         .collect::<String>()
         .trim()
         .to_owned()
+}
+
+fn write_zone(connection: &Connection, name: Option<&str>) -> rusqlite::Result<()> {
+    match name {
+        Some(name) => connection.execute(
+            "INSERT OR REPLACE INTO options (key, value) VALUES (?1, ?2)",
+            params![ZONE, name],
+        )?,
+        None => connection.execute("DELETE FROM options WHERE key = ?1", [ZONE])?,
+    };
+    Ok(())
 }
 
 #[cfg(test)]

@@ -263,3 +263,45 @@ fn a_newer_copy_never_takes_back_a_run() {
     assert_eq!(after.len(), 2);
     assert_eq!(after[0].fired_ms, 5_000);
 }
+
+#[test]
+fn the_owner_sets_one_time_zone_for_every_pc() {
+    let here = routines();
+    let there = routines();
+    assert_eq!(
+        here.zone_name().expect("read"),
+        None,
+        "each PC's own at first"
+    );
+
+    here.set_zone(Some("Asia/Seoul"), 10).expect("set");
+
+    assert_eq!(here.zone().iana_name(), Some("Asia/Seoul"));
+    assert!(there.take(&here.copy().expect("copy")).expect("took"));
+    assert_eq!(
+        there.zone_name().expect("read").as_deref(),
+        Some("Asia/Seoul")
+    );
+
+    here.set_zone(None, 20).expect("cleared");
+    assert!(there.take(&here.copy().expect("copy")).expect("took"));
+    assert_eq!(there.zone_name().expect("read"), None);
+}
+
+#[test]
+fn a_name_that_is_no_time_zone_is_refused() {
+    let routines = routines();
+
+    let refused = routines.set_zone(Some("Mars/Olympus"), 10);
+
+    assert!(refused.expect_err("refused").contains("not a time zone"));
+    assert_eq!(routines.zone_name().expect("read"), None);
+}
+
+#[test]
+fn a_copy_from_a_pc_that_knows_no_time_zone_still_reads() {
+    let copy: RoutinesCopy =
+        serde_json::from_str(r#"{"changed_ms":5,"routines":[]}"#).expect("an older copy");
+
+    assert_eq!(copy.zone, None);
+}
