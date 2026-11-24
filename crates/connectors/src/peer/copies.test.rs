@@ -136,3 +136,63 @@ async fn linked_pcs_catch_up_and_then_copy_each_new_record() {
         let _ = std::fs::remove_dir_all(folder);
     }
 }
+
+#[tokio::test]
+async fn what_one_pc_forgets_the_other_forgets_too_and_never_takes_back() {
+    let a = pc("forget-a", true);
+    let b = pc("forget-b", false);
+    a.store
+        .append(vec![failed("secret"), failed("kept")])
+        .await
+        .expect("appended");
+    let (a_hub, a_heard) = Hub::start(a.config.clone()).await.expect("a started");
+    let a_copies = Copies::start(Arc::clone(&a_hub), a.store.clone());
+    hear_all(Arc::clone(&a_copies), a_heard);
+    let (_, secret) = Invite::make(&a.config.invite, now() + 600).expect("invite");
+    let code = Code {
+        key: a.config.identity.public,
+        secret,
+        address: None,
+    };
+    let hello = Hello {
+        device: String::from("forget-b"),
+        name: String::from("forget-b"),
+        address: None,
+    };
+    let address = a_hub.listening().expect("listening").to_string();
+    join(&b.config.identity, &hello, &code, &address, &b.config.book)
+        .await
+        .expect("joined");
+    let (b_hub, b_heard) = Hub::start(b.config.clone()).await.expect("b started");
+    let b_copies = Copies::start(Arc::clone(&b_hub), b.store.clone());
+    hear_all(Arc::clone(&b_copies), b_heard);
+    until_holds(&b.store, &["secret", "kept"]).await;
+    let told = {
+        let b_copies = Arc::clone(&b_copies);
+        tokio::spawn(async move { b_copies.forgotten_elsewhere().await })
+    };
+
+    let id = a
+        .store
+        .after("forget-a", "", 10, 1 << 20)
+        .await
+        .expect("listed")[0]
+        .id
+        .clone();
+    let forgotten = a.store.forget(vec![id], Vec::new()).await.expect("forgot");
+    a_copies.forget(&forgotten);
+
+    until_holds(&b.store, &["kept"]).await;
+    time::timeout(Duration::from_secs(5), told)
+        .await
+        .expect("b says it forgot in time")
+        .expect("joined");
+    assert_eq!(b.store.forgotten().await.expect("listed"), forgotten);
+    a_copies.made();
+    time::sleep(Duration::from_millis(300)).await;
+    until_holds(&b.store, &["kept"]).await;
+
+    for folder in [a.folder, b.folder] {
+        let _ = std::fs::remove_dir_all(folder);
+    }
+}

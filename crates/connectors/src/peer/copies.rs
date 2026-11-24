@@ -1,6 +1,7 @@
 //! Copies the raw record between linked PCs, record by record. When two PCs link they say how
 //! far they hold each PC's records, and each sends the other what it lacks. After that every new
-//! record, made here or copied in from a third PC, goes out at once.
+//! record, made here or copied in from a third PC, goes out at once. What the owner asked to
+//! forget goes to every PC too, on link and as soon as it is forgotten.
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -18,6 +19,7 @@ use tokio::sync::Notify;
 use crate::peer::hub::Heard;
 use crate::peer::hub::Hub;
 use crate::record::sqlite::Copied;
+use crate::record::sqlite::Forgotten;
 use crate::record::sqlite::SqliteStore;
 
 const BATCH_COUNT: usize = 500;
@@ -41,6 +43,7 @@ pub struct Copies {
     store: SqliteStore,
     others: Mutex<HashMap<String, Other>>,
     wake: Notify,
+    forgot: Notify,
 }
 
 impl Copies {
@@ -51,6 +54,7 @@ impl Copies {
             store,
             others: Mutex::new(HashMap::new()),
             wake: Notify::new(),
+            forgot: Notify::new(),
         });
         tokio::spawn(Arc::clone(&copies).send_all());
         copies
@@ -60,7 +64,41 @@ impl Copies {
     pub async fn hear(&self, heard: &Heard) -> bool {
         match heard.message.get("kind").and_then(Value::as_str) {
             Some("linked") => {
+                match self.store.forgotten().await {
+                    Ok(list) if !list.is_empty() => {
+                        self.hub
+                            .send(&heard.key, json!({ "kind": "forgotten", "list": list }));
+                    }
+                    Ok(_) => {}
+                    Err(error) => eprintln!("dotori: cannot read what was forgotten: {error}"),
+                }
                 self.tell_marks(&heard.key, false).await;
+                true
+            }
+            Some("forgotten") => {
+                let list = heard
+                    .message
+                    .get("list")
+                    .and_then(|list| serde_json::from_value::<Vec<Forgotten>>(list.clone()).ok());
+                match list {
+                    Some(list) => match self.store.take_forgotten(list.clone()).await {
+                        Ok(0) => {}
+                        Ok(_) => {
+                            self.forgot.notify_one();
+                            self.hub
+                                .broadcast(&json!({ "kind": "forgotten", "list": list }));
+                            self.tell_marks(&heard.key, false).await;
+                        }
+                        Err(error) => eprintln!(
+                            "dotori: what {} forgot was not forgotten here: {error}",
+                            heard.device
+                        ),
+                    },
+                    None => eprintln!(
+                        "dotori: {} sent a list to forget that does not read",
+                        heard.device
+                    ),
+                }
                 true
             }
             Some("marks") => {
@@ -129,6 +167,17 @@ impl Copies {
         }
     }
 
+    /// Tells every linked PC to forget what the owner asked this PC to forget.
+    pub fn forget(&self, list: &[Forgotten]) {
+        self.hub
+            .broadcast(&json!({ "kind": "forgotten", "list": list }));
+    }
+
+    /// Waits until another PC made this one forget records, so what was made from them can go too.
+    pub async fn forgotten_elsewhere(&self) {
+        self.forgot.notified().await;
+    }
+
     /// Says that this PC made new records.
     pub fn made(&self) {
         self.wake.notify_one();
@@ -166,19 +215,25 @@ impl Copies {
             .map(|(key, other)| (key.clone(), other.marks.clone()))
             .collect();
         for (key, theirs) in ready {
-            let Some((device, from)) = ours.iter().find_map(|(device, mark)| {
-                let from = theirs.get(device).cloned().unwrap_or_default();
-                (*mark > from).then(|| (device.clone(), from))
-            }) else {
-                continue;
-            };
-            let Ok(rows) = self
-                .store
-                .after(&device, &from, BATCH_COUNT, BATCH_BYTES)
-                .await
-            else {
-                continue;
-            };
+            let behind: Vec<(String, String)> = ours
+                .iter()
+                .filter_map(|(device, mark)| {
+                    let from = theirs.get(device).cloned().unwrap_or_default();
+                    (*mark > from).then(|| (device.clone(), from))
+                })
+                .collect();
+            let mut rows = Vec::new();
+            for (device, from) in behind {
+                if let Ok(found) = self
+                    .store
+                    .after(&device, &from, BATCH_COUNT, BATCH_BYTES)
+                    .await
+                    && !found.is_empty()
+                {
+                    rows = found;
+                    break;
+                }
+            }
             if rows.is_empty() {
                 continue;
             }
