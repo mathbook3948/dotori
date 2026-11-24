@@ -198,3 +198,68 @@ fn the_copy_changed_last_wins() {
         .collect();
     assert_eq!(names, ["저기"]);
 }
+
+#[test]
+fn a_one_time_routine_whose_time_went_by_long_ago_is_over() {
+    let once = routine("14:00", 0, Some("2026-12-24"));
+    let daily = routine("14:00", 0, None);
+    let day = date(2026, 12, 24);
+
+    assert!(!once.over(&seoul(), at(day, 13, 0)));
+    assert!(!once.over(&seoul(), at(day, 14, 20)));
+    assert!(once.over(&seoul(), at(day, 14, 31)));
+    assert!(!daily.over(&seoul(), at(day, 20, 0)));
+}
+
+#[test]
+fn a_time_already_past_and_a_name_already_used_are_refused() {
+    let routines = routines();
+    let now = Timestamp::now().as_millisecond();
+
+    let past = routines.add(
+        &json!({ "name": "지난 일", "time": "08:00", "date": "2020-01-01", "task": "a" }),
+        now,
+    );
+    assert!(past.expect_err("past").contains("already passed"));
+    routines
+        .add(
+            &json!({ "name": "브리핑", "time": "08:00", "task": "a" }),
+            now,
+        )
+        .expect("added");
+    let again = routines.add(
+        &json!({ "name": "브리핑", "time": "09:00", "task": "b" }),
+        now,
+    );
+    assert!(
+        again
+            .expect_err("taken")
+            .contains("already a routine named")
+    );
+}
+
+#[test]
+fn a_newer_copy_never_takes_back_a_run() {
+    let here = routines();
+    let there = routines();
+    here.add(
+        &json!({ "name": "매일", "time": "08:00", "task": "a" }),
+        100,
+    )
+    .expect("added");
+    there.take(&here.copy().expect("copy")).expect("taken");
+    let routine = here.list().expect("listed").remove(0);
+    here.fired(&routine, 5_000, 200).expect("ran");
+    there
+        .add(
+            &json!({ "name": "다른 것", "time": "09:00", "task": "b" }),
+            300,
+        )
+        .expect("added");
+
+    assert_eq!(here.take(&there.copy().expect("copy")), Ok(true));
+
+    let after = here.list().expect("listed");
+    assert_eq!(after.len(), 2);
+    assert_eq!(after[0].fired_ms, 5_000);
+}

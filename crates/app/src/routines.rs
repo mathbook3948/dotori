@@ -31,6 +31,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
 use serde_json::json;
+use tokio::sync::Notify;
 use tokio::time;
 
 /// The channel routines speak on.
@@ -116,6 +117,14 @@ impl Routine {
         })
     }
 
+    /// Whether it happens only once and its time went by too long ago to run.
+    pub(crate) fn over(&self, zone: &TimeZone, now: Timestamp) -> bool {
+        self.date.is_some()
+            && self
+                .last_slot(zone, now)
+                .is_some_and(|slot| now.as_millisecond() - slot > LATE_MS)
+    }
+
     /// Which days it happens, in the owner's words.
     pub(crate) fn when(&self) -> String {
         if let Some(date) = &self.date {
@@ -158,6 +167,7 @@ impl Routine {
 pub(crate) struct Routines {
     path: PathBuf,
     connection: Mutex<Option<Connection>>,
+    changes: Notify,
 }
 
 impl Routines {
@@ -165,6 +175,7 @@ impl Routines {
         Arc::new(Self {
             path,
             connection: Mutex::new(None),
+            changes: Notify::new(),
         })
     }
 
@@ -291,6 +302,27 @@ impl Routines {
         if days == 0b111_1111 {
             days = 0;
         }
+        let wished = Routine {
+            id: 0,
+            name: name.clone(),
+            time: time.clone(),
+            days,
+            date: date.clone(),
+            task: task.clone(),
+            made_ms: now_ms,
+            fired_ms: 0,
+        };
+        if wished.date.is_some()
+            && let Ok(now) = Timestamp::from_millisecond(now_ms)
+            && wished.last_slot(&TimeZone::system(), now).is_some()
+        {
+            return Err(String::from("that date and time has already passed"));
+        }
+        if self.list()?.iter().any(|routine| routine.name == name) {
+            return Err(format!(
+                "there is already a routine named \"{name}\"; pick another name"
+            ));
+        }
         let id = self.with(|connection| {
             let count: i64 =
                 connection.query_row("SELECT count(*) FROM routines", [], |row| row.get(0))?;
@@ -325,27 +357,37 @@ impl Routines {
 
     fn fired(&self, routine: &Routine, slot: i64, now_ms: i64) -> Result<(), String> {
         self.with(|connection| {
+            let both = connection.unchecked_transaction()?;
             if routine.date.is_some() {
-                connection.execute("DELETE FROM routines WHERE id = ?1", [routine.id])
+                both.execute("DELETE FROM routines WHERE id = ?1", [routine.id])?;
             } else {
-                connection.execute(
+                both.execute(
                     "UPDATE routines SET fired_ms = ?2 WHERE id = ?1",
                     params![routine.id, slot],
-                )
+                )?;
             }
+            stamp(&both, now_ms)?;
+            both.commit()
         })?;
-        self.touched(now_ms)
+        self.changes.notify_one();
+        Ok(())
+    }
+
+    fn missed(&self, routine: &Routine, now_ms: i64) -> Result<(), String> {
+        self.with(|connection| {
+            let both = connection.unchecked_transaction()?;
+            both.execute("DELETE FROM routines WHERE id = ?1", [routine.id])?;
+            stamp(&both, now_ms)?;
+            both.commit()
+        })?;
+        self.changes.notify_one();
+        Ok(())
     }
 
     fn touched(&self, now_ms: i64) -> Result<(), String> {
-        self.with(|connection| {
-            connection.execute(
-                "INSERT OR REPLACE INTO meta (key, value) VALUES ('changed_ms', \
-                 max(?1, coalesce((SELECT value FROM meta WHERE key = 'changed_ms') + 1, 0)))",
-                [now_ms],
-            )
-        })
-        .map(|_| ())
+        self.with(|connection| stamp(connection, now_ms))?;
+        self.changes.notify_one();
+        Ok(())
     }
 
     /// Every routine, for the other PCs.
@@ -370,9 +412,16 @@ impl Routines {
     /// Takes another PC's routines in place of these if they changed later. Says whether they
     /// did.
     pub(crate) fn take(&self, copy: &RoutinesCopy) -> Result<bool, String> {
-        if copy.changed_ms <= self.copy()?.changed_ms {
+        let here = self.copy()?;
+        if copy.changed_ms <= here.changed_ms {
             return Ok(false);
         }
+        let fired_here = |routine: &Routine| {
+            here.routines
+                .iter()
+                .find(|known| known.id == routine.id && known.made_ms == routine.made_ms)
+                .map_or(0, |known| known.fired_ms)
+        };
         self.with(|connection| {
             let swap = connection.unchecked_transaction()?;
             swap.execute("DELETE FROM routines", [])?;
@@ -388,7 +437,7 @@ impl Routines {
                         routine.date,
                         one_line(&routine.task),
                         routine.made_ms,
-                        routine.fired_ms
+                        routine.fired_ms.max(fired_here(routine))
                     ],
                 )?;
             }
@@ -438,6 +487,12 @@ impl Channel for RoutineChannel {
                     }
                 };
                 for routine in routines {
+                    if routine.over(&zone, now) {
+                        if let Err(error) = self.routines.missed(&routine, now.as_millisecond()) {
+                            eprintln!("dotori: routine [{}] stays: {error}", routine.id);
+                        }
+                        continue;
+                    }
                     let Some(slot) = routine.due(&zone, now) else {
                         continue;
                     };
@@ -449,6 +504,10 @@ impl Channel for RoutineChannel {
                         continue;
                     };
                     if inbox.push(incoming).await.is_err() {
+                        eprintln!(
+                            "dotori: routine [{}] could not reach the main session",
+                            routine.id
+                        );
                         return Ok(());
                     }
                 }
@@ -510,7 +569,10 @@ pub(crate) async fn share(routines: Arc<Routines>, hub: Arc<Hub>) {
     let mut sent = routines.copy().map(|copy| copy.changed_ms).unwrap_or(0);
     let mut every = time::interval(LOOK_EVERY);
     loop {
-        every.tick().await;
+        tokio::select! {
+            _ = every.tick() => {}
+            () = routines.changes.notified() => {}
+        }
         let Ok(copy) = routines.copy() else {
             continue;
         };
@@ -519,6 +581,16 @@ pub(crate) async fn share(routines: Arc<Routines>, hub: Arc<Hub>) {
             hub.broadcast(&json!({ "kind": "routines", "copy": copy }));
         }
     }
+}
+
+fn stamp(connection: &Connection, now_ms: i64) -> rusqlite::Result<()> {
+    connection
+        .execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('changed_ms', \
+             max(?1, coalesce((SELECT value FROM meta WHERE key = 'changed_ms') + 1, 0)))",
+            [now_ms],
+        )
+        .map(|_| ())
 }
 
 fn clock(time: &str) -> Option<(i8, i8)> {
