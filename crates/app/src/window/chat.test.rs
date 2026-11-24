@@ -352,3 +352,38 @@ fn a_message_shows_its_copy_action_while_the_pointer_rests_on_it(cx: &mut TestAp
     );
     view.read_with(cx, |view, _| assert_eq!(view.copied, Some(0)));
 }
+
+#[gpui::test]
+fn dotori_starting_work_keeps_a_long_conversation_at_its_end(cx: &mut TestAppContext) {
+    let (view, cx, wired) = open(cx);
+    wired.updates.send(Update::Connected).expect("sent");
+    for n in 0..80 {
+        wired.updates.send(reply(&format!("답 {n}"))).expect("sent");
+    }
+    wired
+        .updates
+        .send(Update::Event(ToWindow::Live))
+        .expect("sent");
+    cx.run_until_parked();
+    view.read_with(cx, |view, _| {
+        assert!(
+            view.scroll.max_offset().height > px(0.),
+            "longer than the window"
+        );
+        assert!(view.at_bottom());
+    });
+
+    wired
+        .updates
+        .send(Update::Event(ToWindow::Working { busy: true }))
+        .expect("sent");
+    cx.run_until_parked();
+
+    view.read_with(cx, |view, _| {
+        assert!(view.at_bottom(), "the working row has its room already");
+        assert!(
+            view.working_top().is_some(),
+            "and shows under the last reply"
+        );
+    });
+}

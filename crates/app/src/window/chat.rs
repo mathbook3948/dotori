@@ -248,7 +248,7 @@ impl ChatView {
         let content = self.scroll.bounds_for_item(0)?;
         let top = content.bottom() + self.scroll.offset().y - viewport.top();
         let lowest = viewport.size.height - px(EDGE + WORKING_ROW);
-        (top <= lowest + px(BOTTOM_SLACK)).then_some(top.min(lowest))
+        (top <= lowest + px(0.5)).then_some(top.min(lowest))
     }
 
     fn shows_working(&self) -> bool {
@@ -300,11 +300,6 @@ impl ChatView {
     }
 
     fn pane(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        let room = if self.shows_working() {
-            WORKING_ROW
-        } else {
-            0.
-        };
         div()
             .id("conversation")
             .size_full()
@@ -312,7 +307,7 @@ impl ChatView {
             .track_scroll(&self.scroll)
             .px(px(EDGE))
             .pt(px(EDGE))
-            .pb(px(EDGE + room))
+            .pb(px(EDGE + WORKING_ROW))
             .on_scroll_wheel(cx.listener(|view, _: &ScrollWheelEvent, _, _| {
                 view.follow = None;
             }))
@@ -1007,11 +1002,10 @@ impl Render for ChatView {
                 )
         });
         let working_at = if self.shows_working() && self.tab == Tab::Chat {
-            let at = self.working_top();
-            if at.is_none() {
+            if self.scroll.bounds_for_item(0).is_none() {
                 window.request_animation_frame();
             }
-            at
+            self.working_top()
         } else {
             None
         };

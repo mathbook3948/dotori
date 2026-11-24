@@ -197,7 +197,7 @@ async fn the_owner_talks_to_dotori_and_decides_on_a_command() {
     let command = "echo e2e";
     let model = model::start(Script {
         command: command.to_owned(),
-        think: Duration::ZERO,
+        think: Duration::from_millis(200),
     })
     .await;
     let home = home("decide");

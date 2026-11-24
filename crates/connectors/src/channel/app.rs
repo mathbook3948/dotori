@@ -195,14 +195,25 @@ impl AppChannel {
         self.hub.live.subscribe()
     }
 
-    /// Tells every window which PC answers now, or that no other PC is linked.
+    /// Whether dotori is at work, as windows are told it, from now on. The main session's PC
+    /// passes this to the other PCs.
+    pub fn working_changes(&self) -> watch::Receiver<bool> {
+        self.hub.working.subscribe()
+    }
+
+    /// Tells every window which PC answers now, or that no other PC is linked. When that
+    /// changes, whatever the last PC was working on is no longer shown as going on.
     pub fn answering(&self, answering: Option<(String, bool)>) {
         let event = match answering {
             Some((pc, here)) => ToWindow::Answering { pc, here },
             None => ToWindow::Alone,
         };
         if let Ok(line) = serde_json::to_string(&event) {
-            self.hub.answering.send_replace(Some(line));
+            let line = Some(line);
+            if *self.hub.answering.borrow() != line {
+                self.hub.working.send_replace(false);
+            }
+            self.hub.answering.send_replace(line);
         }
     }
 
