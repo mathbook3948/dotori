@@ -6,6 +6,9 @@ use std::path::Path;
 const DOCS_DIR: &str = "docs";
 const INDEX: &str = "docs/README.md";
 const SECTIONS: [&str; 3] = ["## 배경", "## 내용", "## 미정"];
+const DECISIONS: &str = "## 내용";
+const SENTENCE_ENDINGS: [char; 4] = ['다', '요', '죠', '까'];
+const REASON_WORDS: [&str; 4] = ["때문", "위해", "므로", "라서"];
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Doc {
@@ -57,6 +60,7 @@ pub fn parse_doc(path: &str, text: &str) -> Result<Doc, Vec<String>> {
     if headings != SECTIONS {
         problems.push(format!("sections must be exactly {}", SECTIONS.join(", ")));
     }
+    problems.extend(decision_problems(&lines));
 
     if problems.is_empty() {
         Ok(Doc {
@@ -68,6 +72,66 @@ pub fn parse_doc(path: &str, text: &str) -> Result<Doc, Vec<String>> {
     } else {
         Err(problems)
     }
+}
+
+fn prose(line: &str) -> String {
+    let mut prose = String::new();
+    let mut in_code = false;
+    let mut in_target = false;
+    let mut previous = ' ';
+    for c in line.chars() {
+        match c {
+            '`' => in_code = !in_code,
+            _ if in_code => {}
+            ')' if in_target => in_target = false,
+            _ if in_target => {}
+            '(' if previous == ']' => in_target = true,
+            _ => prose.push(c),
+        }
+        previous = c;
+    }
+    prose
+}
+
+fn has_second_sentence(prose: &str) -> bool {
+    let chars: Vec<char> = prose.chars().collect();
+    chars.iter().enumerate().any(|(index, c)| {
+        let ends_sentence = match c {
+            '.' => index > 0 && SENTENCE_ENDINGS.contains(&chars[index - 1]),
+            '?' | '!' => true,
+            _ => false,
+        };
+        ends_sentence
+            && chars.get(index + 1) == Some(&' ')
+            && chars[index + 2..].iter().any(|c| !c.is_whitespace())
+    })
+}
+
+fn decision_problems(lines: &[&str]) -> Vec<String> {
+    let mut problems = Vec::new();
+    let mut in_decisions = false;
+    for (index, line) in lines.iter().enumerate() {
+        if line.starts_with("## ") {
+            in_decisions = *line == DECISIONS;
+            continue;
+        }
+        if !in_decisions {
+            continue;
+        }
+        let number = index + 1;
+        let prose = prose(line);
+        if has_second_sentence(&prose) {
+            problems.push(format!(
+                "line {number}: a decision line holds one decision in one sentence"
+            ));
+        }
+        if REASON_WORDS.iter().any(|word| prose.contains(word)) {
+            problems.push(format!(
+                "line {number}: a decision line leaves its reasoning to the commit message"
+            ));
+        }
+    }
+    problems
 }
 
 pub fn render_index(docs: &[Doc]) -> String {
