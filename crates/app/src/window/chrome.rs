@@ -33,7 +33,7 @@ const TOP_HEIGHT: f32 = if cfg!(target_os = "macos") { 40. } else { 52. };
 /// against the screen or another window.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Frame {
-    pub(crate) drawn: bool,
+    drawn: bool,
     tiling: Tiling,
 }
 

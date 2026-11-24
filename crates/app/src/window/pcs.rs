@@ -512,9 +512,9 @@ fn button(
         .font_weight(FontWeight::MEDIUM)
         .when(quiet, |button| {
             button
-                .bg(theme.bubble)
+                .bg(theme.canvas)
                 .text_color(theme.text)
-                .hover(|button| button.bg(theme.selection))
+                .hover(|button| button.bg(theme.bubble))
         })
         .when(!quiet, |button| {
             button

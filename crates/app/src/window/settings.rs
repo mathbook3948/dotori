@@ -318,7 +318,7 @@ impl Focusable for SettingsView {
 
 impl Render for SettingsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = Theme::of(window).glass();
+        let theme = Theme::of(window);
         let frame = Frame::of(window);
         let segment = |id: &'static str,
                        label: &'static str,
@@ -417,7 +417,7 @@ impl Render for SettingsView {
             .flex()
             .flex_col()
             .size_full()
-            .bg(theme.canvas)
+            .bg(theme.glass().canvas)
             .text_color(theme.text)
             .text_sm()
             .line_height(px(21.))

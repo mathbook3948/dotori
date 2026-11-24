@@ -280,7 +280,7 @@ This file is the design the windows are moving to. Until a window has moved, `do
 
 - The owner picks a theme in the settings window and every window changes at once. Each theme has a light and a dark set, chosen by the system look or by the owner.
 - The themes are graphite, paper, forest, indigo and acorn. Graphite is the default.
-- `canvas` is the window background. `surface` is anything that sits on it, such as a card, a field or a button. `raised` is a window's top bar and the composer area.
+- `canvas` is the window background. `surface` is anything that sits on it, such as a card or a button. A field on a card takes `canvas`. `raised` is a window's top bar and the composer area.
 - `bubble` is the owner's message. It is a neutral shade of the canvas, never `primary`.
 - `primary` fills only the buttons for the action the owner most likely takes next, such as send or allow, and colors small marks such as list bullets. It never fills a large area. `primary-hover` is the same button under the pointer, and `on-primary` is the text on it.
 - `selection` is the background of selected text.
@@ -313,7 +313,7 @@ This file is the design the windows are moving to. Until a window has moved, `do
 
 ## Elevation & Depth
 
-- dotori's windows are glass. Where the OS blurs what is behind a window (macOS and Windows), the canvas lets `glass.window` of the blurred desktop through. The fills on it, such as bubbles, cards, buttons and the composer, stay solid: GPUI 0.2.2 adds the alpha of what it draws over a see-through canvas instead of blending it, so a see-through fill would come out solid and darker. Elsewhere the same windows are opaque.
+- The chat and settings windows are glass. Where the OS blurs what is behind a window (macOS and Windows), the canvas lets `glass.window` of the blurred desktop through. The fills on it, such as bubbles, cards, buttons and the composer, stay solid: GPUI 0.2.2 adds the alpha of what it draws over a see-through canvas instead of blending it, so a see-through fill would come out solid and darker. Elsewhere the same windows are opaque.
 - A glass surface has a `rim`, a thin light line along its top edge, and a soft shadow under it. Text, `primary` and the marks on a surface stay solid.
 - Cards and fields are set apart by fill and rim, not by borders around them.
 - Lines are used only to divide large areas.
@@ -354,8 +354,8 @@ This file is the design the windows are moving to. Until a window has moved, `do
 - **Browser card**: `warn-soft` fill, `rounded.lg`, what dotori asks, the page now at 16:10 on `surface` that opens the browser when clicked, and the buttons 나중에 (`surface`) and 브라우저 열기 (`primary`). While the browser window is open it turns `surface` and offers 창 다시 보기 and 다 했어요.
 - **Settings and close buttons**: round `surface` glass buttons with a `muted` gear on the left and a `muted` cross on the right of the top strip.
 - **Settings card**: `surface` fill, `rounded.xl`, a `rim` and a soft shadow, a `title` and a `caption` line under it, then its fields.
-- **Field**: `canvas` fill on its card, `rounded.md`, a label above and a `hint` line under it. Only the focused field shows a `primary` outline.
-- **Key field**: a masked field. Under it, one `caption` pill says where the key comes from: in the 금고 (`ok-soft`), from an environment variable of that name (`ok-soft`), typed and kept on save (`bubble`), or not given yet (`warn-soft`). A kept key offers 지우기 beside the pill.
+- **Field**: `canvas` fill on its card, `rounded.md`, a label above and a `caption` line under it. Only the focused field shows a `primary` outline.
+- **Key field**: a masked field. Under it, one `caption` pill says where the key comes from: in the 금고 (`ok-soft`), from an environment variable of that name (`ok-soft`), typed and kept on save (`bubble`), not needed when the model takes no key (`bubble`), or not given yet (`warn-soft`). A kept key offers 지우기 beside the pill.
 - **Assistant picture**: the acorn in the logo colors, or the owner's picture cut round. It stands wherever the logo stands.
 
 ## Do's and Don'ts
@@ -364,6 +364,6 @@ This file is the design the windows are moving to. Until a window has moved, `do
 - Do show a state only when it needs the owner, and say it in words.
 - Don't show status with colored dots.
 - Don't put borders around cards or buttons. A `rim` along the top edge of a glass surface is the one line they carry.
-- Don't use gradients, glows, sparkles, emoji as icons, or cards with a colored stripe on one side. Glass is the window's material only as Elevation & Depth describes it.
+- Don't use gradients, glows, sparkles, emoji as icons, or cards with a colored stripe on one side. Glass is the windows' material only as Elevation & Depth describes it.
 - Don't draw dotori's replies in bubbles or fill large areas with `primary`.
 - Don't let anything jump, flicker or wait for the network before it answers the owner.

@@ -85,21 +85,20 @@ pub(crate) fn run(home: Home, which: Which) -> Result<(), String> {
                 Which::Settings => ("dotori 설정", 520., 640.),
             };
             let bounds = Bounds::centered(None, size(px(wide), px(tall)), cx);
-            let glass = true;
             let options = WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 window_min_size: Some(size(px(360.), px(420.))),
                 titlebar: Some(TitlebarOptions {
                     title: Some(SharedString::new_static(title)),
-                    appears_transparent: glass,
-                    traffic_light_position: glass.then(|| point(px(16.), px(12.))),
+                    appears_transparent: true,
+                    traffic_light_position: Some(point(px(16.), px(12.))),
                 }),
-                window_background: if glass && theme::SEE_THROUGH {
+                window_background: if theme::SEE_THROUGH {
                     WindowBackgroundAppearance::Blurred
                 } else {
                     WindowBackgroundAppearance::Opaque
                 },
-                window_decorations: glass.then_some(WindowDecorations::Client),
+                window_decorations: Some(WindowDecorations::Client),
                 app_id: Some(String::from("dotori")),
                 ..WindowOptions::default()
             };
