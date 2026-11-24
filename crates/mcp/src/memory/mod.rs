@@ -48,6 +48,7 @@ const BATCH_PAUSE: Duration = Duration::from_secs(1);
 const FILL_PAUSE: Duration = Duration::from_secs(30);
 const FAILED_PAUSE: Duration = Duration::from_secs(300);
 const VERSION: i64 = 3;
+const OLD_FORMAT: &str = "2";
 const BUSY: Duration = Duration::from_secs(5);
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -486,18 +487,21 @@ pub fn open_index(path: &Path) -> Result<Connection, String> {
     index
         .pragma_update(None, "secure_delete", "ON")
         .map_err(fail)?;
-    let version: i64 = index
+    let upgrade = rusqlite::Transaction::new_unchecked(&index, TransactionBehavior::Immediate)
+        .map_err(fail)?;
+    let version: i64 = upgrade
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .map_err(fail)?;
-    if version != VERSION {
-        index.execute_batch(DROP).map_err(fail)?;
-        index.execute_batch(SCHEMA).map_err(fail)?;
-        index
-            .pragma_update(None, "user_version", VERSION)
-            .map_err(fail)?;
-    } else {
-        index.execute_batch(SCHEMA).map_err(fail)?;
+    match (version, old_format(&upgrade).map_err(fail)?.as_deref()) {
+        (_, Some(OLD_FORMAT)) => from_old_format(&upgrade).map_err(fail)?,
+        (VERSION, None) => {}
+        _ => upgrade.execute_batch(DROP).map_err(fail)?,
     }
+    upgrade.execute_batch(SCHEMA).map_err(fail)?;
+    upgrade
+        .pragma_update(None, "user_version", VERSION)
+        .map_err(fail)?;
+    upgrade.commit().map_err(fail)?;
     index
         .execute(
             "INSERT INTO terms (terms, rank) VALUES ('secure-delete', 1)",
@@ -565,6 +569,38 @@ fn record_years(folder: &Path) -> rusqlite::Result<Vec<(String, Connection)>> {
             ))
         })
         .collect()
+}
+
+fn has_table(index: &Connection, name: &str) -> rusqlite::Result<bool> {
+    index
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
+            [name],
+            |_| Ok(()),
+        )
+        .optional()
+        .map(|found| found.is_some())
+}
+
+fn old_format(index: &Connection) -> rusqlite::Result<Option<String>> {
+    if !has_table(index, "meta")? {
+        return Ok(None);
+    }
+    meta(index, "format")
+}
+
+fn from_old_format(index: &Connection) -> rusqlite::Result<()> {
+    if has_table(index, "dropped")? {
+        index.execute_batch(
+            "INSERT OR IGNORE INTO forgotten (record) SELECT record FROM dropped; \
+             DROP TABLE dropped;",
+        )?;
+    }
+    index.execute_batch(
+        "ALTER TABLE forgotten RENAME TO dropped; \
+         ALTER TABLE docs RENAME COLUMN sender TO sender_name; \
+         DELETE FROM meta WHERE key = 'format';",
+    )
 }
 
 fn meta(index: &Connection, key: &str) -> rusqlite::Result<Option<String>> {

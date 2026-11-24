@@ -74,3 +74,21 @@ fn a_table_made_in_two_files_is_reported_but_meta_is_not() {
         ["table dropped is made in more than one file: crates/a/src/a.rs, crates/b/src/b.rs"]
     );
 }
+
+#[test]
+fn lowercase_split_and_temporary_tables_are_read_and_comments_are_not() {
+    let source = "/// CREATE TABLE is how a file starts.\n// create table notes (a TEXT)\nconst SCHEMA: &str = \"create temp table\nIF NOT EXISTS\nlater (kind TEXT CHECK (kind = 'a'), seen_at INTEGER)\";";
+
+    let tables = tables_in(source);
+
+    assert_eq!(tables.len(), 1);
+    assert_eq!(tables[0].name, "later");
+    assert_eq!(
+        tables[0]
+            .columns
+            .iter()
+            .map(|column| column.name.as_str())
+            .collect::<Vec<_>>(),
+        ["kind", "seen_at"]
+    );
+}

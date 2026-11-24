@@ -26,31 +26,62 @@ pub struct Column {
 }
 
 pub fn tables_in(source: &str) -> Vec<Table> {
-    let sql = source.replace("\\\n", " ");
+    let code = source
+        .replace("\\\n", " ")
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let words: Vec<(usize, &str)> = code
+        .split_whitespace()
+        .map(|word| (word.as_ptr() as usize - code.as_ptr() as usize, word))
+        .collect();
+    let bare = |word: &str| {
+        word.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+            .to_ascii_uppercase()
+    };
     let mut tables = Vec::new();
-    let mut rest = sql.as_str();
-    while let Some(at) = rest.find("CREATE ") {
-        rest = &rest[at + "CREATE ".len()..];
-        let head = rest.trim_start();
-        let virtual_table = head.starts_with("VIRTUAL TABLE ");
-        let Some(after) = head
-            .strip_prefix("VIRTUAL TABLE ")
-            .or_else(|| head.strip_prefix("TABLE "))
-        else {
+    for (at, (_, word)) in words.iter().enumerate() {
+        if bare(word) != "CREATE" {
+            continue;
+        }
+        let mut next = at + 1;
+        let mut virtual_table = false;
+        while let Some((_, word)) = words.get(next) {
+            match bare(word).as_str() {
+                "TEMP" | "TEMPORARY" => next += 1,
+                "VIRTUAL" => {
+                    virtual_table = true;
+                    next += 1;
+                }
+                _ => break,
+            }
+        }
+        if words.get(next).map(|(_, word)| bare(word)).as_deref() != Some("TABLE") {
+            continue;
+        }
+        next += 1;
+        let guard: Vec<String> = words
+            .iter()
+            .skip(next)
+            .take(3)
+            .map(|(_, word)| bare(word))
+            .collect();
+        if guard == ["IF", "NOT", "EXISTS"] {
+            next += 3;
+        }
+        let Some((start, _)) = words.get(next) else {
             continue;
         };
-        let after = after
-            .trim_start()
-            .strip_prefix("IF NOT EXISTS ")
-            .unwrap_or(after)
-            .trim_start();
-        let name: String = after
-            .chars()
-            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
-            .collect();
+        let after = &code[*start..];
         let Some(open) = after.find('(') else {
             continue;
         };
+        let name = after[..open]
+            .split_whitespace()
+            .next()
+            .unwrap_or_default()
+            .to_owned();
         let body = &after[open + 1..];
         let mut depth = 1usize;
         let mut end = body.len();
@@ -79,7 +110,7 @@ pub fn tables_in(source: &str) -> Vec<Table> {
                 table.foreign = true;
             }
             if part.is_empty()
-                || part.contains('=')
+                || (virtual_table && part.contains('='))
                 || [
                     "PRIMARY KEY",
                     "UNIQUE",
@@ -92,12 +123,12 @@ pub fn tables_in(source: &str) -> Vec<Table> {
             {
                 continue;
             }
-            let mut words = part.split(' ');
-            let name = words.next().unwrap_or_default().to_owned();
+            let mut parts = part.split(' ');
+            let name = parts.next().unwrap_or_default().to_owned();
             let kind = if virtual_table {
                 String::new()
             } else {
-                words.next().unwrap_or_default().to_ascii_uppercase()
+                parts.next().unwrap_or_default().to_ascii_uppercase()
             };
             table.columns.push(Column {
                 name,
@@ -106,7 +137,6 @@ pub fn tables_in(source: &str) -> Vec<Table> {
             });
         }
         tables.push(table);
-        rest = &after[open..];
     }
     tables
 }
