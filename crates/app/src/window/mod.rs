@@ -1,5 +1,6 @@
 mod browser;
 mod chat;
+mod chrome;
 mod identity;
 mod input;
 mod motion;
@@ -84,7 +85,7 @@ pub(crate) fn run(home: Home, which: Which) -> Result<(), String> {
                 Which::Settings => ("dotori 설정", 520., 640.),
             };
             let bounds = Bounds::centered(None, size(px(wide), px(tall)), cx);
-            let glass = matches!(which, Which::Chat);
+            let glass = true;
             let options = WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 window_min_size: Some(size(px(360.), px(420.))),

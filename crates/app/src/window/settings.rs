@@ -37,13 +37,13 @@ use crate::settings::WindowSettings;
 use crate::settings::environment;
 use crate::vault::Vault;
 use crate::vault::now_ms;
+use crate::window::chrome::Frame;
 use crate::window::identity;
 use crate::window::identity::Identity;
 use crate::window::identity::Particle;
 use crate::window::identity::called;
 use crate::window::input::TextInput;
 use crate::window::notes::NotesView;
-use crate::window::parts::header;
 use crate::window::parts::logo;
 use crate::window::parts::prose;
 use crate::window::pcs::PcsView;
@@ -318,7 +318,8 @@ impl Focusable for SettingsView {
 
 impl Render for SettingsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = Theme::of(window);
+        let theme = Theme::of(window).glass();
+        let frame = Frame::of(window);
         let segment = |id: &'static str,
                        label: &'static str,
                        openai_compatible: bool,
@@ -402,8 +403,17 @@ impl Render for SettingsView {
                 .text_color(color)
                 .text_xs()
                 .child(prose(&words))
+                .into_any_element()
         });
-        div()
+        let note = note.unwrap_or_else(|| {
+            div()
+                .text_xs()
+                .text_color(theme.muted)
+                .child("바뀐 설정은 dotori를 다시 시작하면 적용돼요")
+                .into_any_element()
+        });
+        frame
+            .resizable(div())
             .flex()
             .flex_col()
             .size_full()
@@ -411,20 +421,23 @@ impl Render for SettingsView {
             .text_color(theme.text)
             .text_sm()
             .line_height(px(21.))
-            .child(header(
-                &theme,
-                "설정",
-                div()
-                    .text_xs()
-                    .text_color(theme.muted)
-                    .child("바뀐 설정은 dotori를 다시 시작하면 적용돼요"),
-            ))
+            .child(
+                frame.strip(
+                    &theme,
+                    div()
+                        .text_base()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child("설정"),
+                    div(),
+                ),
+            )
             .child(
                 div()
                     .id("settings")
                     .flex_1()
                     .overflow_y_scroll()
-                    .p_5()
+                    .px_5()
+                    .pb_5()
                     .child(self.identity_card(&theme, window, cx))
                     .child(div().h_4())
                     .child(self.look_card(&theme, cx))
@@ -437,9 +450,9 @@ impl Render for SettingsView {
                             .p_5()
                             .rounded_2xl()
                             .bg(theme.surface)
-                            .border_1()
-                            .border_color(theme.line)
-                            .shadow_xs()
+                            .border_t_1()
+                            .border_color(theme.rim)
+                            .shadow_sm()
                             .child(
                                 div()
                                     .flex()
@@ -463,8 +476,6 @@ impl Render for SettingsView {
                                     .gap_1()
                                     .rounded_xl()
                                     .bg(theme.canvas)
-                                    .border_1()
-                                    .border_color(theme.line)
                                     .child(segment("anthropic", "Anthropic", false, cx))
                                     .child(segment("openai", "OpenAI 호환", true, cx)),
                             )
@@ -491,10 +502,7 @@ impl Render for SettingsView {
                     .gap_3()
                     .px_5()
                     .py_3()
-                    .bg(theme.raised)
-                    .border_t_1()
-                    .border_color(theme.line)
-                    .child(div().flex_1().children(note))
+                    .child(div().flex_1().child(note))
                     .child(
                         div()
                             .id("save")
@@ -502,7 +510,7 @@ impl Render for SettingsView {
                             .flex_none()
                             .px_5()
                             .py_2()
-                            .rounded_xl()
+                            .rounded_lg()
                             .cursor_pointer()
                             .bg(theme.primary)
                             .hover(|save| save.bg(theme.primary_hover))
@@ -809,7 +817,9 @@ impl SettingsView {
             .p_5()
             .rounded_2xl()
             .bg(theme.surface)
-            .shadow_xs()
+            .border_t_1()
+            .border_color(theme.rim)
+            .shadow_sm()
             .child(
                 div()
                     .flex()
@@ -936,7 +946,9 @@ impl SettingsView {
             .p_5()
             .rounded_2xl()
             .bg(theme.surface)
-            .shadow_xs()
+            .border_t_1()
+            .border_color(theme.rim)
+            .shadow_sm()
             .child(
                 div()
                     .flex()
@@ -1155,9 +1167,9 @@ fn channel_card(
         .p_5()
         .rounded_2xl()
         .bg(theme.surface)
-        .border_1()
-        .border_color(theme.line)
-        .shadow_xs()
+        .border_t_1()
+        .border_color(theme.rim)
+        .shadow_sm()
         .child(
             div()
                 .flex()
@@ -1266,7 +1278,11 @@ fn field(
                 .rounded_lg()
                 .bg(theme.canvas)
                 .border_1()
-                .border_color(if focused { theme.primary } else { theme.line })
+                .border_color(if focused {
+                    theme.primary.into()
+                } else {
+                    gpui::transparent_black()
+                })
                 .cursor_text()
                 .on_mouse_down(MouseButton::Left, move |_, window, _| window.focus(&focus))
                 .child(input.clone()),

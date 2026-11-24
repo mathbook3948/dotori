@@ -128,9 +128,9 @@ impl Render for NotesView {
             .p_5()
             .rounded_2xl()
             .bg(theme.surface)
-            .border_1()
-            .border_color(theme.line)
-            .shadow_xs()
+            .border_t_1()
+            .border_color(theme.rim)
+            .shadow_sm()
             .child(
                 div()
                     .flex()

@@ -2,7 +2,6 @@ use std::borrow::Cow;
 
 use gpui::AssetSource;
 use gpui::Div;
-use gpui::FontWeight;
 use gpui::Img;
 use gpui::Rgba;
 use gpui::SharedString;
@@ -102,35 +101,6 @@ fn css(color: Rgba) -> String {
 }
 
 const ACORN: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="40 34 176 196" width="176" height="196"><g transform="translate(128 128) scale(0.72) translate(-128 -128) rotate(15 128 140) translate(0 -4)"><path fill="{nut}" d="M 64 124 Q 128 152 192 124 C 202 154 196 190 162 214 C 146 226 134 231 128 236 C 122 231 110 226 94 214 C 60 190 54 154 64 124 Z"/><path fill="{cap}" d="M 56 112 Q 46 112 46 102 C 46 70 82 52 128 52 C 174 52 210 70 210 102 Q 210 112 200 112 Q 128 140 56 112 Z"/><path d="M128 54 Q128 36 112 26" fill="none" stroke="{cap}" stroke-width="16" stroke-linecap="round"/></g></svg>"#;
-
-/// The bar at the top of a window: the mark, a title, and a line under it.
-pub(crate) fn header(theme: &Theme, title: &'static str, under: impl IntoElement) -> Div {
-    div()
-        .flex()
-        .flex_none()
-        .items_center()
-        .gap_3()
-        .px_4()
-        .h(px(60.))
-        .bg(theme.raised)
-        .border_b_1()
-        .border_color(theme.line)
-        .child(logo(theme, 34.))
-        .child(
-            div()
-                .flex()
-                .flex_1()
-                .flex_col()
-                .gap(px(2.))
-                .child(
-                    div()
-                        .text_base()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child(title),
-                )
-                .child(under),
-        )
-}
 
 /// Text that wraps only between words. GPUI breaks Korean between any two syllables, so each
 /// word is laid out on its own and lines break at the spaces. Runs of spaces and indentation keep

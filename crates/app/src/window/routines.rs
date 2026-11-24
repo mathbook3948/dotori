@@ -172,7 +172,11 @@ impl RoutinesView {
                             .rounded_lg()
                             .bg(theme.canvas)
                             .border_1()
-                            .border_color(if focused { theme.primary } else { theme.line })
+                            .border_color(if focused {
+                                theme.primary.into()
+                            } else {
+                                gpui::transparent_black()
+                            })
                             .cursor_text()
                             .on_mouse_down(MouseButton::Left, move |_, window, _| {
                                 window.focus(&focus);
@@ -308,9 +312,9 @@ impl Render for RoutinesView {
             .p_5()
             .rounded_2xl()
             .bg(theme.surface)
-            .border_1()
-            .border_color(theme.line)
-            .shadow_xs()
+            .border_t_1()
+            .border_color(theme.rim)
+            .shadow_sm()
             .child(
                 div()
                     .flex()

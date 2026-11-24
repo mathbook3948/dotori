@@ -27,7 +27,7 @@ A value that is not a token is a new token: add it to `DESIGN.md` first, in ever
 - Colors come only from `Theme`, whose fields follow the color tokens. Fields that still carry older names, such as `accent` for `primary`, are renamed by the change that moves a window. Sizes, radii and gaps use the token values, never a size that is not in `DESIGN.md`.
 - Motion uses GPUI's `with_animation` with the duration of the `motion` token. `ease-out` is `ease_out_quint()` (a constructor you call) and `ease-in-out` is `ease_in_out`. Nothing bounces.
 - A state that waits on a disk or the network is drawn at once as waiting, and the work runs off the drawing thread.
-- No status dots, no borders around cards or buttons (a `rim` on the top edge of a glass surface is the exception), no gradients, glows, sparkles or emoji icons, no colored side stripes. Glass is the chat window's material as DESIGN.md's Elevation & Depth says: the canvas lets the blur through, fills stay solid.
+- No status dots, no borders around cards or buttons (a `rim` on the top edge of a glass surface is the exception), no gradients, glows, sparkles or emoji icons, no colored side stripes. Glass is the windows' material as DESIGN.md's Elevation & Depth says: the canvas lets the blur through, fills stay solid. The top strip, window buttons and resize edges come from `chrome.rs`, so both windows share them.
 
 ## 4. Look at the real window
 
@@ -41,6 +41,8 @@ bash .claude/skills/gpui-design/demo.sh shot "$home" "$home/light.png" light
 bash .claude/skills/gpui-design/demo.sh shot "$home" "$home/dark.png" dark
 bash .claude/skills/gpui-design/demo.sh stop "$home"
 ```
+
+`settings "$home" <out.png> [look]` opens the settings window instead. It is taller than a screen, and scrolling does not reach GPUI under Xvfb, so to see all of it run a second, tall Xvfb (for example `Xvfb :98 -screen 0 900x3800x24` with `openbox`), open `dotori settings` there with `DOTORI_HOME` and `DOTORI_THEME` set, make the window tall with `xdotool windowsize`, and capture it with `import`.
 
 `talk` takes your own messages too. `shot ... light 5` saves five frames a few milliseconds apart, for checking that motion shows steps between its start and its end.
 

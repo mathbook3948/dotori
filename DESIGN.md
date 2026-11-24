@@ -299,6 +299,7 @@ This file is the design the windows are moving to. Until a window has moved, `do
 ## Layout
 
 - The chat window is the conversation and the composer, with no header and no title bar of the OS where dotori can draw its own. A quiet strip at the top holds the settings button on the left and the close button on the right, and the owner drags the window by it. On macOS the system's window buttons stay on the left and the settings button follows them. Where the OS still draws its own title bar, the close button is left to it. Each reply carries the logo.
+- The settings window has the same strip, with the title 설정 on the left and the window buttons on the right. Its cards sit on the canvas one under another, and the save button sits at the bottom with a short note beside it, on the canvas with no line above it.
 - The strip shows no status while things work. When dotori cannot be reached, one quiet line on its left says so and what to do. When the owner's PCs are linked, the PC that answers is named there only when it is not this one.
 - dotori's browser has no place in the chat window. When it needs the owner, a card asks at the end of the conversation, showing the page as it is now, and the browser opens in a window of its own only when the owner opens it. A login it asks for is answered in the card.
 - The conversation keeps `spacing.turn` between turns and `spacing.xl` around its edge.
@@ -312,7 +313,7 @@ This file is the design the windows are moving to. Until a window has moved, `do
 
 ## Elevation & Depth
 
-- The chat window is glass. Where the OS blurs what is behind a window (macOS and Windows), the canvas lets `glass.window` of the blurred desktop through. The fills on it, such as bubbles, cards, buttons and the composer, stay solid: GPUI 0.2.2 adds the alpha of what it draws over a see-through canvas instead of blending it, so a see-through fill would come out solid and darker. Elsewhere the same window is opaque.
+- dotori's windows are glass. Where the OS blurs what is behind a window (macOS and Windows), the canvas lets `glass.window` of the blurred desktop through. The fills on it, such as bubbles, cards, buttons and the composer, stay solid: GPUI 0.2.2 adds the alpha of what it draws over a see-through canvas instead of blending it, so a see-through fill would come out solid and darker. Elsewhere the same windows are opaque.
 - A glass surface has a `rim`, a thin light line along its top edge, and a soft shadow under it. Text, `primary` and the marks on a surface stay solid.
 - Cards and fields are set apart by fill and rim, not by borders around them.
 - Lines are used only to divide large areas.
@@ -352,6 +353,10 @@ This file is the design the windows are moving to. Until a window has moved, `do
 - **Composer**: a `surface` pill (`rounded.full`) with a `rim` and the deepest shadow, straight on the canvas, a round `primary` send button, and a `hint` line under it.
 - **Browser card**: `warn-soft` fill, `rounded.lg`, what dotori asks, the page now at 16:10 on `surface` that opens the browser when clicked, and the buttons 나중에 (`surface`) and 브라우저 열기 (`primary`). While the browser window is open it turns `surface` and offers 창 다시 보기 and 다 했어요.
 - **Settings and close buttons**: round `surface` glass buttons with a `muted` gear on the left and a `muted` cross on the right of the top strip.
+- **Settings card**: `surface` fill, `rounded.xl`, a `rim` and a soft shadow, a `title` and a `caption` line under it, then its fields.
+- **Field**: `canvas` fill on its card, `rounded.md`, a label above and a `hint` line under it. Only the focused field shows a `primary` outline.
+- **Key field**: a masked field. Under it, one `caption` pill says where the key comes from: in the 금고 (`ok-soft`), from an environment variable of that name (`ok-soft`), typed and kept on save (`bubble`), or not given yet (`warn-soft`). A kept key offers 지우기 beside the pill.
+- **Assistant picture**: the acorn in the logo colors, or the owner's picture cut round. It stands wherever the logo stands.
 
 ## Do's and Don'ts
 

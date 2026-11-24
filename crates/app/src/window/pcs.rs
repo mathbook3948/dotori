@@ -250,8 +250,6 @@ impl Render for PcsView {
             .py_2p5()
             .rounded_xl()
             .bg(theme.canvas)
-            .border_1()
-            .border_color(theme.line)
             .child(badge(&theme, &self.name))
             .child(
                 div()
@@ -303,8 +301,6 @@ impl Render for PcsView {
                                 .py_2()
                                 .rounded_lg()
                                 .bg(theme.canvas)
-                                .border_1()
-                                .border_color(theme.primary)
                                 .font_family(MONO)
                                 .text_xs()
                                 .child(prose(code)),
@@ -437,9 +433,9 @@ impl Render for PcsView {
             .p_5()
             .rounded_2xl()
             .bg(theme.surface)
-            .border_1()
-            .border_color(theme.line)
-            .shadow_xs()
+            .border_t_1()
+            .border_color(theme.rim)
+            .shadow_sm()
             .child(
                 div()
                     .flex()
@@ -468,9 +464,7 @@ fn section(theme: &Theme, title: &'static str, body: impl IntoElement) -> impl I
         .flex()
         .flex_col()
         .gap_2()
-        .pt_3()
-        .border_t_1()
-        .border_color(theme.line)
+        .pt_2()
         .child(
             div()
                 .text_xs()
@@ -518,11 +512,9 @@ fn button(
         .font_weight(FontWeight::MEDIUM)
         .when(quiet, |button| {
             button
-                .bg(theme.canvas)
-                .border_1()
-                .border_color(theme.line)
+                .bg(theme.bubble)
                 .text_color(theme.text)
-                .hover(|button| button.border_color(theme.primary).text_color(theme.text))
+                .hover(|button| button.bg(theme.selection))
         })
         .when(!quiet, |button| {
             button
@@ -550,7 +542,11 @@ fn input_box(
         .rounded_lg()
         .bg(theme.canvas)
         .border_1()
-        .border_color(if focused { theme.primary } else { theme.line })
+        .border_color(if focused {
+            theme.primary.into()
+        } else {
+            gpui::transparent_black()
+        })
         .cursor_text()
         .on_mouse_down(MouseButton::Left, move |_, window, _| window.focus(&focus))
         .child(input.clone())
