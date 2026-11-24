@@ -3,6 +3,7 @@ name: release
 on:
   push:
     tags: ["v*"]
+    branches: [claude/epic-thompson-culcuc-release]
   workflow_dispatch:
 
 permissions:
