@@ -103,12 +103,22 @@ pub(crate) fn choose(name: &str, look: Look) {
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = (index, look);
 }
 
+/// The theme and look the owner chose in the settings, which the settings window shows.
+pub(crate) fn saved() -> (usize, Look) {
+    *CHOSEN
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Whether `DOTORI_THEME` overrides what the owner chose.
+pub(crate) fn overridden() -> bool {
+    std::env::var_os(THEME_VARIABLE).is_some()
+}
+
 /// The theme and look in use, with `DOTORI_THEME` over the settings. The variable names a theme,
 /// a look (`light` or `dark`), or both as `<theme>-<look>`.
 pub(crate) fn chosen() -> (usize, Look) {
-    let (mut index, mut look) = *CHOSEN
-        .read()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let (mut index, mut look) = saved();
     if let Ok(asked) = std::env::var(THEME_VARIABLE) {
         for part in asked.split('-') {
             if let Some(at) = THEMES.iter().position(|(known, _, _)| *known == part) {

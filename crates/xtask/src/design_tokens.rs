@@ -20,26 +20,44 @@ pub struct Colors {
 }
 
 pub fn leaves(design: &str) -> Result<Vec<(Vec<String>, String)>, String> {
-    let mut parts = design.splitn(3, "---\n");
-    let (Some(""), Some(front)) = (parts.next(), parts.next()) else {
+    let mut lines = design.lines().map(|line| line.trim_end_matches('\r'));
+    if lines.next() != Some("---") {
         return Err(format!("{DESIGN} starts without front matter"));
-    };
+    }
     let mut path: Vec<String> = Vec::new();
     let mut found = Vec::new();
-    for line in front.lines().filter(|line| !line.trim().is_empty()) {
-        let indent = line.len() - line.trim_start().len();
-        if indent % 2 != 0 {
-            return Err(format!("{DESIGN}: odd indentation in `{line}`"));
+    let mut closed = false;
+    for line in lines {
+        if line == "---" {
+            closed = true;
+            break;
         }
-        let Some((key, value)) = line.trim().split_once(':') else {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let indent = line.len() - line.trim_start().len();
+        if indent % 2 != 0 || indent / 2 > path.len() {
+            return Err(format!(
+                "{DESIGN}: indent by two spaces a level in `{line}`"
+            ));
+        }
+        let Some((key, value)) = trimmed.split_once(':') else {
             return Err(format!("{DESIGN}: no key in `{line}`"));
         };
         path.truncate(indent / 2);
         path.push(key.trim().to_owned());
-        let value = value.trim().trim_matches('"');
+        let value = value.trim();
+        let value = value
+            .strip_prefix('"')
+            .and_then(|quoted| quoted.strip_suffix('"'))
+            .unwrap_or(value);
         if !value.is_empty() {
             found.push((path.clone(), value.to_owned()));
         }
+    }
+    if !closed {
+        return Err(format!("{DESIGN}: the front matter never ends with `---`"));
     }
     Ok(found)
 }
@@ -52,12 +70,15 @@ pub fn colors(design: &str) -> Result<Colors, String> {
     let mut themes: Vec<(String, Palette, Palette)> = Vec::new();
     let mut logo = (empty(), empty());
     for (path, value) in leaves(design)? {
-        let [group, name, look, token] = path.as_slice() else {
-            continue;
-        };
-        if group != "colors" {
+        if path.first().map(String::as_str) != Some("colors") {
             continue;
         }
+        let [_, name, look, token] = path.as_slice() else {
+            return Err(format!(
+                "{}: a color is colors.<theme>.<light|dark>.<token>",
+                path.join(".")
+            ));
+        };
         let light = match look.as_str() {
             "light" => true,
             "dark" => false,

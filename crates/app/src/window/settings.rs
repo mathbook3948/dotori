@@ -9,6 +9,7 @@ use gpui::Focusable;
 use gpui::FontWeight;
 use gpui::MouseButton;
 use gpui::SharedString;
+use gpui::Task;
 use gpui::Window;
 use gpui::div;
 use gpui::prelude::*;
@@ -57,6 +58,7 @@ pub(crate) struct SettingsView {
     discord_owner: Entity<TextInput>,
     discord_token_env: Entity<TextInput>,
     note: Option<Note>,
+    look_saving: Option<Task<()>>,
     pcs: Entity<PcsView>,
     routines: Entity<RoutinesView>,
     notes: Entity<NotesView>,
@@ -129,6 +131,7 @@ impl SettingsView {
             discord_owner: field("123456789012345678", discord.owner, cx),
             discord_token_env,
             note: None,
+            look_saving: None,
         }
     }
 
@@ -457,22 +460,37 @@ impl Render for SettingsView {
 
 impl SettingsView {
     fn set_look(&mut self, name: &str, look: Look, cx: &mut Context<Self>) {
-        let saved = Settings::load(&self.home.settings()).and_then(|mut settings| {
-            settings.window = Some(WindowSettings {
-                theme: Some(name.to_owned()),
-                look: Some(look.name().to_owned()),
-            });
-            settings.save_parts(&self.home.settings(), &["window"])
-        });
-        match saved {
-            Ok(()) => crate::window::theme::choose(name, look),
-            Err(error) => self.note = Some(Note::Failed(SharedString::from(error))),
-        }
-        cx.notify();
+        crate::window::theme::choose(name, look);
+        let path = self.home.settings();
+        let window = WindowSettings {
+            theme: Some(name.to_owned()),
+            look: Some(look.name().to_owned()),
+        };
+        let earlier = self.look_saving.take();
+        self.look_saving = Some(cx.spawn(async move |view, cx| {
+            if let Some(earlier) = earlier {
+                earlier.await;
+            }
+            let saved = cx
+                .background_spawn(async move {
+                    Settings::load(&path).and_then(|mut settings| {
+                        settings.window = Some(window);
+                        settings.save_parts(&path, &["window"])
+                    })
+                })
+                .await;
+            if let Err(error) = saved {
+                let _ = view.update(cx, |view, cx| {
+                    view.note = Some(Note::Failed(SharedString::from(error)));
+                    cx.notify();
+                });
+            }
+        }));
+        cx.refresh_windows();
     }
 
     fn look_card(&self, theme: &Theme, cx: &mut Context<Self>) -> gpui::Div {
-        let (index, look) = crate::window::theme::chosen();
+        let (index, look) = crate::window::theme::saved();
         let current = crate::window::theme::names().nth(index).unwrap_or_default();
         let themes = crate::window::theme::names().map(|name| {
             let chosen = name == current;
@@ -557,7 +575,11 @@ impl SettingsView {
                         div()
                             .text_xs()
                             .text_color(theme.muted)
-                            .child("고르면 모든 창이 바로 바뀌어요."),
+                            .child(if crate::window::theme::overridden() {
+                                "DOTORI_THEME이 정해져 있어서 창은 그 모양으로 그려요. 고른 것은 저장돼요."
+                            } else {
+                                "고르면 모든 창이 바로 바뀌어요."
+                            }),
                     ),
             )
             .child(div().flex().flex_col().gap_1().children(themes))
@@ -840,7 +862,7 @@ fn guide(theme: &Theme, steps: &[&'static str]) -> gpui::Div {
                         .mt(px(1.5))
                         .rounded_full()
                         .bg(theme.selection)
-                        .text_color(theme.primary)
+                        .text_color(theme.text)
                         .text_size(px(11.))
                         .font_weight(FontWeight::SEMIBOLD)
                         .child(SharedString::from((n + 1).to_string())),

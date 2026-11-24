@@ -235,7 +235,7 @@ impl ChatView {
                 .text_size(px(11.))
                 .line_height(px(16.))
                 .cursor_pointer()
-                .when(copied, |copy| copy.text_color(theme.primary))
+                .when(copied, |copy| copy.text_color(theme.text))
                 .when(!copied, |copy| {
                     copy.text_color(theme.muted)
                         .hover(|copy| copy.bg(theme.line).text_color(theme.text))
@@ -607,7 +607,7 @@ impl ChatView {
                                     .py_0p5()
                                     .rounded_md()
                                     .bg(theme.selection)
-                                    .text_color(theme.primary)
+                                    .text_color(theme.text)
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child(own),
                             )
@@ -672,7 +672,7 @@ impl ChatView {
                                         .py_0p5()
                                         .rounded_md()
                                         .text_xs()
-                                        .text_color(theme.primary)
+                                        .text_color(theme.text)
                                         .cursor_pointer()
                                         .hover(|more| more.bg(theme.selection))
                                         .child("전체 보기")

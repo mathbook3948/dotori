@@ -17,6 +17,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
+use std::time::SystemTime;
 
 use gpui::App;
 use gpui::AppContext;
@@ -58,6 +59,7 @@ pub(crate) fn run(home: Home, which: Which) -> Result<(), String> {
         Which::Chat => None,
     };
     let settings_path = home.settings();
+    let seen = stamp(&settings_path);
     apply_look(&settings_path);
     let failed = Rc::new(RefCell::new(None));
     let failure = Rc::clone(&failed);
@@ -111,7 +113,7 @@ pub(crate) fn run(home: Home, which: Which) -> Result<(), String> {
                 cx.quit();
                 return;
             }
-            follow_look(settings_path.clone(), cx);
+            follow_look(settings_path.clone(), seen, cx);
             cx.on_action(|_: &Quit, cx| cx.quit());
             cx.on_window_closed(|cx| {
                 if cx.windows().is_empty() {
@@ -127,29 +129,51 @@ pub(crate) fn run(home: Home, which: Which) -> Result<(), String> {
     }
 }
 
-fn apply_look(settings: &Path) {
+fn saved_look(settings: &Path) -> Option<(String, Look)> {
     let chosen = crate::settings::Settings::load(settings)
-        .ok()
-        .and_then(|settings| settings.window)
+        .ok()?
+        .window
         .unwrap_or_default();
-    theme::choose(
-        chosen.theme.as_deref().unwrap_or_default(),
+    Some((
+        chosen.theme.unwrap_or_default(),
         Look::named(chosen.look.as_deref().unwrap_or_default()),
-    );
+    ))
 }
 
-fn follow_look(settings: PathBuf, cx: &mut App) {
+fn apply_look(settings: &Path) {
+    if let Some((name, look)) = saved_look(settings) {
+        theme::choose(&name, look);
+    }
+}
+
+type Stamp = Option<(SystemTime, u64)>;
+
+fn stamp(path: &Path) -> Stamp {
+    let found = fs::metadata(path).ok()?;
+    Some((found.modified().ok()?, found.len()))
+}
+
+fn follow_look(settings: PathBuf, mut seen: Stamp, cx: &mut App) {
     cx.spawn(async move |cx| {
-        let changed = |path: &Path| fs::metadata(path).and_then(|found| found.modified()).ok();
-        let mut seen = changed(&settings);
         loop {
             cx.background_executor().timer(LOOK_EVERY).await;
-            let now = changed(&settings);
+            let path = settings.clone();
+            let last = seen;
+            let (now, look) = cx
+                .background_executor()
+                .spawn(async move {
+                    let now = stamp(&path);
+                    let look = if now == last { None } else { saved_look(&path) };
+                    (now, look)
+                })
+                .await;
             if now == seen {
                 continue;
             }
             seen = now;
-            apply_look(&settings);
+            if let Some((name, look)) = look {
+                theme::choose(&name, look);
+            }
             if cx.update(|cx| cx.refresh_windows()).is_err() {
                 return;
             }

@@ -108,7 +108,7 @@ impl Render for RoutinesView {
                             .py_1()
                             .rounded_lg()
                             .bg(theme.selection)
-                            .text_color(theme.primary)
+                            .text_color(theme.text)
                             .font_weight(FontWeight::SEMIBOLD)
                             .child(routine.time.clone()),
                     )

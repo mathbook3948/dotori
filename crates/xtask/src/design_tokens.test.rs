@@ -61,3 +61,41 @@ fn the_rendered_code_names_each_theme_and_token() {
     assert!(rendered.contains("pub(crate) const THEMES: [(&str, Theme, Theme); 1]"));
     assert!(rendered.contains("Logo { cap: hex(0x5B3A1EFF), }"));
 }
+
+#[test]
+fn the_front_matter_ends_only_at_a_line_of_its_own_and_skips_comments() {
+    let commented = DESIGN_MD.replace("colors:\n", "# the colors below are tokens\ncolors:\n");
+    assert_eq!(
+        colors(&commented).expect("read"),
+        colors(DESIGN_MD).expect("read")
+    );
+
+    let crlf = DESIGN_MD.replace('\n', "\r\n");
+    assert_eq!(
+        colors(&crlf).expect("read"),
+        colors(DESIGN_MD).expect("read")
+    );
+
+    let unclosed = DESIGN_MD.replace("---\n\n# demo", "\n# demo");
+    assert!(
+        leaves(&unclosed)
+            .expect_err("refused")
+            .contains("never ends")
+    );
+}
+
+#[test]
+fn a_color_at_the_wrong_depth_is_refused() {
+    let deep = DESIGN_MD.replace(
+        "      canvas: \"#F4F5F7\"\n",
+        "      canvas: \"#F4F5F7\"\n      extra:\n        nested: \"#000000\"\n",
+    );
+    assert!(
+        colors(&deep)
+            .expect_err("refused")
+            .contains("colors.<theme>")
+    );
+
+    let jump = DESIGN_MD.replace("  plain:\n    light:\n", "  plain:\n        light:\n");
+    assert!(leaves(&jump).expect_err("refused").contains("two spaces"));
+}

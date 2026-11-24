@@ -497,7 +497,7 @@ fn badge(theme: &Theme, name: &str) -> impl IntoElement {
         .size(px(30.))
         .rounded_lg()
         .bg(theme.selection)
-        .text_color(theme.primary)
+        .text_color(theme.text)
         .font_weight(FontWeight::SEMIBOLD)
         .child(first)
 }
@@ -523,7 +523,7 @@ fn button(
                 .border_1()
                 .border_color(theme.line)
                 .text_color(theme.text)
-                .hover(|button| button.border_color(theme.primary).text_color(theme.primary))
+                .hover(|button| button.border_color(theme.primary).text_color(theme.text))
         })
         .when(!quiet, |button| {
             button
