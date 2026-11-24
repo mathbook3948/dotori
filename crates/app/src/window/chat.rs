@@ -342,17 +342,10 @@ impl ChatView {
                 };
                 let mut streams = Vec::new();
                 if place == "run_shell"
-                    && matches!(status, Some((_, Tone::Ok)))
-                    && let Some(shell) = shell_shown(&body)
+                    && let Some((_, tone)) = &status
+                    && let Some(shell) = shell_shown(*tone == Tone::Ok, &body)
                 {
-                    status = Some(if shell.code == "0" {
-                        (SharedString::new_static("명령이 끝났어요"), Tone::Ok)
-                    } else {
-                        (
-                            SharedString::from(format!("명령이 코드 {}로 끝났어요", shell.code)),
-                            Tone::Warn,
-                        )
-                    });
+                    status = Some(shell.status);
                     streams = shell.streams;
                     body = String::new();
                 }
@@ -550,8 +543,10 @@ impl ChatView {
                         })
                         .when(tool != "memory_forget", |hint| {
                             hint.text_color(theme.faint).child(match tool {
-                                "run_shell" => "허락하면 이 PC에서 바로 실행해요",
-                                "write_file" | "edit_file" => "허락하면 이 PC의 파일을 바로 바꿔요",
+                                "run_shell" => "허락하면 dotori가 이 명령을 바로 실행해요",
+                                "write_file" | "edit_file" => {
+                                    "허락하면 dotori가 파일을 바로 바꿔요"
+                                }
                                 _ => "허락하면 바로 실행해요",
                             })
                         }),
@@ -1018,7 +1013,7 @@ pub(crate) fn decision_shown(text: &str) -> (Option<(SharedString, Tone)>, Strin
     if let Some(output) = text.strip_prefix(RAN) {
         return (
             Some((SharedString::new_static("실행했어요"), Tone::Ok)),
-            output.trim_start_matches('\n').to_owned(),
+            output.strip_prefix('\n').unwrap_or(output).to_owned(),
         );
     }
     if let Some(reason) = text.strip_prefix(FAILED) {
@@ -1060,27 +1055,76 @@ pub(crate) fn decision_shown(text: &str) -> (Option<(SharedString, Tone)>, Strin
     (None, text.to_owned())
 }
 
-/// A shell command's result as the window shows it: its exit code, and each output that has
+/// A shell command's result as the window shows it: how it ended, and each output that has
 /// something in it, labelled.
 pub(crate) struct ShellShown {
-    pub(crate) code: String,
+    pub(crate) status: (SharedString, Tone),
     pub(crate) streams: Vec<(&'static str, String)>,
 }
 
-/// Reads what run_shell returned, if it reads as one.
-pub(crate) fn shell_shown(text: &str) -> Option<ShellShown> {
-    let rest = text.strip_prefix("exit code: ")?;
-    let (code, rest) = rest.split_once("\nstdout:\n")?;
-    let (stdout, stderr) = rest.rsplit_once("\nstderr:\n")?;
-    let streams = [("출력", stdout), ("오류 출력", stderr)]
-        .into_iter()
-        .filter(|(_, output)| !output.trim().is_empty())
-        .map(|(label, output)| (label, output.trim_end().to_owned()))
-        .collect();
+/// Reads what run_shell returned when it `ran`, or why it failed, if it reads as one.
+pub(crate) fn shell_shown(ran: bool, text: &str) -> Option<ShellShown> {
+    if ran {
+        let rest = text.strip_prefix("exit code: ")?;
+        let (code, rest) = rest.split_once('\n')?;
+        let status = match code.trim().parse::<i64>() {
+            Ok(0) => (SharedString::new_static("명령이 끝났어요"), Tone::Ok),
+            Ok(code) => (
+                SharedString::from(format!("명령이 코드 {code}로 끝났어요")),
+                Tone::Warn,
+            ),
+            Err(_) => (
+                SharedString::new_static("명령이 신호를 받고 멈췄어요"),
+                Tone::Warn,
+            ),
+        };
+        return Some(ShellShown {
+            status,
+            streams: shell_streams(rest)?,
+        });
+    }
+    let rest = text.strip_prefix("the command did not finish in ")?;
+    let (seconds, rest) = rest.split_once(" seconds")?;
+    let (_, outputs) = rest.split_once("Its output so far:\n")?;
     Some(ShellShown {
-        code: code.trim().to_owned(),
-        streams,
+        status: (
+            SharedString::from(format!("{seconds}초 안에 끝나지 않아 멈췄어요")),
+            Tone::Warn,
+        ),
+        streams: shell_streams(outputs)?,
     })
+}
+
+fn shell_streams(text: &str) -> Option<Vec<(&'static str, String)>> {
+    let (stdout, rest) = counted(text, "stdout (")?;
+    let rest = rest.strip_prefix('\n')?;
+    let (stderr, _) = counted(rest, "stderr (")?;
+    Some(
+        [("출력", stdout), ("오류 출력", stderr)]
+            .into_iter()
+            .filter(|(_, output)| !output.trim().is_empty())
+            .map(|(label, output)| {
+                let output = output
+                    .replace("(only the last part)\n", "(끝부분만 보여요)\n")
+                    .replace(
+                        "\n(something the command left running still writes here)",
+                        "\n(명령이 남겨 둔 프로세스가 아직 쓰고 있어요)",
+                    );
+                (label, output.trim_end().to_owned())
+            })
+            .collect(),
+    )
+}
+
+fn counted<'a>(text: &'a str, head: &str) -> Option<(&'a str, &'a str)> {
+    let rest = text.strip_prefix(head)?;
+    let (count, rest) = rest.split_once(" characters):\n")?;
+    let count: usize = count.parse().ok()?;
+    let end = rest
+        .char_indices()
+        .nth(count)
+        .map_or(rest.len(), |(at, _)| at);
+    (rest.chars().count() >= count).then(|| (&rest[..end], &rest[end..]))
 }
 
 /// What the owner calls one of dotori's own tools that waits for their OK.

@@ -390,10 +390,9 @@ impl BasicTools {
             Err(_) => {
                 drop(tree);
                 return Err(format!(
-                    "the command did not finish in {} seconds and was stopped. Its output so far:\nstdout:\n{}\nstderr:\n{}",
+                    "the command did not finish in {} seconds and was stopped. Its output so far:\n{}",
                     limit.as_secs(),
-                    drained(stdout).await,
-                    drained(stderr).await
+                    outputs(&drained(stdout).await, &drained(stderr).await)
                 ));
             }
         };
@@ -403,9 +402,8 @@ impl BasicTools {
             |code| code.to_string(),
         );
         Ok(format!(
-            "exit code: {code}\nstdout:\n{}\nstderr:\n{}",
-            drained(stdout).await,
-            drained(stderr).await
+            "exit code: {code}\n{}",
+            outputs(&drained(stdout).await, &drained(stderr).await)
         ))
     }
 }
@@ -431,6 +429,16 @@ fn elsewhere_spelled(path: &Path) -> bool {
     cfg!(windows)
         && (text.starts_with(r"\\?\UNC\")
             || (text.starts_with(r"\\") && !text.starts_with(r"\\?\")))
+}
+
+/// A command's two outputs, each headed with its length in characters so a reader can tell them
+/// apart whatever they hold.
+pub fn outputs(stdout: &str, stderr: &str) -> String {
+    format!(
+        "stdout ({} characters):\n{stdout}\nstderr ({} characters):\n{stderr}",
+        stdout.chars().count(),
+        stderr.chars().count()
+    )
 }
 
 #[cfg(windows)]

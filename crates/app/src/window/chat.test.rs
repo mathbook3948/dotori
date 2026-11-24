@@ -59,14 +59,35 @@ fn what_came_of_a_decided_call_reads_in_the_owner_s_words() {
 }
 
 #[test]
-fn a_shell_result_splits_into_its_code_and_what_it_printed() {
-    let shown = shell_shown("exit code: 2\nstdout:\n\nstderr:\nsh: 1: cd: can't cd\n")
-        .expect("a shell result");
+fn a_shell_result_splits_into_how_it_ended_and_what_it_printed() {
+    use dotori_connectors::tool::basic::outputs;
+    let tricky = "a\nstderr (3 characters):\nb";
+    let ran = format!("exit code: 2\n{}", outputs("", tricky));
 
-    assert_eq!(shown.code, "2");
+    let shown = shell_shown(true, &ran).expect("a shell result");
+
+    assert_eq!(shown.status.1, Tone::Warn);
+    assert!(shown.status.0.contains("코드 2"));
+    assert_eq!(shown.streams, [("오류 출력", String::from(tricky))]);
+
+    let signalled = format!(
+        "exit code: none (stopped by a signal)\n{}",
+        outputs("x", "")
+    );
+    let shown = shell_shown(true, &signalled).expect("read");
+    assert!(shown.status.0.contains("신호"));
+    assert_eq!(shown.streams, [("출력", String::from("x"))]);
+
+    let late = format!(
+        "the command did not finish in 110 seconds and was stopped. Its output so far:\n{}",
+        outputs("(only the last part)\nbuilding", "")
+    );
+    let shown = shell_shown(false, &late).expect("read");
+    assert!(shown.status.0.contains("110초"));
     assert_eq!(
         shown.streams,
-        [("오류 출력", String::from("sh: 1: cd: can't cd"))]
+        [("출력", String::from("(끝부분만 보여요)\nbuilding"))]
     );
-    assert!(shell_shown("sent to team@example.com").is_none());
+
+    assert!(shell_shown(true, "sent to team@example.com").is_none());
 }
