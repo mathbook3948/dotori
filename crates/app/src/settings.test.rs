@@ -488,3 +488,53 @@ fn the_telegram_form_needs_a_numeric_owner_and_a_variable_name() {
     assert_eq!(TelegramForm::of(Some(&section)), form);
     assert_eq!(TelegramForm::default().settings(), Ok(None));
 }
+
+#[test]
+fn discord_needs_its_token_and_owner_and_stays_apart_from_the_others() {
+    let settings = parse(
+        "[telegram]\nowner = 42\n\n[discord]\nowner = \"123456789012345678\"\ntoken_env = \"MY_DC\"",
+    )
+    .expect("parsed");
+
+    let (built, off) = settings.channels(|name| (name != "MY_DC").then(|| String::from("t")));
+    assert_eq!(built.len(), 1);
+    assert_eq!(built[0].id().as_str(), "telegram");
+    assert!(
+        off[0].contains("Discord is off") && off[0].contains("MY_DC"),
+        "{off:?}"
+    );
+
+    let (built, off) = settings.channels(|_| Some(String::from("t")));
+    assert!(off.is_empty(), "{off:?}");
+    let names: Vec<&str> = built.iter().map(|channel| channel.id().as_str()).collect();
+    assert_eq!(names, ["telegram", "discord"]);
+
+    let (_, off) = parse("[discord]\nowner = \"me\"")
+        .expect("parsed")
+        .channels(|_| Some(String::from("t")));
+    assert!(off[0].contains("owner"), "{off:?}");
+    assert!(parse("[discord]\ntoken = \"t\"").is_err());
+}
+
+#[test]
+fn the_discord_form_needs_a_snowflake_owner_and_a_variable_name() {
+    let mut form = DiscordForm {
+        on: true,
+        ..DiscordForm::default()
+    };
+    assert!(form.settings().is_err());
+    form.owner = Some(String::from("yuno#1234"));
+    assert!(form.settings().is_err());
+    form.owner = Some(String::from("42"));
+    assert!(form.settings().is_err());
+    form.owner = Some(String::from("123456789012345678"));
+    form.token_env = Some(String::from("MTIz.abc.def"));
+    assert!(form.settings().expect_err("a token").contains("환경 변수"));
+    form.token_env = None;
+
+    let section = form.settings().expect("valid").expect("on");
+
+    assert_eq!(section.owner.as_deref(), Some("123456789012345678"));
+    assert_eq!(DiscordForm::of(Some(&section)), form);
+    assert_eq!(DiscordForm::default().settings(), Ok(None));
+}

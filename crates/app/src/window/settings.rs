@@ -15,6 +15,8 @@ use gpui::prelude::*;
 use gpui::px;
 
 use crate::home::Home;
+use crate::settings::DISCORD_KEY;
+use crate::settings::DiscordForm;
 use crate::settings::Form;
 use crate::settings::SLACK_APP_KEY;
 use crate::settings::SLACK_BOT_KEY;
@@ -48,6 +50,9 @@ pub(crate) struct SettingsView {
     telegram_on: bool,
     telegram_owner: Entity<TextInput>,
     telegram_token_env: Entity<TextInput>,
+    discord_on: bool,
+    discord_owner: Entity<TextInput>,
+    discord_token_env: Entity<TextInput>,
     note: Option<Note>,
     pcs: Entity<PcsView>,
     routines: Entity<RoutinesView>,
@@ -88,6 +93,10 @@ impl SettingsView {
         let telegram_token_env = field(TELEGRAM_KEY, telegram.token_env.clone(), cx);
         cx.observe(&telegram_token_env, |_, _, cx| cx.notify())
             .detach();
+        let discord = DiscordForm::of(settings.discord.as_ref());
+        let discord_token_env = field(DISCORD_KEY, discord.token_env.clone(), cx);
+        cx.observe(&discord_token_env, |_, _, cx| cx.notify())
+            .detach();
         let slack_app_env = field(SLACK_APP_KEY, slack.app_token_env.clone(), cx);
         let slack_bot_env = field(SLACK_BOT_KEY, slack.bot_token_env.clone(), cx);
         cx.observe(&slack_app_env, |_, _, cx| cx.notify()).detach();
@@ -111,6 +120,9 @@ impl SettingsView {
             telegram_on: telegram.on,
             telegram_owner: field("123456789", telegram.owner, cx),
             telegram_token_env,
+            discord_on: discord.on,
+            discord_owner: field("123456789012345678", discord.owner, cx),
+            discord_token_env,
             note: None,
         }
     }
@@ -176,20 +188,38 @@ impl SettingsView {
         }
     }
 
+    fn discord_form(&self, cx: &Context<Self>) -> DiscordForm {
+        let read = |field: &Entity<TextInput>| {
+            let text = field.read(cx).text().trim().to_owned();
+            (!text.is_empty()).then_some(text)
+        };
+        DiscordForm {
+            on: self.discord_on,
+            owner: read(&self.discord_owner),
+            token_env: read(&self.discord_token_env),
+        }
+    }
+
     fn save(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
         let form = self.form(cx);
         let slack = self.slack_form(cx);
         let telegram = self.telegram_form(cx);
+        let discord = self.discord_form(cx);
         let saved = form.settings(&self.earlier.model).and_then(|model| {
             let slack = slack.settings()?;
             let telegram = telegram.settings()?;
+            let discord = discord.settings()?;
             let settings = Settings {
                 model,
                 slack,
                 telegram,
+                discord,
                 ..Settings::load(&self.home.settings())?
             };
-            settings.save_parts(&self.home.settings(), &["model", "slack", "telegram"])?;
+            settings.save_parts(
+                &self.home.settings(),
+                &["model", "slack", "telegram", "discord"],
+            )?;
             self.earlier = settings;
             Ok(())
         });
@@ -364,6 +394,8 @@ impl Render for SettingsView {
                     .child(div().h_4())
                     .child(self.telegram_card(&theme, window, cx))
                     .child(div().h_4())
+                    .child(self.discord_card(&theme, window, cx))
+                    .child(div().h_4())
                     .child(self.notes.clone())
                     .child(div().h_4())
                     .child(self.routines.clone())
@@ -521,6 +553,62 @@ impl SettingsView {
                     "봇 토큰이 든 환경 변수",
                     "비워 두면 TELEGRAM_BOT_TOKEN이에요.",
                     &self.telegram_token_env,
+                ))
+                .child(token_found),
+        )
+    }
+}
+
+impl SettingsView {
+    fn discord_card(
+        &self,
+        theme: &Theme,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let on = self.discord_on;
+        let card = channel_card(
+            theme,
+            "Discord",
+            "Discord 봇으로도 말할 수 있어요. 봇에게 DM을 보내거나 서버에서 부르면 같은 대화로 이어져요.",
+            switch(theme, "discord-switch", on).on_click(cx.listener(|view, _, _, cx| {
+                view.discord_on = !view.discord_on;
+                view.note = None;
+                cx.notify();
+            })),
+        );
+        if !on {
+            return card;
+        }
+        let token_found = found(theme, &self.discord_token_env, DISCORD_KEY, cx);
+        card.child(guide(
+            theme,
+            &[
+                "discord.com/developers/applications에서 앱을 만들고 Bot 메뉴에서 토큰을 받아요. 같은 화면에서 Message Content Intent를 켜요.",
+                "OAuth2 URL Generator에서 bot 범위와 View Channels, Send Messages, Read Message History 권한을 골라 내 서버에 봇을 초대해요.",
+                "토큰을 아래 이름의 환경 변수에 넣고 dotori를 다시 시작해요. 토큰은 파일에 저장하지 않아요.",
+            ],
+        ))
+        .child(field(
+            theme,
+            window,
+            cx,
+            "내 Discord 사용자 ID",
+            "설정의 고급에서 개발자 모드를 켜고, 내 프로필을 눌러 \"사용자 ID 복사\"로 얻어요. 이 사람의 말만 들어요.",
+            &self.discord_owner,
+        ))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap_1p5()
+                .child(field(
+                    theme,
+                    window,
+                    cx,
+                    "봇 토큰이 든 환경 변수",
+                    "비워 두면 DISCORD_BOT_TOKEN이에요.",
+                    &self.discord_token_env,
                 ))
                 .child(token_found),
         )
