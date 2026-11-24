@@ -2,6 +2,7 @@ mod core_deps;
 mod docs;
 mod forbidden_chars;
 mod root_entries;
+mod sql_schema;
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -15,9 +16,12 @@ fn main() -> ExitCode {
         "core-deps" => core_deps::run(&workspace_root),
         "root-entries" => root_entries::run(&workspace_root),
         "docs" => docs::check(&workspace_root),
+        "sql-schema" => sql_schema::run(&workspace_root),
         "docs-write" => docs::write(&workspace_root),
         _ => {
-            eprintln!("usage: xtask <forbidden-chars|core-deps|root-entries|docs|docs-write>");
+            eprintln!(
+                "usage: xtask <forbidden-chars|core-deps|root-entries|docs|docs-write|sql-schema>"
+            );
             return ExitCode::from(2);
         }
     };

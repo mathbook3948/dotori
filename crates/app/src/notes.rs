@@ -37,6 +37,7 @@ use tokio::time;
 use crate::confirm;
 use crate::routines;
 use crate::routines::Routines;
+use crate::versioned;
 
 const REMEMBER: &str = "remember";
 const FORGET: &str = "forget";
@@ -44,6 +45,7 @@ const OWNER_TOOLS: [&str; 4] = [REMEMBER, FORGET, routines::ADD, routines::REMOV
 pub(crate) const MAX_NOTES: i64 = 50;
 const LOOK_EVERY: Duration = Duration::from_secs(20);
 pub(crate) const MAX_LENGTH: usize = 500;
+const VERSION: i64 = 1;
 const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS notes (\
     id INTEGER PRIMARY KEY AUTOINCREMENT, at_ms INTEGER NOT NULL, text TEXT NOT NULL); \
     CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL)";
@@ -82,14 +84,7 @@ impl Notes {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if held.is_none() {
-            if let Some(folder) = self.path.parent() {
-                std::fs::create_dir_all(folder).map_err(|error| error.to_string())?;
-            }
-            let opened = Connection::open(&self.path).map_err(|error| error.to_string())?;
-            opened
-                .execute_batch(SCHEMA)
-                .map_err(|error| error.to_string())?;
-            *held = Some(opened);
+            *held = Some(versioned::open(&self.path, SCHEMA, VERSION)?);
         }
         let opened = held.as_ref().ok_or("no connection")?;
         let done = work(opened).map_err(|error| error.to_string());

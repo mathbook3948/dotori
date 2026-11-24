@@ -14,6 +14,7 @@ run = [
   "cargo run --quiet --package xtask -- core-deps",
   "cargo run --quiet --package xtask -- root-entries",
   "cargo run --quiet --package xtask -- docs",
+  "cargo run --quiet --package xtask -- sql-schema",
   "cargo deny check licenses",
 ]
 

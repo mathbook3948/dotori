@@ -47,7 +47,8 @@ const QUERY_WAIT: Duration = Duration::from_secs(15);
 const BATCH_PAUSE: Duration = Duration::from_secs(1);
 const FILL_PAUSE: Duration = Duration::from_secs(30);
 const FAILED_PAUSE: Duration = Duration::from_secs(300);
-const FORMAT: &str = "2";
+const VERSION: i64 = 3;
+const OLD_FORMAT: &str = "2";
 const BUSY: Duration = Duration::from_secs(5);
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -58,7 +59,7 @@ CREATE TABLE IF NOT EXISTS docs (
     kind TEXT NOT NULL,
     channel TEXT,
     place TEXT,
-    sender TEXT,
+    sender_name TEXT,
     role TEXT,
     text TEXT
 );
@@ -71,7 +72,7 @@ CREATE TABLE IF NOT EXISTS copied_vectors (
     vector BLOB NOT NULL,
     PRIMARY KEY (record, model)
 );
-CREATE TABLE IF NOT EXISTS forgotten (record TEXT PRIMARY KEY) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS dropped (record TEXT PRIMARY KEY) WITHOUT ROWID;
 ";
 const DROP: &str = "
 DROP TABLE IF EXISTS meta;
@@ -81,6 +82,7 @@ DROP TABLE IF EXISTS vectors;
 DROP TABLE IF EXISTS vector_log;
 DROP TABLE IF EXISTS copied_vectors;
 DROP TABLE IF EXISTS forgotten;
+DROP TABLE IF EXISTS dropped;
 ";
 
 /// Where memory reads the raw record, keeps its index, and keeps dictionaries. The record is a
@@ -356,7 +358,7 @@ impl Memory {
         for seq in seqs {
             let row = index
                 .query_row(
-                    "SELECT record, at_ms, kind, channel, place, sender, role, text FROM docs WHERE seq = ?1",
+                    "SELECT record, at_ms, kind, channel, place, sender_name, role, text FROM docs WHERE seq = ?1",
                     [seq],
                     |row| {
                         Ok(Hit {
@@ -473,7 +475,9 @@ impl Hit {
     }
 }
 
-fn open_index(path: &PathBuf) -> Result<Connection, String> {
+/// Opens the search index at `path`, made again from nothing when it is in another format. Every
+/// table of the index is made here, also for the vectors other PCs send.
+pub fn open_index(path: &Path) -> Result<Connection, String> {
     if let Some(folder) = path.parent() {
         std::fs::create_dir_all(folder).map_err(|error| error.to_string())?;
     }
@@ -483,16 +487,22 @@ fn open_index(path: &PathBuf) -> Result<Connection, String> {
     index
         .pragma_update(None, "secure_delete", "ON")
         .map_err(fail)?;
-    index.execute_batch(SCHEMA).map_err(fail)?;
-    if meta(&index, "format").map_err(fail)?.as_deref() != Some(FORMAT) {
-        index.execute_batch(DROP).map_err(fail)?;
+    if current(&index).map_err(fail)? {
         index.execute_batch(SCHEMA).map_err(fail)?;
-        index
-            .execute(
-                "INSERT INTO meta (key, value) VALUES ('format', ?1)",
-                [FORMAT],
-            )
+    } else {
+        let upgrade = rusqlite::Transaction::new_unchecked(&index, TransactionBehavior::Immediate)
             .map_err(fail)?;
+        if !current(&upgrade).map_err(fail)? {
+            match old_format(&upgrade).map_err(fail)?.as_deref() {
+                Some(OLD_FORMAT) => from_old_format(&upgrade).map_err(fail)?,
+                _ => upgrade.execute_batch(DROP).map_err(fail)?,
+            }
+            upgrade.execute_batch(SCHEMA).map_err(fail)?;
+            upgrade
+                .pragma_update(None, "user_version", VERSION)
+                .map_err(fail)?;
+        }
+        upgrade.commit().map_err(fail)?;
     }
     index
         .execute(
@@ -563,6 +573,44 @@ fn record_years(folder: &Path) -> rusqlite::Result<Vec<(String, Connection)>> {
         .collect()
 }
 
+fn has_table(index: &Connection, name: &str) -> rusqlite::Result<bool> {
+    index
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
+            [name],
+            |_| Ok(()),
+        )
+        .optional()
+        .map(|found| found.is_some())
+}
+
+fn current(index: &Connection) -> rusqlite::Result<bool> {
+    let version: i64 = index.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    Ok(version == VERSION && old_format(index)?.is_none())
+}
+
+fn old_format(index: &Connection) -> rusqlite::Result<Option<String>> {
+    if !has_table(index, "meta")? {
+        return Ok(None);
+    }
+    meta(index, "format")
+}
+
+fn from_old_format(index: &Connection) -> rusqlite::Result<()> {
+    match (has_table(index, "forgotten")?, has_table(index, "dropped")?) {
+        (true, true) => index.execute_batch(
+            "INSERT OR IGNORE INTO dropped (record) SELECT record FROM forgotten; \
+             DROP TABLE forgotten;",
+        )?,
+        (true, false) => index.execute_batch("ALTER TABLE forgotten RENAME TO dropped;")?,
+        (false, _) => {}
+    }
+    index.execute_batch(
+        "ALTER TABLE docs RENAME COLUMN sender TO sender_name; \
+         DELETE FROM meta WHERE key = 'format';",
+    )
+}
+
 fn meta(index: &Connection, key: &str) -> rusqlite::Result<Option<String>> {
     index
         .query_row("SELECT value FROM meta WHERE key = ?1", [key], |row| {
@@ -610,7 +658,7 @@ fn copy_records(index: &mut Connection, folder: &Path) -> rusqlite::Result<()> {
             let rows: Vec<Doc> = rows.into_iter().map(|(_, doc)| doc).collect();
             for doc in &rows {
                 batch.execute(
-                    "INSERT OR IGNORE INTO docs (record, at_ms, kind, channel, place, sender, role, text) \
+                    "INSERT OR IGNORE INTO docs (record, at_ms, kind, channel, place, sender_name, role, text) \
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                     params![
                         doc.record,
@@ -656,7 +704,7 @@ fn drop_forgotten(index: &mut Connection, folder: &Path) -> rusqlite::Result<()>
         let batch = index.transaction_with_behavior(TransactionBehavior::Immediate)?;
         for (_, record) in &rows {
             batch.execute(
-                "INSERT OR IGNORE INTO forgotten (record) VALUES (?1)",
+                "INSERT OR IGNORE INTO dropped (record) VALUES (?1)",
                 [record],
             )?;
             let seq: Option<i64> = batch
@@ -679,7 +727,7 @@ fn drop_forgotten(index: &mut Connection, folder: &Path) -> rusqlite::Result<()>
         batch.commit()?;
     }
     index.execute(
-        "DELETE FROM copied_vectors WHERE record IN (SELECT record FROM forgotten)",
+        "DELETE FROM copied_vectors WHERE record IN (SELECT record FROM dropped)",
         [],
     )?;
     if dropped {
@@ -727,7 +775,9 @@ fn catch_up(index: &mut Connection, folder: &Path, analyzer: &Analyzer) -> rusql
             .and_then(|done| done.parse().ok())
             .unwrap_or(0);
         let rows: Vec<(i64, Option<String>, Option<String>)> = batch
-            .prepare("SELECT seq, sender, text FROM docs WHERE seq > ?1 ORDER BY seq LIMIT ?2")?
+            .prepare(
+                "SELECT seq, sender_name, text FROM docs WHERE seq > ?1 ORDER BY seq LIMIT ?2",
+            )?
             .query_map(params![done, BATCH], |row| {
                 Ok((row.get(0)?, row.get(1)?, row.get(2)?))
             })?

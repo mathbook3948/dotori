@@ -121,7 +121,7 @@ pub(crate) fn pending(
     start.commit()?;
     let rows: Vec<(i64, Option<String>, Option<String>, bool)> = index
         .prepare(
-            "SELECT d.seq, d.sender, d.text, \
+            "SELECT d.seq, d.sender_name, d.text, \
              EXISTS (SELECT 1 FROM vectors v WHERE v.seq = d.seq AND v.model = ?3) \
              FROM docs d WHERE d.seq > ?1 ORDER BY d.seq LIMIT ?2",
         )?

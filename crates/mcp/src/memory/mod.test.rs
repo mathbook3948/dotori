@@ -629,3 +629,123 @@ async fn a_forgotten_record_loses_its_vector_too() {
         .expect("counted");
     assert_eq!(vectors, 1);
 }
+
+const FORMAT_TWO: &str = "
+CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE docs (seq INTEGER PRIMARY KEY, record TEXT NOT NULL UNIQUE, at_ms INTEGER NOT NULL, \
+    kind TEXT NOT NULL, channel TEXT, place TEXT, sender TEXT, role TEXT, text TEXT);
+CREATE VIRTUAL TABLE terms USING fts5(words, tokenize = 'unicode61');
+CREATE TABLE vectors (seq INTEGER PRIMARY KEY, model TEXT NOT NULL, vector BLOB NOT NULL);
+CREATE TABLE vector_log (n INTEGER PRIMARY KEY AUTOINCREMENT, seq INTEGER NOT NULL);
+CREATE TABLE copied_vectors (record TEXT NOT NULL, model TEXT NOT NULL, vector BLOB NOT NULL, \
+    PRIMARY KEY (record, model));
+CREATE TABLE forgotten (record TEXT PRIMARY KEY) WITHOUT ROWID;
+INSERT INTO meta (key, value) VALUES ('format', '2'), ('index_id', 'kept-id');
+INSERT INTO docs (seq, record, at_ms, kind, sender, text) VALUES (1, 'r1', 1, 'heard', '민지', '안녕');
+INSERT INTO vectors (seq, model, vector) VALUES (1, 'm', x'00');
+INSERT INTO forgotten (record) VALUES ('r9');
+";
+
+fn moved_forward(path: &std::path::Path) {
+    let index = open_index(path).expect("opened");
+    let version: i64 = index
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .expect("version");
+    let sender: String = index
+        .query_row("SELECT sender_name FROM docs WHERE seq = 1", [], |row| {
+            row.get(0)
+        })
+        .expect("renamed");
+    let vectors: i64 = index
+        .query_row("SELECT count(*) FROM vectors", [], |row| row.get(0))
+        .expect("counted");
+    let dropped: Vec<String> = index
+        .prepare("SELECT record FROM dropped ORDER BY record")
+        .expect("prepared")
+        .query_map([], |row| row.get(0))
+        .expect("listed")
+        .collect::<Result<_, _>>()
+        .expect("read");
+
+    assert_eq!(version, 3);
+    assert_eq!(sender, "민지");
+    assert_eq!(vectors, 1, "vectors are kept, not made again");
+    assert_eq!(
+        meta(&index, "index_id").expect("read").as_deref(),
+        Some("kept-id")
+    );
+    assert_eq!(meta(&index, "format").expect("read"), None);
+    assert!(dropped.contains(&String::from("r9")), "{dropped:?}");
+}
+
+#[test]
+fn an_index_in_the_old_format_moves_forward_and_keeps_its_vectors() {
+    let config = config();
+    Connection::open(&config.index)
+        .expect("opened")
+        .execute_batch(FORMAT_TWO)
+        .expect("made");
+
+    moved_forward(&config.index);
+}
+
+#[test]
+fn an_index_an_older_dotori_made_again_after_this_one_moves_forward_too() {
+    let config = config();
+    let older = Connection::open(&config.index).expect("opened");
+    older.execute_batch(FORMAT_TWO).expect("made");
+    older
+        .execute_batch(
+            "PRAGMA user_version = 3; \
+             CREATE TABLE dropped (record TEXT PRIMARY KEY) WITHOUT ROWID; \
+             INSERT INTO dropped (record) VALUES ('r8');",
+        )
+        .expect("left behind");
+    drop(older);
+
+    moved_forward(&config.index);
+    let index = open_index(&config.index).expect("opened");
+    let kept: i64 = index
+        .query_row(
+            "SELECT count(*) FROM dropped WHERE record = 'r8'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("counted");
+    assert_eq!(kept, 1);
+}
+
+#[test]
+fn an_old_index_from_before_forgetting_moves_forward_too() {
+    let config = config();
+    Connection::open(&config.index)
+        .expect("opened")
+        .execute_batch(
+            "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL); \
+             CREATE TABLE docs (seq INTEGER PRIMARY KEY, record TEXT NOT NULL UNIQUE, \
+                 at_ms INTEGER NOT NULL, kind TEXT NOT NULL, channel TEXT, place TEXT, \
+                 sender TEXT, role TEXT, text TEXT); \
+             CREATE VIRTUAL TABLE terms USING fts5(words, tokenize = 'unicode61'); \
+             CREATE TABLE vectors (seq INTEGER PRIMARY KEY, model TEXT NOT NULL, vector BLOB NOT NULL); \
+             INSERT INTO meta (key, value) VALUES ('format', '2'); \
+             INSERT INTO docs (seq, record, at_ms, kind, sender, text) VALUES (1, 'r1', 1, 'heard', '민지', '안녕'); \
+             INSERT INTO vectors (seq, model, vector) VALUES (1, 'm', x'00');",
+        )
+        .expect("made");
+
+    let index = open_index(&config.index).expect("opened");
+    let sender: String = index
+        .query_row("SELECT sender_name FROM docs WHERE seq = 1", [], |row| {
+            row.get(0)
+        })
+        .expect("renamed");
+    let vectors: i64 = index
+        .query_row("SELECT count(*) FROM vectors", [], |row| row.get(0))
+        .expect("counted");
+
+    assert_eq!(sender, "민지");
+    assert_eq!(vectors, 1);
+    assert_eq!(meta(&index, "format").expect("read"), None);
+    drop(index);
+    open_index(&config.index).expect("opened again");
+}

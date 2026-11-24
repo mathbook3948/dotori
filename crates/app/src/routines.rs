@@ -34,6 +34,8 @@ use serde_json::json;
 use tokio::sync::Notify;
 use tokio::time;
 
+use crate::versioned;
+
 /// The channel routines speak on.
 pub(crate) const ROUTINE: &str = "routine";
 pub(crate) const ADD: &str = "routine_add";
@@ -54,6 +56,7 @@ const DAYS: [(&str, &str, Weekday); 7] = [
 ];
 const WEEKDAYS: u8 = 0b001_1111;
 const WEEKEND: u8 = 0b110_0000;
+const VERSION: i64 = 1;
 const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS routines (\
     id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, time TEXT NOT NULL, \
     days INTEGER NOT NULL, date TEXT, task TEXT NOT NULL, made_ms INTEGER NOT NULL, \
@@ -185,14 +188,7 @@ impl Routines {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if held.is_none() {
-            if let Some(folder) = self.path.parent() {
-                std::fs::create_dir_all(folder).map_err(|error| error.to_string())?;
-            }
-            let opened = Connection::open(&self.path).map_err(|error| error.to_string())?;
-            opened
-                .execute_batch(SCHEMA)
-                .map_err(|error| error.to_string())?;
-            *held = Some(opened);
+            *held = Some(versioned::open(&self.path, SCHEMA, VERSION)?);
         }
         let opened = held.as_ref().ok_or("no connection")?;
         let done = work(opened).map_err(|error| error.to_string());
