@@ -12,6 +12,7 @@ use std::time::Instant;
 use dotori_connectors::peer::base64url;
 use dotori_connectors::peer::hub::Heard;
 use dotori_connectors::peer::unbase64url;
+use dotori_mcp::memory::open_index;
 use rusqlite::Connection;
 use rusqlite::OptionalExtension;
 use rusqlite::params;
@@ -27,17 +28,6 @@ pub(crate) const VECTORS_JOB: &str = "vectors";
 const BATCH: i64 = 200;
 const ASK_EVERY: Duration = Duration::from_secs(30);
 const ANSWER_WAIT: Duration = Duration::from_secs(60);
-const BUSY: Duration = Duration::from_secs(5);
-const TABLES: &str = "
-CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS copied_vectors (
-    record TEXT NOT NULL,
-    model TEXT NOT NULL,
-    vector BLOB NOT NULL,
-    PRIMARY KEY (record, model)
-);
-CREATE TABLE IF NOT EXISTS forgotten (record TEXT PRIMARY KEY) WITHOUT ROWID;
-";
 
 /// One vector as it travels: the record it is for, the model that made it, and its bytes.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -110,14 +100,12 @@ pub(crate) fn keep(
     upto: i64,
 ) -> Result<(), String> {
     let fail = |error: rusqlite::Error| error.to_string();
-    let mut connection = Connection::open(index).map_err(fail)?;
-    connection.busy_timeout(BUSY).map_err(fail)?;
-    connection.execute_batch(TABLES).map_err(fail)?;
+    let mut connection = open_index(index)?;
     let batch = connection.transaction().map_err(fail)?;
     for one in sent {
         let forgotten: bool = batch
             .query_row(
-                "SELECT EXISTS(SELECT 1 FROM forgotten WHERE record = ?1)",
+                "SELECT EXISTS(SELECT 1 FROM dropped WHERE record = ?1)",
                 [&one.record],
                 |row| row.get(0),
             )

@@ -22,6 +22,7 @@
 ## engineering
 
 - [견고함](engineering/robustness.md): 외부 입력, 파일, 자식 프로세스, 실패를 다루는 코드가 처음부터 지킬 것을 정한다.
+- [저장](engineering/storage.md): SQLite 파일의 테이블과 열을 어떻게 짓고 관리하는지 정한다.
 
 ## product
 

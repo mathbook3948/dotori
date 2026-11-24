@@ -24,6 +24,7 @@ mod settings_copies;
 mod tools;
 mod tray;
 mod vector_copies;
+mod versioned;
 mod window;
 
 use std::env;
