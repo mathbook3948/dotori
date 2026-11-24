@@ -4,6 +4,12 @@ use std::path::PathBuf;
 /// Overrides the folder that holds every dotori file, such as for a second instance or tests.
 pub(crate) const HOME_VARIABLE: &str = "DOTORI_HOME";
 
+const FOLDER: &str = if cfg!(debug_assertions) {
+    "dotori-dev"
+} else {
+    "dotori"
+};
+
 /// The folder that holds the settings, the raw record, and how windows reach the daemon.
 #[derive(Clone, Debug)]
 pub(crate) struct Home {
@@ -17,7 +23,7 @@ impl Home {
         }
         platform_root()
             .map(|base| Self {
-                root: base.join("dotori"),
+                root: base.join(FOLDER),
             })
             .ok_or_else(|| format!("cannot find a home folder; set {HOME_VARIABLE}"))
     }

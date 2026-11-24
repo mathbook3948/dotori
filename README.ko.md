@@ -80,6 +80,8 @@ mise install
 mise run check
 ```
 
+소스에서 실행하려면 `cargo run -p dotori`를 씁니다. 창 하나만 열려면 뒤에 `window`나 `settings`를 붙입니다. 디버그 빌드는 위 폴더 옆의 `dotori-dev`에 파일을 두므로, 평소 쓰는 dotori의 파일을 건드리지 않습니다.
+
 설계 결정은 [`docs/`](docs/README.md)에 있습니다. 기여하려면 [CONTRIBUTING](.github/CONTRIBUTING.md)을 읽어 주세요. 보안 문제는 [보안 정책](.github/SECURITY.md)에 따라 알려 주세요.
 
 ## 라이선스
