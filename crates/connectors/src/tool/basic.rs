@@ -106,7 +106,15 @@ struct ShellInput {
 impl BasicTools {
     /// What the model is told about each basic tool.
     pub fn specs(&self) -> Vec<ToolSpec> {
-        let folder = self.folder.display();
+        let folder = if self
+            .private
+            .as_ref()
+            .is_some_and(|private| private.open == self.folder)
+        {
+            String::from("dotori's work folder")
+        } else {
+            self.folder.display().to_string()
+        };
         let spec = |name: &str, description: &str, schema: Value| ToolSpec {
             name: name.to_owned(),
             description: description.to_owned(),

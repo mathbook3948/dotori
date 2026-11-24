@@ -5,7 +5,7 @@ use crate::BoxFuture;
 pub struct SubSessionSpec {
     pub title: String,
     pub brief: String,
-    /// An absolute folder on this PC the work is about, where a coding agent starts.
+    /// An absolute folder on this PC the work is about, which the sub-session works in.
     pub folder: Option<String>,
 }
 
