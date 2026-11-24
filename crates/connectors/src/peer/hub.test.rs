@@ -153,7 +153,7 @@ async fn a_pc_learns_of_another_through_a_third_and_a_removal_unlinks_it() {
 }
 
 #[tokio::test]
-async fn greetings_past_the_limit_are_hung_up_on_until_one_finishes() {
+async fn greetings_past_the_limit_are_hung_up_on_until_they_end() {
     let a = pc("crowd", "a", true);
     let b = pc("crowd", "b", false);
     let (a_hub, _a_heard) = Hub::start(a.config.clone()).await.expect("a started");

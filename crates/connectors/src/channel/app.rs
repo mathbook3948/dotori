@@ -49,6 +49,7 @@ const LIVE: usize = 1024;
 const MAX_LINE: u64 = 256 * 1024;
 const HELLO_WAIT: Duration = Duration::from_secs(5);
 const WINDOWS: usize = 32;
+const ACCEPT_PAUSE: Duration = Duration::from_millis(50);
 
 /// The first line a window sends. Without the right token the daemon hangs up.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -349,7 +350,10 @@ impl Channel for AppChannel {
             let listener = TcpListener::from_std(listener).map_err(failed)?;
             let mut windows = JoinSet::new();
             loop {
-                let (stream, _) = listener.accept().await.map_err(failed)?;
+                let Ok((stream, _)) = listener.accept().await else {
+                    time::sleep(ACCEPT_PAUSE).await;
+                    continue;
+                };
                 while windows.try_join_next().is_some() {}
                 if windows.len() >= WINDOWS {
                     drop(stream);
