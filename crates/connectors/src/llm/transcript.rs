@@ -236,7 +236,15 @@ impl Builder {
                     });
                     (
                         String::from(DELEGATE),
-                        serde_json::json!({ "title": spec.title, "brief": spec.brief }).to_string(),
+                        match &spec.folder {
+                            Some(folder) => serde_json::json!({
+                                "title": spec.title,
+                                "brief": spec.brief,
+                                "folder": folder,
+                            }),
+                            None => serde_json::json!({ "title": spec.title, "brief": spec.brief }),
+                        }
+                        .to_string(),
                     )
                 }
                 Action::UseTool(call) => (call.name.clone(), call.input.clone()),

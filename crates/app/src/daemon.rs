@@ -405,6 +405,7 @@ pub(crate) async fn serve(
             sub_sessions: Arc::clone(&sub_sessions),
             records: Arc::clone(&records),
         };
+        asking.lapse_waiting();
         let agent = Agent::spawn(config.clone(), ports)
             .await
             .map_err(|error| error.to_string())?;

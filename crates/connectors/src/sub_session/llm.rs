@@ -51,7 +51,11 @@ impl std::fmt::Debug for LlmRunner {
 
 impl LlmRunner {
     async fn work(&self, spec: SubSessionSpec) -> SubSessionOutcome {
-        let content = match Content::parse(spec.brief.clone()) {
+        let brief = match &spec.folder {
+            Some(folder) => format!("The job is about the folder {folder}.\n\n{}", spec.brief),
+            None => spec.brief.clone(),
+        };
+        let content = match Content::parse(brief) {
             Ok(content) => content,
             Err(error) => return SubSessionOutcome::Failed(error.to_string()),
         };

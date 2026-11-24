@@ -33,7 +33,7 @@ fn spec() -> SubSessionSpec {
     SubSessionSpec {
         title: String::from("Build"),
         brief: String::from("Build \"it\"\nnow."),
-        folder: None,
+        folder: Some(String::from("/home/me/project")),
     }
 }
 

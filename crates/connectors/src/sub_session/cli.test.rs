@@ -130,7 +130,7 @@ async fn a_job_about_a_folder_starts_the_agent_there_and_a_missing_one_is_refuse
     let runner = CliRunner {
         agent: CodingAgent::ClaudeCode,
         program: script,
-        folder: folder.join("work"),
+        folder: folder.join("dotori").join("work"),
         mcp: None,
         limit: Duration::from_secs(10),
         hidden_env: Vec::new(),
@@ -145,6 +145,21 @@ async fn a_job_about_a_folder_starts_the_agent_there_and_a_missing_one_is_refuse
     let here = runner.run(spec(None)).await;
     let missing = runner.run(spec(Some(&folder.join("nowhere")))).await;
     let relative = runner.run(spec(Some(Path::new("project")))).await;
+    std::fs::create_dir_all(folder.join(".secret").join("keys")).expect("made");
+    std::fs::create_dir_all(folder.join("dotori").join("record")).expect("made");
+    std::fs::create_dir_all(folder.join("dotori").join("work").join("scratch")).expect("made");
+    let hidden = runner
+        .run(spec(Some(&folder.join(".secret").join("keys"))))
+        .await;
+    let dotori = runner
+        .run(spec(Some(&folder.join("dotori").join("record"))))
+        .await;
+    let scratch = runner
+        .run(spec(Some(
+            &folder.join("dotori").join("work").join("scratch"),
+        )))
+        .await;
+    let root = runner.run(spec(Some(Path::new("/")))).await;
 
     let canonical = |path: &Path| path.canonicalize().expect("exists").display().to_string();
     assert!(
@@ -152,15 +167,19 @@ async fn a_job_about_a_folder_starts_the_agent_there_and_a_missing_one_is_refuse
         "{there:?}"
     );
     assert!(
-        matches!(&here, SubSessionOutcome::Finished(text) if *text == canonical(&folder.join("work"))),
+        matches!(&here, SubSessionOutcome::Finished(text) if *text == canonical(&folder.join("dotori").join("work"))),
         "{here:?}"
     );
-    for refused in [missing, relative] {
+    for refused in [missing, relative, hidden, dotori, root] {
         assert!(
             matches!(&refused, SubSessionOutcome::Failed(text) if text.contains("not a folder")),
             "{refused:?}"
         );
     }
+    assert!(
+        matches!(&scratch, SubSessionOutcome::Finished(text) if text.ends_with("scratch")),
+        "{scratch:?}"
+    );
     let _ = std::fs::remove_dir_all(&folder);
 }
 

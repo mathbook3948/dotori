@@ -221,6 +221,10 @@ impl BrowserRoute {
             .unwrap_or_default();
         let result = if !name.starts_with(BROWSER_TOOLS) {
             Err(String::from("only browser tools are run for another PC"))
+        } else if linked.main_pc().as_deref() != Some(heard.key.as_str()) {
+            Err(String::from(
+                "only the PC that runs the main session may use the browser",
+            ))
         } else if !linked.keeper.holds(BROWSER_JOB) {
             Err(String::from(
                 "this PC no longer holds the browser; try again",

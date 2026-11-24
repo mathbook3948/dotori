@@ -139,13 +139,10 @@ impl CliRunner {
 
     async fn attempt(&self, spec: SubSessionSpec) -> Result<SubSessionOutcome, String> {
         let folder = match spec.folder.as_deref().map(PathBuf::from) {
-            Some(asked) if asked.is_absolute() && asked.is_dir() => asked,
-            Some(asked) => {
-                return Ok(SubSessionOutcome::Failed(format!(
-                    "{} is not a folder on this PC",
-                    asked.display()
-                )));
-            }
+            Some(asked) => match self.allowed(&asked) {
+                Ok(folder) => folder,
+                Err(refused) => return Ok(SubSessionOutcome::Failed(refused)),
+            },
             None => {
                 std::fs::create_dir_all(&self.folder)
                     .map_err(|error| format!("cannot make {}: {error}", self.folder.display()))?;
@@ -236,6 +233,46 @@ impl CliRunner {
                 None => SubSessionOutcome::Failed(String::from("codex gave no final answer")),
             },
         })
+    }
+}
+
+impl CliRunner {
+    fn allowed(&self, asked: &Path) -> Result<PathBuf, String> {
+        let shown = asked.display();
+        if !asked.is_absolute() {
+            return Err(format!(
+                "{shown} is not a folder on this PC: give the whole path"
+            ));
+        }
+        let folder = asked
+            .canonicalize()
+            .ok()
+            .filter(|folder| folder.is_dir())
+            .ok_or_else(|| format!("{shown} is not a folder on this PC"))?;
+        let hidden = folder.components().any(|part| match part {
+            std::path::Component::Normal(name) => name.to_string_lossy().starts_with('.'),
+            _ => false,
+        });
+        let home = ["HOME", "USERPROFILE"]
+            .into_iter()
+            .filter_map(std::env::var_os)
+            .filter_map(|home| PathBuf::from(home).canonicalize().ok())
+            .any(|home| home == folder);
+        let own = self.folder.canonicalize().ok();
+        let dotori = self
+            .folder
+            .parent()
+            .and_then(|root| root.canonicalize().ok())
+            .is_some_and(|root| {
+                folder.starts_with(&root)
+                    && !own.as_ref().is_some_and(|own| folder.starts_with(own))
+            });
+        if hidden || home || dotori || folder.parent().is_none() {
+            return Err(format!(
+                "{shown} is not a folder a coding agent may work in: pick the project folder itself"
+            ));
+        }
+        Ok(folder)
     }
 }
 
