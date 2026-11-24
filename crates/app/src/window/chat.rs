@@ -231,7 +231,7 @@ impl ChatView {
         if !FOLLOW.moving(elapsed) {
             self.follow = None;
             self.scroll.scroll_to_bottom();
-            return false;
+            return true;
         }
         let now = FOLLOW.at(elapsed);
         let left = (1.0 - now) / (1.0 - done).max(f32::EPSILON);
@@ -308,8 +308,11 @@ impl ChatView {
             .px(px(EDGE))
             .pt(px(EDGE))
             .pb(px(EDGE + WORKING_ROW))
-            .on_scroll_wheel(cx.listener(|view, _: &ScrollWheelEvent, _, _| {
+            .on_scroll_wheel(cx.listener(|view, _: &ScrollWheelEvent, _, cx| {
                 view.follow = None;
+                if view.shows_working() {
+                    cx.notify();
+                }
             }))
             .child(self.conversation(theme, cx))
             .into_any_element()
