@@ -5,12 +5,12 @@ description: "Use for any change to how dotori's GPUI windows look or move (crat
 
 # GPUI design
 
-`DESIGN.md` at the repository root is the standard: its front matter holds the tokens (colors per theme and look, type, spacing, radius, motion) and its sections hold the rules. This skill is how a change to a window meets it.
+`DESIGN.md` at the repository root is the design the windows are moving to: its front matter holds the tokens (colors per theme and look, type, spacing, radius, motion) and its sections hold the rules. Until a window has moved, `docs/architecture/windows.md` and the code describe it, and a small fix follows them. This skill is how a change moves a window to `DESIGN.md`.
 
 ## 1. Read before drawing
 
 - Read `DESIGN.md` whole, the Do's and Don'ts last.
-- Read the window code you will touch under `crates/app/src/window/` and `theme.rs`.
+- Read `docs/architecture/windows.md` and the window code you will touch under `crates/app/src/window/`, `theme.rs` included.
 
 ## 2. Plan in a few lines
 
@@ -24,8 +24,8 @@ A value that is not a token is a new token: add it to `DESIGN.md` first, in ever
 
 ## 3. Build
 
-- Colors come only from `Theme`. Sizes, radii and gaps come from the token scales.
-- Motion uses GPUI's `with_animation` with durations from `motion` and an easing-out curve (`ease_out_quint`) for things that appear, `ease_in_out` for things that change. Nothing bounces.
+- Colors come only from `Theme`, whose fields follow the color tokens. Sizes, radii and gaps use the token values, never a size that is not in `DESIGN.md`.
+- Motion uses GPUI's `with_animation` with the duration of the `motion` token. `ease-out` is `ease_out_quint()` (a constructor you call) and `ease-in-out` is `ease_in_out`. Nothing bounces.
 - A state that waits on a disk or the network is drawn at once as waiting, and the work runs off the drawing thread.
 - No status dots, no borders on cards or buttons, no gradients, glass, glows, sparkles or emoji icons, no colored side stripes.
 
@@ -34,11 +34,12 @@ A value that is not a token is a new token: add it to `DESIGN.md` first, in ever
 Run it, do not trust the code. In a container without a screen:
 
 1. Start Xvfb and a window manager, for example `Xvfb :97 -screen 0 1280x900x24` and `DISPLAY=:97 openbox`.
-2. Make a fresh `DOTORI_HOME` in the scratchpad whose `settings.toml` points the model at a local fake OpenAI-compatible server that answers with a fixed conversation: a reminder, a list, a tool call and a permission request.
-3. Start `dotori daemon`, send the messages with `dotori chat`, then open `dotori window`.
-4. Save the window with `xdotool search --name dotori` and `import -window <id> -frame <file>.png`. Set `DOTORI_THEME=light` or `dark` for each look.
+2. Make a fresh `DOTORI_HOME` in the scratchpad whose `settings.toml` points the model at a local fake OpenAI-compatible server that answers with a fixed conversation: a reminder, a list, a tool call and a shell command, which always asks the owner first.
+3. Start `dotori daemon` with `DISPLAY` unset, so it runs without a tray.
+4. Send the messages with `dotori chat`, keeping its input open until the replies came back, for example `(echo 안녕; sleep 5) | dotori chat`.
+5. Open `dotori window` on the display, then save it with `xdotool search --name '^dotori$'` and `import -window <id> -frame <file>.png`. Set `DOTORI_THEME=light` or `dark` for each look.
 
-Take every theme the change touches in both looks. Read each screenshot yourself. For motion, take a few screenshots a few frames apart while it runs, and check that each shows a step between the start and the end.
+Take every theme that exists in both looks. Read each screenshot yourself. For motion, take a few screenshots a few frames apart while it runs, and check that each shows a step between the start and the end.
 
 ## 5. Critique, then fix
 
@@ -54,4 +55,6 @@ Fix what fails and look again. Then report with the screenshots, light and dark 
 
 ## 6. Keep the standard true
 
+- Update `docs/architecture/windows.md` in the same pull request, so it says how the window is after the change.
 - When the owner changes the look, change `DESIGN.md` in the same pull request as the code.
+- Run `mise run check` before each commit.
