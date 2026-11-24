@@ -25,6 +25,26 @@ pub struct ToolCall {
     pub input: String,
 }
 
+/// The verbs a tool of dotori's own starts with. A tool is named as a verb, followed by what it
+/// acts on when the verb alone is unclear, such as `add_routine`, `read_page` or `say`.
+pub const TOOL_VERBS: [&str; 12] = [
+    "add", "remove", "read", "write", "edit", "run", "search", "erase", "fetch", "ask", "say",
+    "delegate",
+];
+
+/// Whether `name` follows that rule: lowercase words joined by `_`, the first a verb of
+/// [`TOOL_VERBS`]. A relayed MCP server's tool keeps its own name after `<server>__`.
+pub fn well_named(name: &str) -> bool {
+    if name.contains("__") {
+        return true;
+    }
+    let first = name.split('_').next().unwrap_or_default();
+    TOOL_VERBS.contains(&first)
+        && name
+            .split('_')
+            .all(|word| !word.is_empty() && word.bytes().all(|byte| byte.is_ascii_lowercase()))
+}
+
 #[derive(Clone, Debug)]
 pub struct ToolSpec {
     pub name: String,
@@ -52,3 +72,7 @@ pub trait Toolbox: Send + Sync + 'static {
     /// Core never cancels a running tool, except when it exceeds the configured timeout.
     fn run(&self, call: ToolCall) -> BoxFuture<'_, Result<String, ToolError>>;
 }
+
+#[cfg(test)]
+#[path = "mod.test.rs"]
+mod tests;

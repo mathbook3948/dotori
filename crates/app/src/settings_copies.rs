@@ -157,6 +157,11 @@ impl SettingsCopies {
 
     /// Takes the parts of another PC's settings that changed later than these. Says whether any
     /// did.
+    ///
+    /// The whole copy wins, not each change, on purpose. dotori serves one person, who changes
+    /// these from one PC at a time, so two PCs changing them in the same moment does not happen
+    /// in practice. Merging change by change would add a log and conflict rules for a case that
+    /// does not occur.
     pub(crate) fn take(&self, times: Times, shared: Shared) -> Result<bool, String> {
         let mut known = self.known.lock().expect("unpoisoned");
         let Some(here) = self.current_held(&mut known) else {

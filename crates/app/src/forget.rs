@@ -23,7 +23,7 @@ use serde_json::Value;
 use serde_json::json;
 
 /// The name of the tool that forgets records.
-pub(crate) const FORGET: &str = "memory_forget";
+pub(crate) const FORGET: &str = "erase_records";
 const MOST: usize = 50;
 const SHOWN: usize = 300;
 
@@ -41,7 +41,7 @@ impl Tool for Forget {
 
     fn description(&self) -> &str {
         "Forget records for good, only when the owner asked you to forget or delete something. \
-         Find them with memory_search first and give the record numbers it shows. They leave the \
+         Find them with search_memory first and give the record numbers it shows. They leave the \
          record, memory search and the owner's other PCs, and so does every record that carries \
          their numbers, such as a search result. Your own replies that repeated what they said \
          carry no number: search for those too and give their numbers. The owner sees what goes \
@@ -55,7 +55,7 @@ impl Tool for Forget {
                 "records": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "The record numbers memory_search shows, such as 019a…"
+                    "description": "The record numbers search_memory shows, such as 019a…"
                 }
             },
             "required": ["records"]
@@ -125,7 +125,7 @@ impl Toolbox for Previewed {
             let ids = ids(&arguments).map_err(failed)?;
             let found = self.store.described(ids.clone()).await.map_err(|error| {
                 failed(format!(
-                    "{error}; find the record numbers with memory_search first"
+                    "{error}; find the record numbers with search_memory first"
                 ))
             })?;
             let carrying = self.store.carrying(ids.clone()).await.map_err(|error| {

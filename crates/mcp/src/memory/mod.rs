@@ -831,7 +831,7 @@ fn when(at_ms: i64) -> String {
     )
 }
 
-/// `memory_search`: finds earlier messages and answers by their words.
+/// `search_memory`: finds earlier messages and answers by their words.
 #[derive(Debug)]
 pub struct MemorySearch {
     memory: Arc<Memory>,
@@ -839,7 +839,7 @@ pub struct MemorySearch {
 
 impl Tool for MemorySearch {
     fn name(&self) -> &str {
-        "memory_search"
+        "search_memory"
     }
 
     fn description(&self) -> &str {

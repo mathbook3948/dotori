@@ -103,10 +103,10 @@ async fn the_owner_can_keep_and_drop_notes_and_the_model_sees_them() {
     assert!(tools.run(call(FORGET, json!({ "id": 1 }))).await.is_err());
     assert_eq!(
         tools
-            .run(call("webfetch", json!({})))
+            .run(call("fetch_url", json!({})))
             .await
             .expect("passed on"),
-        "shared webfetch"
+        "shared fetch_url"
     );
 }
 
@@ -162,7 +162,7 @@ fn the_tools_come_before_the_shared_ones() {
     struct Clashing;
     impl Toolbox for Clashing {
         fn specs(&self) -> Vec<ToolSpec> {
-            ["remember", "routine_add", "webfetch"]
+            ["add_note", "add_routine", "fetch_url"]
                 .map(|name| ToolSpec {
                     name: String::from(name),
                     description: String::new(),
@@ -188,7 +188,7 @@ fn the_tools_come_before_the_shared_ones() {
             FORGET,
             routines::ADD,
             routines::REMOVE,
-            "webfetch"
+            "fetch_url"
         ]
     );
 }
@@ -219,7 +219,7 @@ fn a_tool_or_sub_session_result_after_the_owner_spoke_closes_the_notes() {
     assert!(!owner_asked(&[]));
     assert!(!owner_asked(&[
         owner.clone(),
-        acted("webfetch", "w"),
+        acted("fetch_url", "w"),
         returned("w")
     ]));
     assert!(owner_asked(&[
@@ -238,7 +238,7 @@ fn a_tool_or_sub_session_result_after_the_owner_spoke_closes_the_notes() {
     assert!(!owner_asked(&[owner.clone(), sub_session]));
     assert!(owner_asked(&[
         heard(Role::Owner),
-        acted("webfetch", "w"),
+        acted("fetch_url", "w"),
         returned("w"),
         owner
     ]));

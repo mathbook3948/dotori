@@ -38,8 +38,8 @@ use crate::versioned;
 
 /// The channel routines speak on.
 pub(crate) const ROUTINE: &str = "routine";
-pub(crate) const ADD: &str = "routine_add";
-pub(crate) const REMOVE: &str = "routine_remove";
+pub(crate) const ADD: &str = "add_routine";
+pub(crate) const REMOVE: &str = "remove_routine";
 const MAX_ROUTINES: i64 = 30;
 const MAX_NAME: usize = 60;
 const MAX_TASK: usize = 1000;
@@ -244,7 +244,7 @@ impl Routines {
             "Routines the owner set up. When one is due, its task arrives as a message on the \
              `routine` channel, in a thread named after the routine: do the task then and say \
              the result in that thread, which the owner reads in the chat window. Use \
-             `routine_remove` with a routine's number when the owner asks to drop it.\n{}",
+             `remove_routine` with a routine's number when the owner asks to drop it.\n{}",
             lines.join("\n")
         ))
     }
@@ -407,6 +407,11 @@ impl Routines {
 
     /// Takes another PC's routines in place of these if they changed later. Says whether they
     /// did.
+    ///
+    /// The whole copy wins, not each change, on purpose. dotori serves one person, who changes
+    /// these from one PC at a time, so two PCs changing them in the same moment does not happen
+    /// in practice. Merging change by change would add a log and conflict rules for a case that
+    /// does not occur.
     pub(crate) fn take(&self, copy: &RoutinesCopy) -> Result<bool, String> {
         let here = self.copy()?;
         if copy.changed_ms <= here.changed_ms {
