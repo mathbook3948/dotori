@@ -41,8 +41,9 @@ use tokio::time;
 use crate::door;
 use crate::door::Door;
 use crate::home::Home;
-use crate::settings;
 use crate::settings::Settings;
+use crate::vault;
+use crate::vault::Vault;
 
 const START_WAIT: Duration = Duration::from_secs(30);
 
@@ -66,6 +67,7 @@ pub(crate) fn holds_job(jobs: &std::path::Path, job: &str) -> bool {
 
 pub(crate) async fn serve(home: Home) -> Result<(), String> {
     let settings = Settings::load(&home.settings())?;
+    let vault = Vault::new(&home.root);
     let chosen = settings.browser.clone().unwrap_or_default();
     let (screen, asks) = Screen::new();
     let browser = Browser::with_screen(
@@ -103,7 +105,7 @@ pub(crate) async fn serve(home: Home) -> Result<(), String> {
     let mut tools: Vec<Box<dyn Tool>> = vec![Box::new(WebFetch::new()?)];
     tools.extend(browser.tools());
     let embedding = settings
-        .embedding(settings::environment)
+        .embedding(vault::lookup(&vault))
         .unwrap_or_else(|error| {
             eprintln!("dotori: memory search matches words only: {error}");
             None
@@ -116,7 +118,7 @@ pub(crate) async fn serve(home: Home) -> Result<(), String> {
         jobs: Some(home.jobs()),
     });
     tools.extend(memory.tools());
-    let (relays, wrong) = settings.relays(settings::environment, false);
+    let (relays, wrong) = settings.relays(vault::lookup(&vault), false);
     let (relayed, failed) = relay(relays).await;
     for problem in wrong.iter().chain(&failed) {
         eprintln!("dotori: an MCP server is left out: {problem}");

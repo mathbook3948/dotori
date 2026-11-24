@@ -25,6 +25,7 @@ mod settings;
 mod settings_copies;
 mod tools;
 mod tray;
+mod vault;
 mod vector_copies;
 mod versioned;
 mod window;

@@ -20,6 +20,8 @@ use crate::settings::ANTHROPIC_KEY;
 use crate::settings::DISCORD_KEY;
 use crate::settings::DiscordForm;
 use crate::settings::Form;
+use crate::settings::MODEL_KEY;
+use crate::settings::ModelSettings;
 use crate::settings::SLACK_APP_KEY;
 use crate::settings::SLACK_BOT_KEY;
 use crate::settings::Settings;
@@ -28,6 +30,8 @@ use crate::settings::TELEGRAM_KEY;
 use crate::settings::TelegramForm;
 use crate::settings::WindowSettings;
 use crate::settings::environment;
+use crate::vault::Vault;
+use crate::vault::now_ms;
 use crate::window::input::TextInput;
 use crate::window::notes::NotesView;
 use crate::window::parts::header;
@@ -44,19 +48,22 @@ pub(crate) struct SettingsView {
     openai_compatible: bool,
     model: Entity<TextInput>,
     base_url: Entity<TextInput>,
-    api_key_env: Entity<TextInput>,
+    api_key_env: Option<String>,
+    api_key: Entity<TextInput>,
     effort: Entity<TextInput>,
     other: Form,
     slack_on: bool,
     slack_owner: Entity<TextInput>,
-    slack_app_env: Entity<TextInput>,
-    slack_bot_env: Entity<TextInput>,
+    slack_app_token: Entity<TextInput>,
+    slack_bot_token: Entity<TextInput>,
     telegram_on: bool,
     telegram_owner: Entity<TextInput>,
-    telegram_token_env: Entity<TextInput>,
+    telegram_token: Entity<TextInput>,
     discord_on: bool,
     discord_owner: Entity<TextInput>,
-    discord_token_env: Entity<TextInput>,
+    discord_token: Entity<TextInput>,
+    vault: Vault,
+    kept: Vec<String>,
     note: Option<Note>,
     look_saving: Option<Task<()>>,
     pcs: Entity<PcsView>,
@@ -82,8 +89,12 @@ impl SettingsView {
                 input
             })
         };
-        let api_key_env = field("기본값", form.api_key_env.clone(), cx);
-        cx.observe(&api_key_env, |_, _, cx| cx.notify()).detach();
+        let secret = |cx: &mut Context<Self>| {
+            let input = cx.new(|cx| TextInput::masked("붙여 넣기", cx));
+            cx.observe(&input, |_, _, cx| cx.notify()).detach();
+            input
+        };
+        let api_key = secret(cx);
         let other = Form {
             openai_compatible: !form.openai_compatible,
             ..Form::default()
@@ -97,17 +108,13 @@ impl SettingsView {
         let notes = cx.new(|cx| NotesView::new(&home, cx));
         let slack = SlackForm::of(settings.slack.as_ref());
         let telegram = TelegramForm::of(settings.telegram.as_ref());
-        let telegram_token_env = field(TELEGRAM_KEY, telegram.token_env.clone(), cx);
-        cx.observe(&telegram_token_env, |_, _, cx| cx.notify())
-            .detach();
+        let telegram_token = secret(cx);
         let discord = DiscordForm::of(settings.discord.as_ref());
-        let discord_token_env = field(DISCORD_KEY, discord.token_env.clone(), cx);
-        cx.observe(&discord_token_env, |_, _, cx| cx.notify())
-            .detach();
-        let slack_app_env = field(SLACK_APP_KEY, slack.app_token_env.clone(), cx);
-        let slack_bot_env = field(SLACK_BOT_KEY, slack.bot_token_env.clone(), cx);
-        cx.observe(&slack_app_env, |_, _, cx| cx.notify()).detach();
-        cx.observe(&slack_bot_env, |_, _, cx| cx.notify()).detach();
+        let discord_token = secret(cx);
+        let slack_app_token = secret(cx);
+        let slack_bot_token = secret(cx);
+        let vault = Vault::new(&home.root);
+        let kept = vault.names().unwrap_or_default();
         Self {
             pcs,
             routines,
@@ -117,19 +124,22 @@ impl SettingsView {
             openai_compatible: form.openai_compatible,
             model: field("기본값", form.model, cx),
             base_url: field("기본값", form.base_url, cx),
-            api_key_env,
+            api_key_env: form.api_key_env,
+            api_key,
             effort: field("기본값", form.effort, cx),
             other,
             slack_on: slack.on,
             slack_owner: field("U012AB3CD", slack.owner, cx),
-            slack_app_env,
-            slack_bot_env,
+            slack_app_token,
+            slack_bot_token,
             telegram_on: telegram.on,
             telegram_owner: field("123456789", telegram.owner, cx),
-            telegram_token_env,
+            telegram_token,
             discord_on: discord.on,
             discord_owner: field("123456789012345678", discord.owner, cx),
-            discord_token_env,
+            discord_token,
+            vault,
+            kept,
             note: None,
             look_saving: None,
         }
@@ -148,7 +158,8 @@ impl SettingsView {
         };
         fill(&self.model, next.model, cx);
         fill(&self.base_url, next.base_url, cx);
-        fill(&self.api_key_env, next.api_key_env, cx);
+        self.api_key_env = next.api_key_env;
+        self.api_key.update(cx, |input, cx| input.set_text("", cx));
         fill(&self.effort, next.effort, cx);
         self.openai_compatible = openai_compatible;
         self.note = None;
@@ -164,7 +175,7 @@ impl SettingsView {
             openai_compatible: self.openai_compatible,
             model: read(&self.model),
             base_url: read(&self.base_url),
-            api_key_env: read(&self.api_key_env),
+            api_key_env: self.api_key_env.clone(),
             effort: (!self.openai_compatible)
                 .then(|| read(&self.effort))
                 .flatten(),
@@ -179,8 +190,16 @@ impl SettingsView {
         SlackForm {
             on: self.slack_on,
             owner: read(&self.slack_owner),
-            app_token_env: read(&self.slack_app_env),
-            bot_token_env: read(&self.slack_bot_env),
+            app_token_env: self
+                .earlier
+                .slack
+                .as_ref()
+                .and_then(|slack| slack.app_token_env.clone()),
+            bot_token_env: self
+                .earlier
+                .slack
+                .as_ref()
+                .and_then(|slack| slack.bot_token_env.clone()),
         }
     }
 
@@ -192,7 +211,11 @@ impl SettingsView {
         TelegramForm {
             on: self.telegram_on,
             owner: read(&self.telegram_owner),
-            token_env: read(&self.telegram_token_env),
+            token_env: self
+                .earlier
+                .telegram
+                .as_ref()
+                .and_then(|telegram| telegram.token_env.clone()),
         }
     }
 
@@ -204,26 +227,46 @@ impl SettingsView {
         DiscordForm {
             on: self.discord_on,
             owner: read(&self.discord_owner),
-            token_env: read(&self.discord_token_env),
+            token_env: self
+                .earlier
+                .discord
+                .as_ref()
+                .and_then(|discord| discord.token_env.clone()),
         }
     }
 
     fn save(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
-        let form = self.form(cx);
+        let mut form = self.form(cx);
+        if form.openai_compatible
+            && form.api_key_env.is_none()
+            && !self.api_key.read(cx).text().trim().is_empty()
+        {
+            form.api_key_env = Some(MODEL_KEY.to_owned());
+        }
+        let api_key_env = form.api_key_env.clone();
         let slack = self.slack_form(cx);
         let telegram = self.telegram_form(cx);
         let discord = self.discord_form(cx);
-        let saved = form.settings(&self.earlier.model).and_then(|model| {
-            let slack = slack.settings()?;
-            let telegram = telegram.settings()?;
-            let discord = discord.settings()?;
-            let settings = Settings {
+        let wanted = form.settings(&self.earlier.model).and_then(|model| {
+            Ok(Settings {
                 model,
-                slack,
-                telegram,
-                discord,
+                slack: slack.settings()?,
+                telegram: telegram.settings()?,
+                discord: discord.settings()?,
                 ..Settings::load(&self.home.settings())?
-            };
+            })
+        });
+        let saved = wanted.and_then(|settings| {
+            let before = mem::replace(&mut self.api_key_env, api_key_env);
+            if let Err(error) = self.keep_secrets(cx) {
+                let kept_model_key = self
+                    .api_key_name()
+                    .is_some_and(|name| self.vault.names().unwrap_or_default().contains(&name));
+                if !kept_model_key {
+                    self.api_key_env = before;
+                }
+                return Err(error);
+            }
             settings.save_parts(
                 &self.home.settings(),
                 &["model", "slack", "telegram", "discord"],
@@ -231,6 +274,7 @@ impl SettingsView {
             self.earlier = settings;
             Ok(())
         });
+        self.kept = self.vault.names().unwrap_or_default();
         self.note = Some(match saved {
             Ok(()) => Note::Saved,
             Err(error) => Note::Failed(SharedString::from(error)),
@@ -295,29 +339,14 @@ impl Render for SettingsView {
                 "비워 두면 공식 주소를 써요.",
                 &self.base_url,
             ))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1p5()
-                    .child(field(
-                        &theme,
-                        window,
-                        cx,
-                        "API 키가 든 환경 변수",
-                        if self.openai_compatible {
-                            "키는 파일에 저장하지 않아요. 키가 필요 없으면 비워 둬요."
-                        } else {
-                            "키는 파일에 저장하지 않아요. 비워 두면 ANTHROPIC_API_KEY예요."
-                        },
-                        &self.api_key_env,
-                    ))
-                    .when(
-                        !self.openai_compatible
-                            || !self.api_key_env.read(cx).text().trim().is_empty(),
-                        |key| key.child(found(&theme, &self.api_key_env, ANTHROPIC_KEY, cx)),
-                    ),
-            );
+            .child(self.secret_field(
+                &theme,
+                window,
+                cx,
+                "API 키",
+                &self.api_key,
+                self.api_key_name(),
+            ));
         if !self.openai_compatible {
             fields = fields.child(field(
                 &theme,
@@ -442,6 +471,7 @@ impl Render for SettingsView {
                     .child(
                         div()
                             .id("save")
+                            .debug_selector(|| "save".to_owned())
                             .flex_none()
                             .px_5()
                             .py_2()
@@ -459,6 +489,191 @@ impl Render for SettingsView {
 }
 
 impl SettingsView {
+    fn secrets(&self) -> [(&Entity<TextInput>, Option<String>); 5] {
+        let named = |named: Option<&String>, default: &str| {
+            named.cloned().unwrap_or_else(|| default.to_owned())
+        };
+        let slack = self.earlier.slack.as_ref();
+        [
+            (&self.api_key, self.api_key_name()),
+            (
+                &self.slack_app_token,
+                Some(named(
+                    slack.and_then(|slack| slack.app_token_env.as_ref()),
+                    SLACK_APP_KEY,
+                )),
+            ),
+            (
+                &self.slack_bot_token,
+                Some(named(
+                    slack.and_then(|slack| slack.bot_token_env.as_ref()),
+                    SLACK_BOT_KEY,
+                )),
+            ),
+            (
+                &self.telegram_token,
+                Some(named(
+                    self.earlier
+                        .telegram
+                        .as_ref()
+                        .and_then(|telegram| telegram.token_env.as_ref()),
+                    TELEGRAM_KEY,
+                )),
+            ),
+            (
+                &self.discord_token,
+                Some(named(
+                    self.earlier
+                        .discord
+                        .as_ref()
+                        .and_then(|discord| discord.token_env.as_ref()),
+                    DISCORD_KEY,
+                )),
+            ),
+        ]
+    }
+
+    fn api_key_name(&self) -> Option<String> {
+        match (&self.api_key_env, self.openai_compatible) {
+            (Some(name), _) => Some(name.clone()),
+            (None, false) => Some(ANTHROPIC_KEY.to_owned()),
+            (None, true) => None,
+        }
+    }
+
+    fn keep_secrets(&mut self, cx: &mut Context<Self>) -> Result<(), String> {
+        let typed: Vec<(Entity<TextInput>, String, String)> = self
+            .secrets()
+            .into_iter()
+            .filter_map(|(input, name)| {
+                let value = input.read(cx).text().trim().to_owned();
+                Some((input.clone(), name?, value)).filter(|(_, _, value)| !value.is_empty())
+            })
+            .collect();
+        for (_, name, value) in &typed {
+            self.vault
+                .set(name, value, now_ms())
+                .map_err(|error| vault_failed("넣지", &error))?;
+        }
+        for (input, _, _) in typed {
+            input.update(cx, |input, cx| input.set_text("", cx));
+        }
+        Ok(())
+    }
+
+    fn forget_model_key_name(&mut self, name: &str) -> Result<(), String> {
+        if name != MODEL_KEY || self.api_key_env.as_deref() != Some(MODEL_KEY) {
+            return Ok(());
+        }
+        self.api_key_env = None;
+        let mut settings = Settings::load(&self.home.settings())?;
+        if let ModelSettings::OpenaiCompatible { api_key_env, .. } = &mut settings.model
+            && api_key_env.as_deref() == Some(MODEL_KEY)
+        {
+            *api_key_env = None;
+            settings.save_parts(&self.home.settings(), &["model"])?;
+            self.earlier.model = settings.model;
+        }
+        Ok(())
+    }
+
+    fn forget(&mut self, name: &str, cx: &mut Context<Self>) {
+        let forgot = self
+            .vault
+            .remove(name, now_ms())
+            .map_err(|error| vault_failed("지우지", &error))
+            .and_then(|()| self.forget_model_key_name(name));
+        self.kept = self.vault.names().unwrap_or_default();
+        self.note = forgot
+            .err()
+            .map(|error| Note::Failed(SharedString::from(error)));
+        cx.notify();
+    }
+
+    fn secret_field(
+        &self,
+        theme: &Theme,
+        window: &Window,
+        cx: &mut Context<Self>,
+        label: &'static str,
+        input: &Entity<TextInput>,
+        name: Option<String>,
+    ) -> impl IntoElement + use<> {
+        let typed = !input.read(cx).text().trim().is_empty();
+        let from_environment = name.as_deref().and_then(environment).is_some();
+        let kept = name
+            .as_ref()
+            .is_some_and(|name| self.kept.iter().any(|kept| kept == name));
+        let (ink, soft, words) = if typed {
+            (
+                theme.muted,
+                theme.bubble,
+                "저장하면 금고에 안전하게 보관돼요",
+            )
+        } else if from_environment {
+            (
+                theme.ok,
+                theme.ok_soft,
+                "이 PC의 환경 변수 값을 쓰고 있어요",
+            )
+        } else if kept {
+            (theme.ok, theme.ok_soft, "금고에 안전하게 보관돼 있어요")
+        } else if name.is_none() {
+            (theme.muted, theme.bubble, "키가 필요 없으면 비워 둬요")
+        } else {
+            (theme.warn, theme.warn_soft, "아직 넣지 않았어요")
+        };
+        let forget = (kept && !typed).then(|| {
+            let name = name.clone().unwrap_or_default();
+            div()
+                .id(SharedString::from(format!("forget-{name}")))
+                .debug_selector({
+                    let name = name.clone();
+                    move || format!("forget-{name}")
+                })
+                .px_2()
+                .py_0p5()
+                .rounded_md()
+                .text_xs()
+                .text_color(theme.muted)
+                .cursor_pointer()
+                .hover(|forget| forget.bg(theme.danger_soft).text_color(theme.danger))
+                .child("지우기")
+                .on_click(cx.listener(move |view, _, _, cx| view.forget(&name, cx)))
+        });
+        let hint = match &name {
+            Some(name) => format!(
+                "이 PC에서만 열리게 잠가 금고에 보관하고, 묶인 PC에는 암호화해서 보내요. dotori는 이 값을 대화하는 AI에게 보내지 않아요. 같은 이름({name})의 환경 변수가 있으면 그 값을 먼저 써요."
+            ),
+            None => String::from(
+                "이 PC에서만 열리게 잠가 금고에 보관하고, 묶인 PC에는 암호화해서 보내요. dotori는 이 값을 대화하는 AI에게 보내지 않아요.",
+            ),
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap_1p5()
+            .child(field(theme, window, cx, label, "", input))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .px_2()
+                            .py_0p5()
+                            .rounded_full()
+                            .bg(soft)
+                            .text_color(ink)
+                            .text_xs()
+                            .child(words),
+                    )
+                    .children(forget),
+            )
+            .child(div().text_xs().text_color(theme.muted).child(prose(&hint)))
+    }
+
     fn set_look(&mut self, name: &str, look: Look, cx: &mut Context<Self>) {
         crate::window::theme::choose(name, look);
         let path = self.home.settings();
@@ -614,14 +829,29 @@ impl SettingsView {
         if !on {
             return card;
         }
-        let app_found = found(theme, &self.slack_app_env, SLACK_APP_KEY, cx);
-        let bot_found = found(theme, &self.slack_bot_env, SLACK_BOT_KEY, cx);
+        let [_, (_, app_name), (_, bot_name), _, _] = self.secrets();
+        let app_token = self.secret_field(
+            theme,
+            window,
+            cx,
+            "앱 토큰",
+            &self.slack_app_token,
+            app_name,
+        );
+        let bot_token = self.secret_field(
+            theme,
+            window,
+            cx,
+            "봇 토큰",
+            &self.slack_bot_token,
+            bot_name,
+        );
         card.child(guide(
             theme,
             &[
                 "api.slack.com/apps에서 앱을 만들고 Socket Mode를 켜요. connections:write 권한으로 앱 토큰(xapp-)을 만들어요.",
                 "봇 권한 app_mentions:read, chat:write, im:history, im:read, im:write, users:read, channels:read, groups:read를 주고, app_mention과 message.im 이벤트를 구독한 뒤 설치해서 봇 토큰(xoxb-)을 받아요.",
-                "두 토큰을 아래 이름의 환경 변수에 넣고 dotori를 다시 시작해요. 토큰은 파일에 저장하지 않아요.",
+                "두 토큰을 아래에 붙여 넣고 저장한 뒤 dotori를 다시 시작해요.",
             ],
         ))
         .child(field(
@@ -632,36 +862,8 @@ impl SettingsView {
             "Slack에서 내 프로필을 열고 더보기 메뉴의 \"멤버 ID 복사\"로 얻어요. 이 사람의 말만 들어요.",
             &self.slack_owner,
         ))
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .gap_1p5()
-                .child(field(
-                    theme,
-                    window,
-                    cx,
-                    "앱 토큰이 든 환경 변수",
-                    "비워 두면 SLACK_APP_TOKEN이에요.",
-                    &self.slack_app_env,
-                ))
-                .child(app_found),
-        )
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .gap_1p5()
-                .child(field(
-                    theme,
-                    window,
-                    cx,
-                    "봇 토큰이 든 환경 변수",
-                    "비워 두면 SLACK_BOT_TOKEN이에요.",
-                    &self.slack_bot_env,
-                ))
-                .child(bot_found),
-        )
+        .child(app_token)
+        .child(bot_token)
     }
 
     fn telegram_card(
@@ -684,12 +886,13 @@ impl SettingsView {
         if !on {
             return card;
         }
-        let token_found = found(theme, &self.telegram_token_env, TELEGRAM_KEY, cx);
+        let [_, _, _, (_, name), _] = self.secrets();
+        let token = self.secret_field(theme, window, cx, "봇 토큰", &self.telegram_token, name);
         card.child(guide(
             theme,
             &[
                 "Telegram에서 @BotFather에게 /newbot을 보내 봇을 만들고 토큰을 받아요.",
-                "토큰을 아래 이름의 환경 변수에 넣고 dotori를 다시 시작해요. 토큰은 파일에 저장하지 않아요.",
+                "토큰을 아래에 붙여 넣고 저장한 뒤 dotori를 다시 시작해요.",
                 "그룹에서도 쓰려면 봇을 그룹에 넣고 @봇이름으로 불러요.",
             ],
         ))
@@ -701,21 +904,7 @@ impl SettingsView {
             "숫자예요. @userinfobot에게 아무 말이나 보내면 알려 줘요. 이 사람의 말만 들어요.",
             &self.telegram_owner,
         ))
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .gap_1p5()
-                .child(field(
-                    theme,
-                    window,
-                    cx,
-                    "봇 토큰이 든 환경 변수",
-                    "비워 두면 TELEGRAM_BOT_TOKEN이에요.",
-                    &self.telegram_token_env,
-                ))
-                .child(token_found),
-        )
+        .child(token)
     }
 }
 
@@ -740,13 +929,14 @@ impl SettingsView {
         if !on {
             return card;
         }
-        let token_found = found(theme, &self.discord_token_env, DISCORD_KEY, cx);
+        let [_, _, _, _, (_, name)] = self.secrets();
+        let token = self.secret_field(theme, window, cx, "봇 토큰", &self.discord_token, name);
         card.child(guide(
             theme,
             &[
                 "discord.com/developers/applications에서 앱을 만들고 Bot 메뉴에서 토큰을 받아요. 같은 화면에서 Message Content Intent를 켜요.",
                 "OAuth2 URL Generator에서 bot 범위와 View Channels, Send Messages, Read Message History 권한을 골라 내 서버에 봇을 초대해요.",
-                "토큰을 아래 이름의 환경 변수에 넣고 dotori를 다시 시작해요. 토큰은 파일에 저장하지 않아요.",
+                "토큰을 아래에 붙여 넣고 저장한 뒤 dotori를 다시 시작해요.",
             ],
         ))
         .child(field(
@@ -757,21 +947,16 @@ impl SettingsView {
             "설정의 고급에서 개발자 모드를 켜고, 내 프로필을 눌러 \"사용자 ID 복사\"로 얻어요. 이 사람의 말만 들어요.",
             &self.discord_owner,
         ))
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .gap_1p5()
-                .child(field(
-                    theme,
-                    window,
-                    cx,
-                    "봇 토큰이 든 환경 변수",
-                    "비워 두면 DISCORD_BOT_TOKEN이에요.",
-                    &self.discord_token_env,
-                ))
-                .child(token_found),
-        )
+        .child(token)
+    }
+}
+
+fn vault_failed(what: &str, error: &str) -> String {
+    eprintln!("dotori: the vault: {error}");
+    if error.contains("another key") {
+        format!("이 PC의 금고 키가 금고와 맞지 않아서 키를 {what} 못했어요")
+    } else {
+        format!("키를 금고에 {what} 못했어요. 잠시 뒤에 다시 해 보세요")
     }
 }
 
@@ -871,37 +1056,6 @@ fn guide(theme: &Theme, steps: &[&'static str]) -> gpui::Div {
         }))
 }
 
-fn found(theme: &Theme, input: &Entity<TextInput>, default: &str, cx: &App) -> gpui::Div {
-    let typed = input.read(cx).text().trim().to_owned();
-    let name = if typed.is_empty() {
-        default.to_owned()
-    } else {
-        typed
-    };
-    let (ink, soft, words) = if environment(&name).is_some() {
-        (theme.ok, theme.ok_soft, format!("{name}이 이 PC에 있어요"))
-    } else {
-        (
-            theme.warn,
-            theme.warn_soft,
-            format!("{name}이 이 PC에 아직 없어요"),
-        )
-    };
-    div().flex().child(
-        div()
-            .flex()
-            .items_center()
-            .gap_1p5()
-            .px_2()
-            .py_0p5()
-            .rounded_full()
-            .bg(soft)
-            .text_color(ink)
-            .text_xs()
-            .child(words),
-    )
-}
-
 fn field(
     theme: &Theme,
     window: &Window,
@@ -930,7 +1084,9 @@ fn field(
                 .on_mouse_down(MouseButton::Left, move |_, window, _| window.focus(&focus))
                 .child(input.clone()),
         )
-        .child(div().text_xs().text_color(theme.muted).child(hint))
+        .when(!hint.is_empty(), |field| {
+            field.child(div().text_xs().text_color(theme.muted).child(hint))
+        })
 }
 
 fn theme_label(name: &str) -> &'static str {
