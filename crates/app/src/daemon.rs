@@ -126,9 +126,12 @@ pub(crate) async fn serve(
     for problem in wrong.iter().chain(&failed) {
         eprintln!("dotori: an MCP server is left out: {problem}");
     }
-    let asked = settings.asked();
+    let mut asked = settings.asked();
     for name in asked.unmatched(guarded.iter().map(|tool| tool.name())) {
-        eprintln!("dotori: `confirm` names {name}, which no MCP server offers");
+        eprintln!(
+            "dotori: `confirm` names {name}, which no MCP server offers, so every tool of its server waits for the owner"
+        );
+        asked.close_server_of(&name);
     }
     let asking = Arc::new(Asking::new(
         asked,
@@ -548,6 +551,7 @@ fn sub_session_runner(
         folder: home.work(),
         mcp: shared.map(|shared| shared as Arc<dyn McpServer>),
         limit: SUB_SESSION_LIMIT,
+        hidden_env: settings.guarded_secrets(),
     }))
 }
 

@@ -114,6 +114,9 @@ pub struct CliRunner {
     pub folder: PathBuf,
     pub mcp: Option<Arc<dyn McpServer>>,
     pub limit: Duration,
+    /// Environment variables the coding agent must not see, such as tokens of servers only the
+    /// main session may reach.
+    pub hidden_env: Vec<String>,
 }
 
 impl std::fmt::Debug for CliRunner {
@@ -166,6 +169,9 @@ impl CliRunner {
             .kill_on_drop(true);
         #[cfg(unix)]
         command.process_group(0);
+        for hidden in &self.hidden_env {
+            command.env_remove(hidden);
+        }
         if let Some(address) = &address {
             command.env(TOKEN_VARIABLE, &address.token);
         }

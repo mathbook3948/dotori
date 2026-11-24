@@ -4,6 +4,7 @@
 //! only through this gate, reaches them; sub-sessions never see them.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicU64;
@@ -38,8 +39,7 @@ use tokio::time;
 use crate::main_session::Linked;
 use crate::settings::Asked;
 
-/// The channel the results of the calls the owner decided about come in on.
-pub(crate) const DECISION: &str = "decision";
+pub(crate) use dotori_connectors::channel::DECISION;
 const WAITING: &str = "This call acts toward other people, so it waits for the owner: the chat \
                        window shows it with 허락 and 거절. What the owner decides, and the result \
                        if it ran, arrive later on the `decision` channel. Do not call it again.";
@@ -98,6 +98,7 @@ pub(crate) struct Asking {
     inner: Arc<dyn Toolbox>,
     app: Arc<AppChannel>,
     waiting: Mutex<HashMap<u64, ToolCall>>,
+    decided: Mutex<HashSet<u64>>,
     next: AtomicU64,
 }
 
@@ -113,37 +114,47 @@ impl Asking {
             inner,
             app,
             waiting: Mutex::new(HashMap::new()),
+            decided: Mutex::new(HashSet::new()),
             next: AtomicU64::new(start),
         }
     }
 
-    /// Runs or drops the call `id` as the owner decided, and says what came of it. A call that
-    /// no longer waits here, as after dotori started again, is shown to have lapsed.
-    pub(crate) async fn decide(&self, id: u64, ok: bool) -> Outcome {
+    /// Runs or drops the call `id` as the owner decided, and says what came of it. A call decided
+    /// already, as by a second click, gives `None`. A call this dotori never asked about, as one
+    /// from before it started again, is shown to have lapsed.
+    pub(crate) async fn decide(&self, id: u64, ok: bool) -> Option<Outcome> {
         let call = self
             .waiting
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .remove(&id);
+        let first = self
+            .decided
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(id);
+        if !first {
+            return None;
+        }
         let Some(call) = call else {
             self.app.lapsed(id);
-            return Outcome {
+            return Some(Outcome {
                 id,
                 tool: String::from("?"),
                 text: String::from(
                     "The owner answered a call that no longer waits, as dotori started again or \
                      moved to another PC since, so it did not run. Ask again if it is still wanted.",
                 ),
-            };
+            });
         };
         self.app.decided(id, ok);
         let tool = call.name.clone();
         if !ok {
-            return Outcome {
+            return Some(Outcome {
                 id,
                 tool,
                 text: String::from("The owner declined this call, so it did not run."),
-            };
+            });
         }
         let text = match time::timeout(RUN_FOR, self.inner.run(call)).await {
             Ok(Ok(output)) => format!(
@@ -156,7 +167,7 @@ impl Asking {
             ),
             Err(_) => String::from("The owner allowed this call, but it did not finish in time."),
         };
-        Outcome { id, tool, text }
+        Some(Outcome { id, tool, text })
     }
 }
 
@@ -199,7 +210,9 @@ pub(crate) async fn decided(
         }
         return;
     }
-    let _ = outcomes.send(asking.decide(id, ok).await);
+    if let Some(outcome) = asking.decide(id, ok).await {
+        let _ = outcomes.send(outcome);
+    }
 }
 
 /// A decision another PC passed on, if `heard` is one.

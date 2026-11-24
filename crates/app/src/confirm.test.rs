@@ -75,7 +75,7 @@ async fn a_listed_call_waits_and_runs_only_once_the_owner_allows_it() {
     assert_eq!(tool, "mail__send");
     assert!(input.contains("I quit"));
 
-    let outcome = asking.decide(id, true).await;
+    let outcome = asking.decide(id, true).await.expect("waiting");
     assert_eq!(outcome.tool, "mail__send");
     assert!(
         outcome.text.contains("not the owner's words"),
@@ -89,13 +89,18 @@ async fn a_listed_call_waits_and_runs_only_once_the_owner_allows_it() {
         ToWindow::Decided { id, ok: true }
     );
 
-    let again = asking.decide(id, true).await;
-    assert!(again.text.contains("no longer waits"), "{}", again.text);
     assert_eq!(
-        shown(&published.recv().await.expect("lapsed").line),
-        ToWindow::Lapsed { id }
+        asking.decide(id, true).await,
+        None,
+        "a second click is ignored"
     );
     assert_eq!(counting.0.load(Ordering::SeqCst), 1);
+    let unknown = asking.decide(id + 99, true).await.expect("told");
+    assert!(unknown.text.contains("no longer waits"), "{}", unknown.text);
+    assert_eq!(
+        shown(&published.recv().await.expect("lapsed").line),
+        ToWindow::Lapsed { id: id + 99 }
+    );
 }
 
 #[tokio::test]
@@ -107,7 +112,7 @@ async fn a_declined_call_never_runs() {
         panic!("an ask first");
     };
 
-    let outcome = asking.decide(id, false).await;
+    let outcome = asking.decide(id, false).await.expect("waiting");
 
     assert!(outcome.text.contains("declined"), "{}", outcome.text);
     assert_eq!(counting.0.load(Ordering::SeqCst), 0);

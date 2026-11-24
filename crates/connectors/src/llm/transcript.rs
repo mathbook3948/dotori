@@ -8,6 +8,7 @@ use dotori_core::message::Role;
 use dotori_core::sub_session::SubSessionOutcome;
 use serde_json::value::RawValue;
 
+use crate::channel::DECISION;
 use crate::llm::reply::DELEGATE;
 use crate::llm::reply::SAY;
 use crate::llm::reply::Trace;
@@ -307,6 +308,11 @@ impl Builder {
 
 fn note(entry: &Entry) -> String {
     match entry {
+        Entry::Heard { message, .. } if message.address.channel.as_str() == DECISION => tagged(
+            "decided_call",
+            &[("tool", message.address.place.as_str())],
+            message.content.as_str(),
+        ),
         Entry::Heard { thread, message } => {
             let role = match message.sender.role {
                 Role::Owner => "owner",

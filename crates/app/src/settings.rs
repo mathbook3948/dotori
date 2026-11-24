@@ -108,6 +108,16 @@ impl Asked {
             .collect()
     }
 
+    /// Makes every tool of the server `listed` names wait, for a name that matched no tool.
+    pub(crate) fn close_server_of(&mut self, listed: &str) {
+        if let Some((server, _)) = listed.split_once("__") {
+            let prefix = format!("{server}__");
+            if !self.servers.contains(&prefix) {
+                self.servers.push(prefix);
+            }
+        }
+    }
+
     pub(crate) fn needs(&self, tool: &str) -> bool {
         self.tools.iter().any(|asked| asked == tool)
             || self
@@ -515,6 +525,16 @@ impl Settings {
 
     /// The MCP servers to relay, reading tokens through `key`. A server set up wrong is named
     /// in the second list and left out.
+    /// The variables that hold the tokens of the servers only the main session reaches, which
+    /// coding agents must not see.
+    pub(crate) fn guarded_secrets(&self) -> Vec<String> {
+        self.mcp
+            .iter()
+            .filter(|server| !server.confirm.is_empty())
+            .filter_map(|server| server.token_env.clone())
+            .collect()
+    }
+
     /// The relayed tools the owner must allow before each call, by the name the model sees.
     /// `"*"` stands for every tool of its server.
     pub(crate) fn asked(&self) -> Asked {
@@ -541,11 +561,21 @@ impl Settings {
     ) -> (Vec<RelayConfig>, Vec<String>) {
         let mut chosen = Vec::new();
         let mut wrong = Vec::new();
-        for server in self
-            .mcp
-            .iter()
-            .filter(|server| server.confirm.is_empty() != guarded)
-        {
+        let mut named = Vec::new();
+        for server in &self.mcp {
+            if named.contains(&server.name.as_str()) {
+                if server.confirm.is_empty() != guarded {
+                    wrong.push(format!(
+                        "{}: another MCP server already has this name",
+                        server.name
+                    ));
+                }
+                continue;
+            }
+            named.push(server.name.as_str());
+            if server.confirm.is_empty() == guarded {
+                continue;
+            }
             let reach = match (&server.url, &server.command) {
                 (Some(url), None) => {
                     let token = match &server.token_env {

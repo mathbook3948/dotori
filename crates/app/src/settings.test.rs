@@ -406,3 +406,28 @@ fn relayed_tools_the_owner_listed_wait_for_their_ok() {
         ["mail__send", "chat__"]
     );
 }
+
+#[test]
+fn a_mistyped_confirm_name_makes_its_whole_server_wait_and_its_token_stays_hidden() {
+    let settings = parse(
+        "[[mcp]]\nname = \"mail\"\nurl = \"https://mail.example/mcp\"\ntoken_env = \"MAIL_TOKEN\"\n\
+         confirm = [\"send_mesage\"]\n\n\
+         [[mcp]]\nname = \"notes\"\ncommand = \"notes-mcp\"\ntoken_env = \"NOTES_TOKEN\"\n\n\
+         [[mcp]]\nname = \"mail\"\ncommand = \"other-mail\"",
+    )
+    .expect("parsed");
+    let mut asked = settings.asked();
+
+    for name in asked.unmatched(["mail__send_message"].into_iter()) {
+        asked.close_server_of(&name);
+    }
+
+    assert!(asked.needs("mail__send_message"));
+    assert!(asked.needs("mail__read"));
+    assert!(!asked.needs("notes__write"));
+    assert_eq!(settings.guarded_secrets(), ["MAIL_TOKEN"]);
+    let (shared, wrong) = settings.relays(|_| Some(String::from("t")), false);
+    let names: Vec<&str> = shared.iter().map(|config| config.name.as_str()).collect();
+    assert_eq!(names, ["notes"]);
+    assert!(wrong[0].contains("already has this name"), "{wrong:?}");
+}

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::time::Duration;
 
 use dotori_connectors::channel::app::FromWindow;
@@ -57,6 +58,8 @@ pub(crate) struct ChatView {
     copied: Option<usize>,
     hovered: Option<usize>,
     decided: HashMap<u64, Option<bool>>,
+    clicked: HashSet<u64>,
+    whole: HashSet<u64>,
     _uncopy: Option<Task<()>>,
     _pump: Task<()>,
 }
@@ -103,6 +106,8 @@ impl ChatView {
             copied: None,
             hovered: None,
             decided: HashMap::new(),
+            clicked: HashSet::new(),
+            whole: HashSet::new(),
             _uncopy: None,
             _pump: pump,
         }
@@ -115,6 +120,8 @@ impl ChatView {
                 self.copied = None;
                 self.hovered = None;
                 self.decided.clear();
+                self.clicked.clear();
+                self.whole.clear();
                 self.answering = None;
                 self.browser_at = None;
                 self.link = LinkState::Connected;
@@ -389,7 +396,8 @@ impl ChatView {
         cx: &mut Context<Self>,
     ) -> gpui::Div {
         let (server, name) = tool.split_once("__").unwrap_or(("", tool));
-        let fields = asked_fields(input);
+        let (fields, cut) = asked_fields(input, self.whole.contains(&id));
+        let clicked = self.clicked.contains(&id);
         let decided = self.decided.get(&id).copied();
         let button = |key: &'static str, label: &'static str, ok: bool, cx: &mut Context<Self>| {
             let main = ok;
@@ -415,7 +423,9 @@ impl ChatView {
                 })
                 .child(label)
                 .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
-                    let _ = view.say.send(FromWindow::Decide { id, ok });
+                    if view.clicked.insert(id) {
+                        let _ = view.say.send(FromWindow::Decide { id, ok });
+                    }
                     cx.notify();
                 }))
         };
@@ -446,6 +456,16 @@ impl ChatView {
                         .child(words),
                 )
             }
+            None if clicked => div().flex().child(
+                div()
+                    .px_2p5()
+                    .py_0p5()
+                    .rounded_full()
+                    .bg(theme.canvas)
+                    .text_color(theme.muted)
+                    .text_xs()
+                    .child("처리하는 중이에요"),
+            ),
             None => div()
                 .flex()
                 .items_center()
@@ -543,7 +563,29 @@ impl ChatView {
                                         .child(SharedString::from(key)),
                                 )
                                 .child(div().flex_1().min_w_0().child(prose(&value)))
-                        })),
+                        }))
+                        .when(cut, |box_| {
+                            box_.child(
+                                div().flex().justify_end().child(
+                                    div()
+                                        .id(SharedString::from(format!("whole-{id}")))
+                                        .px_2()
+                                        .py_0p5()
+                                        .rounded_md()
+                                        .text_xs()
+                                        .text_color(theme.accent)
+                                        .cursor_pointer()
+                                        .hover(|more| more.bg(theme.selection))
+                                        .child("전체 보기")
+                                        .on_click(cx.listener(
+                                            move |view, _: &ClickEvent, _, cx| {
+                                                view.whole.insert(id);
+                                                cx.notify();
+                                            },
+                                        )),
+                                ),
+                            )
+                        }),
                 )
                 .child(footer),
         )
@@ -855,8 +897,8 @@ fn day_line(theme: &Theme, day: &str) -> impl IntoElement {
         .child(div().flex_1().h(px(1.)).bg(theme.line))
 }
 
-fn asked_fields(input: &str) -> Vec<(String, String)> {
-    let fields = match serde_json::from_str::<serde_json::Value>(input) {
+fn asked_fields(input: &str, whole: bool) -> (Vec<(String, String)>, bool) {
+    let fields: Vec<(String, String)> = match serde_json::from_str::<serde_json::Value>(input) {
         Ok(serde_json::Value::Object(fields)) if !fields.is_empty() => fields
             .into_iter()
             .map(|(key, value)| {
@@ -869,13 +911,19 @@ fn asked_fields(input: &str) -> Vec<(String, String)> {
             .collect(),
         _ => vec![(String::from("input"), input.to_owned())],
     };
-    fields
+    let mut cut = false;
+    let fields = fields
         .into_iter()
-        .map(|(key, value)| (key, shown_value(&value)))
-        .collect()
+        .map(|(key, value)| {
+            let (shown, shortened) = shown_value(&value, whole);
+            cut |= shortened;
+            (key, shown)
+        })
+        .collect();
+    (fields, cut)
 }
 
-fn shown_value(value: &str) -> String {
+fn shown_value(value: &str, whole: bool) -> (String, bool) {
     let mut lines: Vec<&str> = Vec::new();
     for line in value.lines() {
         if line.trim().is_empty() && lines.last().is_some_and(|last| last.trim().is_empty()) {
@@ -885,11 +933,11 @@ fn shown_value(value: &str) -> String {
     }
     let joined = lines.join("\n");
     let total = joined.chars().count();
-    if total <= SHOWN_VALUE {
-        return joined;
+    if whole || total <= SHOWN_VALUE {
+        return (joined, false);
     }
     let cut: String = joined.chars().take(SHOWN_VALUE).collect();
-    format!("{cut}\n(전체 {total}자 중 앞부분)")
+    (format!("{cut}\n(전체 {total}자 중 앞부분)"), true)
 }
 
 fn channel_name(channel: &str) -> String {

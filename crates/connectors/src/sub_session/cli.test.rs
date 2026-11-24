@@ -93,6 +93,7 @@ async fn a_run_returns_the_agent_answer_and_its_failures() {
         folder: folder.join("work"),
         mcp: Some(Arc::new(Fixed)),
         limit: Duration::from_secs(10),
+        hidden_env: Vec::new(),
     };
     let spec = |title: &str| SubSessionSpec {
         title: String::from(title),
@@ -134,6 +135,7 @@ async fn a_run_past_its_limit_ends_with_everything_it_started() {
         folder: folder.join("work"),
         mcp: None,
         limit: Duration::from_secs(1),
+        hidden_env: Vec::new(),
     };
     let outcome = runner
         .run(SubSessionSpec {
@@ -169,6 +171,7 @@ async fn a_server_that_is_down_fails_the_run_before_it_starts() {
         folder: std::env::temp_dir().join("dotori-cli-down"),
         mcp: Some(Arc::new(Down)),
         limit: Duration::from_secs(1),
+        hidden_env: Vec::new(),
     };
     let outcome = runner
         .run(SubSessionSpec {
