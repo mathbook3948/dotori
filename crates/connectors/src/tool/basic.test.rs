@@ -32,7 +32,10 @@ fn tools() -> (WithBasic, PathBuf) {
             folder: folder.join("work"),
             limit: Duration::from_secs(5),
             hidden_env: vec![String::from("DOTORI_TEST_SECRET")],
-            private: Some(folder.clone()),
+            private: Some(Private {
+                folder: folder.clone(),
+                open: folder.join("work"),
+            }),
         },
         rest: Arc::new(Nothing),
     };

@@ -27,6 +27,10 @@ use dotori_core::tool::ToolError;
 use dotori_core::tool::Toolbox;
 use tokio::time;
 
+use super::working_folder;
+use crate::tool::basic::BasicTools;
+use crate::tool::basic::WithBasic;
+
 /// What the model of an LLM sub-session is told, to be appended to its system prompt.
 pub const LLM_SUB_SESSION_SYSTEM: &str = "\
 Your brief arrives as a message on thread 0. Call `say` on thread 0 with your whole result when you are done.
@@ -36,7 +40,10 @@ Do not use `delegate`.";
 /// brief's thread and calls no more tools.
 pub struct LlmRunner {
     pub model: Arc<dyn Model>,
-    pub toolbox: Arc<dyn Toolbox>,
+    /// The basic tools every sub-session gets, with `folder` moved to the folder its job is about.
+    pub basic: BasicTools,
+    /// The tools besides the basic ones.
+    pub rest: Arc<dyn Toolbox>,
     pub max_turns: usize,
     pub tool_timeout: Duration,
 }
@@ -51,11 +58,18 @@ impl std::fmt::Debug for LlmRunner {
 
 impl LlmRunner {
     async fn work(&self, spec: SubSessionSpec) -> SubSessionOutcome {
-        let brief = match &spec.folder {
-            Some(folder) => format!("The job is about the folder {folder}.\n\n{}", spec.brief),
-            None => spec.brief.clone(),
+        let folder = match working_folder(&self.basic.folder, spec.folder.as_deref()) {
+            Ok(folder) => folder,
+            Err(refused) => return SubSessionOutcome::Failed(refused),
         };
-        let content = match Content::parse(brief) {
+        let toolbox = WithBasic {
+            basic: BasicTools {
+                folder,
+                ..self.basic.clone()
+            },
+            rest: Arc::clone(&self.rest),
+        };
+        let content = match Content::parse(spec.brief.clone()) {
             Ok(content) => content,
             Err(error) => return SubSessionOutcome::Failed(error.to_string()),
         };
@@ -83,7 +97,7 @@ impl LlmRunner {
         for _ in 0..self.max_turns {
             let request = ModelRequest {
                 conversation: conversation.clone(),
-                tools: self.toolbox.specs(),
+                tools: toolbox.specs(),
                 context: None,
             };
             let reply = match self.model.complete(request).await {
@@ -107,7 +121,7 @@ impl LlmRunner {
                     Action::UseTool(call) => {
                         used_tools = true;
                         let id = call.id.clone();
-                        let outcome = time::timeout(self.tool_timeout, self.toolbox.run(call))
+                        let outcome = time::timeout(self.tool_timeout, toolbox.run(call))
                             .await
                             .unwrap_or_else(|_| {
                                 Err(ToolError {

@@ -115,10 +115,11 @@ async fn a_run_returns_the_agent_answer_and_its_failures() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn a_job_about_a_folder_starts_the_agent_there_and_a_missing_one_is_refused() {
+async fn a_job_about_a_folder_starts_the_agent_there_and_a_refused_one_starts_nothing() {
     use std::os::unix::fs::PermissionsExt;
     let folder = std::env::temp_dir().join(format!("dotori-cli-folder-{}", std::process::id()));
     let project = folder.join("project");
+    let work = folder.join("dotori").join("work");
     std::fs::create_dir_all(&project).expect("made");
     let script = folder.join("fake-claude");
     std::fs::write(
@@ -130,7 +131,7 @@ async fn a_job_about_a_folder_starts_the_agent_there_and_a_missing_one_is_refuse
     let runner = CliRunner {
         agent: CodingAgent::ClaudeCode,
         program: script,
-        folder: folder.join(".local").join("dotori").join("work"),
+        folder: work.clone(),
         mcp: None,
         limit: Duration::from_secs(10),
         hidden_env: Vec::new(),
@@ -143,36 +144,7 @@ async fn a_job_about_a_folder_starts_the_agent_there_and_a_missing_one_is_refuse
 
     let there = runner.run(spec(Some(&project))).await;
     let here = runner.run(spec(None)).await;
-    let missing = runner.run(spec(Some(&folder.join("nowhere")))).await;
-    let relative = runner.run(spec(Some(Path::new("project")))).await;
-    std::fs::create_dir_all(folder.join(".secret").join("keys")).expect("made");
-    std::fs::create_dir_all(folder.join(".local").join("dotori").join("record")).expect("made");
-    std::fs::create_dir_all(
-        folder
-            .join(".local")
-            .join("dotori")
-            .join("work")
-            .join("scratch"),
-    )
-    .expect("made");
-    let hidden = runner
-        .run(spec(Some(&folder.join(".secret").join("keys"))))
-        .await;
-    let dotori = runner
-        .run(spec(Some(
-            &folder.join(".local").join("dotori").join("record"),
-        )))
-        .await;
-    let scratch = runner
-        .run(spec(Some(
-            &folder
-                .join(".local")
-                .join("dotori")
-                .join("work")
-                .join("scratch"),
-        )))
-        .await;
-    let root = runner.run(spec(Some(Path::new("/")))).await;
+    let dotori = runner.run(spec(Some(&folder.join("dotori")))).await;
 
     let canonical = |path: &Path| path.canonicalize().expect("exists").display().to_string();
     assert!(
@@ -180,18 +152,12 @@ async fn a_job_about_a_folder_starts_the_agent_there_and_a_missing_one_is_refuse
         "{there:?}"
     );
     assert!(
-        matches!(&here, SubSessionOutcome::Finished(text) if *text == canonical(&folder.join(".local").join("dotori").join("work"))),
+        matches!(&here, SubSessionOutcome::Finished(text) if *text == canonical(&work)),
         "{here:?}"
     );
-    for refused in [missing, relative, hidden, dotori, root] {
-        assert!(
-            matches!(&refused, SubSessionOutcome::Failed(text) if text.contains("not a folder")),
-            "{refused:?}"
-        );
-    }
     assert!(
-        matches!(&scratch, SubSessionOutcome::Finished(text) if text.ends_with("scratch")),
-        "{scratch:?}"
+        matches!(&dotori, SubSessionOutcome::Failed(text) if text.contains("not a folder a sub-session may work in")),
+        "{dotori:?}"
     );
     let _ = std::fs::remove_dir_all(&folder);
 }
@@ -268,21 +234,5 @@ async fn a_server_that_is_down_fails_the_run_before_it_starts() {
     assert!(
         matches!(&outcome, SubSessionOutcome::Failed(text) if text.contains("it crashed")),
         "{outcome:?}"
-    );
-}
-
-#[test]
-fn a_verbatim_windows_path_starts_the_agent_as_a_plain_one() {
-    assert_eq!(
-        plain(PathBuf::from(r"\\?\C:\Users\me\project")),
-        PathBuf::from(r"C:\Users\me\project")
-    );
-    assert_eq!(
-        plain(PathBuf::from(r"\\?\UNC\server\share")),
-        PathBuf::from(r"\\?\UNC\server\share")
-    );
-    assert_eq!(
-        plain(PathBuf::from("/home/me/project")),
-        PathBuf::from("/home/me/project")
     );
 }

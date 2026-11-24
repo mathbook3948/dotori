@@ -52,8 +52,15 @@ pub struct BasicTools {
     /// Environment variables a command must not see, such as tokens only the main session's
     /// guarded tools use.
     pub hidden_env: Vec<String>,
-    /// A folder whose files these tools leave alone, such as dotori's own, apart from `folder`.
-    pub private: Option<PathBuf>,
+    /// A folder whose files these tools leave alone, such as dotori's own.
+    pub private: Option<Private>,
+}
+
+/// A folder the basic tools leave alone, apart from `open` inside it.
+#[derive(Clone, Debug)]
+pub struct Private {
+    pub folder: PathBuf,
+    pub open: PathBuf,
 }
 
 /// The basic tools in front of `rest`, which gets every other call.
@@ -99,6 +106,15 @@ struct ShellInput {
 impl BasicTools {
     /// What the model is told about each basic tool.
     pub fn specs(&self) -> Vec<ToolSpec> {
+        let folder = if self
+            .private
+            .as_ref()
+            .is_some_and(|private| private.open == self.folder)
+        {
+            String::from("dotori's work folder")
+        } else {
+            self.folder.display().to_string()
+        };
         let spec = |name: &str, description: &str, schema: Value| ToolSpec {
             name: name.to_owned(),
             description: description.to_owned(),
@@ -107,8 +123,10 @@ impl BasicTools {
         vec![
             spec(
                 READ_FILE,
-                "Read a text file on the owner's PC. Lines come numbered from 1. A relative path \
-                 starts in dotori's work folder.",
+                &format!(
+                    "Read a text file on the owner's PC. Lines come numbered from 1. A relative \
+                     path starts in {folder}."
+                ),
                 json!({
                     "type": "object",
                     "properties": {
@@ -122,8 +140,10 @@ impl BasicTools {
             ),
             spec(
                 WRITE_FILE,
-                "Write a whole file on the owner's PC, making its folders. An existing file is \
-                 replaced.",
+                &format!(
+                    "Write a whole file on the owner's PC, making its folders. An existing file \
+                     is replaced. A relative path starts in {folder}."
+                ),
                 json!({
                     "type": "object",
                     "properties": {
@@ -136,8 +156,11 @@ impl BasicTools {
             ),
             spec(
                 EDIT_FILE,
-                "Replace text in a file on the owner's PC. `old` must appear exactly once unless \
-                 `all` is set. Read the file first so `old` matches it exactly.",
+                &format!(
+                    "Replace text in a file on the owner's PC. `old` must appear exactly once \
+                     unless `all` is set. Read the file first so `old` matches it exactly. A \
+                     relative path starts in {folder}."
+                ),
                 json!({
                     "type": "object",
                     "properties": {
@@ -152,10 +175,12 @@ impl BasicTools {
             ),
             spec(
                 RUN_SHELL,
-                "Run a shell command on the owner's PC as the owner and get its exit code and \
-                 output. It runs in dotori's work folder unless `folder` says otherwise, gets no \
-                 input, and is stopped with everything it started when its time runs out. Hand \
-                 long work to a sub-session instead.",
+                &format!(
+                    "Run a shell command on the owner's PC as the owner and get its exit code and \
+                     output. It runs in {folder} unless `folder` says otherwise, gets no input, \
+                     and is stopped with everything it started when its time runs out. Hand long \
+                     work to a sub-session instead."
+                ),
                 json!({
                     "type": "object",
                     "properties": {
@@ -219,9 +244,9 @@ impl BasicTools {
                 })
                 .unwrap_or_else(|| path.to_path_buf())
         };
-        let (shown, folder, private) = (real(&path), real(&self.folder), real(private));
+        let (shown, open, private) = (real(&path), real(&private.open), real(&private.folder));
         let inside = shown.starts_with(&private) || same_within(&shown, &private);
-        let work = shown.starts_with(&folder) || same_within(&shown, &folder);
+        let work = shown.starts_with(&open) || same_within(&shown, &open);
         if (inside && !work) || elsewhere_spelled(&shown) {
             return Err(format!(
                 "{} is dotori's own; these tools work only in its work folder there",

@@ -144,7 +144,7 @@ pub(crate) fn tools(toolbox: &[ToolSpec]) -> Vec<ToolSpec> {
                 "Hand a large job to a sub-session that works on its own. The brief is all it knows.",
             ),
             input_schema: String::from(
-                r#"{"type":"object","properties":{"title":{"type":"string","description":"A few words naming the job."},"brief":{"type":"string","description":"Everything the sub-session needs to know to do the job."},"folder":{"type":"string","description":"An absolute folder on the owner's PC the job is about, such as a project to change. A coding agent starts there."}},"required":["title","brief"],"additionalProperties":false}"#,
+                r#"{"type":"object","properties":{"title":{"type":"string","description":"A few words naming the job."},"brief":{"type":"string","description":"Everything the sub-session needs to know to do the job."},"folder":{"type":"string","description":"An absolute folder on the owner's PC the job is about, such as a project to change. The sub-session works there: its relative paths and commands start in it."}},"required":["title","brief"],"additionalProperties":false}"#,
             ),
         },
     ];
