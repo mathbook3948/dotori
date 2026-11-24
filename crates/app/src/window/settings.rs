@@ -575,15 +575,23 @@ impl SettingsView {
             .as_ref()
             .is_some_and(|name| self.kept.iter().any(|kept| kept == name));
         let (ink, soft, words) = if typed {
-            (theme.muted, theme.bubble, "저장을 누르면 vault에 잠가 둬요")
+            (
+                theme.muted,
+                theme.bubble,
+                "저장하면 금고에 안전하게 보관돼요",
+            )
         } else if from_environment {
-            (theme.ok, theme.ok_soft, "같은 이름의 환경 변수 값을 써요")
+            (
+                theme.ok,
+                theme.ok_soft,
+                "이 PC의 환경 변수 값을 쓰고 있어요",
+            )
         } else if kept {
-            (theme.ok, theme.ok_soft, "vault에 있어요")
+            (theme.ok, theme.ok_soft, "금고에 안전하게 보관돼 있어요")
         } else if name.is_none() {
             (theme.muted, theme.bubble, "키가 필요 없으면 비워 둬요")
         } else {
-            (theme.warn, theme.warn_soft, "아직 없어요")
+            (theme.warn, theme.warn_soft, "아직 넣지 않았어요")
         };
         let forget = (kept && !typed).then(|| {
             let name = name.clone().unwrap_or_default();
@@ -605,9 +613,11 @@ impl SettingsView {
         });
         let hint = match &name {
             Some(name) => format!(
-                "이 PC의 키체인으로 잠근 vault에 두고, 묶인 PC에도 보내요. 같은 이름({name})의 환경 변수가 있으면 그 값을 먼저 써요."
+                "이 PC의 키체인으로 잠근 금고에 보관하고, 묶인 PC에는 암호화해서 보내요. 대화하는 AI는 이 값을 볼 수 없어요. 같은 이름({name})의 환경 변수가 있으면 그 값을 먼저 써요."
             ),
-            None => String::from("이 PC의 키체인으로 잠근 vault에 두고, 묶인 PC에도 보내요."),
+            None => String::from(
+                "이 PC의 키체인으로 잠근 금고에 보관하고, 묶인 PC에는 암호화해서 보내요. 대화하는 AI는 이 값을 볼 수 없어요.",
+            ),
         };
         div()
             .flex()
