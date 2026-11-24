@@ -43,7 +43,7 @@ const FORGET: &str = "forget";
 const OWNER_TOOLS: [&str; 4] = [REMEMBER, FORGET, routines::ADD, routines::REMOVE];
 pub(crate) const MAX_NOTES: i64 = 50;
 const LOOK_EVERY: Duration = Duration::from_secs(20);
-const MAX_LENGTH: usize = 500;
+pub(crate) const MAX_LENGTH: usize = 500;
 const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS notes (\
     id INTEGER PRIMARY KEY AUTOINCREMENT, at_ms INTEGER NOT NULL, text TEXT NOT NULL); \
     CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL)";
@@ -237,21 +237,18 @@ impl Notes {
         }
         let at_ms = now_ms();
         let id = self.with(|connection| {
-            let count: i64 =
-                connection.query_row("SELECT count(*) FROM notes", [], |row| row.get(0))?;
-            if count >= MAX_NOTES {
-                return Ok(None);
-            }
-            connection.execute(
-                "INSERT INTO notes (at_ms, text) VALUES (?1, ?2)",
-                params![at_ms, text],
+            let added = connection.execute(
+                "INSERT INTO notes (at_ms, text) SELECT ?1, ?2 \
+                 WHERE (SELECT count(*) FROM notes) < ?3",
+                params![at_ms, text, MAX_NOTES],
             )?;
-            Ok(Some(connection.last_insert_rowid()))
+            Ok((added > 0).then(|| connection.last_insert_rowid()))
         })?;
-        self.touched();
-        id.ok_or(format!(
+        let id = id.ok_or(format!(
             "there are already {MAX_NOTES} notes; ask the owner which to forget"
-        ))
+        ))?;
+        self.touched();
+        Ok(id)
     }
 
     fn forget(&self, input: &Value) -> Result<String, String> {

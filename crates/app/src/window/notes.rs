@@ -14,6 +14,7 @@ use gpui::prelude::*;
 use gpui::px;
 
 use crate::home::Home;
+use crate::notes::MAX_LENGTH;
 use crate::notes::MAX_NOTES;
 use crate::notes::Notes;
 use crate::window::input::Submit;
@@ -79,6 +80,8 @@ impl NotesView {
             Err(error) => {
                 self.failed = Some(if error.contains("already") {
                     format!("메모는 {MAX_NOTES}개까지예요. 하나를 지우고 더해 주세요.")
+                } else if error.contains("at most") {
+                    format!("메모 하나는 {MAX_LENGTH}자까지예요.")
                 } else {
                     error
                 });
