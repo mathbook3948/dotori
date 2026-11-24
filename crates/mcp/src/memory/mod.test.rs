@@ -5,7 +5,7 @@ use super::*;
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
-fn config() -> MemoryConfig {
+pub(super) fn config() -> MemoryConfig {
     let n = NEXT.fetch_add(1, Ordering::SeqCst);
     let folder = std::env::temp_dir().join(format!("dotori-memory-{}-{n}", std::process::id()));
     let _ = std::fs::remove_dir_all(&folder);
@@ -19,7 +19,7 @@ fn config() -> MemoryConfig {
     }
 }
 
-fn record(config: &MemoryConfig, rows: &[(&str, Option<&str>, Option<&str>)]) {
+pub(super) fn record(config: &MemoryConfig, rows: &[(&str, Option<&str>, Option<&str>)]) {
     std::fs::create_dir_all(&config.record).expect("made");
     let record = Connection::open(config.record.join("2023.sqlite3")).expect("opened");
     record
@@ -50,7 +50,7 @@ fn record(config: &MemoryConfig, rows: &[(&str, Option<&str>, Option<&str>)]) {
     }
 }
 
-fn memory(config: MemoryConfig) -> Arc<Memory> {
+pub(super) fn memory(config: MemoryConfig) -> Arc<Memory> {
     Arc::new(Memory {
         config,
         embedder: None,
@@ -157,7 +157,7 @@ fn a_record_file_without_its_table_yet_is_empty() {
     );
 }
 
-async fn embedding_api(failing: bool) -> String {
+pub(super) async fn embedding_api(failing: bool) -> String {
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await
         .expect("bound");
@@ -236,7 +236,7 @@ async fn embedding_api(failing: bool) -> String {
     format!("http://{address}/v1")
 }
 
-fn embedded(config: MemoryConfig, base_url: String) -> Arc<Memory> {
+pub(super) fn embedded(config: MemoryConfig, base_url: String) -> Arc<Memory> {
     let embedding = EmbeddingConfig {
         base_url,
         model: String::from("test"),

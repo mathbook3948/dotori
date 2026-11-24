@@ -18,6 +18,7 @@ mod peers;
 mod replace;
 mod routines;
 mod screen_link;
+mod search_eval;
 mod settings;
 mod settings_copies;
 mod tools;
@@ -30,7 +31,7 @@ use std::process::ExitCode;
 
 use crate::home::Home;
 
-const USAGE: &str = "usage: dotori [daemon | chat | window | settings]";
+const USAGE: &str = "usage: dotori [daemon | chat | window | settings | search-eval <file>]";
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -46,6 +47,7 @@ async fn main() -> ExitCode {
         Some("mcp") => tools::serve(home).await,
         Some("window") => window::run(home, window::Which::Chat),
         Some("settings") => window::run(home, window::Which::Settings),
+        Some("search-eval") => search_eval::run(home, env::args().nth(2)).await,
         Some(_) => return fail(USAGE),
     };
     match result {
