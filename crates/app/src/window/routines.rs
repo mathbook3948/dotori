@@ -81,6 +81,7 @@ impl RoutinesView {
                 self.zone.update(cx, |input, cx| input.set_text(&text, cx));
             }
             self.stored = stored;
+            self.zone_saved = false;
             cx.notify();
         }
     }
@@ -102,7 +103,9 @@ impl RoutinesView {
             Ok(()) => {
                 self.failed = None;
                 self.zone_saved = true;
-                self.stored = name;
+                self.stored = self.routines.zone_name().ok().flatten();
+                let text = self.stored.clone().unwrap_or_default();
+                self.zone.update(cx, |input, cx| input.set_text(&text, cx));
             }
             Err(failed) => {
                 self.failed = Some(failed);
@@ -120,12 +123,13 @@ impl RoutinesView {
             .iana_name()
             .map_or_else(|| "이 PC의 시간대".to_owned(), str::to_owned);
         let hint = match (&self.stored, self.zone_saved && !changed) {
-            (_, true) => "바꿨어요. 다음 루틴부터 이 시간대로 읽어요.".to_owned(),
+            (Some(_), true) => "바꿨어요. 다음 루틴부터 모든 PC가 이 시간대로 읽어요.".to_owned(),
+            (None, true) => "바꿨어요. 다음 루틴부터 각 PC가 자기 시간대로 읽어요.".to_owned(),
             (Some(_), false) => format!(
-                "모든 PC가 이 시간대로 루틴을 읽어요. 비우면 각 PC의 시간대({here})를 써요."
+                "모든 PC가 이 시간대로 루틴을 읽어요. 비우면 각 PC의 시간대를 써요. 이 PC의 시간대: {here}"
             ),
             (None, false) => format!(
-                "지금은 각 PC의 시간대로 읽어요. 이 PC는 {here}예요. Asia/Seoul처럼 적으면 모든 PC가 같은 시간대를 써요."
+                "지금은 각 PC의 시간대로 읽어요. Asia/Seoul처럼 적으면 모든 PC가 같은 시간대를 써요. 이 PC의 시간대: {here}"
             ),
         };
         let save = div()

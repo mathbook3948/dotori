@@ -299,9 +299,66 @@ fn a_name_that_is_no_time_zone_is_refused() {
 }
 
 #[test]
-fn a_copy_from_a_pc_that_knows_no_time_zone_still_reads() {
-    let copy: RoutinesCopy =
-        serde_json::from_str(r#"{"changed_ms":5,"routines":[]}"#).expect("an older copy");
+fn a_copy_from_a_pc_that_knows_no_time_zone_keeps_the_one_here() {
+    let routines = routines();
+    routines.set_zone(Some("Asia/Seoul"), 10).expect("set");
+    let older: RoutinesCopy =
+        serde_json::from_str(r#"{"changed_ms":50,"routines":[]}"#).expect("an older copy");
 
-    assert_eq!(copy.zone, None);
+    assert!(routines.take(&older).expect("took"));
+
+    assert_eq!(
+        routines.zone_name().expect("read").as_deref(),
+        Some("Asia/Seoul")
+    );
+}
+
+#[test]
+fn a_time_zone_is_kept_by_its_own_name() {
+    let routines = routines();
+
+    routines.set_zone(Some(" asia/seoul "), 10).expect("set");
+
+    assert_eq!(
+        routines.zone_name().expect("read").as_deref(),
+        Some("Asia/Seoul")
+    );
+}
+
+#[test]
+fn a_file_from_before_time_zones_opens_and_takes_one() {
+    let folder = std::env::temp_dir().join(format!(
+        "dotori-routines-v1-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::SeqCst)
+    ));
+    let _ = std::fs::remove_dir_all(&folder);
+    let path = folder.join("routines.sqlite3");
+    let first = Routines::new(path.clone());
+    first
+        .add(
+            &json!({ "name": "아침 브리핑", "time": "08:00", "task": "오늘 일정 알려줘" }),
+            10,
+        )
+        .expect("added");
+    drop(first);
+    let old = Connection::open(&path).expect("opened");
+    old.execute_batch("DROP TABLE options; PRAGMA user_version = 1;")
+        .expect("made it a first-version file");
+    drop(old);
+
+    let routines = Routines::new(path.clone());
+    routines.set_zone(Some("Asia/Seoul"), 20).expect("set");
+
+    assert_eq!(routines.list().expect("listed").len(), 1);
+    assert_eq!(
+        routines.zone_name().expect("read").as_deref(),
+        Some("Asia/Seoul")
+    );
+    let version: i64 = Connection::open(&path)
+        .expect("opened")
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .expect("read");
+    assert_eq!(version, VERSION);
+    let _ = std::fs::remove_dir_all(&folder);
 }

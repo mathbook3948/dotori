@@ -80,6 +80,9 @@ pub(crate) struct Routine {
 }
 
 /// Every routine as one PC holds it, and when it last changed there. The copy changed last wins.
+///
+/// `zone` is the time zone the owner set, empty when they set none. A PC from before time zones
+/// sends none at all, which leaves the one here as it is.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct RoutinesCopy {
     pub(crate) changed_ms: i64,
@@ -415,11 +418,20 @@ impl Routines {
     /// Sets the time zone every PC reads routine times in, such as `Asia/Seoul`, or with `None`
     /// goes back to each PC's own. The other PCs get it with the routines.
     pub(crate) fn set_zone(&self, name: Option<&str>, now_ms: i64) -> Result<(), String> {
-        if let Some(name) = name {
-            TimeZone::get(name).map_err(|_| format!("`{name}` is not a time zone"))?;
-        }
-        self.with(|connection| write_zone(connection, name))?;
-        self.touched(now_ms)
+        let name = match name {
+            Some(name) => {
+                Some(canonical(name).ok_or_else(|| format!("`{name}` is not a time zone"))?)
+            }
+            None => None,
+        };
+        self.with(|connection| {
+            let both = connection.unchecked_transaction()?;
+            write_zone(&both, name.as_deref())?;
+            stamp(&both, now_ms)?;
+            both.commit()
+        })?;
+        self.changes.notify_one();
+        Ok(())
     }
 
     /// Every routine, for the other PCs.
@@ -438,7 +450,7 @@ impl Routines {
         Ok(RoutinesCopy {
             changed_ms,
             routines,
-            zone: self.zone_name()?,
+            zone: Some(self.zone_name()?.unwrap_or_default()),
         })
     }
 
@@ -483,7 +495,15 @@ impl Routines {
                 "INSERT OR REPLACE INTO meta (key, value) VALUES ('changed_ms', ?1)",
                 [copy.changed_ms],
             )?;
-            write_zone(&swap, copy.zone.as_deref())?;
+            match copy.zone.as_deref() {
+                None => {}
+                Some("") => write_zone(&swap, None)?,
+                Some(name) => {
+                    if let Some(name) = canonical(name) {
+                        write_zone(&swap, Some(&name))?;
+                    }
+                }
+            }
             swap.commit()?;
             Ok(true)
         })
@@ -652,6 +672,11 @@ fn one_line(text: &str) -> String {
         .collect::<String>()
         .trim()
         .to_owned()
+}
+
+fn canonical(name: &str) -> Option<String> {
+    let zone = TimeZone::get(name.trim()).ok()?;
+    zone.iana_name().map(str::to_owned)
 }
 
 fn write_zone(connection: &Connection, name: Option<&str>) -> rusqlite::Result<()> {
