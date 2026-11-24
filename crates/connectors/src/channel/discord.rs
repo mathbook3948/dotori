@@ -310,6 +310,8 @@ impl DiscordChannel {
         let mut answered = true;
         loop {
             let frame = tokio::select! {
+                biased;
+                frame = socket.next() => frame,
                 _ = beat.tick() => {
                     if !answered {
                         return Ok(Ended::Again);
@@ -322,7 +324,6 @@ impl DiscordChannel {
                         .map_err(gone)?;
                     continue;
                 }
-                frame = socket.next() => frame,
             };
             let frame = match frame {
                 Some(Ok(frame)) => frame,
@@ -388,10 +389,9 @@ impl DiscordChannel {
                     let roles = data
                         .get("roles")
                         .and_then(Value::as_array)
-                        .cloned()
-                        .unwrap_or_default()
                         .into_iter()
-                        .chain(data.get("role").cloned());
+                        .flatten()
+                        .chain(data.get("role"));
                     for role in roles {
                         if role.pointer("/tags/bot_id").and_then(Value::as_str) == Some(&bot.id)
                             && let Some(id) = role.get("id").and_then(Value::as_str)
