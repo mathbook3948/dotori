@@ -343,7 +343,7 @@ impl ScreenView {
                             .when(chosen, |row| {
                                 row.bg(theme.canvas).font_weight(FontWeight::SEMIBOLD)
                             })
-                            .when(disabled, |row| row.text_color(theme.faint))
+                            .when(disabled, |row| row.text_color(theme.muted))
                             .when(!disabled, |row| {
                                 row.cursor_pointer()
                                     .hover(|row| row.bg(theme.canvas))
@@ -368,7 +368,7 @@ impl ScreenView {
                         .rounded_lg()
                         .bg(theme.canvas)
                         .border_1()
-                        .border_color(theme.accent)
+                        .border_color(theme.primary)
                         .cursor_text()
                         .on_mouse_down(
                             MouseButton::Left,
@@ -388,8 +388,8 @@ impl ScreenView {
                         .py_1p5()
                         .rounded_lg()
                         .cursor_pointer()
-                        .bg(theme.accent)
-                        .text_color(theme.accent_text)
+                        .bg(theme.primary)
+                        .text_color(theme.on_primary)
                         .font_weight(FontWeight::SEMIBOLD)
                         .child("넣기")
                         .on_click(cx.listener(|view, _, _, cx| {
@@ -481,9 +481,9 @@ impl ScreenView {
                 div()
                     .px_1p5()
                     .rounded_sm()
-                    .bg(theme.other)
+                    .bg(theme.bubble)
                     .text_xs()
-                    .text_color(theme.other_text)
+                    .text_color(theme.muted)
                     .child(SharedString::from(realm.to_owned()))
             });
         let (name, secret) = match &self.login {
@@ -569,7 +569,7 @@ impl ScreenView {
                                                     .h(px(10.))
                                                     .border_2()
                                                     .border_b_0()
-                                                    .border_color(theme.accent)
+                                                    .border_color(theme.primary)
                                                     .rounded_t_full(),
                                             )
                                             .child(
@@ -577,7 +577,7 @@ impl ScreenView {
                                                     .w(px(18.))
                                                     .h(px(13.))
                                                     .rounded_sm()
-                                                    .bg(theme.accent),
+                                                    .bg(theme.primary),
                                             ),
                                     ),
                             )
@@ -641,7 +641,7 @@ impl ScreenView {
                     .child(
                         div()
                             .text_xs()
-                            .text_color(theme.faint)
+                            .text_color(theme.muted)
                             .child("이 페이지에만 넘기고 대화 기록에는 남기지 않아요."),
                     )
                     .child(
@@ -670,9 +670,9 @@ impl ScreenView {
                                     .py_1p5()
                                     .rounded_lg()
                                     .cursor_pointer()
-                                    .bg(theme.accent)
-                                    .hover(|go| go.bg(theme.accent_hover))
-                                    .text_color(theme.accent_text)
+                                    .bg(theme.primary)
+                                    .hover(|go| go.bg(theme.primary_hover))
+                                    .text_color(theme.on_primary)
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child("로그인")
                                     .on_click(
@@ -827,8 +827,8 @@ impl ScreenView {
 
     fn bar(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let (color, words) = match (self.down, self.mode) {
-            (true, _) => (theme.faint, "연결하는 중"),
-            (false, Mode::Agent) => (theme.accent, "dotori가 쓰는 중"),
+            (true, _) => (theme.muted, "연결하는 중"),
+            (false, Mode::Agent) => (theme.primary, "dotori가 쓰는 중"),
             (false, Mode::Waiting) => (theme.warn, "넘겨받는 중"),
             (false, Mode::Owner) => (theme.ok, "내가 조작 중"),
             (false, Mode::Idle) => (theme.muted, "쉬는 중"),
@@ -845,16 +845,16 @@ impl ScreenView {
                 .font_weight(FontWeight::SEMIBOLD)
                 .when(primary, |button| {
                     button
-                        .bg(theme.accent)
-                        .text_color(theme.accent_text)
-                        .hover(|button| button.bg(theme.accent_hover))
+                        .bg(theme.primary)
+                        .text_color(theme.on_primary)
+                        .hover(|button| button.bg(theme.primary_hover))
                 })
                 .when(!primary, |button| {
                     button
                         .border_1()
                         .border_color(theme.line)
                         .bg(theme.surface)
-                        .hover(|button| button.border_color(theme.accent))
+                        .hover(|button| button.border_color(theme.primary))
                 })
                 .child(label)
         };
@@ -901,7 +901,7 @@ impl ScreenView {
                         .py_0p5()
                         .rounded_full()
                         .bg(theme.warn)
-                        .text_color(theme.accent_text)
+                        .text_color(theme.on_primary)
                         .text_xs()
                         .child("새 창"),
                 )
@@ -1123,10 +1123,10 @@ impl Render for ScreenView {
                     .size(px(18.))
                     .rounded_full()
                     .border_2()
-                    .border_color(theme.accent)
+                    .border_color(theme.primary)
                     .bg(gpui::Rgba {
                         a: 0.25,
-                        ..theme.accent
+                        ..theme.primary
                     })
             });
         div()

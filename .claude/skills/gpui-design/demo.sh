@@ -2,7 +2,9 @@
 # Drives the real dotori windows on a virtual screen with the end-to-end test's fake model.
 #   demo.sh start <home>                    build, then start Xvfb, a window manager, the fake model and the daemon
 #   demo.sh talk <home> [message ...]       send messages through `dotori chat` (the demo conversation by default)
-#   demo.sh shot <home> <out.png> [light|dark] [frames]   open the chat window and save it; frames > 1 saves out-1.png, out-2.png, ...
+#   demo.sh shot <home> <out.png> [look] [frames]   open the chat window and save it; frames > 1 saves out-1.png, out-2.png, ...
+#   demo.sh settings <home> <out.png> [look]       open the settings window and save it
+#   [look] is light, dark, a theme such as forest, or both as forest-dark
 #   demo.sh stop <home>                     stop what start started
 set -euo pipefail
 
@@ -13,7 +15,7 @@ dotori="$target/debug/dotori"
 model="$target/debug/examples/demo_model"
 offline="http://127.0.0.1:9"
 
-usage() { sed -n '2,6p' "$0" >&2; exit 2; }
+usage() { sed -n '2,8p' "$0" >&2; exit 2; }
 [ $# -ge 2 ] || usage
 command="$1"
 home="$(mkdir -p "$2" && cd "$2" && pwd)"
@@ -70,19 +72,20 @@ talk)
     done
   } | env -u DISPLAY DOTORI_HOME="$home" "$dotori" chat
   ;;
-shot)
+shot|settings)
   [ $# -ge 3 ] || usage
   out="$3"; look="${4:-light}"; frames="${5:-1}"
-  pkill -f "$dotori window" 2>/dev/null || true
-  background "$home/window.log" \
-    env DISPLAY=":$display" DOTORI_HOME="$home" DOTORI_THEME="$look" LANG=C.UTF-8 "$dotori" window
+  if [ "$command" = shot ]; then which=window; title='^dotori$'; else which=settings; title='^dotori .'; fi
+  pkill -f "$dotori $which" 2>/dev/null || true
+  background "$home/$which.log" \
+    env DISPLAY=":$display" DOTORI_HOME="$home" DOTORI_THEME="$look" LANG=C.UTF-8 "$dotori" "$which"
   window=""
   for _ in $(seq 100); do
-    window="$(DISPLAY=":$display" xdotool search --name '^dotori$' 2>/dev/null | head -1 || true)"
+    window="$(DISPLAY=":$display" xdotool search --name "$title" 2>/dev/null | head -1 || true)"
     [ -n "$window" ] && break
     sleep 0.1
   done
-  [ -n "$window" ] || { echo "no chat window; see $home/window.log" >&2; exit 1; }
+  [ -n "$window" ] || { echo "no $which window; see $home/$which.log" >&2; exit 1; }
   sleep 2
   if [ "$frames" -le 1 ]; then
     DISPLAY=":$display" import -window "$window" -frame "$out"
@@ -96,6 +99,7 @@ shot)
   ;;
 stop)
   pkill -f "$dotori window" 2>/dev/null || true
+  pkill -f "$dotori settings" 2>/dev/null || true
   if [ -f "$pids" ]; then
     while read -r pid; do kill "$pid" 2>/dev/null || true; done <"$pids"
     rm -f "$pids"

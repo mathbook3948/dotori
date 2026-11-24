@@ -1,4 +1,5 @@
 mod core_deps;
+mod design_tokens;
 mod docs;
 mod forbidden_chars;
 mod root_entries;
@@ -17,10 +18,12 @@ fn main() -> ExitCode {
         "root-entries" => root_entries::run(&workspace_root),
         "docs" => docs::check(&workspace_root),
         "sql-schema" => sql_schema::run(&workspace_root),
+        "design-tokens" => design_tokens::check(&workspace_root),
+        "design-write" => design_tokens::write(&workspace_root),
         "docs-write" => docs::write(&workspace_root),
         _ => {
             eprintln!(
-                "usage: xtask <forbidden-chars|core-deps|root-entries|docs|docs-write|sql-schema>"
+                "usage: xtask <forbidden-chars|core-deps|root-entries|docs|docs-write|sql-schema|design-tokens|design-write>"
             );
             return ExitCode::from(2);
         }

@@ -1,25 +1,25 @@
+use std::sync::RwLock;
+
 use gpui::Rgba;
 use gpui::Window;
 use gpui::WindowAppearance;
-use gpui::rgb;
-use gpui::rgba;
 
-/// The colors every window draws with, one set for a light system look and one for a dark one.
+use crate::window::themes::THEMES;
+
+/// The colors every window draws with, named as the color tokens of DESIGN.md.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Theme {
     pub(crate) canvas: Rgba,
     pub(crate) surface: Rgba,
     pub(crate) raised: Rgba,
     pub(crate) line: Rgba,
+    pub(crate) bubble: Rgba,
     pub(crate) text: Rgba,
     pub(crate) muted: Rgba,
-    pub(crate) faint: Rgba,
-    pub(crate) accent: Rgba,
-    pub(crate) accent_hover: Rgba,
-    pub(crate) accent_text: Rgba,
+    pub(crate) primary: Rgba,
+    pub(crate) primary_hover: Rgba,
+    pub(crate) on_primary: Rgba,
     pub(crate) selection: Rgba,
-    pub(crate) other: Rgba,
-    pub(crate) other_text: Rgba,
     pub(crate) ok: Rgba,
     pub(crate) ok_soft: Rgba,
     pub(crate) warn: Rgba,
@@ -28,68 +28,140 @@ pub(crate) struct Theme {
     pub(crate) danger_soft: Rgba,
 }
 
-const THEME_VARIABLE: &str = "DOTORI_THEME";
+/// The two colors of dotori's acorn logo.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Logo {
+    pub(crate) cap: Rgba,
+    pub(crate) nut: Rgba,
+}
 
-fn light() -> Theme {
-    Theme {
-        canvas: rgb(0xf7f3ee),
-        surface: rgb(0xffffff),
-        raised: rgb(0xfffdfa),
-        line: rgb(0xe7dfd5),
-        text: rgb(0x2a231d),
-        muted: rgb(0x7c7067),
-        faint: rgb(0xb3a79c),
-        accent: rgb(0x8b5a2b),
-        accent_hover: rgb(0x774b22),
-        accent_text: rgb(0xffffff),
-        selection: rgba(0x8b5a2b40),
-        other: rgb(0xedf1f5),
-        other_text: rgb(0x52606f),
-        ok: rgb(0x3f9a5c),
-        ok_soft: rgb(0xe3f2e7),
-        warn: rgb(0xc9822b),
-        warn_soft: rgb(0xf8ead6),
-        danger: rgb(0xc0453a),
-        danger_soft: rgb(0xf8deda),
+/// Whether the windows follow the system's light or dark look, or keep to one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Look {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+impl Look {
+    /// The look named in the settings, or the system's for any other word.
+    pub(crate) fn named(name: &str) -> Self {
+        match name {
+            "light" => Self::Light,
+            "dark" => Self::Dark,
+            _ => Self::System,
+        }
+    }
+
+    /// The word the settings keep for this look.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::Light => "light",
+            Self::Dark => "dark",
+        }
     }
 }
 
-fn dark() -> Theme {
-    Theme {
-        canvas: rgb(0x1b1714),
-        surface: rgb(0x26211d),
-        raised: rgb(0x211c18),
-        line: rgb(0x3a322c),
-        text: rgb(0xf0e8e0),
-        muted: rgb(0xa89c91),
-        faint: rgb(0x6f655c),
-        accent: rgb(0xc98a4b),
-        accent_hover: rgb(0xd99a5b),
-        accent_text: rgb(0x1b1714),
-        selection: rgba(0xc98a4b55),
-        other: rgb(0x232a33),
-        other_text: rgb(0x9fb0c3),
-        ok: rgb(0x5cbf7e),
-        ok_soft: rgb(0x1f3326),
-        warn: rgb(0xe0a458),
-        warn_soft: rgb(0x3a2c1b),
-        danger: rgb(0xe07064),
-        danger_soft: rgb(0x3e2422),
+/// A color from its `0xRRGGBBAA` value.
+pub(crate) const fn hex(value: u32) -> Rgba {
+    Rgba {
+        r: ((value >> 24) & 0xFF) as f32 / 255.0,
+        g: ((value >> 16) & 0xFF) as f32 / 255.0,
+        b: ((value >> 8) & 0xFF) as f32 / 255.0,
+        a: (value & 0xFF) as f32 / 255.0,
+    }
+}
+
+const THEME_VARIABLE: &str = "DOTORI_THEME";
+
+static CHOSEN: RwLock<(usize, Look)> = RwLock::new((0, Look::System));
+
+/// The names of the themes, the default first.
+pub(crate) fn names() -> impl Iterator<Item = &'static str> {
+    THEMES.iter().map(|(name, _, _)| *name)
+}
+
+/// The light and dark colors of the theme called `name`.
+pub(crate) fn named(name: &str) -> Option<(Theme, Theme)> {
+    THEMES
+        .iter()
+        .find(|(known, _, _)| *known == name)
+        .map(|(_, light, dark)| (*light, *dark))
+}
+
+/// Draws every window of this process with the theme called `name` in `look` from the next
+/// frame. An unknown name keeps the default theme.
+pub(crate) fn choose(name: &str, look: Look) {
+    let index = THEMES
+        .iter()
+        .position(|(known, _, _)| *known == name)
+        .unwrap_or(0);
+    *CHOSEN
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = (index, look);
+}
+
+/// The theme and look the owner chose in the settings, which the settings window shows.
+pub(crate) fn saved() -> (usize, Look) {
+    *CHOSEN
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Whether `DOTORI_THEME` overrides what the owner chose.
+pub(crate) fn overridden() -> bool {
+    std::env::var_os(THEME_VARIABLE).is_some()
+}
+
+/// The theme and look in use, with `DOTORI_THEME` over the settings. The variable names a theme,
+/// a look (`light` or `dark`), or both as `<theme>-<look>`.
+pub(crate) fn chosen() -> (usize, Look) {
+    let (mut index, mut look) = saved();
+    if let Ok(asked) = std::env::var(THEME_VARIABLE) {
+        for part in asked.split('-') {
+            if let Some(at) = THEMES.iter().position(|(known, _, _)| *known == part) {
+                index = at;
+            } else if part == "light" || part == "dark" {
+                look = Look::named(part);
+            }
+        }
+    }
+    (index, look)
+}
+
+fn dark(window: &Window, look: Look) -> bool {
+    match look {
+        Look::Light => false,
+        Look::Dark => true,
+        Look::System => matches!(
+            window.appearance(),
+            WindowAppearance::Dark | WindowAppearance::VibrantDark
+        ),
     }
 }
 
 impl Theme {
-    /// The theme that matches the system's light or dark look for `window`, unless
-    /// `DOTORI_THEME` asks for `light` or `dark`.
+    /// The colors to draw `window` with now: the chosen theme in the chosen look.
     pub(crate) fn of(window: &Window) -> Self {
-        match std::env::var(THEME_VARIABLE).as_deref() {
-            Ok("dark") => return dark(),
-            Ok("light") => return light(),
-            _ => {}
-        }
-        match window.appearance() {
-            WindowAppearance::Dark | WindowAppearance::VibrantDark => dark(),
-            WindowAppearance::Light | WindowAppearance::VibrantLight => light(),
+        let (index, look) = chosen();
+        let (_, light, dark_colors) = THEMES[index];
+        if dark(window, look) {
+            dark_colors
+        } else {
+            light
         }
     }
 }
+
+impl Theme {
+    /// Whether these are the colors of a dark look, judged by the canvas.
+    pub(crate) fn is_dark(&self) -> bool {
+        0.2126 * self.canvas.r + 0.7152 * self.canvas.g + 0.0722 * self.canvas.b < 0.5
+    }
+}
+
+#[cfg(test)]
+#[path = "theme.test.rs"]
+mod tests;

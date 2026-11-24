@@ -190,7 +190,7 @@ pub(crate) fn rich(text: &str, theme: &Theme) -> Div {
                         div()
                             .flex_none()
                             .min_w(px(12.))
-                            .text_color(theme.accent)
+                            .text_color(theme.primary)
                             .font_weight(FontWeight::SEMIBOLD)
                             .child(mark),
                     )

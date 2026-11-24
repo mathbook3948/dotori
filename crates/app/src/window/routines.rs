@@ -81,7 +81,7 @@ impl Render for RoutinesView {
                     .gap_1()
                     .py_4()
                     .text_xs()
-                    .text_color(theme.faint)
+                    .text_color(theme.muted)
                     .child("아직 루틴이 없어요")
                     .child("채팅창에서 \"평일 아침 8시에 오늘 일정 알려줘\"처럼 부탁해 보세요"),
             );
@@ -108,7 +108,7 @@ impl Render for RoutinesView {
                             .py_1()
                             .rounded_lg()
                             .bg(theme.selection)
-                            .text_color(theme.accent)
+                            .text_color(theme.text)
                             .font_weight(FontWeight::SEMIBOLD)
                             .child(routine.time.clone()),
                     )
@@ -133,9 +133,9 @@ impl Render for RoutinesView {
                                         div()
                                             .px_1p5()
                                             .rounded_sm()
-                                            .bg(theme.other)
+                                            .bg(theme.bubble)
                                             .text_xs()
-                                            .text_color(theme.other_text)
+                                            .text_color(theme.muted)
                                             .child(routine.when()),
                                     ),
                             )

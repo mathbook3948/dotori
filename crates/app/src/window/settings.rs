@@ -9,6 +9,7 @@ use gpui::Focusable;
 use gpui::FontWeight;
 use gpui::MouseButton;
 use gpui::SharedString;
+use gpui::Task;
 use gpui::Window;
 use gpui::div;
 use gpui::prelude::*;
@@ -25,6 +26,7 @@ use crate::settings::Settings;
 use crate::settings::SlackForm;
 use crate::settings::TELEGRAM_KEY;
 use crate::settings::TelegramForm;
+use crate::settings::WindowSettings;
 use crate::settings::environment;
 use crate::window::input::TextInput;
 use crate::window::notes::NotesView;
@@ -32,6 +34,7 @@ use crate::window::parts::header;
 use crate::window::parts::prose;
 use crate::window::pcs::PcsView;
 use crate::window::routines::RoutinesView;
+use crate::window::theme::Look;
 use crate::window::theme::Theme;
 
 /// The settings window. It writes `settings.toml`, which the daemon reads when it starts.
@@ -55,6 +58,7 @@ pub(crate) struct SettingsView {
     discord_owner: Entity<TextInput>,
     discord_token_env: Entity<TextInput>,
     note: Option<Note>,
+    look_saving: Option<Task<()>>,
     pcs: Entity<PcsView>,
     routines: Entity<RoutinesView>,
     notes: Entity<NotesView>,
@@ -127,6 +131,7 @@ impl SettingsView {
             discord_owner: field("123456789012345678", discord.owner, cx),
             discord_token_env,
             note: None,
+            look_saving: None,
         }
     }
 
@@ -364,6 +369,8 @@ impl Render for SettingsView {
                     .flex_1()
                     .overflow_y_scroll()
                     .p_5()
+                    .child(self.look_card(&theme, cx))
+                    .child(div().h_4())
                     .child(
                         div()
                             .flex()
@@ -440,9 +447,9 @@ impl Render for SettingsView {
                             .py_2()
                             .rounded_xl()
                             .cursor_pointer()
-                            .bg(theme.accent)
-                            .hover(|save| save.bg(theme.accent_hover))
-                            .text_color(theme.accent_text)
+                            .bg(theme.primary)
+                            .hover(|save| save.bg(theme.primary_hover))
+                            .text_color(theme.on_primary)
                             .font_weight(FontWeight::SEMIBOLD)
                             .child("저장")
                             .on_click(cx.listener(Self::save)),
@@ -452,6 +459,141 @@ impl Render for SettingsView {
 }
 
 impl SettingsView {
+    fn set_look(&mut self, name: &str, look: Look, cx: &mut Context<Self>) {
+        crate::window::theme::choose(name, look);
+        let path = self.home.settings();
+        let window = WindowSettings {
+            theme: Some(name.to_owned()),
+            look: Some(look.name().to_owned()),
+        };
+        let earlier = self.look_saving.take();
+        self.look_saving = Some(cx.spawn(async move |view, cx| {
+            if let Some(earlier) = earlier {
+                earlier.await;
+            }
+            let saved = cx
+                .background_spawn(async move {
+                    Settings::load(&path).and_then(|mut settings| {
+                        settings.window = Some(window);
+                        settings.save_parts(&path, &["window"])
+                    })
+                })
+                .await;
+            if let Err(error) = saved {
+                let _ = view.update(cx, |view, cx| {
+                    view.note = Some(Note::Failed(SharedString::from(error)));
+                    cx.notify();
+                });
+            }
+        }));
+        cx.refresh_windows();
+    }
+
+    fn look_card(&self, theme: &Theme, cx: &mut Context<Self>) -> gpui::Div {
+        let (index, look) = crate::window::theme::saved();
+        let current = crate::window::theme::names().nth(index).unwrap_or_default();
+        let themes = crate::window::theme::names().map(|name| {
+            let chosen = name == current;
+            let (light, dark) = crate::window::theme::named(name).unwrap_or((*theme, *theme));
+            let swatch = |color| div().size(px(14.)).rounded_full().bg(color);
+            div()
+                .id(SharedString::from(format!("theme-{name}")))
+                .debug_selector(move || format!("theme-{name}"))
+                .flex()
+                .items_center()
+                .gap_3()
+                .px_3()
+                .py_2()
+                .rounded_lg()
+                .cursor_pointer()
+                .when(chosen, |row| {
+                    row.bg(theme.bubble).font_weight(FontWeight::SEMIBOLD)
+                })
+                .when(!chosen, |row| row.hover(|row| row.bg(theme.canvas)))
+                .child(div().flex_1().child(theme_label(name)))
+                .child(
+                    div()
+                        .flex()
+                        .gap_1()
+                        .child(swatch(light.canvas))
+                        .child(swatch(light.primary))
+                        .child(swatch(dark.canvas))
+                        .child(swatch(dark.primary)),
+                )
+                .on_click(cx.listener(move |view, _, _, cx| view.set_look(name, look, cx)))
+        });
+        let looks = [Look::System, Look::Light, Look::Dark].map(|option| {
+            let chosen = option == look;
+            let label = match option {
+                Look::System => "시스템 따라",
+                Look::Light => "밝게",
+                Look::Dark => "어둡게",
+            };
+            div()
+                .id(SharedString::from(format!("look-{}", option.name())))
+                .debug_selector(move || format!("look-{}", option.name()))
+                .flex_1()
+                .py_1p5()
+                .rounded_lg()
+                .text_center()
+                .cursor_pointer()
+                .when(chosen, |segment| {
+                    segment
+                        .bg(theme.surface)
+                        .shadow_sm()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme.text)
+                })
+                .when(!chosen, |segment| {
+                    segment
+                        .text_color(theme.muted)
+                        .hover(|segment| segment.text_color(theme.text))
+                })
+                .child(label)
+                .on_click(cx.listener(move |view, _, _, cx| view.set_look(current, option, cx)))
+        });
+        div()
+            .flex()
+            .flex_col()
+            .gap_4()
+            .p_5()
+            .rounded_2xl()
+            .bg(theme.surface)
+            .shadow_xs()
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_base()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("모양"),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.muted)
+                            .child(if crate::window::theme::overridden() {
+                                "DOTORI_THEME이 정해져 있어서 창은 그 모양으로 그려요. 고른 것은 저장돼요."
+                            } else {
+                                "고르면 모든 창이 바로 바뀌어요."
+                            }),
+                    ),
+            )
+            .child(div().flex().flex_col().gap_1().children(themes))
+            .child(
+                div()
+                    .flex()
+                    .p_1()
+                    .gap_1()
+                    .rounded_xl()
+                    .bg(theme.canvas)
+                    .children(looks),
+            )
+    }
+
     fn slack_card(
         &self,
         theme: &Theme,
@@ -684,7 +826,7 @@ fn switch(theme: &Theme, id: &'static str, on: bool) -> gpui::Stateful<gpui::Div
         .p(px(2.))
         .rounded_full()
         .cursor_pointer()
-        .bg(if on { theme.accent } else { theme.line })
+        .bg(if on { theme.primary } else { theme.line })
         .when(on, |switch| switch.justify_end())
         .child(
             div()
@@ -720,7 +862,7 @@ fn guide(theme: &Theme, steps: &[&'static str]) -> gpui::Div {
                         .mt(px(1.5))
                         .rounded_full()
                         .bg(theme.selection)
-                        .text_color(theme.accent)
+                        .text_color(theme.text)
                         .text_size(px(11.))
                         .font_weight(FontWeight::SEMIBOLD)
                         .child(SharedString::from((n + 1).to_string())),
@@ -784,10 +926,25 @@ fn field(
                 .rounded_lg()
                 .bg(theme.canvas)
                 .border_1()
-                .border_color(if focused { theme.accent } else { theme.line })
+                .border_color(if focused { theme.primary } else { theme.line })
                 .cursor_text()
                 .on_mouse_down(MouseButton::Left, move |_, window, _| window.focus(&focus))
                 .child(input.clone()),
         )
         .child(div().text_xs().text_color(theme.muted).child(hint))
 }
+
+fn theme_label(name: &str) -> &'static str {
+    match name {
+        "graphite" => "그래파이트",
+        "paper" => "페이퍼",
+        "forest" => "포레스트",
+        "indigo" => "인디고",
+        "acorn" => "도토리",
+        _ => "테마",
+    }
+}
+
+#[cfg(test)]
+#[path = "settings.test.rs"]
+mod tests;
