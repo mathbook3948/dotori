@@ -33,19 +33,19 @@ impl AgentState {
     /// Resumes a conversation loaded from the raw record. Threads are interned again in
     /// arrival order, so every recorded `ThreadRef` points at the same place, and recent
     /// message ids are seen again. Work this PC started that was running when it stopped never
-    /// returns, so it gets a result that says so, appended after the loaded entries. `here` says,
-    /// entry by entry, whether this PC made it; work another PC started is left for that PC.
+    /// returns, so it gets a result that says so, appended after the loaded entries. Each entry
+    /// comes with whether this PC made it; work another PC started, and results another PC
+    /// recorded, are left to that PC.
     pub(crate) fn resume(
         wiring: Wiring,
         seen_capacity: NonZeroUsize,
-        conversation: Vec<Entry>,
-        here: Vec<bool>,
+        marked: Vec<(Entry, bool)>,
     ) -> Self {
         let mut state = Self::new(wiring, seen_capacity);
         let mut tools = Vec::new();
         let mut delegated = Vec::new();
-        for (n, entry) in conversation.iter().enumerate() {
-            let mine = here.get(n).copied().unwrap_or(true);
+        for (entry, mine) in &marked {
+            let mine = *mine;
             match entry {
                 Entry::Heard { message, .. } => {
                     state.threads.intern(message.address.clone());
@@ -63,8 +63,10 @@ impl AgentState {
                         }
                     }
                 }
-                Entry::ToolReturned { call, .. } => tools.retain(|running| running != call),
-                Entry::SubSessionReturned { spec, .. } => {
+                Entry::ToolReturned { call, .. } if mine => {
+                    tools.retain(|running| running != call);
+                }
+                Entry::SubSessionReturned { spec, .. } if mine => {
                     if let Some(index) = delegated.iter().position(|running| running == spec) {
                         delegated.remove(index);
                     }
@@ -72,7 +74,7 @@ impl AgentState {
                 _ => {}
             }
         }
-        state.conversation = conversation;
+        state.conversation = marked.into_iter().map(|(entry, _)| entry).collect();
         let stopped = String::from("stopped by a restart");
         for call in tools {
             state.conversation.push(Entry::ToolReturned {

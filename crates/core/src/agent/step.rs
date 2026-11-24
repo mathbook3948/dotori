@@ -154,7 +154,7 @@ fn on_tool_done(
         .push(Entry::ToolReturned { call, result });
     match (&state.phase, done) {
         (Phase::UsingTools { .. }, true) => vec![call_model(state)],
-        (Phase::Stopping { .. }, true) => vec![Effect::Stop],
+        (Phase::Stopping { .. }, true) => vec![stop(state)],
         _ => Vec::new(),
     }
 }
@@ -217,8 +217,7 @@ fn on_channel_ended(
     Vec::new()
 }
 
-fn on_shutdown(state: &mut AgentState) -> Vec<Effect> {
-    let mut effects = Vec::new();
+fn stop(state: &mut AgentState) -> Effect {
     let mut stopped: Vec<(SubSessionId, SubSessionSpec)> = state.sub_sessions.drain().collect();
     stopped.sort_by_key(|(id, _)| *id);
     for (_, spec) in stopped {
@@ -229,6 +228,11 @@ fn on_shutdown(state: &mut AgentState) -> Vec<Effect> {
             )),
         });
     }
+    Effect::Stop
+}
+
+fn on_shutdown(state: &mut AgentState) -> Vec<Effect> {
+    let mut effects = Vec::new();
     let waiting = match mem::replace(&mut state.phase, Phase::Idle) {
         Phase::Idle => HashMap::new(),
         Phase::Thinking { call, .. } => {
@@ -242,7 +246,7 @@ fn on_shutdown(state: &mut AgentState) -> Vec<Effect> {
         }
     };
     if waiting.is_empty() {
-        effects.push(Effect::Stop);
+        effects.push(stop(state));
     }
     state.phase = Phase::Stopping { waiting };
     effects

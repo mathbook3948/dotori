@@ -32,12 +32,11 @@ impl Agent {
             .unwrap_or_else(|detail| Err(RecordError { detail }))
             .map_err(SpawnError::Load)?;
         let loaded = records.len();
-        let here = records.iter().map(|marked| marked.here).collect();
-        let conversation = records
+        let marked = records
             .into_iter()
-            .map(|marked| marked.record.entry)
+            .map(|marked| (marked.record.entry, marked.here))
             .collect();
-        let state = AgentState::resume(wiring, config.seen_capacity, conversation, here);
+        let state = AgentState::resume(wiring, config.seen_capacity, marked);
         let (tx, rx) = mpsc::channel(config.queue_capacity.get());
         let shell = Shell::start(rx, tx.clone(), ports, config.tool_timeout);
         shell.record(&state.conversation[loaded..]);
