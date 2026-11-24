@@ -31,15 +31,26 @@ A value that is not a token is a new token: add it to `DESIGN.md` first, in ever
 
 ## 4. Look at the real window
 
-Run it, do not trust the code. In a container without a screen:
+Run it, do not trust the code. `demo.sh` next to this file drives the real windows on a virtual screen with the fake model the end-to-end test uses, so the conversation is the same every time: a reminder that sets a routine, a list of the week, and a shell command that waits for the owner.
 
-1. Start Xvfb and a window manager, for example `Xvfb :97 -screen 0 1280x900x24` and `DISPLAY=:97 openbox`.
-2. Make a fresh `DOTORI_HOME` in the scratchpad whose `settings.toml` points the model at a local fake OpenAI-compatible server that answers with a fixed conversation: a reminder, a list, a tool call and a shell command, which always asks the owner first.
-3. Start `dotori daemon` with `DISPLAY` unset, so it runs without a tray.
-4. Send the messages with `dotori chat`, keeping its input open until the replies came back, for example `(echo 안녕; sleep 5) | dotori chat`.
-5. Open `dotori window` on the display, then save it with `xdotool search --name '^dotori$'` and `import -window <id> -frame <file>.png`. Set `DOTORI_THEME=light` or `dark` for each look.
+```bash
+home=<scratchpad>/demo-home
+bash .claude/skills/gpui-design/demo.sh start "$home"
+bash .claude/skills/gpui-design/demo.sh talk "$home"
+bash .claude/skills/gpui-design/demo.sh shot "$home" "$home/light.png" light
+bash .claude/skills/gpui-design/demo.sh shot "$home" "$home/dark.png" dark
+bash .claude/skills/gpui-design/demo.sh stop "$home"
+```
 
-Take every theme that exists in both looks. Read each screenshot yourself. For motion, take a few screenshots a few frames apart while it runs, and check that each shows a step between the start and the end.
+`talk` takes your own messages too. `shot ... light 5` saves five frames a few milliseconds apart, for checking that motion shows steps between its start and its end.
+
+Take every theme that exists in both looks. Read each screenshot yourself.
+
+## 4a. Test what it does
+
+- A window's behavior is tested with GPUI's test platform in its `<name>.test.rs`: open the view with fake `Link` and `ScreenLink` channels, type with `simulate_input` and `simulate_keystrokes`, click an element found by its `debug_selector` with `simulate_click`, and assert what the window sent and what it holds. `crates/app/src/window/chat.test.rs` shows the pattern.
+- Give each control a test needs a `debug_selector`. It costs nothing outside tests.
+- `crates/app/tests/e2e.rs` runs the real daemon against the fake model in `crates/app/tests/support/model.rs`. When a change touches what the daemon sends the windows, extend it.
 
 ## 5. Critique, then fix
 

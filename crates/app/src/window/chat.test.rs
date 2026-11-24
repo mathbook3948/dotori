@@ -1,3 +1,7 @@
+use gpui::Modifiers;
+use gpui::TestAppContext;
+use gpui::VisualTestContext;
+
 use super::*;
 
 #[test]
@@ -90,4 +94,113 @@ fn a_shell_result_splits_into_how_it_ended_and_what_it_printed() {
     );
 
     assert!(shell_shown(true, "sent to team@example.com").is_none());
+}
+
+struct Wired {
+    updates: mpsc::UnboundedSender<Update>,
+    said: mpsc::UnboundedReceiver<FromWindow>,
+}
+
+fn open(cx: &mut TestAppContext) -> (Entity<ChatView>, &mut VisualTestContext, Wired) {
+    let (updates_tx, updates) = mpsc::unbounded_channel();
+    let (say, said) = mpsc::unbounded_channel();
+    let (_shown, seen) = mpsc::unbounded_channel();
+    let (send, _sent) = mpsc::unbounded_channel();
+    cx.update(|cx| cx.bind_keys(crate::window::input::bindings()));
+    let (view, cx) = cx.add_window_view(|_, cx| {
+        ChatView::new(Link { updates, say }, ScreenLink { seen, send }, cx)
+    });
+    (
+        view,
+        cx,
+        Wired {
+            updates: updates_tx,
+            said,
+        },
+    )
+}
+
+fn type_and_send(view: &Entity<ChatView>, cx: &mut VisualTestContext, text: &str) {
+    cx.update(|window, cx| {
+        let field = view.read(cx).input.focus_handle(cx);
+        window.focus(&field);
+    });
+    cx.simulate_input(text);
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+}
+
+fn click(cx: &mut VisualTestContext, selector: &'static str) {
+    let bounds = cx
+        .debug_bounds(selector)
+        .unwrap_or_else(|| panic!("{selector} is drawn"));
+    cx.simulate_click(bounds.center(), Modifiers::none());
+    cx.run_until_parked();
+}
+
+#[gpui::test]
+fn enter_sends_what_the_owner_typed_and_clears_the_field(cx: &mut TestAppContext) {
+    let (view, cx, mut wired) = open(cx);
+    wired.updates.send(Update::Connected).expect("sent");
+    cx.run_until_parked();
+
+    type_and_send(&view, cx, "안녕");
+
+    assert_eq!(
+        wired.said.try_recv().ok(),
+        Some(FromWindow::Say {
+            text: String::from("안녕")
+        })
+    );
+    view.read_with(cx, |view, cx| assert_eq!(view.input.read(cx).text(), ""));
+}
+
+#[gpui::test]
+fn nothing_is_sent_before_the_window_reaches_dotori(cx: &mut TestAppContext) {
+    let (view, cx, mut wired) = open(cx);
+
+    type_and_send(&view, cx, "안녕");
+
+    assert!(wired.said.try_recv().is_err());
+    view.read_with(cx, |view, cx| {
+        assert_eq!(view.input.read(cx).text(), "안녕")
+    });
+}
+
+#[gpui::test]
+fn the_owner_allows_or_declines_a_call_from_its_card(cx: &mut TestAppContext) {
+    let (view, cx, mut wired) = open(cx);
+    wired.updates.send(Update::Connected).expect("sent");
+    for id in [7, 8] {
+        wired
+            .updates
+            .send(Update::Event(ToWindow::Ask {
+                id,
+                tool: String::from("run_shell"),
+                input: String::from(r#"{"command":"ls"}"#),
+                at: 0,
+            }))
+            .expect("sent");
+    }
+    cx.run_until_parked();
+
+    click(cx, "allow-7");
+    click(cx, "decline-8");
+
+    assert_eq!(
+        wired.said.try_recv().ok(),
+        Some(FromWindow::Decide { id: 7, ok: true })
+    );
+    assert_eq!(
+        wired.said.try_recv().ok(),
+        Some(FromWindow::Decide { id: 8, ok: false })
+    );
+    wired
+        .updates
+        .send(Update::Event(ToWindow::Decided { id: 7, ok: true }))
+        .expect("sent");
+    cx.run_until_parked();
+    view.read_with(cx, |view, _| {
+        assert_eq!(view.decided.get(&7), Some(&Some(true)));
+    });
 }

@@ -468,6 +468,7 @@ impl ChatView {
             let main = ok;
             div()
                 .id(SharedString::from(format!("{key}-{id}")))
+                .debug_selector(|| format!("{key}-{id}"))
                 .px_4()
                 .py_1p5()
                 .rounded_lg()
