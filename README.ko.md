@@ -1,9 +1,4 @@
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset=".github/assets/logo-dark.svg">
-  <img src=".github/assets/logo.svg" alt="dotori 로고. 도토리" width="96" align="right">
-</picture>
-
-# dotori
+# <picture><source media="(prefers-color-scheme: dark)" srcset=".github/assets/logo-dark.svg"><img src=".github/assets/logo.svg" alt="" width="48" align="absmiddle"></picture> dotori
 
 [![CI](https://github.com/mathbook3948/dotori/actions/workflows/check.yml/badge.svg)](https://github.com/mathbook3948/dotori/actions/workflows/check.yml)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#라이선스)
