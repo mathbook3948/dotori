@@ -29,9 +29,12 @@ use gpui::Focusable;
 use gpui::KeyBinding;
 use gpui::SharedString;
 use gpui::TitlebarOptions;
+use gpui::WindowBackgroundAppearance;
 use gpui::WindowBounds;
+use gpui::WindowDecorations;
 use gpui::WindowOptions;
 use gpui::actions;
+use gpui::point;
 use gpui::px;
 use gpui::size;
 
@@ -76,13 +79,21 @@ pub(crate) fn run(home: Home, which: Which) -> Result<(), String> {
                 Which::Settings => ("dotori 설정", 520., 640.),
             };
             let bounds = Bounds::centered(None, size(px(wide), px(tall)), cx);
+            let glass = matches!(which, Which::Chat);
             let options = WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 window_min_size: Some(size(px(360.), px(420.))),
                 titlebar: Some(TitlebarOptions {
                     title: Some(SharedString::new_static(title)),
-                    ..TitlebarOptions::default()
+                    appears_transparent: glass,
+                    traffic_light_position: glass.then(|| point(px(16.), px(12.))),
                 }),
+                window_background: if glass && theme::SEE_THROUGH {
+                    WindowBackgroundAppearance::Blurred
+                } else {
+                    WindowBackgroundAppearance::Opaque
+                },
+                window_decorations: glass.then_some(WindowDecorations::Client),
                 app_id: Some(String::from("dotori")),
                 ..WindowOptions::default()
             };

@@ -14,6 +14,7 @@ use gpui::App;
 use gpui::ClickEvent;
 use gpui::ClipboardItem;
 use gpui::Context;
+use gpui::Decorations;
 use gpui::Div;
 use gpui::Entity;
 use gpui::FocusHandle;
@@ -21,16 +22,23 @@ use gpui::Focusable;
 use gpui::FontWeight;
 use gpui::ImageSource;
 use gpui::MouseButton;
+use gpui::MouseDownEvent;
 use gpui::ObjectFit;
 use gpui::Pixels;
+use gpui::Point;
 use gpui::RenderImage;
+use gpui::ResizeEdge;
 use gpui::ScrollHandle;
 use gpui::ScrollWheelEvent;
 use gpui::SharedString;
+use gpui::Size;
+use gpui::Stateful;
 use gpui::StyleRefinement;
 use gpui::Task;
+use gpui::Tiling;
 use gpui::WeakEntity;
 use gpui::Window;
+use gpui::WindowControlArea;
 use gpui::WindowHandle;
 use gpui::div;
 use gpui::img;
@@ -55,6 +63,9 @@ use crate::window::motion::MESSAGE_ENTER;
 use crate::window::motion::RISE;
 use crate::window::motion::WORKING;
 use crate::window::motion::breath;
+use crate::window::parts::CLOSE_ICON;
+use crate::window::parts::MAXIMIZE_ICON;
+use crate::window::parts::MINIMIZE_ICON;
 use crate::window::parts::MONO;
 use crate::window::parts::SETTINGS_ICON;
 use crate::window::parts::logo;
@@ -70,6 +81,9 @@ const COPIED_FOR: Duration = Duration::from_millis(1500);
 const SHOWN_VALUE: usize = 600;
 const BOTTOM_SLACK: f32 = 8.;
 const TURN_SPACE: f32 = 18.;
+const RESIZE_MARGIN: f32 = 6.;
+const TOP_LEFT: f32 = if cfg!(target_os = "macos") { 80. } else { 12. };
+const TOP_HEIGHT: f32 = if cfg!(target_os = "macos") { 40. } else { 52. };
 const PREVIEW_EVERY: Duration = Duration::from_millis(500);
 const EDGE: f32 = 20.;
 const WORKING_ROW: f32 = 20.;
@@ -468,6 +482,9 @@ impl ChatView {
                         .py_2()
                         .rounded_2xl()
                         .bg(theme.bubble)
+                        .border_t_1()
+                        .border_color(theme.rim)
+                        .shadow_xs()
                         .text_color(theme.text)
                         .child(prose(text)),
                 )
@@ -613,6 +630,9 @@ impl ChatView {
                             .py_2()
                             .rounded_xl()
                             .bg(theme.surface)
+                            .border_t_1()
+                            .border_color(theme.rim)
+                            .shadow_xs()
                             .children(pill)
                             .when(!body.trim().is_empty(), |line| line.child(prose(&body)))
                             .children(streams),
@@ -659,6 +679,8 @@ impl ChatView {
                 .when(!ok, |button| {
                     button
                         .bg(theme.surface)
+                        .border_t_1()
+                        .border_color(theme.rim)
                         .text_color(theme.text)
                         .hover(|button| button.bg(theme.bubble))
                 })
@@ -727,6 +749,9 @@ impl ChatView {
                 .py_3()
                 .rounded_xl()
                 .bg(fill)
+                .border_t_1()
+                .border_color(theme.rim)
+                .shadow_sm()
                 .child(
                     div()
                         .flex()
@@ -983,6 +1008,8 @@ impl ChatView {
                 .when(!primary, |button| {
                     button
                         .bg(theme.surface)
+                        .border_t_1()
+                        .border_color(theme.rim)
                         .text_color(theme.text)
                         .hover(|button| button.bg(theme.bubble))
                 })
@@ -998,6 +1025,9 @@ impl ChatView {
                 .mb(px(TURN_SPACE))
                 .rounded_xl()
                 .bg(fill)
+                .border_t_1()
+                .border_color(theme.rim)
+                .shadow_sm()
         };
         let title = |words: SharedString| div().font_weight(FontWeight::SEMIBOLD).child(words);
         if opened {
@@ -1206,11 +1236,8 @@ impl ChatView {
         div()
             .flex_none()
             .px_4()
-            .pt_3()
+            .pt_2()
             .pb_3()
-            .bg(theme.raised)
-            .border_t_1()
-            .border_color(theme.line)
             .child(
                 div()
                     .id("composer")
@@ -1220,9 +1247,11 @@ impl ChatView {
                     .pl_4()
                     .pr_1p5()
                     .py_1p5()
-                    .rounded(px(18.))
+                    .rounded_full()
                     .bg(theme.surface)
-                    .shadow_sm()
+                    .border_t_1()
+                    .border_color(theme.rim)
+                    .shadow_md()
                     .cursor_text()
                     .on_mouse_down(MouseButton::Left, move |_, window, _| {
                         window.focus(&focus);
@@ -1277,7 +1306,7 @@ impl Focusable for ChatView {
 
 impl Render for ChatView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = Theme::of(window);
+        let theme = Theme::of(window).glass();
         self.entered
             .retain(|_, at| MESSAGE_ENTER.moving(at.elapsed()));
         let following = self.step_follow();
@@ -1301,6 +1330,12 @@ impl Render for ChatView {
                         .child(detail)
                 }))
         });
+        let tiling = match window.window_decorations() {
+            Decorations::Client { tiling } => Some(tiling),
+            Decorations::Server => None,
+        };
+        let drawn = tiling.is_some();
+        let tiling = tiling.unwrap_or_default();
         let working_at = if self.shows_working() {
             if self.scroll.bounds_for_item(0).is_none() {
                 window.request_animation_frame();
@@ -1318,17 +1353,59 @@ impl Render for ChatView {
             .text_sm()
             .line_height(px(21.))
             .on_action(cx.listener(Self::submit))
+            .when(drawn, |root| {
+                root.on_mouse_down(
+                    MouseButton::Left,
+                    move |event: &MouseDownEvent, window, cx| {
+                        if let Some(edge) =
+                            resize_edge(event.position, window.viewport_size(), tiling)
+                        {
+                            window.start_window_resize(edge);
+                            cx.stop_propagation();
+                        }
+                    },
+                )
+            })
             .child(
                 div()
-                    .flex()
                     .flex_none()
-                    .items_center()
-                    .gap_3()
-                    .h(px(52.))
-                    .pl(px(EDGE))
-                    .pr(px(12.))
-                    .child(div().flex_1().min_w_0().children(notice))
-                    .child(settings_button(&theme)),
+                    .h(px(TOP_HEIGHT))
+                    .when(!cfg!(target_os = "macos"), |top| top.pt(px(RESIZE_MARGIN)))
+                    .child(
+                        div()
+                            .id("top")
+                            .size_full()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .pl(px(TOP_LEFT))
+                            .pr(px(12.))
+                            .window_control_area(WindowControlArea::Drag)
+                            .when(drawn, |top| {
+                                top.on_mouse_down(
+                                    MouseButton::Left,
+                                    move |event: &MouseDownEvent, window, _| {
+                                        let at = (event.position, window.viewport_size());
+                                        if resize_edge(at.0, at.1, tiling).is_none() {
+                                            window.start_window_move();
+                                        }
+                                    },
+                                )
+                            })
+                            .on_click(move |event: &ClickEvent, window, _| {
+                                if event.click_count() != 2 {
+                                    return;
+                                }
+                                if cfg!(target_os = "macos") {
+                                    window.titlebar_double_click();
+                                } else if drawn {
+                                    window.zoom_window();
+                                }
+                            })
+                            .child(settings_button(&theme))
+                            .child(div().flex_1().min_w_0().children(notice))
+                            .children(window_buttons(&theme, drawn)),
+                    ),
             )
             .child(
                 div()
@@ -1351,19 +1428,27 @@ impl Render for ChatView {
     }
 }
 
-fn settings_button(theme: &Theme) -> impl IntoElement {
+fn round_button(id: &'static str, theme: &Theme) -> Stateful<Div> {
     div()
-        .id("settings")
-        .debug_selector(|| String::from("settings"))
+        .id(id)
+        .debug_selector(move || id.to_owned())
         .flex()
+        .flex_none()
         .items_center()
         .justify_center()
         .size(px(36.))
         .rounded_full()
         .bg(theme.surface)
-        .shadow_xs()
+        .border_t_1()
+        .border_color(theme.rim)
+        .shadow_sm()
         .cursor_pointer()
         .hover(|button| button.bg(theme.bubble))
+}
+
+fn settings_button(theme: &Theme) -> impl IntoElement {
+    round_button("settings", theme)
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .child(
             svg()
                 .path(SETTINGS_ICON)
@@ -1371,6 +1456,55 @@ fn settings_button(theme: &Theme) -> impl IntoElement {
                 .text_color(theme.muted),
         )
         .on_click(|_, _, _| crate::tray::open("settings"))
+}
+
+fn window_buttons(theme: &Theme, drawn: bool) -> Vec<AnyElement> {
+    let buttons = [
+        ("minimize", MINIMIZE_ICON, WindowControlArea::Min),
+        ("maximize", MAXIMIZE_ICON, WindowControlArea::Max),
+        ("close", CLOSE_ICON, WindowControlArea::Close),
+    ];
+    let native = cfg!(target_os = "windows");
+    if !native && !drawn {
+        return Vec::new();
+    }
+    buttons
+        .into_iter()
+        .map(|(id, icon, area)| {
+            let button = round_button(id, theme)
+                .child(svg().path(icon).size(px(16.)).text_color(theme.muted));
+            if native {
+                return button.window_control_area(area).into_any_element();
+            }
+            button
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(move |_, window, _| match area {
+                    WindowControlArea::Min => window.minimize_window(),
+                    WindowControlArea::Max => window.zoom_window(),
+                    _ => window.remove_window(),
+                })
+                .into_any_element()
+        })
+        .collect()
+}
+
+fn resize_edge(at: Point<Pixels>, size: Size<Pixels>, tiling: Tiling) -> Option<ResizeEdge> {
+    let near = px(RESIZE_MARGIN);
+    let left = !tiling.left && at.x < near;
+    let right = !tiling.right && at.x > size.width - near;
+    let top = !tiling.top && at.y < near;
+    let bottom = !tiling.bottom && at.y > size.height - near;
+    match (top, bottom, left, right) {
+        (true, _, true, _) => Some(ResizeEdge::TopLeft),
+        (true, _, _, true) => Some(ResizeEdge::TopRight),
+        (_, true, true, _) => Some(ResizeEdge::BottomLeft),
+        (_, true, _, true) => Some(ResizeEdge::BottomRight),
+        (true, _, _, _) => Some(ResizeEdge::Top),
+        (_, true, _, _) => Some(ResizeEdge::Bottom),
+        (_, _, true, _) => Some(ResizeEdge::Left),
+        (_, _, _, true) => Some(ResizeEdge::Right),
+        _ => None,
+    }
 }
 
 fn entering(row: Div, progress: f32) -> Div {
@@ -1428,7 +1562,7 @@ struct Rows {
 
 impl Render for Rows {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = Theme::of(window);
+        let theme = Theme::of(window).glass();
         self.chat
             .update(cx, |chat, cx| chat.pane(&theme, window, cx))
             .unwrap_or_else(|_| div().into_any_element())
@@ -1439,7 +1573,7 @@ struct WorkingView;
 
 impl Render for WorkingView {
     fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        let theme = Theme::of(window);
+        let theme = Theme::of(window).glass();
         div()
             .flex()
             .items_center()

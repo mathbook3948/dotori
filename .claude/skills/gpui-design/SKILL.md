@@ -27,7 +27,7 @@ A value that is not a token is a new token: add it to `DESIGN.md` first, in ever
 - Colors come only from `Theme`, whose fields follow the color tokens. Fields that still carry older names, such as `accent` for `primary`, are renamed by the change that moves a window. Sizes, radii and gaps use the token values, never a size that is not in `DESIGN.md`.
 - Motion uses GPUI's `with_animation` with the duration of the `motion` token. `ease-out` is `ease_out_quint()` (a constructor you call) and `ease-in-out` is `ease_in_out`. Nothing bounces.
 - A state that waits on a disk or the network is drawn at once as waiting, and the work runs off the drawing thread.
-- No status dots, no borders on cards or buttons, no gradients, glass, glows, sparkles or emoji icons, no colored side stripes.
+- No status dots, no borders around cards or buttons (a `rim` on the top edge of a glass surface is the exception), no gradients, glows, sparkles or emoji icons, no colored side stripes. Glass is the chat window's material as DESIGN.md's Elevation & Depth says: the canvas lets the blur through, fills stay solid.
 
 ## 4. Look at the real window
 
