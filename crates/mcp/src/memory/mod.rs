@@ -4,6 +4,7 @@
 mod analyzer;
 mod dictionary;
 mod embedding;
+mod eval;
 mod vectors;
 
 use std::path::Path;
@@ -28,6 +29,11 @@ use crate::ToolFuture;
 use analyzer::Analyzer;
 use embedding::Embedder;
 pub use embedding::EmbeddingConfig;
+pub use eval::Case;
+pub use eval::HITS;
+pub use eval::Method;
+pub use eval::Report;
+pub use eval::Score;
 use vectors::Vectors;
 
 const BATCH: i64 = 1000;
@@ -221,13 +227,13 @@ impl Memory {
         })]
     }
 
-    fn search(
+    fn ranked(
         &self,
+        state: &mut State,
         query: &str,
         limit: u64,
         meaning: Option<Result<Vec<f32>, String>>,
-    ) -> Result<String, String> {
-        let mut state = self.lock();
+    ) -> Result<Option<Ranked>, String> {
         if matches!(state.analyzer, Analyzer::Plain)
             && !state.dictionary_failed
             && dictionary::ready(&self.config.dictionaries)
@@ -240,13 +246,13 @@ impl Memory {
                 }
             }
         }
-        self.opened(&mut state)?;
+        self.opened(state)?;
         let State {
             index,
             analyzer,
             vectors,
             ..
-        } = &mut *state;
+        } = state;
         let index = index.as_mut().ok_or("no index")?;
         catch_up(index, &self.config.record, analyzer)
             .map_err(|error| format!("the search index could not catch up: {error}"))?;
@@ -254,7 +260,7 @@ impl Memory {
             .query_row("SELECT count(*) FROM docs", [], |row| row.get(0))
             .map_err(|error| error.to_string())?;
         if indexed == 0 {
-            return Ok(String::from("Nothing is recorded yet."));
+            return Ok(None);
         }
         let terms = analyzer.terms(query);
         let mut note = None;
@@ -310,6 +316,29 @@ impl Memory {
                 })
                 .map_err(|error| error.to_string())?
         };
+        Ok(Some(Ranked {
+            by_words,
+            by_meaning,
+            note,
+        }))
+    }
+
+    fn search(
+        &self,
+        query: &str,
+        limit: u64,
+        meaning: Option<Result<Vec<f32>, String>>,
+    ) -> Result<String, String> {
+        let mut state = self.lock();
+        let Some(Ranked {
+            by_words,
+            by_meaning,
+            note,
+        }) = self.ranked(&mut state, query, limit, meaning)?
+        else {
+            return Ok(String::from("Nothing is recorded yet."));
+        };
+        let index = state.index.as_mut().ok_or("no index")?;
         let count = usize::try_from(limit).unwrap_or(MAX_LIMIT as usize);
         let seqs = match by_meaning {
             Some(by_meaning) => vectors::fuse(&[by_words, by_meaning], count),
@@ -399,6 +428,12 @@ async fn fill(memory: Weak<Memory>) {
         drop(strong);
         tokio::time::sleep(pause).await;
     }
+}
+
+struct Ranked {
+    by_words: Vec<i64>,
+    by_meaning: Option<Vec<i64>>,
+    note: Option<String>,
 }
 
 struct Hit {
