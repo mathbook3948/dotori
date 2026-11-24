@@ -324,3 +324,44 @@ fn saving_some_sections_keeps_the_owners_comments_and_the_rest_of_the_file() {
     assert!(!text.contains("[memory]"), "{text}");
     assert_eq!(Settings::load(&path).expect("read back"), settings);
 }
+
+#[test]
+fn the_slack_form_turns_into_a_section_or_none() {
+    let off = SlackForm::default();
+    assert_eq!(off.settings(), Ok(None));
+
+    let on = SlackForm {
+        on: true,
+        owner: Some(String::from("U012AB3CD")),
+        app_token_env: None,
+        bot_token_env: Some(String::from("MY_BOT")),
+    };
+    let section = on.settings().expect("valid").expect("on");
+    assert_eq!(section.owner.as_deref(), Some("U012AB3CD"));
+    assert_eq!(section.bot_token_env.as_deref(), Some("MY_BOT"));
+    assert_eq!(SlackForm::of(Some(&section)), on);
+    assert_eq!(SlackForm::of(None), off);
+}
+
+#[test]
+fn the_slack_form_refuses_a_missing_owner_and_a_pasted_token() {
+    let mut form = SlackForm {
+        on: true,
+        ..SlackForm::default()
+    };
+    assert!(form.settings().is_err());
+    form.owner = Some(String::from("someone"));
+    assert!(form.settings().is_err());
+    form.owner = Some(String::from("u012ab3cd"));
+    assert_eq!(
+        form.settings()
+            .expect("valid")
+            .expect("on")
+            .owner
+            .as_deref(),
+        Some("U012AB3CD")
+    );
+    form.app_token_env = Some(String::from("xapp-1-A0-123-abc"));
+    let refused = form.settings().expect_err("a token is not a name");
+    assert!(refused.contains("환경 변수"), "{refused}");
+}

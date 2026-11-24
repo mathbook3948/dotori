@@ -25,8 +25,10 @@ use serde::Serialize;
 use crate::replace::replace;
 
 const ANTHROPIC_KEY: &str = "ANTHROPIC_API_KEY";
-const SLACK_APP_KEY: &str = "SLACK_APP_TOKEN";
-const SLACK_BOT_KEY: &str = "SLACK_BOT_TOKEN";
+/// Where the Slack app token is when the settings do not say.
+pub(crate) const SLACK_APP_KEY: &str = "SLACK_APP_TOKEN";
+/// Where the Slack bot token is when the settings do not say.
+pub(crate) const SLACK_BOT_KEY: &str = "SLACK_BOT_TOKEN";
 
 /// What the user sets in `settings.toml`. A missing file means every default.
 /// Keys never live in the file. It names the environment variable that holds each key.
@@ -180,6 +182,71 @@ impl Default for ModelSettings {
             max_tokens: None,
             effort: None,
         }
+    }
+}
+
+/// The Slack part of the settings window, each field already trimmed. A blank variable name
+/// means the default one.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct SlackForm {
+    pub(crate) on: bool,
+    pub(crate) owner: Option<String>,
+    pub(crate) app_token_env: Option<String>,
+    pub(crate) bot_token_env: Option<String>,
+}
+
+impl SlackForm {
+    pub(crate) fn of(slack: Option<&SlackSettings>) -> Self {
+        match slack {
+            Some(slack) => Self {
+                on: true,
+                owner: slack.owner.clone(),
+                app_token_env: slack.app_token_env.clone(),
+                bot_token_env: slack.bot_token_env.clone(),
+            },
+            None => Self::default(),
+        }
+    }
+
+    /// The `[slack]` section this form asks for, or `None` when Slack is off.
+    pub(crate) fn settings(&self) -> Result<Option<SlackSettings>, String> {
+        if !self.on {
+            return Ok(None);
+        }
+        let owner = self
+            .owner
+            .as_deref()
+            .map(str::to_ascii_uppercase)
+            .ok_or("Slack을 쓰려면 내 Slack 멤버 ID를 적어 주세요")?;
+        if !(owner.starts_with('U') || owner.starts_with('W'))
+            || owner.len() < 3
+            || !owner
+                .chars()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+        {
+            return Err(String::from(
+                "Slack 멤버 ID는 U012AB3CD처럼 U나 W로 시작하는 대문자와 숫자예요",
+            ));
+        }
+        for name in [&self.app_token_env, &self.bot_token_env]
+            .into_iter()
+            .flatten()
+        {
+            let mut chars = name.chars();
+            let first = chars
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic() || c == '_');
+            if !first || !chars.all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                return Err(format!(
+                    "`{name}`은 환경 변수 이름이 아니에요. 토큰은 여기 말고 환경 변수에 넣어 주세요"
+                ));
+            }
+        }
+        Ok(Some(SlackSettings {
+            app_token_env: self.app_token_env.clone(),
+            bot_token_env: self.bot_token_env.clone(),
+            owner: Some(owner),
+        }))
     }
 }
 
