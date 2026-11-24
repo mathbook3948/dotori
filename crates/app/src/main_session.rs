@@ -194,6 +194,10 @@ impl AppWindow for AgentApp {
     fn show(&self, traffic: Traffic) -> BoxFuture<'_, Result<(), ChannelError>> {
         self.app.show(traffic)
     }
+
+    fn working(&self, busy: bool) {
+        self.app.working(busy);
+    }
 }
 
 /// A channel that sends only while this PC still runs the main session.
@@ -279,6 +283,14 @@ pub(crate) async fn hear(linked: &Linked, app: &AppChannel, route: &Route, heard
             }
             true
         }
+        Some("working") => {
+            if !linked.runs_main()
+                && let Some(busy) = heard.message.get("busy").and_then(Value::as_bool)
+            {
+                app.working(busy);
+            }
+            true
+        }
         Some("window") => {
             let from_here =
                 heard.message.get("origin").and_then(Value::as_str) == Some(linked.own.as_str());
@@ -297,19 +309,31 @@ pub(crate) async fn hear(linked: &Linked, app: &AppChannel, route: &Route, heard
 /// Sends what the windows here show to the other PCs while this PC runs the main session.
 pub(crate) async fn mirror(linked: Linked, app: Arc<AppChannel>) {
     let mut published = app.published();
+    let mut working = app.working_changes();
     loop {
-        match published.recv().await {
-            Ok(published) => {
+        tokio::select! {
+            got = published.recv() => match got {
+                Ok(published) => {
+                    if linked.runs_main() {
+                        linked.hub.broadcast(&json!({
+                            "kind": "window",
+                            "line": published.line,
+                            "origin": published.origin,
+                        }));
+                    }
+                }
+                Err(RecvError::Lagged(_)) => {}
+                Err(RecvError::Closed) => return,
+            },
+            changed = working.changed() => {
+                if changed.is_err() {
+                    return;
+                }
+                let busy = *working.borrow_and_update();
                 if linked.runs_main() {
-                    linked.hub.broadcast(&json!({
-                        "kind": "window",
-                        "line": published.line,
-                        "origin": published.origin,
-                    }));
+                    linked.hub.broadcast(&json!({ "kind": "working", "busy": busy }));
                 }
             }
-            Err(RecvError::Lagged(_)) => {}
-            Err(RecvError::Closed) => return,
         }
     }
 }

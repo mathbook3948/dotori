@@ -1,5 +1,5 @@
 //! When each line of the conversation was said, as the owner reads it: a line between days, and
-//! the time under the last of the lines one speaker said in the same minute.
+//! the time of each line, which shows while the pointer rests on it.
 
 use dotori_connectors::channel::app::ToWindow;
 use jiff::Timestamp;
@@ -13,62 +13,38 @@ use jiff::tz::TimeZone;
 pub(crate) struct Mark {
     /// The day, shown above the line when it is the first of that day.
     pub(crate) day: Option<String>,
-    /// The time, shown with the line when it ends what its speaker said in that minute.
+    /// The time the line was said, when it is known.
     pub(crate) time: Option<String>,
-}
-
-#[derive(PartialEq)]
-enum Speaker {
-    Owner,
-    Dotori,
-    Elsewhere,
 }
 
 /// The marks for every line, in order, read in `zone` on the day `today`.
 pub(crate) fn marks(lines: &[ToWindow], zone: &TimeZone, today: Date) -> Vec<Mark> {
-    let said: Vec<Option<(Speaker, ZonedDateTime)>> = lines
+    let mut last_day = None;
+    lines
         .iter()
         .map(|line| {
-            let (speaker, at) = match line {
-                ToWindow::Owner { at, .. } => (Speaker::Owner, *at),
-                ToWindow::Reply { at, .. } => (Speaker::Dotori, *at),
-                ToWindow::Traffic { at, .. } | ToWindow::Ask { at, .. } => {
-                    (Speaker::Elsewhere, *at)
-                }
+            let at = match line {
+                ToWindow::Owner { at, .. }
+                | ToWindow::Reply { at, .. }
+                | ToWindow::Traffic { at, .. }
+                | ToWindow::Ask { at, .. } => *at,
                 ToWindow::Answering { .. }
                 | ToWindow::Alone
                 | ToWindow::BrowserAt { .. }
+                | ToWindow::Live
+                | ToWindow::Working { .. }
                 | ToWindow::Decided { .. }
-                | ToWindow::Lapsed { .. } => {
-                    return None;
-                }
+                | ToWindow::Lapsed { .. } => return Mark::default(),
             };
-            let local = local(at, zone)?;
-            Some((speaker, local))
-        })
-        .collect();
-    let mut last_day = None;
-    said.iter()
-        .enumerate()
-        .map(|(n, now)| {
-            let Some((speaker, at)) = now else {
+            let Some(at) = local(at, zone) else {
                 return Mark::default();
             };
             let date = at.date();
             let day = (last_day != Some(date)).then(|| day_name(date, today));
             last_day = Some(date);
-            let continued = speaker != &Speaker::Elsewhere
-                && said
-                    .get(n + 1)
-                    .and_then(Option::as_ref)
-                    .is_some_and(|(next, later)| {
-                        next == speaker
-                            && later.date() == date
-                            && (later.hour(), later.minute()) == (at.hour(), at.minute())
-                    });
             Mark {
                 day,
-                time: (!continued).then(|| clock(at)),
+                time: Some(clock(&at)),
             }
         })
         .collect()

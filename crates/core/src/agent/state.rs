@@ -117,6 +117,15 @@ impl AgentState {
     }
 }
 
+impl AgentState {
+    pub(crate) fn working(&self) -> bool {
+        matches!(
+            self.phase,
+            Phase::Thinking { .. } | Phase::UsingTools { .. }
+        )
+    }
+}
+
 pub(crate) enum Phase {
     Idle,
     Thinking {

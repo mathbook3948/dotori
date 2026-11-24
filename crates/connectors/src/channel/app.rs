@@ -120,6 +120,12 @@ pub enum ToWindow {
     /// Which of the owner's PCs holds the browser now. Sent only while PCs are linked, and never
     /// kept in the conversation.
     BrowserAt { pc: String, here: bool },
+    /// Everything before this came from the backlog, and what follows happens now. Sent once to
+    /// each window, so it can let new lines move in without moving the history.
+    Live,
+    /// Whether dotori is at work now, thinking or running tools. Sent to a window when it
+    /// connects and whenever it changes, and never kept in the conversation.
+    Working { busy: bool },
 }
 
 /// The app channel on the daemon's side. Windows connect over local TCP and prove themselves
@@ -138,6 +144,7 @@ struct Hub {
     next_id: AtomicU64,
     answering: watch::Sender<Option<String>>,
     browser: watch::Sender<Option<String>>,
+    working: watch::Sender<bool>,
     decisions: Mutex<Option<mpsc::UnboundedSender<(u64, bool)>>>,
 }
 
@@ -165,6 +172,7 @@ impl AppChannel {
                 next_id: AtomicU64::new(0),
                 answering: watch::channel(None).0,
                 browser: watch::channel(None).0,
+                working: watch::channel(false).0,
                 decisions: Mutex::new(None),
             }),
         };
@@ -187,14 +195,25 @@ impl AppChannel {
         self.hub.live.subscribe()
     }
 
-    /// Tells every window which PC answers now, or that no other PC is linked.
+    /// Whether dotori is at work, as windows are told it, from now on. The main session's PC
+    /// passes this to the other PCs.
+    pub fn working_changes(&self) -> watch::Receiver<bool> {
+        self.hub.working.subscribe()
+    }
+
+    /// Tells every window which PC answers now, or that no other PC is linked. When that
+    /// changes, whatever the last PC was working on is no longer shown as going on.
     pub fn answering(&self, answering: Option<(String, bool)>) {
         let event = match answering {
             Some((pc, here)) => ToWindow::Answering { pc, here },
             None => ToWindow::Alone,
         };
         if let Ok(line) = serde_json::to_string(&event) {
-            self.hub.answering.send_replace(Some(line));
+            let line = Some(line);
+            if *self.hub.answering.borrow() != line {
+                self.hub.working.send_replace(false);
+            }
+            self.hub.answering.send_replace(line);
         }
     }
 
@@ -211,7 +230,11 @@ impl AppChannel {
         if serde_json::from_str::<ToWindow>(line).is_ok_and(|shown| {
             !matches!(
                 shown,
-                ToWindow::Answering { .. } | ToWindow::Alone | ToWindow::BrowserAt { .. }
+                ToWindow::Answering { .. }
+                    | ToWindow::Alone
+                    | ToWindow::BrowserAt { .. }
+                    | ToWindow::Live
+                    | ToWindow::Working { .. }
             )
         }) {
             self.hub.publish_line(line.to_owned(), None);
@@ -380,6 +403,10 @@ impl Channel for AppChannel {
 }
 
 impl AppWindow for AppChannel {
+    fn working(&self, busy: bool) {
+        self.hub.working.send_replace(busy);
+    }
+
     fn show(&self, traffic: Traffic) -> BoxFuture<'_, Result<(), ChannelError>> {
         self.hub.publish(&ToWindow::Traffic {
             channel: traffic.address.channel.as_str().to_owned(),
@@ -407,6 +434,7 @@ async fn serve(stream: TcpStream, token: String, hub: Arc<Hub>, inbox: Arc<dyn I
     let (backlog, mut live) = hub.join();
     let mut answering = hub.answering.subscribe();
     let mut browser = hub.browser.subscribe();
+    let mut working = hub.working.subscribe();
     let sending = async move {
         for line in backlog {
             send(&mut write, &line).await?;
@@ -417,6 +445,13 @@ async fn serve(stream: TcpStream, token: String, hub: Arc<Hub>, inbox: Arc<dyn I
         }
         let now = browser.borrow_and_update().clone();
         if let Some(line) = now {
+            send(&mut write, &line).await?;
+        }
+        let busy = *working.borrow_and_update();
+        if let Ok(line) = serde_json::to_string(&ToWindow::Working { busy }) {
+            send(&mut write, &line).await?;
+        }
+        if let Ok(line) = serde_json::to_string(&ToWindow::Live) {
             send(&mut write, &line).await?;
         }
         loop {
@@ -442,6 +477,15 @@ async fn serve(stream: TcpStream, token: String, hub: Arc<Hub>, inbox: Arc<dyn I
                     }
                     let now = browser.borrow_and_update().clone();
                     if let Some(line) = now {
+                        send(&mut write, &line).await?;
+                    }
+                }
+                changed = working.changed() => {
+                    if changed.is_err() {
+                        return Ok(());
+                    }
+                    let busy = *working.borrow_and_update();
+                    if let Ok(line) = serde_json::to_string(&ToWindow::Working { busy }) {
                         send(&mut write, &line).await?;
                     }
                 }

@@ -94,18 +94,6 @@ pub(crate) fn header(theme: &Theme, title: &'static str, under: impl IntoElement
         )
 }
 
-/// A small dot and a few words, such as whether the window reaches dotori.
-pub(crate) fn status(color: Rgba, muted: Rgba, words: impl IntoElement) -> Div {
-    div()
-        .flex()
-        .items_center()
-        .gap_1p5()
-        .text_xs()
-        .text_color(muted)
-        .child(div().flex_none().size(px(7.)).rounded_full().bg(color))
-        .child(words)
-}
-
 /// Text that wraps only between words. GPUI breaks Korean between any two syllables, so each
 /// word is laid out on its own and lines break at the spaces. Runs of spaces and indentation keep
 /// their width. A word wider than the line still wraps inside itself.

@@ -181,7 +181,7 @@ pub(crate) fn rich(text: &str, theme: &Theme) -> Div {
                 Block::Heading(words) => line(&words, theme)
                     .pt(px(2.))
                     .text_base()
-                    .font_weight(FontWeight::BOLD),
+                    .font_weight(FontWeight::SEMIBOLD),
                 Block::Item { depth, mark, words } => div()
                     .flex()
                     .gap_2()
@@ -200,11 +200,10 @@ pub(crate) fn rich(text: &str, theme: &Theme) -> Div {
                     .px_3()
                     .py_2()
                     .rounded_lg()
-                    .bg(theme.canvas)
-                    .border_1()
-                    .border_color(theme.line)
+                    .bg(theme.surface)
                     .font_family(MONO)
-                    .text_sm()
+                    .text_size(px(12.5))
+                    .line_height(px(19.))
                     .child(prose(&lines.join("\n"))),
             }
         }))
@@ -245,9 +244,9 @@ fn drawn(run: &Run, theme: &Theme) -> Div {
         drawn
             .px(px(3.))
             .rounded_sm()
-            .bg(theme.canvas)
+            .bg(theme.surface)
             .font_family(MONO)
-            .text_sm()
+            .text_size(px(12.5))
     } else {
         drawn
     }
