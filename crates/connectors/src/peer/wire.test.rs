@@ -38,16 +38,16 @@ async fn approved_pcs_link_and_carry_messages_longer_than_a_frame() {
     assert_eq!(dial.hello.device, "b");
     assert_eq!(answer.hello.device, "a");
     assert_eq!(answer.key, a_key);
-    let (a_send, a_sent) = mpsc::unbounded_channel();
+    let (a_send, a_sent) = outbox();
     let (a_heard, _a_hearing) = mpsc::unbounded_channel();
-    let (_b_send, b_sent) = mpsc::unbounded_channel();
+    let (_b_send, b_sent) = outbox();
     let (b_heard, mut b_hearing) = mpsc::unbounded_channel();
     tokio::spawn(dial.carry(a_sent, a_heard));
     tokio::spawn(answer.carry(b_sent, b_heard));
     let long = "도토리".repeat(60_000);
-    a_send
-        .send(serde_json::json!({ "kind": "note", "text": long }))
-        .expect("sent");
+    assert!(
+        a_send.put(encode(&serde_json::json!({ "kind": "note", "text": long })).expect("encoded"))
+    );
     let heard = b_hearing.recv().await.expect("heard");
     assert_eq!(heard["text"].as_str().map(str::len), Some(long.len()));
 }
@@ -117,4 +117,38 @@ async fn joining_needs_the_invites_secret() {
         answer(answered, &b, |_| false, || None, &hb),
     );
     assert!(answer_none.expect_err("no invite").contains("no invite"));
+}
+
+#[test]
+fn an_outbox_nobody_empties_takes_no_more_than_its_bytes_and_then_refuses_everything() {
+    let (outbox, _outgoing) = outbox();
+    let mebibyte: Arc<[u8]> = vec![b'1'; 1024 * 1024].into();
+    let fits = QUEUE_BYTES / mebibyte.len();
+
+    for _ in 0..fits {
+        assert!(outbox.put(Arc::clone(&mebibyte)));
+    }
+
+    assert!(!outbox.put(Arc::clone(&mebibyte)));
+    assert!(!outbox.put(Arc::from(&b"1"[..])));
+}
+
+#[test]
+fn an_outbox_nobody_empties_takes_no_more_than_its_count() {
+    let (outbox, _outgoing) = outbox();
+    let small: Arc<[u8]> = Arc::from(&b"1"[..]);
+
+    for _ in 0..QUEUE_COUNT {
+        assert!(outbox.put(Arc::clone(&small)));
+    }
+
+    assert!(!outbox.put(small));
+}
+
+#[test]
+fn a_message_longer_than_a_line_carries_is_not_encoded() {
+    let long = "1".repeat(MESSAGE_LONGEST);
+
+    assert!(encode(&serde_json::json!(long)).is_err());
+    assert!(encode(&serde_json::json!({ "kind": "note" })).is_ok());
 }

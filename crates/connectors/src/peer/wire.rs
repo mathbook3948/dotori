@@ -2,6 +2,10 @@
 //! joining with an invite also proves it holds the invite's secret. Messages are JSON values,
 //! cut into Noise frames.
 
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -14,6 +18,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 use tokio::net::tcp::OwnedReadHalf;
 use tokio::net::tcp::OwnedWriteHalf;
+use tokio::sync::Notify;
 use tokio::sync::mpsc;
 use tokio::time;
 
@@ -28,6 +33,9 @@ const FRAME: usize = 65535;
 const TAG: usize = 16;
 const PIECE: usize = FRAME - TAG - 1;
 const MESSAGE_LONGEST: usize = 64 * 1024 * 1024;
+pub(crate) const QUEUE_COUNT: usize = 4096;
+pub(crate) const QUEUE_BYTES: usize = 2 * MESSAGE_LONGEST;
+const PING_MESSAGE: &[u8] = br#"{"kind":"ping"}"#;
 const HANDSHAKE_WAIT: Duration = Duration::from_secs(10);
 const PING: Duration = Duration::from_secs(15);
 const SILENCE: Duration = Duration::from_secs(45);
@@ -59,6 +67,69 @@ pub struct Line {
     transport: Box<TransportState>,
     pub key: [u8; KEY],
     pub hello: Hello,
+}
+
+/// Where messages wait to go out on a line. It holds at most `QUEUE_COUNT` messages and
+/// `QUEUE_BYTES` bytes, the one being written included.
+#[derive(Clone, Debug)]
+pub struct Outbox {
+    send: mpsc::Sender<Arc<[u8]>>,
+    queue: Arc<Queue>,
+}
+
+/// The end of an `Outbox` that a line carries from.
+#[derive(Debug)]
+pub struct Outgoing {
+    sent: mpsc::Receiver<Arc<[u8]>>,
+    queue: Arc<Queue>,
+}
+
+#[derive(Debug, Default)]
+struct Queue {
+    bytes: AtomicUsize,
+    hung_up: AtomicBool,
+    hang_up: Notify,
+}
+
+/// A new outbox, and the end to give `Line::carry`.
+pub fn outbox() -> (Outbox, Outgoing) {
+    let (send, sent) = mpsc::channel(QUEUE_COUNT);
+    let queue = Arc::new(Queue::default());
+    (
+        Outbox {
+            send,
+            queue: Arc::clone(&queue),
+        },
+        Outgoing { sent, queue },
+    )
+}
+
+/// `message` as it goes on a line, made once for as many outboxes as it goes to.
+pub fn encode(message: &Value) -> Result<Arc<[u8]>, String> {
+    let bytes = serde_json::to_vec(message).map_err(|error| error.to_string())?;
+    if bytes.len() > MESSAGE_LONGEST {
+        return Err(String::from("a message too long to send"));
+    }
+    Ok(bytes.into())
+}
+
+impl Outbox {
+    /// Queues `message` without waiting. Says false when the line has ended or the message does
+    /// not fit, and a message that does not fit hangs the line up.
+    pub fn put(&self, message: Arc<[u8]>) -> bool {
+        if self.queue.hung_up.load(Ordering::SeqCst) {
+            return false;
+        }
+        let length = message.len();
+        let before = self.queue.bytes.fetch_add(length, Ordering::SeqCst);
+        if before.saturating_add(length) <= QUEUE_BYTES && self.send.try_send(message).is_ok() {
+            return true;
+        }
+        self.queue.bytes.fetch_sub(length, Ordering::SeqCst);
+        self.queue.hung_up.store(true, Ordering::SeqCst);
+        self.queue.hang_up.notify_one();
+        false
+    }
 }
 
 /// Opens a line to the PC with `key` on `stream`.
@@ -245,12 +316,25 @@ async fn read_frame(read: &mut OwnedReadHalf) -> Result<Vec<u8>, String> {
 }
 
 impl Line {
-    /// Carries messages until either side stops: what comes out of `sent` goes to the other PC,
-    /// and what the other PC sends goes into `heard`. A quiet line is pinged, and a line silent
-    /// for too long is closed.
+    /// Carries messages until either side stops: what comes out of `outgoing` goes to the other
+    /// PC, and what the other PC sends goes into `heard`. A quiet line is pinged, and a line silent
+    /// for too long is closed. A line whose outbox overflowed closes at once, even mid-message.
     pub async fn carry(
         self,
-        mut sent: mpsc::UnboundedReceiver<Value>,
+        outgoing: Outgoing,
+        heard: mpsc::UnboundedSender<Value>,
+    ) -> Result<(), String> {
+        let Outgoing { mut sent, queue } = outgoing;
+        tokio::select! {
+            ended = self.carry_until_stopped(&mut sent, &queue, heard) => ended,
+            () = queue.hang_up.notified() => Err(String::from("the other PC fell too far behind")),
+        }
+    }
+
+    async fn carry_until_stopped(
+        self,
+        sent: &mut mpsc::Receiver<Arc<[u8]>>,
+        queue: &Queue,
         heard: mpsc::UnboundedSender<Value>,
     ) -> Result<(), String> {
         let Self {
@@ -300,7 +384,9 @@ impl Line {
                 }
                 out = sent.recv() => {
                     let Some(out) = out else { break Ok(()) };
-                    if let Err(error) = sent_in_time(&mut transport, &mut write, &out).await {
+                    let written = sent_in_time(&mut transport, &mut write, &out).await;
+                    queue.bytes.fetch_sub(out.len(), Ordering::SeqCst);
+                    if let Err(error) = written {
                         break Err(error);
                     }
                 }
@@ -308,8 +394,7 @@ impl Line {
                     if last_heard.elapsed() > SILENCE {
                         break Err(String::from("the other PC went quiet"));
                     }
-                    let ping = serde_json::json!({ "kind": "ping" });
-                    if let Err(error) = sent_in_time(&mut transport, &mut write, &ping).await {
+                    if let Err(error) = sent_in_time(&mut transport, &mut write, PING_MESSAGE).await {
                         break Err(error);
                     }
                 }
@@ -323,7 +408,7 @@ impl Line {
 async fn sent_in_time(
     transport: &mut TransportState,
     write: &mut OwnedWriteHalf,
-    message: &Value,
+    message: &[u8],
 ) -> Result<(), String> {
     time::timeout(SILENCE, send_message(transport, write, message))
         .await
@@ -333,15 +418,11 @@ async fn sent_in_time(
 async fn send_message(
     transport: &mut TransportState,
     write: &mut OwnedWriteHalf,
-    message: &Value,
+    message: &[u8],
 ) -> Result<(), String> {
-    let bytes = serde_json::to_vec(message).map_err(|error| error.to_string())?;
-    if bytes.len() > MESSAGE_LONGEST {
-        return Err(String::from("a message too long to send"));
-    }
     let mut frame = vec![0u8; FRAME];
     let mut piece = Vec::with_capacity(PIECE + 1);
-    let mut chunks = bytes.chunks(PIECE).peekable();
+    let mut chunks = message.chunks(PIECE).peekable();
     if chunks.peek().is_none() {
         return Err(String::from("an empty message"));
     }
