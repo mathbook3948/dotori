@@ -90,7 +90,13 @@ impl Memory {
             match rank(self, &case, meaning).await? {
                 Outcome::Scored(ranked, expected) => {
                     if asked_meaning && ranked.by_meaning.is_none() && no_meaning.is_none() {
-                        no_meaning = Some(String::from("search by meaning failed"));
+                        no_meaning = Some(
+                            ranked
+                                .note
+                                .as_deref()
+                                .map(|note| note.trim_matches(['(', ')']).to_owned())
+                                .unwrap_or_else(|| String::from("search by meaning failed")),
+                        );
                     }
                     found.push((ranked, expected));
                 }
@@ -161,7 +167,9 @@ async fn coverage(memory: &Arc<Memory>, model: String) -> Result<(usize, usize),
     tokio::task::spawn_blocking(move || {
         let mut state = memory.lock();
         memory.opened(&mut state)?;
-        let index = state.index.as_ref().ok_or("no index")?;
+        let index = state.index.as_mut().ok_or("no index")?;
+        vectors::merge_copied(index).map_err(|error| error.to_string())?;
+        let index = &*index;
         let count = |sql: &str, model: Option<&str>| {
             match model {
                 Some(model) => index.query_row(sql, [model], |row| row.get::<_, i64>(0)),
