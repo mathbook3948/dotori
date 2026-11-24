@@ -6,6 +6,7 @@ use serde::Deserialize;
 
 use super::DEFAULT_LIMIT;
 use super::Memory;
+use super::NO_WORDS;
 use super::QUERY_WAIT;
 use super::Ranked;
 use super::vectors;
@@ -42,11 +43,13 @@ pub struct Score {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Report {
     pub scored: usize,
-    /// Questions left out because no record holds the words they expect.
-    pub unmatched: Vec<String>,
+    /// Questions that could not be scored, each with why.
+    pub left_out: Vec<(String, String)>,
     pub scores: Vec<Score>,
     /// Why ranking by meaning was not scored.
     pub no_meaning: Option<String>,
+    /// When meaning was scored: how many records had a vector, out of the records with text.
+    pub vectored: Option<(usize, usize)>,
 }
 
 /// How many hits a search shows.
@@ -54,67 +57,50 @@ pub const HITS: usize = DEFAULT_LIMIT as usize;
 
 impl Memory {
     /// Ranks every question the way memory search does, by words, by meaning, and by both, and
-    /// scores each way against the records that hold the expected words.
+    /// scores each way against the records that hold the expected words. Questions go to the
+    /// embedding API only while search by meaning can still be scored.
     pub async fn evaluate(self: &Arc<Self>, cases: Vec<Case>) -> Result<Report, String> {
+        let mut no_meaning = match &self.embedder {
+            None => Some(String::from("no embedding API is set up")),
+            Some(embedder) => {
+                let (vectored, _) = coverage(self, embedder.name()).await?;
+                (vectored == 0).then(|| String::from("no record has a vector yet"))
+            }
+        };
         let mut found = Vec::new();
-        let mut no_meaning = self
-            .embedder
-            .is_none()
-            .then(|| String::from("no embedding API is set up"));
-        let mut unmatched = Vec::new();
+        let mut left_out = Vec::new();
         for case in cases {
             let meaning = match &self.embedder {
-                Some(embedder) => Some(
-                    match tokio::time::timeout(
-                        QUERY_WAIT,
-                        embedder.embed(&[case.question.chars().take(vectors::LONGEST).collect()]),
+                Some(embedder) if no_meaning.is_none() => {
+                    let wanted = case.question.chars().take(vectors::LONGEST).collect();
+                    Some(
+                        match tokio::time::timeout(QUERY_WAIT, embedder.embed(&[wanted])).await {
+                            Ok(Ok(mut made)) => made.pop().ok_or_else(|| String::from("no vector")),
+                            Ok(Err(refused)) => Err(refused.detail),
+                            Err(_) => Err(String::from("the embedding API took too long")),
+                        },
                     )
-                    .await
-                    {
-                        Ok(Ok(mut made)) => made.pop().ok_or_else(|| String::from("no vector")),
-                        Ok(Err(refused)) => Err(refused.detail),
-                        Err(_) => Err(String::from("the embedding API took too long")),
-                    },
-                ),
-                None => None,
-            };
-            let memory = Arc::clone(self);
-            let ranked = tokio::task::spawn_blocking(move || {
-                let mut state = memory.lock();
-                let ranked = memory
-                    .ranked(&mut state, &case.question, DEFAULT_LIMIT, meaning)?
-                    .ok_or_else(|| String::from("nothing is recorded yet"))?;
-                let index = state.index.as_ref().ok_or("no index")?;
-                let expected = holding(index, &case.expect)?;
-                let vectored = match &memory.embedder {
-                    Some(embedder) => {
-                        vectors::any(index, &embedder.name()).map_err(|error| error.to_string())?
-                    }
-                    None => false,
-                };
-                Ok::<_, String>((case.question, ranked, expected, vectored))
-            })
-            .await
-            .map_err(|error| error.to_string())??;
-            let (question, ranked, expected, vectored) = ranked;
-            if expected.is_empty() {
-                unmatched.push(question);
-                continue;
-            }
-            if no_meaning.is_none() {
-                if !vectored {
-                    no_meaning = Some(String::from("no record has a vector yet"));
-                } else if ranked.by_meaning.is_none() {
-                    no_meaning = Some(
-                        ranked
-                            .note
-                            .clone()
-                            .unwrap_or_else(|| String::from("search by meaning failed")),
-                    );
                 }
+                _ => None,
+            };
+            if let Some(Err(error)) = &meaning {
+                no_meaning = Some(format!("search by meaning failed: {error}"));
             }
-            found.push((ranked, expected));
+            let asked_meaning = matches!(meaning, Some(Ok(_)));
+            match rank(self, &case, meaning).await? {
+                Outcome::Scored(ranked, expected) => {
+                    if asked_meaning && ranked.by_meaning.is_none() && no_meaning.is_none() {
+                        no_meaning = Some(String::from("search by meaning failed"));
+                    }
+                    found.push((ranked, expected));
+                }
+                Outcome::LeftOut(why) => left_out.push((case.question, why)),
+            }
         }
+        let vectored = match (&self.embedder, &no_meaning) {
+            (Some(embedder), None) => Some(coverage(self, embedder.name()).await?),
+            _ => None,
+        };
         let mut methods = vec![Method::Words];
         if no_meaning.is_none() {
             methods.extend([Method::Meaning, Method::Both]);
@@ -125,11 +111,78 @@ impl Memory {
             .collect();
         Ok(Report {
             scored: found.len(),
-            unmatched,
+            left_out,
             scores,
             no_meaning,
+            vectored,
         })
     }
+}
+
+enum Outcome {
+    Scored(Ranked, HashSet<i64>),
+    LeftOut(String),
+}
+
+async fn rank(
+    memory: &Arc<Memory>,
+    case: &Case,
+    meaning: Option<Result<Vec<f32>, String>>,
+) -> Result<Outcome, String> {
+    let memory = Arc::clone(memory);
+    let case = case.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut state = memory.lock();
+        let ranked = match memory.ranked(&mut state, &case.question, DEFAULT_LIMIT, meaning) {
+            Ok(Some(ranked)) => ranked,
+            Ok(None) => return Err(String::from("nothing is recorded yet")),
+            Err(error) if error == NO_WORDS => {
+                return Ok(Outcome::LeftOut(String::from(
+                    "it has no words to search for",
+                )));
+            }
+            Err(error) => return Err(error),
+        };
+        let index = state.index.as_ref().ok_or("no index")?;
+        let expected = holding(index, &case.expect)?;
+        if expected.is_empty() {
+            return Ok(Outcome::LeftOut(String::from(
+                "no record holds the words it expects",
+            )));
+        }
+        Ok(Outcome::Scored(ranked, expected))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+async fn coverage(memory: &Arc<Memory>, model: String) -> Result<(usize, usize), String> {
+    let memory = Arc::clone(memory);
+    tokio::task::spawn_blocking(move || {
+        let mut state = memory.lock();
+        memory.opened(&mut state)?;
+        let index = state.index.as_ref().ok_or("no index")?;
+        let count = |sql: &str, model: Option<&str>| {
+            match model {
+                Some(model) => index.query_row(sql, [model], |row| row.get::<_, i64>(0)),
+                None => index.query_row(sql, [], |row| row.get::<_, i64>(0)),
+            }
+            .map(|counted| usize::try_from(counted).unwrap_or(0))
+            .map_err(|error| error.to_string())
+        };
+        Ok((
+            count(
+                "SELECT count(*) FROM vectors WHERE model = ?1",
+                Some(&model),
+            )?,
+            count(
+                "SELECT count(*) FROM docs WHERE trim(coalesce(text, '')) != ''",
+                None,
+            )?,
+        ))
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 fn holding(index: &Connection, expect: &[String]) -> Result<HashSet<i64>, String> {

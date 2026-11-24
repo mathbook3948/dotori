@@ -13,7 +13,7 @@ fn case(question: &str, expect: &[&str]) -> Case {
 }
 
 #[tokio::test]
-async fn words_are_scored_and_a_question_no_record_answers_is_left_out() {
+async fn words_are_scored_and_a_question_that_cannot_be_scored_is_left_out_with_why() {
     let config = config();
     record(
         &config,
@@ -29,6 +29,7 @@ async fn words_are_scored_and_a_question_no_record_answers_is_left_out() {
             case("점심 메뉴", &["점심 메뉴"]),
             case("회의 시간", &["3시"]),
             case("주말 계획", &["캠핑"]),
+            case("?!", &["3시"]),
         ])
         .await
         .expect("evaluated");
@@ -37,7 +38,16 @@ async fn words_are_scored_and_a_question_no_record_answers_is_left_out() {
         report,
         Report {
             scored: 2,
-            unmatched: vec![String::from("주말 계획")],
+            left_out: vec![
+                (
+                    String::from("주말 계획"),
+                    String::from("no record holds the words it expects")
+                ),
+                (
+                    String::from("?!"),
+                    String::from("it has no words to search for")
+                ),
+            ],
             scores: vec![Score {
                 method: Method::Words,
                 first: 1,
@@ -45,6 +55,7 @@ async fn words_are_scored_and_a_question_no_record_answers_is_left_out() {
                 reciprocal: 0.5,
             }],
             no_meaning: Some(String::from("no embedding API is set up")),
+            vectored: None,
         }
     );
 }
@@ -72,6 +83,7 @@ async fn meaning_is_scored_once_records_have_vectors() {
     );
     assert_eq!(before.scores.len(), 1);
     assert_eq!(after.no_meaning, None);
+    assert_eq!(after.vectored, Some((2, 2)));
     let shown: Vec<(Method, usize, usize)> = after
         .scores
         .iter()

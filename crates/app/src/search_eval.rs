@@ -57,10 +57,10 @@ fn shown(report: &Report) -> String {
         "Scored {} questions against the first {HITS} hits a search shows.",
         report.scored
     );
-    if !report.unmatched.is_empty() {
-        let _ = writeln!(out, "Left out, as no record holds the words they expect:");
-        for question in &report.unmatched {
-            let _ = writeln!(out, "  {question}");
+    if !report.left_out.is_empty() {
+        let _ = writeln!(out, "Left out:");
+        for (question, why) in &report.left_out {
+            let _ = writeln!(out, "  {question} ({why})");
         }
     }
     if report.scored > 0 {
@@ -84,6 +84,12 @@ fn shown(report: &Report) -> String {
     }
     if let Some(why) = &report.no_meaning {
         let _ = writeln!(out, "Not scored by meaning: {why}.");
+    }
+    if let Some((vectored, records)) = report.vectored {
+        let _ = writeln!(
+            out,
+            "Meaning was scored with vectors for {vectored} of {records} records with text."
+        );
     }
     out
 }

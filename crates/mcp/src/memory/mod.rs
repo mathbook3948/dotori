@@ -42,6 +42,7 @@ const MAX_LIMIT: u64 = 50;
 const SHOWN: usize = 400;
 const CANDIDATES: u64 = 50;
 const EMBED_BATCH: i64 = 64;
+const NO_WORDS: &str = "the query has no words to search for";
 const QUERY_WAIT: Duration = Duration::from_secs(15);
 const BATCH_PAUSE: Duration = Duration::from_secs(1);
 const FILL_PAUSE: Duration = Duration::from_secs(30);
@@ -289,7 +290,7 @@ impl Memory {
             _ => None,
         };
         if terms.is_empty() && by_meaning.is_none() {
-            return Err(String::from("the query has no words to search for"));
+            return Err(String::from(NO_WORDS));
         }
         let by_words: Vec<i64> = if terms.is_empty() {
             Vec::new()
