@@ -2,6 +2,8 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use reqwest::Url;
@@ -14,11 +16,14 @@ use tokio::io::BufReader;
 use tokio::process::Child;
 use tokio::process::Command;
 use tokio::sync::Mutex;
+use tokio::sync::Notify;
 use tokio::sync::mpsc;
 use tokio::time;
 
 use crate::Tool;
 use crate::ToolFuture;
+use crate::auth::Challenge;
+use crate::auth::Challenges;
 use crate::cdp::Cdp;
 use crate::chrome;
 use crate::fetch;
@@ -39,7 +44,7 @@ const RUN_WAIT: Duration = Duration::from_secs(100);
 const WIDTH: u32 = 1280;
 const HEIGHT: u32 = 800;
 const WORLD: &str = "dotori";
-const AUTH_WAIT: Duration = Duration::from_secs(120);
+const AUTH_WAIT: Duration = Duration::from_secs(90);
 const LOGINS_EVERY: Duration = Duration::from_secs(60);
 
 /// How the browser runs. The profile folder keeps logins between runs. Without an executable,
@@ -79,7 +84,12 @@ pub struct Browser {
     screen: Arc<Screen>,
     shown: Arc<std::sync::Mutex<Option<Shown>>>,
     owner: Mutex<Option<tokio::sync::OwnedMutexGuard<()>>>,
+    logins: SharedChallenges,
+    taking: AtomicBool,
+    give_up: Notify,
 }
+
+type SharedChallenges = Arc<std::sync::Mutex<Challenges<Arc<Cdp>>>>;
 
 impl std::fmt::Debug for Browser {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -182,6 +192,9 @@ impl Browser {
             screen,
             shown: Arc::new(std::sync::Mutex::new(None)),
             owner: Mutex::new(None),
+            logins: Arc::default(),
+            taking: AtomicBool::new(false),
+            give_up: Notify::new(),
         });
         if tokio::runtime::Handle::try_current().is_ok() {
             tokio::spawn(Arc::clone(&browser).listen(asks));
@@ -193,13 +206,28 @@ impl Browser {
         while let Some(ask) = asks.recv().await {
             let done = match ask {
                 Ask::Watch(on) => {
+                    if !on {
+                        self.give_up.notify_waiters();
+                    }
                     if !on && self.owner.lock().await.take().is_some() {
                         self.screen.update(json!({ "mode": "idle" }));
                     }
                     self.cast(on).await
                 }
-                Ask::Take => self.take().await,
+                Ask::Take => {
+                    if !self.taking.swap(true, Ordering::SeqCst) {
+                        let browser = Arc::clone(&self);
+                        tokio::spawn(async move {
+                            if let Err(error) = browser.take().await {
+                                browser.screen.update(json!({ "error": error }));
+                            }
+                            browser.taking.store(false, Ordering::SeqCst);
+                        });
+                    }
+                    Ok(())
+                }
                 Ask::Give => {
+                    self.give_up.notify_waiters();
                     self.owner.lock().await.take();
                     self.screen.update(json!({ "mode": "idle", "error": null }));
                     Ok(())
@@ -241,7 +269,13 @@ impl Browser {
             return Ok(());
         }
         self.screen.update(json!({ "mode": "waiting" }));
-        let held = Arc::clone(&self.acting).lock_owned().await;
+        let held = tokio::select! {
+            held = Arc::clone(&self.acting).lock_owned() => held,
+            () = self.give_up.notified() => {
+                self.screen.update(json!({ "mode": "idle" }));
+                return Ok(());
+            }
+        };
         if let Err(error) = self.page().await {
             drop(held);
             self.screen.update(json!({ "mode": "idle" }));
@@ -283,13 +317,16 @@ impl Browser {
     }
 
     async fn auth(&self, input: &Value) -> Result<(), String> {
-        let picker = self.screen.state.lock().expect("unpoisoned")["picker"].clone();
-        if picker.get("kind").and_then(Value::as_str) != Some("auth") {
+        let Some(id) = input.get("id").and_then(Value::as_u64) else {
             return Ok(());
-        }
-        self.screen.update(json!({ "picker": null, "asked": null }));
-        let shown = self.shown.lock().expect("unpoisoned").clone();
-        let Some(Shown { cdp, .. }) = shown else {
+        };
+        let login = {
+            let mut logins = self.logins.lock().expect("unpoisoned");
+            let login = logins.take(id);
+            self.screen.update(json!({ "login": logins.shown() }));
+            login
+        };
+        let Some(login) = login else {
             return Ok(());
         };
         let given = match (
@@ -303,7 +340,7 @@ impl Browser {
             }
             _ => None,
         };
-        answer_auth(&cdp, &picker, given).await
+        answer_auth(&login, given).await
     }
 
     async fn pick(&self, cdp: &Cdp, session: &str, input: &Value) -> Result<(), String> {
@@ -528,6 +565,7 @@ impl Browser {
             events,
             Arc::clone(&self.screen),
             Arc::clone(&self.shown),
+            Arc::clone(&self.logins),
             target.clone(),
         ));
         let page = |method: &'static str, params: Value| {
@@ -573,6 +611,8 @@ impl Browser {
             None,
         )
         .await?;
+        self.logins.lock().expect("unpoisoned").clear();
+        self.screen.update(json!({ "login": null }));
         *self.shown.lock().expect("unpoisoned") = Some(Shown {
             cdp: Arc::clone(&cdp),
             main: session.clone(),
@@ -773,6 +813,7 @@ async fn watch(
     mut events: tokio::sync::mpsc::UnboundedReceiver<Value>,
     screen: Arc<Screen>,
     shown: Arc<std::sync::Mutex<Option<Shown>>>,
+    logins: SharedChallenges,
     main_target: String,
 ) {
     while let Some(event) = events.recv().await {
@@ -888,39 +929,37 @@ async fn watch(
                 None
             }
             Some("Fetch.authRequired") => {
-                let request = params.get("requestId").cloned().unwrap_or(Value::Null);
                 let challenge = params.get("authChallenge").cloned().unwrap_or(Value::Null);
-                let origin = challenge
-                    .get("origin")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_owned();
-                screen.update(json!({
-                    "picker": {
-                        "kind": "auth",
-                        "request": request,
-                        "session": session,
-                        "origin": origin,
-                        "realm": challenge.get("realm").cloned().unwrap_or(Value::Null),
-                    },
-                    "asked": format!("{origin}에 로그인해야 해요"),
-                }));
+                let id = {
+                    let mut waiting = logins.lock().expect("unpoisoned");
+                    let id = waiting.ask(
+                        Arc::clone(&cdp),
+                        params.get("requestId").cloned().unwrap_or(Value::Null),
+                        session.map(str::to_owned),
+                        challenge
+                            .get("origin")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_owned(),
+                        challenge.get("realm").cloned().unwrap_or(Value::Null),
+                    );
+                    screen.update(json!({ "login": waiting.shown() }));
+                    id
+                };
                 let screen = Arc::clone(&screen);
-                let cdp = Arc::clone(&cdp);
-                let session = session.map(str::to_owned);
+                let logins = Arc::clone(&logins);
                 tokio::spawn(async move {
                     time::sleep(AUTH_WAIT).await;
-                    let still = screen.state.lock().expect("unpoisoned")["picker"]
-                        .get("request")
-                        .is_some_and(|waiting| *waiting == request);
-                    if still {
-                        screen.update(json!({ "picker": null }));
-                        let _ = answer_auth(
-                            &cdp,
-                            &json!({ "request": request, "session": session }),
-                            None,
-                        )
-                        .await;
+                    let lapsed = {
+                        let mut waiting = logins.lock().expect("unpoisoned");
+                        let lapsed = waiting.take(id);
+                        if lapsed.is_some() {
+                            screen.update(json!({ "login": waiting.shown() }));
+                        }
+                        lapsed
+                    };
+                    if let Some(lapsed) = lapsed {
+                        let _ = answer_auth(&lapsed, None).await;
                     }
                 });
                 None
@@ -947,7 +986,10 @@ async fn watch(
     }
 }
 
-async fn answer_auth(cdp: &Cdp, picker: &Value, given: Option<(&str, &str)>) -> Result<(), String> {
+async fn answer_auth(
+    login: &Challenge<Arc<Cdp>>,
+    given: Option<(&str, &str)>,
+) -> Result<(), String> {
     let response = match given {
         Some((username, password)) => json!({
             "response": "ProvideCredentials",
@@ -956,16 +998,15 @@ async fn answer_auth(cdp: &Cdp, picker: &Value, given: Option<(&str, &str)>) -> 
         }),
         None => json!({ "response": "CancelAuth" }),
     };
-    cdp.send(
-        "Fetch.continueWithAuth",
-        json!({
-            "requestId": picker.get("request").cloned().unwrap_or(Value::Null),
-            "authChallengeResponse": response,
-        }),
-        picker.get("session").and_then(Value::as_str),
-    )
-    .await
-    .map(drop)
+    login
+        .handle
+        .send(
+            "Fetch.continueWithAuth",
+            json!({ "requestId": login.request, "authChallengeResponse": response }),
+            login.session.as_deref(),
+        )
+        .await
+        .map(drop)
 }
 
 /// Whether a page may be loaded from `url`, by the same rule as webfetch.

@@ -78,6 +78,8 @@ pub(crate) struct ScreenView {
     prompted: bool,
     typed: Option<Entity<TextInput>>,
     login: Option<(Entity<TextInput>, Entity<TextInput>)>,
+    asked_login: Option<Value>,
+    answered: Option<u64>,
     focus_login: bool,
     down: bool,
     pointer: Option<(f64, f64, Instant)>,
@@ -112,6 +114,8 @@ impl ScreenView {
             prompted: false,
             typed: None,
             login: None,
+            asked_login: None,
+            answered: None,
             focus_login: false,
             down: true,
             pointer: None,
@@ -126,7 +130,7 @@ impl ScreenView {
 
     /// Whether dotori asked the owner to take the browser over, for a mark on the tab.
     pub(crate) fn asking(&self) -> bool {
-        self.asked.is_some()
+        self.asked.is_some() || self.asked_login.is_some()
     }
 
     fn apply(&mut self, item: Seen, cx: &mut Context<Self>) {
@@ -168,6 +172,29 @@ impl ScreenView {
                     self.open_picker(picker.as_ref(), cx);
                 }
                 self.picker = picker;
+                let login = state
+                    .get("login")
+                    .filter(|login| {
+                        login.is_object()
+                            && login.get("id").and_then(Value::as_u64) != self.answered
+                    })
+                    .cloned();
+                let id = |login: &Option<Value>| {
+                    login
+                        .as_ref()
+                        .and_then(|login| login.get("id"))
+                        .and_then(Value::as_u64)
+                };
+                if id(&login) != id(&self.asked_login) {
+                    self.login = login.as_ref().map(|_| {
+                        (
+                            cx.new(|cx| TextInput::new("", cx)),
+                            cx.new(|cx| TextInput::masked("", cx)),
+                        )
+                    });
+                    self.focus_login = login.is_some();
+                }
+                self.asked_login = login;
             }
             Seen::Frame(Picture {
                 width,
@@ -206,18 +233,10 @@ impl ScreenView {
 
     fn open_picker(&mut self, picker: Option<&Value>, cx: &mut Context<Self>) {
         self.typed = None;
-        self.login = None;
         let Some(picker) = picker else {
             return;
         };
         match picker.get("kind").and_then(Value::as_str) {
-            Some("auth") => {
-                self.login = Some((
-                    cx.new(|cx| TextInput::new("", cx)),
-                    cx.new(|cx| TextInput::masked("", cx)),
-                ));
-                self.focus_login = true;
-            }
             Some("value") => {
                 let now = picker
                     .get("value")
@@ -282,9 +301,6 @@ impl ScreenView {
     fn picker_card(&self, theme: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
         let picker = self.picker.as_ref()?;
         let kind = picker.get("kind").and_then(Value::as_str)?;
-        if kind == "auth" {
-            return Some(self.login_card(picker, theme, cx));
-        }
         let title = match kind {
             "select" => "고르기",
             "value" => "값 넣기",
@@ -442,8 +458,10 @@ impl ScreenView {
         )
     }
 
-    fn login_card(&self, picker: &Value, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        let origin = picker
+    fn login_card(&self, theme: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let asked = self.asked_login.as_ref()?;
+        let again = asked.get("again").and_then(Value::as_bool) == Some(true);
+        let origin = asked
             .get("origin")
             .and_then(Value::as_str)
             .unwrap_or_default();
@@ -451,7 +469,7 @@ impl ScreenView {
             .split_once("://")
             .map_or(origin, |(_, host)| host)
             .to_owned();
-        let realm = picker
+        let realm = asked
             .get("realm")
             .and_then(Value::as_str)
             .filter(|realm| !realm.is_empty())
@@ -600,12 +618,22 @@ impl ScreenView {
                                     }
                                 },
                             ))
-                            .child(
-                                field("login-secret", "비밀번호", secret).on_action(
-                                    cx.listener(|view, _: &Submit, _, cx| view.log_in(cx)),
-                                ),
-                            ),
+                            .child(field("login-secret", "비밀번호", secret).on_action(
+                                cx.listener(|view, _: &Submit, window, cx| view.log_in(window, cx)),
+                            )),
                     )
+                    .when(again, |card| {
+                        card.child(
+                            div()
+                                .px_3()
+                                .py_1p5()
+                                .rounded_lg()
+                                .bg(theme.danger_soft)
+                                .text_color(theme.danger)
+                                .text_xs()
+                                .child("아이디나 비밀번호가 맞지 않았어요. 다시 넣어 주세요."),
+                        )
+                    })
                     .child(
                         div()
                             .text_xs()
@@ -627,9 +655,8 @@ impl ScreenView {
                                     .text_color(theme.muted)
                                     .hover(|cancel| cancel.bg(theme.canvas))
                                     .child("취소")
-                                    .on_click(cx.listener(|view, _, _, cx| {
-                                        view.say(json!({ "kind": "auth", "cancel": true }));
-                                        view.close_login(cx);
+                                    .on_click(cx.listener(|view, _, window, cx| {
+                                        view.answer_login(None, window, cx);
                                     })),
                             )
                             .child(
@@ -644,26 +671,59 @@ impl ScreenView {
                                     .text_color(theme.accent_text)
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child("로그인")
-                                    .on_click(cx.listener(|view, _, _, cx| view.log_in(cx))),
+                                    .on_click(
+                                        cx.listener(|view, _, window, cx| view.log_in(window, cx)),
+                                    ),
                             ),
                     ),
             )
+            .on_key_down(cx.listener(|view, event: &KeyDownEvent, window, cx| {
+                if event.keystroke.key == "escape" {
+                    view.answer_login(None, window, cx);
+                    cx.stop_propagation();
+                }
+            }))
             .into_any_element()
+            .into()
     }
 
-    fn log_in(&mut self, cx: &mut Context<Self>) {
+    fn log_in(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some((name, secret)) = &self.login else {
             return;
         };
-        let username = name.read(cx).text().to_owned();
-        let password = secret.read(cx).text().to_owned();
-        self.say(json!({ "kind": "auth", "username": username, "password": password }));
-        self.close_login(cx);
+        let given = (
+            name.read(cx).text().to_owned(),
+            secret.read(cx).text().to_owned(),
+        );
+        self.answer_login(Some(given), window, cx);
     }
 
-    fn close_login(&mut self, cx: &mut Context<Self>) {
-        self.picker = None;
+    fn answer_login(
+        &mut self,
+        given: Option<(String, String)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(id) = self
+            .asked_login
+            .as_ref()
+            .and_then(|login| login.get("id"))
+            .and_then(Value::as_u64)
+        else {
+            return;
+        };
+        self.say(match given {
+            Some((username, password)) => {
+                json!({ "kind": "auth", "id": id, "username": username, "password": password })
+            }
+            None => json!({ "kind": "auth", "id": id, "cancel": true }),
+        });
+        self.answered = Some(id);
+        self.asked_login = None;
         self.login = None;
+        if self.mode == Mode::Owner {
+            window.focus(&self.focus);
+        }
         cx.notify();
     }
 
@@ -1018,6 +1078,7 @@ impl Render for ScreenView {
             window.focus(&name.focus_handle(cx));
         }
         let picker = self.picker_card(&theme, cx);
+        let login = self.login_card(&theme, cx);
         self.painted |= self.picture.is_some();
         let screen = match &self.picture {
             Some(picture) => img(ImageSource::Render(Arc::clone(picture)))
@@ -1182,7 +1243,8 @@ impl Render for ScreenView {
                     )
                     .child(screen)
                     .children(marker)
-                    .children(picker),
+                    .children(picker)
+                    .children(login),
             )
     }
 }

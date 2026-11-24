@@ -687,24 +687,38 @@ async fn a_page_that_asks_for_a_login_waits_for_the_owners_answer() {
         )
         .await
     });
-    let mut asked = Value::Null;
-    for _ in 0..100 {
-        asked = browser.screen.state.lock().expect("unpoisoned")["picker"].clone();
-        if asked.get("kind").and_then(Value::as_str) == Some("auth") {
-            break;
+    let login =
+        |browser: &Browser| browser.screen.state.lock().expect("unpoisoned")["login"].clone();
+    let waited = |browser: Arc<Browser>, after: u64| async move {
+        for _ in 0..100 {
+            let shown = login(&browser);
+            if shown["id"].as_u64().is_some_and(|id| id > after) {
+                return shown;
+            }
+            time::sleep(Duration::from_millis(100)).await;
         }
-        time::sleep(Duration::from_millis(100)).await;
-    }
+        panic!("no login asked");
+    };
+    let asked = waited(Arc::clone(&browser), 0).await;
     assert_eq!(asked["origin"], "https://httpbin.org", "{asked}");
-    let notice = browser.screen.state.lock().expect("unpoisoned")["asked"].clone();
-    assert!(
-        notice
-            .as_str()
-            .is_some_and(|said| said.contains("httpbin.org"))
-    );
+    assert_eq!(asked["again"], false);
+    let first = asked["id"].as_u64().expect("numbered");
 
     browser
-        .auth(&json!({ "kind": "auth", "username": "owner", "password": "secret" }))
+        .auth(&json!({ "kind": "auth", "id": first + 100, "username": "owner", "password": "secret" }))
+        .await
+        .expect("ignored");
+    assert_eq!(login(&browser)["id"], first);
+
+    browser
+        .auth(&json!({ "kind": "auth", "id": first, "username": "owner", "password": "wrong" }))
+        .await
+        .expect("answered");
+    let again = waited(Arc::clone(&browser), first).await;
+    assert_eq!(again["again"], true, "{again}");
+
+    browser
+        .auth(&json!({ "kind": "auth", "id": again["id"], "username": "owner", "password": "secret" }))
         .await
         .expect("answered");
     going.await.expect("joined").expect("navigated");
@@ -720,5 +734,5 @@ async fn a_page_that_asks_for_a_login_waits_for_the_owners_answer() {
             .is_some_and(|text| text.contains("\"authenticated\": true")),
         "{body}"
     );
-    assert!(browser.screen.state.lock().expect("unpoisoned")["picker"].is_null());
+    assert!(login(&browser).is_null());
 }

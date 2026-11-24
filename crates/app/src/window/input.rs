@@ -405,9 +405,8 @@ impl TextInput {
         }
     }
 
-    /// A field that grows to several lines as the text wraps, and takes a line break on
-    /// Shift+Enter.
-    /// A field of one line that shows a dot for each character, for a password.
+    /// A field of one line that shows a dot for each character, for a password. It never hands
+    /// the input method the real text and takes no composition.
     pub(crate) fn masked(placeholder: &'static str, cx: &mut Context<Self>) -> Self {
         Self {
             masked: true,
@@ -436,6 +435,8 @@ impl TextInput {
             .map_or(self.content.len(), |(at, _)| at)
     }
 
+    /// A field that grows to several lines as the text wraps, and takes a line break on
+    /// Shift+Enter.
     pub(crate) fn multiline(placeholder: &'static str, cx: &mut Context<Self>) -> Self {
         Self {
             multiline: true,
@@ -487,6 +488,14 @@ impl EntityInputHandler for TextInput {
     ) -> Option<String> {
         let range = self.range_from_utf16(&range_utf16);
         actual_range.replace(self.range_to_utf16(&range));
+        if self.masked {
+            return Some(
+                self.content[range]
+                    .chars()
+                    .flat_map(|c| std::iter::repeat_n(DOT, c.len_utf16()))
+                    .collect(),
+            );
+        }
         Some(self.content[range].to_string())
     }
 
@@ -543,9 +552,13 @@ impl EntityInputHandler for TextInput {
         range_utf16: Option<Range<usize>>,
         new_text: &str,
         new_selected_range_utf16: Option<Range<usize>>,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.masked {
+            self.replace_text_in_range(range_utf16, new_text, window, cx);
+            return;
+        }
         let range = range_utf16
             .as_ref()
             .map(|range_utf16| self.range_from_utf16(range_utf16))
