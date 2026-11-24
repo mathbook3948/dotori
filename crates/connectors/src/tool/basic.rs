@@ -5,6 +5,9 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use dotori_core::BoxFuture;
@@ -17,6 +20,7 @@ use serde_json::Value;
 use serde_json::json;
 use tokio::io::AsyncRead;
 use tokio::io::AsyncReadExt;
+use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tokio::task::JoinHandle;
 use tokio::time;
@@ -37,6 +41,8 @@ const SHOWN: usize = 256 * 1024;
 const OUTPUT: usize = 30 * 1024;
 const LINE: usize = 4000;
 const DRAIN: Duration = Duration::from_secs(1);
+
+static STAGED: AtomicU64 = AtomicU64::new(0);
 
 /// Files and a shell on this PC, as the owner's own user. Relative paths start in `folder`.
 #[derive(Clone, Debug)]
@@ -214,7 +220,9 @@ impl BasicTools {
                 .unwrap_or_else(|| path.to_path_buf())
         };
         let (shown, folder, private) = (real(&path), real(&self.folder), real(private));
-        if shown.starts_with(&private) && !shown.starts_with(&folder) {
+        let inside = shown.starts_with(&private) || same_within(&shown, &private);
+        let work = shown.starts_with(&folder) || same_within(&shown, &folder);
+        if (inside && !work) || elsewhere_spelled(&shown) {
             return Err(format!(
                 "{} is dotori's own; these tools work only in its work folder there",
                 path.display()
@@ -309,11 +317,9 @@ impl BasicTools {
                 path.display()
             )
         })?;
+        let crlf = |text: &str| text.replace("\r\n", "\n").replace('\n', "\r\n");
         let (old, new) = if text.contains("\r\n") && !input.old.contains('\r') {
-            (
-                input.old.replace('\n', "\r\n"),
-                input.new.replace('\n', "\r\n"),
-            )
+            (crlf(&input.old), crlf(&input.new))
         } else {
             (input.old.clone(), input.new.clone())
         };
@@ -377,14 +383,16 @@ impl BasicTools {
             .spawn()
             .map_err(|error| format!("cannot run in {}: {error}", folder.display()))?;
         let mut tree = Tree(child.id());
-        let stdout = child.stdout.take().map(|out| tokio::spawn(last_part(out)));
-        let stderr = child.stderr.take().map(|err| tokio::spawn(last_part(err)));
+        let stdout = child.stdout.take().map(reading);
+        let stderr = child.stderr.take().map(reading);
         let status = match time::timeout(limit, child.wait()).await {
             Ok(status) => status.map_err(|error| error.to_string())?,
             Err(_) => {
                 return Err(format!(
-                    "the command did not finish in {} seconds and was stopped",
-                    limit.as_secs()
+                    "the command did not finish in {} seconds and was stopped. Its output so far:\nstdout:\n{}\nstderr:\n{}",
+                    limit.as_secs(),
+                    drained(stdout).await,
+                    drained(stderr).await
                 ));
             }
         };
@@ -401,6 +409,29 @@ impl BasicTools {
     }
 }
 
+#[cfg(unix)]
+fn same_within(path: &Path, folder: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(folder) = std::fs::metadata(folder) else {
+        return false;
+    };
+    path.ancestors()
+        .filter_map(|known| std::fs::metadata(known).ok())
+        .any(|known| known.dev() == folder.dev() && known.ino() == folder.ino())
+}
+
+#[cfg(not(unix))]
+fn same_within(_path: &Path, _folder: &Path) -> bool {
+    false
+}
+
+fn elsewhere_spelled(path: &Path) -> bool {
+    let text = path.to_string_lossy();
+    cfg!(windows)
+        && (text.starts_with(r"\\?\UNC\")
+            || (text.starts_with(r"\\") && !text.starts_with(r"\\?\")))
+}
+
 #[cfg(windows)]
 fn shell_command(line: &str) -> Command {
     let mut command = Command::new("cmd");
@@ -415,59 +446,85 @@ fn shell_command(line: &str) -> Command {
     command
 }
 
-async fn last_part(mut from: impl AsyncRead + Unpin) -> (Vec<u8>, bool) {
-    let mut kept = Vec::new();
-    let mut cut = false;
-    let mut buffer = [0u8; 8192];
-    while let Ok(read) = from.read(&mut buffer).await {
-        if read == 0 {
-            break;
+type Kept = Arc<Mutex<(Vec<u8>, bool)>>;
+
+fn reading(from: impl AsyncRead + Unpin + Send + 'static) -> (Kept, JoinHandle<()>) {
+    let kept: Kept = Arc::default();
+    let filling = Arc::clone(&kept);
+    let task = tokio::spawn(async move {
+        let mut from = from;
+        let mut buffer = [0u8; 8192];
+        while let Ok(read) = from.read(&mut buffer).await {
+            if read == 0 {
+                break;
+            }
+            let mut kept = filling
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            kept.0.extend_from_slice(&buffer[..read]);
+            if kept.0.len() > OUTPUT * 2 {
+                let extra = kept.0.len() - OUTPUT;
+                kept.0.drain(..extra);
+                kept.1 = true;
+            }
         }
-        kept.extend_from_slice(&buffer[..read]);
-        if kept.len() > OUTPUT * 2 {
-            kept.drain(..kept.len() - OUTPUT);
-            cut = true;
-        }
-    }
-    (kept, cut)
+    });
+    (kept, task)
 }
 
-async fn drained(reading: Option<JoinHandle<(Vec<u8>, bool)>>) -> String {
-    let Some(mut reading) = reading else {
+async fn drained(reading: Option<(Kept, JoinHandle<()>)>) -> String {
+    let Some((kept, mut task)) = reading else {
         return String::new();
     };
-    let (bytes, cut) = match time::timeout(DRAIN, &mut reading).await {
-        Ok(Ok(read)) => read,
-        _ => {
-            reading.abort();
-            return String::from(
-                "(not read: something the command left running still holds it open)",
-            );
-        }
-    };
+    let ended = time::timeout(DRAIN, &mut task).await.is_ok();
+    let (bytes, cut) = kept
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
     let text = String::from_utf8_lossy(&bytes);
-    let shown = tail(&text);
+    let mut shown = tail(&text);
     if cut && !shown.starts_with("(only the last part)") {
-        return format!("(only the last part)\n{shown}");
+        shown = format!("(only the last part)\n{shown}");
+    }
+    if !ended {
+        shown.push_str("\n(something the command left running still writes here)");
     }
     shown
 }
 
 async fn replace(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let name = path
+    let shown = path.display();
+    let target = match tokio::fs::canonicalize(path).await {
+        Ok(real) => real,
+        Err(_) => path.to_path_buf(),
+    };
+    let name = target
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let staged = path.with_file_name(format!(".{name}.dotori-{}", std::process::id()));
-    tokio::fs::write(&staged, bytes)
-        .await
-        .map_err(|error| format!("{}: {error}", path.display()))?;
-    if let Ok(was) = tokio::fs::metadata(path).await {
-        let _ = tokio::fs::set_permissions(&staged, was.permissions()).await;
+    let staged = target.with_file_name(format!(
+        ".{name}.dotori-{}-{}",
+        std::process::id(),
+        STAGED.fetch_add(1, Ordering::Relaxed)
+    ));
+    let written = async {
+        let mut file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&staged)
+            .await?;
+        file.write_all(bytes).await?;
+        file.sync_all().await?;
+        drop(file);
+        if let Ok(was) = tokio::fs::metadata(&target).await {
+            tokio::fs::set_permissions(&staged, was.permissions()).await?;
+        }
+        tokio::fs::rename(&staged, &target).await
     }
-    tokio::fs::rename(&staged, path).await.map_err(|error| {
+    .await;
+    written.map_err(|error| {
         let _ = std::fs::remove_file(&staged);
-        format!("{}: {error}", path.display())
+        format!("{shown}: {error}")
     })
 }
 

@@ -40,8 +40,8 @@ use crate::main_session::Linked;
 use crate::settings::Asked;
 
 pub(crate) use dotori_connectors::channel::DECISION;
-const WAITING: &str = "This call acts toward other people, so it waits for the owner: the chat \
-                       window shows it with 허락 and 거절. What the owner decides, and the result \
+const WAITING: &str = "This call waits for the owner, as the owner set it or as every call of \
+                       this tool does: the chat window shows it with 허락 and 거절. What the owner decides, and the result \
                        if it ran, arrive later on the `decision` channel. Do not call it again.";
 const RUN_FOR: Duration = Duration::from_secs(120);
 

@@ -315,3 +315,54 @@ async fn a_device_is_not_read_and_a_command_left_running_does_not_hold_the_answe
     assert!(loud.contains("(only the last part)"));
     let _ = std::fs::remove_dir_all(folder);
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn an_edit_through_a_link_changes_the_file_it_points_to() {
+    let (tools, folder) = tools();
+    std::fs::create_dir_all(folder.join("work")).expect("made");
+    std::fs::write(folder.join("work").join("real.txt"), "a\n").expect("written");
+    std::os::unix::fs::symlink(
+        folder.join("work").join("real.txt"),
+        folder.join("work").join("link.txt"),
+    )
+    .expect("linked");
+
+    run(
+        &tools,
+        EDIT_FILE,
+        json!({ "path": "link.txt", "old": "a", "new": "b" }),
+    )
+    .await
+    .expect("edited");
+
+    assert!(
+        std::fs::symlink_metadata(folder.join("work").join("link.txt"))
+            .expect("there")
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(
+        std::fs::read_to_string(folder.join("work").join("real.txt")).expect("read"),
+        "b\n"
+    );
+    let _ = std::fs::remove_dir_all(folder);
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn output_already_written_is_kept_when_something_left_running_holds_the_pipe() {
+    let (tools, folder) = tools();
+
+    let ran = run(
+        &tools,
+        RUN_SHELL,
+        json!({ "command": "echo built; sleep 20 &" }),
+    )
+    .await
+    .expect("ran");
+
+    assert!(ran.contains("built"), "{ran}");
+    assert!(ran.contains("left running"), "{ran}");
+    let _ = std::fs::remove_dir_all(folder);
+}
