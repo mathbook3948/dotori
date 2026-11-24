@@ -48,6 +48,7 @@ const BACKLOG: usize = 500;
 const LIVE: usize = 1024;
 const MAX_LINE: u64 = 256 * 1024;
 const HELLO_WAIT: Duration = Duration::from_secs(5);
+const WINDOWS: usize = 32;
 
 /// The first line a window sends. Without the right token the daemon hangs up.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -350,6 +351,10 @@ impl Channel for AppChannel {
             loop {
                 let (stream, _) = listener.accept().await.map_err(failed)?;
                 while windows.try_join_next().is_some() {}
+                if windows.len() >= WINDOWS {
+                    drop(stream);
+                    continue;
+                }
                 windows.spawn(serve(
                     stream,
                     self.token.clone(),

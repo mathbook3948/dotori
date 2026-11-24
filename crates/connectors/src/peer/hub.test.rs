@@ -151,3 +151,49 @@ async fn a_pc_learns_of_another_through_a_third_and_a_removal_unlinks_it() {
         let _ = std::fs::remove_dir_all(folder);
     }
 }
+
+#[tokio::test]
+async fn greetings_past_the_limit_are_hung_up_on_until_one_finishes() {
+    let a = pc("crowd", "a", true);
+    let b = pc("crowd", "b", false);
+    let (a_hub, _a_heard) = Hub::start(a.config.clone()).await.expect("a started");
+    let address = a_hub.listening().expect("listening").to_string();
+    let (_, secret) = Invite::make(&a.config.invite, now() + 600).expect("invite");
+    let code = Code {
+        key: a.config.identity.public,
+        secret,
+        address: None,
+    };
+    let mut silent = Vec::new();
+    for _ in 0..GREETING {
+        silent.push(TcpStream::connect(&address).await.expect("connected"));
+    }
+    time::sleep(Duration::from_millis(200)).await;
+
+    let crowded = join(
+        &b.config.identity,
+        &hello(&b),
+        &code,
+        &address,
+        &b.config.book,
+    )
+    .await;
+    assert!(crowded.is_err());
+
+    drop(silent);
+    time::sleep(Duration::from_millis(200)).await;
+    let joined = join(
+        &b.config.identity,
+        &hello(&b),
+        &code,
+        &address,
+        &b.config.book,
+    )
+    .await
+    .expect("joined");
+    assert_eq!(joined.device, "a");
+
+    for folder in [a.folder, b.folder] {
+        let _ = std::fs::remove_dir_all(folder);
+    }
+}

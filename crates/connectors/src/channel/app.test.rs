@@ -342,3 +342,27 @@ async fn lines_from_before_a_start_come_first_and_stay_on_this_pc() {
     );
     assert!(published.try_recv().is_err());
 }
+
+#[tokio::test]
+async fn connections_past_the_limit_are_hung_up_on_and_the_owner_still_gets_in_later() {
+    let (_channel, address, mut inbox) = start().await;
+    let mut held = Vec::new();
+    for _ in 0..WINDOWS {
+        held.push(TcpStream::connect(address).await.expect("connected"));
+    }
+    time::sleep(Duration::from_millis(200)).await;
+
+    let mut turned_away = Window::open(address, "secret").await;
+    turned_away.say("hello?").await;
+    assert_eq!(turned_away.next().await, None);
+
+    drop(held);
+    time::sleep(Duration::from_millis(200)).await;
+    let mut owner = Window::open(address, "secret").await;
+    owner.say("now").await;
+    let heard = time::timeout(WAIT, inbox.recv())
+        .await
+        .expect("in time")
+        .expect("heard");
+    assert_eq!(heard.content.as_str(), "now");
+}

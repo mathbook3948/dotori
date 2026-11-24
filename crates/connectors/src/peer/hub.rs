@@ -19,6 +19,7 @@ use serde_json::Value;
 use serde_json::json;
 use tokio::net::TcpListener;
 use tokio::net::TcpStream;
+use tokio::sync::Semaphore;
 use tokio::sync::mpsc;
 use tokio::time;
 
@@ -40,6 +41,7 @@ use crate::peer::write_privately;
 const DIAL_EVERY: Duration = Duration::from_secs(5);
 const DIAL_WAIT: Duration = Duration::from_secs(5);
 const BOOK: &str = "book";
+const GREETING: usize = 16;
 
 /// Where this PC keeps what the hub needs, and how the others reach it.
 #[derive(Clone, Debug)]
@@ -268,9 +270,14 @@ impl Hub {
     }
 
     async fn listen(self: Arc<Self>, listener: TcpListener) {
+        let greeting = Arc::new(Semaphore::new(GREETING));
         loop {
             let Ok((stream, _)) = listener.accept().await else {
                 time::sleep(Duration::from_millis(50)).await;
+                continue;
+            };
+            let Ok(turn) = Arc::clone(&greeting).try_acquire_owned() else {
+                drop(stream);
                 continue;
             };
             let hub = Arc::clone(&self);
@@ -292,6 +299,7 @@ impl Hub {
                     &hub.hello(),
                 )
                 .await;
+                drop(turn);
                 if let Ok((line, Start::Join(_))) = &answered {
                     hub.welcome(line);
                 }
