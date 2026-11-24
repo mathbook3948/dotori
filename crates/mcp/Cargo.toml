@@ -3,6 +3,13 @@ name = "dotori-mcp"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "The MCP server of dotori: memory search, web fetch, the browser, and relayed MCP servers"
+rust-version.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish = false
 
 [dependencies]
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
