@@ -48,7 +48,16 @@ pub(crate) fn step(state: &mut AgentState, event: Event) -> Vec<Effect> {
             result,
         } => on_delivery_done(state, thread, place, text, result),
         Event::ChannelEnded { channel, result } => on_channel_ended(state, channel, result),
-        Event::Shutdown => on_shutdown(state),
+        Event::SubSessionReturned {
+            spec,
+            outcome,
+            record,
+            ack,
+        } => on_returned(state, spec, outcome, record, ack),
+        Event::Shutdown { handing_off } => {
+            state.handing_off |= handing_off;
+            on_shutdown(state)
+        }
     }
 }
 
@@ -217,7 +226,77 @@ fn on_channel_ended(
     Vec::new()
 }
 
+fn on_returned(
+    state: &mut AgentState,
+    spec: SubSessionSpec,
+    outcome: SubSessionOutcome,
+    record: bool,
+    ack: u64,
+) -> Vec<Effect> {
+    let started = state
+        .sub_sessions
+        .iter()
+        .filter(|(_, running)| **running == spec)
+        .map(|(id, _)| *id)
+        .min();
+    if started.is_none() && !still_open(&state.conversation, &spec) {
+        if !record && unanswered(&state.conversation, &spec, &outcome) {
+            let mut effects = vec![Effect::Acknowledge(ack, true)];
+            effects.extend(absorb(state, Arrival::Joins));
+            return effects;
+        }
+        return vec![Effect::Acknowledge(ack, false)];
+    }
+    if let Some(id) = started {
+        state.sub_sessions.remove(&id);
+    }
+    state
+        .conversation
+        .push(Entry::SubSessionReturned { spec, outcome });
+    if !record {
+        state.unrecorded += 1;
+    }
+    let mut effects = vec![Effect::Acknowledge(ack, true)];
+    effects.extend(absorb(state, Arrival::Joins));
+    effects
+}
+
+fn unanswered(conversation: &[Entry], spec: &SubSessionSpec, outcome: &SubSessionOutcome) -> bool {
+    conversation
+        .iter()
+        .rev()
+        .take_while(|entry| !matches!(entry, Entry::Acted { .. }))
+        .any(|entry| {
+            matches!(entry, Entry::SubSessionReturned { spec: returned, outcome: came } if returned == spec && came == outcome)
+        })
+}
+
+fn still_open(conversation: &[Entry], spec: &SubSessionSpec) -> bool {
+    let mut open = 0usize;
+    for entry in conversation {
+        match entry {
+            Entry::Acted { actions, .. } => {
+                open += actions
+                    .iter()
+                    .filter(
+                        |action| matches!(action, Action::Delegate(delegated) if delegated == spec),
+                    )
+                    .count();
+            }
+            Entry::SubSessionReturned { spec: returned, .. } if returned == spec => {
+                open = open.saturating_sub(1);
+            }
+            _ => {}
+        }
+    }
+    open > 0
+}
+
 fn stop(state: &mut AgentState) -> Effect {
+    if state.handing_off {
+        state.sub_sessions.clear();
+        return Effect::Stop;
+    }
     let mut stopped: Vec<(SubSessionId, SubSessionSpec)> = state.sub_sessions.drain().collect();
     stopped.sort_by_key(|(id, _)| *id);
     for (_, spec) in stopped {

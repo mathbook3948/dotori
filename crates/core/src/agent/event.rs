@@ -9,6 +9,7 @@ use crate::llm::ModelReply;
 use crate::message::Incoming;
 use crate::message::Place;
 use crate::sub_session::SubSessionOutcome;
+use crate::sub_session::SubSessionSpec;
 use crate::tool::ToolError;
 
 /// The single inbound queue item. Crate-private, so outside code reaches the queue only
@@ -41,5 +42,13 @@ pub(crate) enum Event {
         channel: ChannelId,
         result: Result<(), ChannelError>,
     },
-    Shutdown,
+    SubSessionReturned {
+        spec: SubSessionSpec,
+        outcome: SubSessionOutcome,
+        record: bool,
+        ack: u64,
+    },
+    Shutdown {
+        handing_off: bool,
+    },
 }

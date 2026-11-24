@@ -53,6 +53,9 @@ use crate::door::Door;
 use crate::forget::FORGET;
 use crate::forget::Forget;
 use crate::forget::Previewed;
+use crate::handoff;
+use crate::handoff::HandedOff;
+use crate::handoff::Handoff;
 use crate::history;
 use crate::home::Home;
 use crate::idle::NoTools;
@@ -122,7 +125,11 @@ pub(crate) async fn serve(
         Some(tools) => Arc::clone(tools) as Arc<dyn Toolbox>,
         None => Arc::new(NoTools),
     };
-    let sub_sessions = sub_session_runner(&home, &settings, &toolbox, shared)?;
+    let handoff = Arc::new(Handoff::default());
+    let sub_sessions: Arc<dyn SubSessionRunner> = Arc::new(HandedOff {
+        handoff: Arc::clone(&handoff),
+        inner: sub_session_runner(&home, &settings, &toolbox, shared)?,
+    });
     let records = open_record(&home).await?;
     let notes = Notes::new(home.notes());
     let routines = Routines::new(home.routines());
@@ -195,6 +202,7 @@ pub(crate) async fn serve(
     let (records, linked, heard) = link(&home, &settings, records, &app).await;
     if let Some(linked) = &linked {
         browser.link(linked.clone());
+        handoff.link(linked.clone(), Arc::clone(&records));
     }
     for job in [VECTORS_JOB, BROWSER_JOB] {
         vector_copies::write_job(&home.jobs(), job, linked.is_none());
@@ -320,11 +328,17 @@ pub(crate) async fn serve(
             tokio::spawn(async move { settings_copies.share(linked).await });
         }
         let routines = Arc::clone(&routines);
+        let handoff = Arc::clone(&handoff);
         tokio::spawn(async move {
             while let Some(heard) = heard.recv().await {
                 linked.keeper.hear(&heard);
                 if let Some(decision) = confirm::heard(&heard) {
                     let _ = decide_tx.send((decision, true));
+                    continue;
+                }
+                if let Some((spec, outcome)) = handoff::heard(&heard.message) {
+                    let handoff = Arc::clone(&handoff);
+                    tokio::spawn(async move { handoff.show(spec, outcome).await });
                     continue;
                 }
                 if settings_copies.hear(&linked, &heard) {
@@ -458,9 +472,10 @@ pub(crate) async fn serve(
             records: Arc::clone(&records),
         };
         asking.lapse_waiting();
-        let agent = Agent::spawn(config.clone(), ports)
+        let agent = Agent::spawn_continuing(config.clone(), ports, handoff.running())
             .await
             .map_err(|error| error.to_string())?;
+        handoff.serve(Some(agent.returns()));
         if linked.is_some() {
             eprintln!("dotori: this PC runs the assistant now");
         }
@@ -477,7 +492,14 @@ pub(crate) async fn serve(
             () = &mut quit => Some(Ok(())),
         };
         route.elsewhere();
-        agent.shutdown().await;
+        handoff.serve(None);
+        if ended.is_some() {
+            handoff.quit();
+            agent.shutdown().await;
+            handoff.stop_all();
+        } else {
+            agent.hand_off().await;
+        }
         asking.lapse_waiting();
         match ended {
             Some(stopped) => break stopped,

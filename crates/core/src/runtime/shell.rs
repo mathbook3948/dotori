@@ -1,9 +1,11 @@
 use std::collections::HashMap;
+use std::mem;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::SystemTime;
 
 use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 use tokio::task::AbortHandle;
 use tokio::task::JoinSet;
 use tokio::time;
@@ -49,11 +51,16 @@ pub(crate) struct Shell {
     model: Arc<dyn Model>,
     toolbox: Arc<dyn Toolbox>,
     sub_sessions: Arc<dyn SubSessionRunner>,
+    acks: Acks,
     tool_timeout: Duration,
     tasks: JoinSet<()>,
     senders: JoinSet<()>,
     model_calls: HashMap<CallId, AbortHandle>,
 }
+
+/// Who waits to hear whether a result handed in from outside was taken, by the number its event
+/// carries.
+pub(crate) type Acks = Arc<std::sync::Mutex<HashMap<u64, oneshot::Sender<bool>>>>;
 
 /// One reply waiting in a channel's outbox. Each channel drains its outbox in order.
 pub(crate) struct Delivery {
@@ -69,6 +76,7 @@ impl Shell {
         tx: mpsc::Sender<Event>,
         ports: Ports,
         tool_timeout: Duration,
+        acks: Acks,
     ) -> Self {
         let mut tasks = JoinSet::new();
         let mut senders = JoinSet::new();
@@ -90,6 +98,7 @@ impl Shell {
             model: ports.model,
             toolbox: ports.toolbox,
             sub_sessions: ports.sub_sessions,
+            acks,
             tool_timeout,
             tasks,
             senders,
@@ -104,7 +113,12 @@ impl Shell {
             }
             let recorded = state.conversation.len();
             let effects = step(&mut state, event);
-            self.record(&state.conversation[recorded..]);
+            let end = state
+                .conversation
+                .len()
+                .saturating_sub(mem::take(&mut state.unrecorded))
+                .max(recorded);
+            self.record(&state.conversation[recorded..end]);
             for effect in effects {
                 if matches!(effect, Effect::Stop) {
                     break 'events;
@@ -118,6 +132,10 @@ impl Shell {
 
     async fn stop(mut self) {
         self.rx.close();
+        self.acks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
         drop(self.outboxes);
         drop(self.shows);
         drop(self.records);
@@ -197,6 +215,16 @@ impl Shell {
                         })
                         .await;
                 });
+            }
+            Effect::Acknowledge(ack, taken) => {
+                let waiting = self
+                    .acks
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .remove(&ack);
+                if let Some(waiting) = waiting {
+                    let _ = waiting.send(taken);
+                }
             }
             Effect::Stop => {}
         }

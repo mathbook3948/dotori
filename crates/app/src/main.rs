@@ -5,6 +5,7 @@ mod daemon;
 mod device;
 mod door;
 mod forget;
+mod handoff;
 mod history;
 mod home;
 mod idle;

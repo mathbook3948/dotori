@@ -31,5 +31,7 @@ pub(crate) enum Effect {
         sub_session: SubSessionId,
         spec: SubSessionSpec,
     },
+    /// Says whether a result handed in from outside was taken, once it is recorded.
+    Acknowledge(u64, bool),
     Stop,
 }
