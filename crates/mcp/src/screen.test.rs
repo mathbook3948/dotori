@@ -98,6 +98,10 @@ async fn a_window_without_the_token_gets_nothing() {
 #[test]
 fn only_known_asks_are_taken() {
     assert_eq!(ask_of(r#"{"kind":"give"}"#), Some(Ask::Give));
+    assert!(matches!(
+        ask_of(r#"{"kind":"auth","username":"owner","password":"secret"}"#),
+        Some(Ask::Input(_))
+    ));
     assert_eq!(ask_of(r#"{"kind":"watch"}"#), None);
     assert_eq!(ask_of("not json"), None);
 }

@@ -50,10 +50,12 @@ use tokio::sync::mpsc;
 use crate::screen_link::Picture;
 use crate::screen_link::ScreenLink;
 use crate::screen_link::Seen;
+use crate::window::input::Submit;
 use crate::window::input::TextInput;
 use crate::window::parts::prose;
 use crate::window::theme::Theme;
 
+const ANSWERED_KEPT: usize = 16;
 const POINTER_SHOWN: Duration = Duration::from_millis(900);
 
 #[derive(Clone, Copy, PartialEq)]
@@ -76,6 +78,10 @@ pub(crate) struct ScreenView {
     picker: Option<Value>,
     prompted: bool,
     typed: Option<Entity<TextInput>>,
+    login: Option<(Entity<TextInput>, Entity<TextInput>)>,
+    asked_login: Option<Value>,
+    answered: Vec<u64>,
+    focus_login: bool,
     down: bool,
     pointer: Option<(f64, f64, Instant)>,
     composing: bool,
@@ -108,6 +114,10 @@ impl ScreenView {
             picker: None,
             prompted: false,
             typed: None,
+            login: None,
+            asked_login: None,
+            answered: Vec::new(),
+            focus_login: false,
             down: true,
             pointer: None,
             composing: false,
@@ -121,7 +131,7 @@ impl ScreenView {
 
     /// Whether dotori asked the owner to take the browser over, for a mark on the tab.
     pub(crate) fn asking(&self) -> bool {
-        self.asked.is_some()
+        self.asked.is_some() || self.asked_login.is_some()
     }
 
     fn apply(&mut self, item: Seen, cx: &mut Context<Self>) {
@@ -163,6 +173,32 @@ impl ScreenView {
                     self.open_picker(picker.as_ref(), cx);
                 }
                 self.picker = picker;
+                let login = state
+                    .get("login")
+                    .filter(|login| {
+                        login.is_object()
+                            && !login
+                                .get("id")
+                                .and_then(Value::as_u64)
+                                .is_some_and(|id| self.answered.contains(&id))
+                    })
+                    .cloned();
+                let id = |login: &Option<Value>| {
+                    login
+                        .as_ref()
+                        .and_then(|login| login.get("id"))
+                        .and_then(Value::as_u64)
+                };
+                if id(&login) != id(&self.asked_login) {
+                    self.login = login.as_ref().map(|_| {
+                        (
+                            cx.new(|cx| TextInput::new("", cx)),
+                            cx.new(|cx| TextInput::masked("", cx)),
+                        )
+                    });
+                    self.focus_login = login.is_some();
+                }
+                self.asked_login = login;
             }
             Seen::Frame(Picture {
                 width,
@@ -426,6 +462,278 @@ impl ScreenView {
         )
     }
 
+    fn login_card(&self, theme: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let asked = self.asked_login.as_ref()?;
+        let again = asked.get("again").and_then(Value::as_bool) == Some(true);
+        let origin = asked
+            .get("origin")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let site = origin
+            .split_once("://")
+            .map_or(origin, |(_, host)| host)
+            .to_owned();
+        let realm = asked
+            .get("realm")
+            .and_then(Value::as_str)
+            .filter(|realm| !realm.is_empty())
+            .map(|realm| {
+                div()
+                    .px_1p5()
+                    .rounded_sm()
+                    .bg(theme.other)
+                    .text_xs()
+                    .text_color(theme.other_text)
+                    .child(SharedString::from(realm.to_owned()))
+            });
+        let (name, secret) = match &self.login {
+            Some((name, secret)) => (Some(name.clone()), Some(secret.clone())),
+            None => (None, None),
+        };
+        let field = |id: &'static str, label: &'static str, input: Option<Entity<TextInput>>| {
+            let target = input.clone();
+            div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(
+                    div()
+                        .text_xs()
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(theme.muted)
+                        .child(label),
+                )
+                .child(
+                    div()
+                        .id(id)
+                        .px_3()
+                        .py_2()
+                        .rounded_lg()
+                        .bg(theme.canvas)
+                        .border_1()
+                        .border_color(theme.line)
+                        .cursor_text()
+                        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                            if let Some(input) = &target {
+                                window.focus(&input.focus_handle(cx));
+                            }
+                            cx.stop_propagation();
+                        })
+                        .children(input),
+                )
+        };
+        let next = secret.clone();
+        div()
+            .id("login")
+            .occlude()
+            .absolute()
+            .inset_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(gpui::rgba(0x0000_0033))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_4()
+                    .w(px(340.))
+                    .p_5()
+                    .rounded_2xl()
+                    .bg(theme.surface)
+                    .border_1()
+                    .border_color(theme.line)
+                    .shadow_lg()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_3()
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_none()
+                                    .items_center()
+                                    .justify_center()
+                                    .size(px(36.))
+                                    .rounded_full()
+                                    .bg(theme.selection)
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_col()
+                                            .items_center()
+                                            .child(
+                                                div()
+                                                    .w(px(12.))
+                                                    .h(px(10.))
+                                                    .border_2()
+                                                    .border_b_0()
+                                                    .border_color(theme.accent)
+                                                    .rounded_t_full(),
+                                            )
+                                            .child(
+                                                div()
+                                                    .w(px(18.))
+                                                    .h(px(13.))
+                                                    .rounded_sm()
+                                                    .bg(theme.accent),
+                                            ),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .min_w_0()
+                                    .gap_0p5()
+                                    .child(
+                                        div()
+                                            .text_base()
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .child("로그인이 필요해요"),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap_1p5()
+                                            .min_w_0()
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .text_color(theme.muted)
+                                                    .truncate()
+                                                    .child(SharedString::from(site)),
+                                            )
+                                            .children(realm),
+                                    ),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_3()
+                            .child(field("login-name", "아이디", name).on_action(
+                                move |_: &Submit, window, cx| {
+                                    if let Some(next) = &next {
+                                        window.focus(&next.focus_handle(cx));
+                                    }
+                                },
+                            ))
+                            .child(field("login-secret", "비밀번호", secret).on_action(
+                                cx.listener(|view, _: &Submit, window, cx| view.log_in(window, cx)),
+                            )),
+                    )
+                    .when(again, |card| {
+                        card.child(
+                            div()
+                                .px_3()
+                                .py_1p5()
+                                .rounded_lg()
+                                .bg(theme.danger_soft)
+                                .text_color(theme.danger)
+                                .text_xs()
+                                .child("아이디나 비밀번호가 맞지 않았어요. 다시 넣어 주세요."),
+                        )
+                    })
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.faint)
+                            .child("이 페이지에만 넘기고 대화 기록에는 남기지 않아요."),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .justify_end()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .id("login-cancel")
+                                    .px_3()
+                                    .py_1p5()
+                                    .rounded_lg()
+                                    .cursor_pointer()
+                                    .text_color(theme.muted)
+                                    .hover(|cancel| cancel.bg(theme.canvas))
+                                    .child("취소")
+                                    .on_click(cx.listener(|view, _, window, cx| {
+                                        view.answer_login(None, window, cx);
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .id("login-go")
+                                    .px_4()
+                                    .py_1p5()
+                                    .rounded_lg()
+                                    .cursor_pointer()
+                                    .bg(theme.accent)
+                                    .hover(|go| go.bg(theme.accent_hover))
+                                    .text_color(theme.accent_text)
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child("로그인")
+                                    .on_click(
+                                        cx.listener(|view, _, window, cx| view.log_in(window, cx)),
+                                    ),
+                            ),
+                    ),
+            )
+            .on_key_down(cx.listener(|view, event: &KeyDownEvent, window, cx| {
+                if event.keystroke.key == "escape" {
+                    view.answer_login(None, window, cx);
+                    cx.stop_propagation();
+                }
+            }))
+            .into_any_element()
+            .into()
+    }
+
+    fn log_in(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((name, secret)) = &self.login else {
+            return;
+        };
+        let given = (
+            name.read(cx).text().to_owned(),
+            secret.read(cx).text().to_owned(),
+        );
+        self.answer_login(Some(given), window, cx);
+    }
+
+    fn answer_login(
+        &mut self,
+        given: Option<(String, String)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(id) = self
+            .asked_login
+            .as_ref()
+            .and_then(|login| login.get("id"))
+            .and_then(Value::as_u64)
+        else {
+            return;
+        };
+        self.say(match given {
+            Some((username, password)) => {
+                json!({ "kind": "auth", "id": id, "username": username, "password": password })
+            }
+            None => json!({ "kind": "auth", "id": id, "cancel": true }),
+        });
+        if self.answered.len() >= ANSWERED_KEPT {
+            self.answered.remove(0);
+        }
+        self.answered.push(id);
+        self.asked_login = None;
+        self.login = None;
+        if self.mode == Mode::Owner {
+            window.focus(&self.focus);
+        }
+        cx.notify();
+    }
+
     fn say(&self, value: Value) {
         let _ = self.send.send(value);
     }
@@ -477,8 +785,8 @@ impl ScreenView {
         }));
     }
 
-    fn key(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
-        if self.mode != Mode::Owner || self.composing {
+    fn key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.mode != Mode::Owner || self.composing || !self.focus.is_focused(window) {
             return;
         }
         let stroke = &event.keystroke;
@@ -770,7 +1078,14 @@ impl Render for ScreenView {
         let entity: Entity<Self> = cx.entity();
         let focus = self.focus.clone();
         let owner = self.mode == Mode::Owner;
+        if self.focus_login
+            && let Some((name, _)) = &self.login
+        {
+            self.focus_login = false;
+            window.focus(&name.focus_handle(cx));
+        }
         let picker = self.picker_card(&theme, cx);
+        let login = self.login_card(&theme, cx);
         self.painted |= self.picture.is_some();
         let screen = match &self.picture {
             Some(picture) => img(ImageSource::Render(Arc::clone(picture)))
@@ -935,7 +1250,8 @@ impl Render for ScreenView {
                     )
                     .child(screen)
                     .children(marker)
-                    .children(picker),
+                    .children(picker)
+                    .children(login),
             )
     }
 }

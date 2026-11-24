@@ -671,3 +671,116 @@ async fn a_frame_from_the_same_page_is_read_and_one_from_elsewhere_is_named() {
     let body = shown.split_once("\n\n").expect("a body").1;
     assert!(!body.contains("Secret"), "{body}");
 }
+
+#[tokio::test]
+#[ignore = "starts a real Chrome and reaches httpbin.org"]
+async fn a_page_that_asks_for_a_login_waits_for_the_owners_answer() {
+    let browser = browser();
+    let running = browser.page().await.expect("started");
+    let cdp = Arc::clone(&running.cdp);
+    let session = running.session.clone();
+    let going = tokio::spawn(async move {
+        cdp.send(
+            "Page.navigate",
+            json!({ "url": "https://httpbin.org/basic-auth/owner/secret" }),
+            Some(&session),
+        )
+        .await
+    });
+    let login =
+        |browser: &Browser| browser.screen.state.lock().expect("unpoisoned")["login"].clone();
+    let waited = |browser: Arc<Browser>, after: u64| async move {
+        for _ in 0..100 {
+            let shown = login(&browser);
+            if shown["id"].as_u64().is_some_and(|id| id > after) {
+                return shown;
+            }
+            time::sleep(Duration::from_millis(100)).await;
+        }
+        panic!("no login asked");
+    };
+    let asked = waited(Arc::clone(&browser), 0).await;
+    assert_eq!(asked["origin"], "https://httpbin.org", "{asked}");
+    assert_eq!(asked["again"], false);
+    let first = asked["id"].as_u64().expect("numbered");
+
+    browser
+        .auth(&json!({ "kind": "auth", "id": first + 100, "username": "owner", "password": "secret" }))
+        .await
+        .expect("ignored");
+    assert_eq!(login(&browser)["id"], first);
+
+    browser
+        .auth(&json!({ "kind": "auth", "id": first, "username": "owner", "password": "wrong" }))
+        .await
+        .expect("answered");
+    let again = waited(Arc::clone(&browser), first).await;
+    assert_eq!(again["again"], true, "{again}");
+
+    browser
+        .auth(&json!({ "kind": "auth", "id": again["id"], "username": "owner", "password": "secret" }))
+        .await
+        .expect("answered");
+    going.await.expect("joined").expect("navigated");
+    let page = Page { running: &running };
+    page.settle().await.expect("settled");
+
+    let body = page
+        .evaluate("document.body.innerText")
+        .await
+        .expect("read");
+    assert!(
+        body.as_str()
+            .is_some_and(|text| text.contains("\"authenticated\": true")),
+        "{body}"
+    );
+    assert!(login(&browser).is_null());
+}
+
+#[tokio::test]
+#[ignore = "starts a real Chrome"]
+async fn giving_the_browser_back_while_waiting_leaves_it_with_the_agent() {
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let base = std::env::temp_dir().join(format!("dotori-browser-test-{}-{n}", std::process::id()));
+    let (screen, _) = Screen::new();
+    let (asks, heard) = mpsc::unbounded_channel();
+    let browser = Browser::with_screen(
+        BrowserConfig {
+            logins: None,
+            executable: std::env::var_os("DOTORI_TEST_CHROME").map(PathBuf::from),
+            downloads: base.join("chrome"),
+            profile: base.join("profile"),
+        },
+        screen,
+        heard,
+    );
+    let mode = |browser: &Browser| browser.screen.state.lock().expect("unpoisoned")["mode"].clone();
+    let acting = Arc::clone(&browser.acting).lock_owned().await;
+
+    asks.send(Ask::Take).expect("sent");
+    for _ in 0..50 {
+        if mode(&browser) == "waiting" {
+            break;
+        }
+        time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(mode(&browser), "waiting");
+    asks.send(Ask::Give).expect("sent");
+    time::sleep(Duration::from_millis(200)).await;
+    drop(acting);
+    time::sleep(Duration::from_secs(3)).await;
+
+    assert!(browser.owner.lock().await.is_none());
+    assert_eq!(mode(&browser), "idle");
+    assert!(browser.acting.try_lock().is_ok());
+
+    asks.send(Ask::Take).expect("sent");
+    for _ in 0..200 {
+        if mode(&browser) == "owner" {
+            break;
+        }
+        time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(mode(&browser), "owner");
+    assert!(browser.owner.lock().await.is_some());
+}

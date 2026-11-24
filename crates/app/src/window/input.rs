@@ -75,6 +75,7 @@ actions!(
 );
 
 const MAX_ROWS: f32 = 8.;
+const DOT: char = '•';
 
 /// A text field, of one line or of several.
 pub(crate) struct TextInput {
@@ -88,6 +89,7 @@ pub(crate) struct TextInput {
     last_bounds: Option<Bounds<Pixels>>,
     is_selecting: bool,
     multiline: bool,
+    masked: bool,
     scroll: ScrollHandle,
     followed: Option<(SharedString, usize, Pixels)>,
     column: Option<Pixels>,
@@ -144,7 +146,7 @@ impl TextInput {
         let Some(shaped) = self.last_layout.as_ref() else {
             return (self.cursor_offset(), None);
         };
-        let at = shaped.position(self.cursor_offset());
+        let at = shaped.position(self.shown(self.cursor_offset()));
         let x = self.column.unwrap_or(at.x);
         let y = at.y + shaped.line_height * (rows + 0.5);
         let to = if y < Pixels::ZERO {
@@ -152,7 +154,7 @@ impl TextInput {
         } else if y >= shaped.height() {
             self.content.len()
         } else {
-            self.within(shaped.index(point(x, y)))
+            self.within(self.hidden(shaped.index(point(x, y))))
         };
         (to, Some(x))
     }
@@ -170,7 +172,7 @@ impl TextInput {
         if view.size.height <= Pixels::ZERO {
             return false;
         }
-        let cursor = bounds.top() + shaped.position(self.cursor_offset()).y;
+        let cursor = bounds.top() + shaped.position(self.shown(self.cursor_offset())).y;
         let mut offset = self.scroll.offset();
         if cursor < view.top() {
             offset.y += view.top() - cursor;
@@ -269,14 +271,14 @@ impl TextInput {
     }
 
     fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
-        if !self.selected_range.is_empty() {
+        if !self.selected_range.is_empty() && !self.masked {
             cx.write_to_clipboard(ClipboardItem::new_string(
                 self.content[self.selected_range.clone()].to_string(),
             ));
         }
     }
     fn cut(&mut self, _: &Cut, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.selected_range.is_empty() {
+        if !self.selected_range.is_empty() && !self.masked {
             cx.write_to_clipboard(ClipboardItem::new_string(
                 self.content[self.selected_range.clone()].to_string(),
             ));
@@ -313,7 +315,7 @@ impl TextInput {
         if position.y > bounds.bottom() {
             return self.content.len();
         }
-        self.within(shaped.index(position - bounds.origin))
+        self.within(self.hidden(shaped.index(position - bounds.origin)))
     }
 
     fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
@@ -396,10 +398,41 @@ impl TextInput {
             last_bounds: None,
             is_selecting: false,
             multiline: false,
+            masked: false,
             scroll: ScrollHandle::new(),
             followed: None,
             column: None,
         }
+    }
+
+    /// A field of one line that shows a dot for each character, for a password. It never hands
+    /// the input method the real text.
+    pub(crate) fn masked(placeholder: &'static str, cx: &mut Context<Self>) -> Self {
+        Self {
+            masked: true,
+            ..Self::new(placeholder, cx)
+        }
+    }
+
+    fn shown(&self, index: usize) -> usize {
+        if self.masked {
+            self.content[..index.min(self.content.len())]
+                .chars()
+                .count()
+                * DOT.len_utf8()
+        } else {
+            index
+        }
+    }
+
+    fn hidden(&self, shown: usize) -> usize {
+        if !self.masked {
+            return shown;
+        }
+        self.content
+            .char_indices()
+            .nth(shown / DOT.len_utf8())
+            .map_or(self.content.len(), |(at, _)| at)
     }
 
     /// A field that grows to several lines as the text wraps, and takes a line break on
@@ -455,6 +488,14 @@ impl EntityInputHandler for TextInput {
     ) -> Option<String> {
         let range = self.range_from_utf16(&range_utf16);
         actual_range.replace(self.range_to_utf16(&range));
+        if self.masked {
+            return Some(
+                self.content[range]
+                    .chars()
+                    .flat_map(|c| std::iter::repeat_n(DOT, c.len_utf16()))
+                    .collect(),
+            );
+        }
         Some(self.content[range].to_string())
     }
 
@@ -547,8 +588,8 @@ impl EntityInputHandler for TextInput {
     ) -> Option<Bounds<Pixels>> {
         let shaped = self.last_layout.as_ref()?;
         let range = self.range_from_utf16(&range_utf16);
-        let start = shaped.position(range.start);
-        let end = shaped.position(range.end);
+        let start = shaped.position(self.shown(range.start));
+        let end = shaped.position(self.shown(range.end));
         Some(Bounds::from_corners(
             bounds.origin + start,
             bounds.origin + point(end.x.max(start.x), start.y + shaped.line_height),
@@ -563,7 +604,7 @@ impl EntityInputHandler for TextInput {
     ) -> Option<usize> {
         let inside = self.last_bounds?.localize(&point)?;
         let shaped = self.last_layout.as_ref()?;
-        Some(self.offset_to_utf16(self.within(shaped.index(inside))))
+        Some(self.offset_to_utf16(self.within(self.hidden(shaped.index(inside)))))
     }
 }
 
@@ -690,6 +731,11 @@ impl TextInput {
         let theme = Theme::of(window);
         let (text, color) = if self.content.is_empty() {
             (self.placeholder.clone(), theme.faint.into())
+        } else if self.masked {
+            (
+                SharedString::from(DOT.to_string().repeat(self.content.chars().count())),
+                style.color,
+            )
         } else {
             (self.content.clone(), style.color)
         };
@@ -701,7 +747,11 @@ impl TextInput {
             underline: None,
             strikethrough: None,
         };
-        let runs = match self.marked_range.as_ref() {
+        let marked = self
+            .marked_range
+            .as_ref()
+            .map(|marked| self.shown(marked.start)..self.shown(marked.end));
+        let runs = match marked.as_ref() {
             Some(marked) => [
                 TextRun {
                     len: marked.start,
@@ -788,7 +838,7 @@ impl Element for TextElement {
             let at = shaped.position(if input.content.is_empty() {
                 0
             } else {
-                input.cursor_offset()
+                input.shown(input.cursor_offset())
             });
             (
                 Vec::new(),
@@ -800,7 +850,10 @@ impl Element for TextElement {
         } else {
             (
                 shaped
-                    .rows(&selected, bounds.size.width)
+                    .rows(
+                        &(input.shown(selected.start)..input.shown(selected.end)),
+                        bounds.size.width,
+                    )
                     .into_iter()
                     .map(|row| {
                         fill(

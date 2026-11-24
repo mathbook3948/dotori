@@ -2,6 +2,8 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use reqwest::Url;
@@ -15,10 +17,13 @@ use tokio::process::Child;
 use tokio::process::Command;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc;
+use tokio::sync::watch;
 use tokio::time;
 
 use crate::Tool;
 use crate::ToolFuture;
+use crate::auth::Challenge;
+use crate::auth::Challenges;
 use crate::cdp::Cdp;
 use crate::chrome;
 use crate::fetch;
@@ -39,6 +44,7 @@ const RUN_WAIT: Duration = Duration::from_secs(100);
 const WIDTH: u32 = 1280;
 const HEIGHT: u32 = 800;
 const WORLD: &str = "dotori";
+const AUTH_WAIT: Duration = Duration::from_secs(90);
 const LOGINS_EVERY: Duration = Duration::from_secs(60);
 
 /// How the browser runs. The profile folder keeps logins between runs. Without an executable,
@@ -78,7 +84,12 @@ pub struct Browser {
     screen: Arc<Screen>,
     shown: Arc<std::sync::Mutex<Option<Shown>>>,
     owner: Mutex<Option<tokio::sync::OwnedMutexGuard<()>>>,
+    logins: SharedChallenges,
+    taking: AtomicBool,
+    gave: watch::Sender<u64>,
 }
+
+type SharedChallenges = Arc<std::sync::Mutex<Challenges<Arc<Cdp>>>>;
 
 impl std::fmt::Debug for Browser {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -181,6 +192,9 @@ impl Browser {
             screen,
             shown: Arc::new(std::sync::Mutex::new(None)),
             owner: Mutex::new(None),
+            logins: Arc::default(),
+            taking: AtomicBool::new(false),
+            gave: watch::Sender::new(0),
         });
         if tokio::runtime::Handle::try_current().is_ok() {
             tokio::spawn(Arc::clone(&browser).listen(asks));
@@ -192,16 +206,35 @@ impl Browser {
         while let Some(ask) = asks.recv().await {
             let done = match ask {
                 Ask::Watch(on) => {
+                    if !on {
+                        self.gave.send_modify(|gave| *gave += 1);
+                    }
                     if !on && self.owner.lock().await.take().is_some() {
                         self.screen.update(json!({ "mode": "idle" }));
                     }
                     self.cast(on).await
                 }
-                Ask::Take => self.take().await,
+                Ask::Take => {
+                    if !self.taking.swap(true, Ordering::SeqCst) {
+                        let browser = Arc::clone(&self);
+                        let since = *self.gave.borrow();
+                        tokio::spawn(async move {
+                            if let Err(error) = browser.take(since).await {
+                                browser.screen.update(json!({ "error": error }));
+                            }
+                            browser.taking.store(false, Ordering::SeqCst);
+                        });
+                    }
+                    Ok(())
+                }
                 Ask::Give => {
+                    self.gave.send_modify(|gave| *gave += 1);
                     self.owner.lock().await.take();
                     self.screen.update(json!({ "mode": "idle", "error": null }));
                     Ok(())
+                }
+                Ask::Input(input) if input.get("kind").and_then(Value::as_str) == Some("auth") => {
+                    self.auth(&input).await
                 }
                 Ask::Input(input) => {
                     if self.owner.lock().await.is_some() {
@@ -231,19 +264,33 @@ impl Browser {
         cdp.send(method, params, Some(&session)).await.map(drop)
     }
 
-    async fn take(&self) -> Result<(), String> {
+    async fn take(&self, since: u64) -> Result<(), String> {
+        let mut gave = self.gave.subscribe();
         if self.owner.lock().await.is_some() {
             self.screen.update(json!({ "mode": "owner" }));
             return Ok(());
         }
         self.screen.update(json!({ "mode": "waiting" }));
-        let held = Arc::clone(&self.acting).lock_owned().await;
+        let held = tokio::select! {
+            held = Arc::clone(&self.acting).lock_owned() => held,
+            _ = gave.wait_for(|now| *now != since) => {
+                self.screen.update(json!({ "mode": "idle" }));
+                return Ok(());
+            }
+        };
         if let Err(error) = self.page().await {
             drop(held);
             self.screen.update(json!({ "mode": "idle" }));
             return Err(error);
         }
-        *self.owner.lock().await = Some(held);
+        let mut owner = self.owner.lock().await;
+        if *self.gave.borrow() != since {
+            drop(held);
+            self.screen.update(json!({ "mode": "idle" }));
+            return Ok(());
+        }
+        *owner = Some(held);
+        drop(owner);
         self.screen
             .update(json!({ "mode": "owner", "asked": null, "error": null }));
         Ok(())
@@ -276,6 +323,33 @@ impl Browser {
             cdp.send(method, params, Some(&session)).await?;
         }
         Ok(())
+    }
+
+    async fn auth(&self, input: &Value) -> Result<(), String> {
+        let Some(id) = input.get("id").and_then(Value::as_u64) else {
+            return Ok(());
+        };
+        let login = {
+            let mut logins = self.logins.lock().expect("unpoisoned");
+            let login = logins.take(id);
+            self.screen.update(json!({ "login": logins.shown() }));
+            login
+        };
+        let Some(login) = login else {
+            return Ok(());
+        };
+        let given = match (
+            input.get("username").and_then(Value::as_str),
+            input.get("password").and_then(Value::as_str),
+        ) {
+            (Some(username), Some(password))
+                if input.get("cancel").and_then(Value::as_bool) != Some(true) =>
+            {
+                Some((username, password))
+            }
+            _ => None,
+        };
+        answer_auth(&login, given).await
     }
 
     async fn pick(&self, cdp: &Cdp, session: &str, input: &Value) -> Result<(), String> {
@@ -495,11 +569,14 @@ impl Browser {
         let events = cdp
             .events()
             .ok_or("the browser's events are already taken")?;
+        self.logins.lock().expect("unpoisoned").clear();
+        self.screen.update(json!({ "login": null }));
         let watcher = tokio::spawn(watch(
             Arc::clone(&cdp),
             events,
             Arc::clone(&self.screen),
             Arc::clone(&self.shown),
+            Arc::clone(&self.logins),
             target.clone(),
         ));
         let page = |method: &'static str, params: Value| {
@@ -510,7 +587,10 @@ impl Browser {
         page("Page.enable", json!({})).await?;
         page(
             "Fetch.enable",
-            json!({ "patterns": [{ "resourceType": "Document", "requestStage": "Request" }] }),
+            json!({
+                "patterns": [{ "resourceType": "Document", "requestStage": "Request" }],
+                "handleAuthRequests": true,
+            }),
         )
         .await?;
         let version = cdp.send("Browser.getVersion", json!({}), None).await?;
@@ -742,6 +822,7 @@ async fn watch(
     mut events: tokio::sync::mpsc::UnboundedReceiver<Value>,
     screen: Arc<Screen>,
     shown: Arc<std::sync::Mutex<Option<Shown>>>,
+    logins: SharedChallenges,
     main_target: String,
 ) {
     while let Some(event) = events.recv().await {
@@ -856,6 +937,42 @@ async fn watch(
                 }
                 None
             }
+            Some("Fetch.authRequired") => {
+                let challenge = params.get("authChallenge").cloned().unwrap_or(Value::Null);
+                let id = {
+                    let mut waiting = logins.lock().expect("unpoisoned");
+                    let id = waiting.ask(
+                        Arc::clone(&cdp),
+                        params.get("requestId").cloned().unwrap_or(Value::Null),
+                        session.map(str::to_owned),
+                        challenge
+                            .get("origin")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_owned(),
+                        challenge.get("realm").cloned().unwrap_or(Value::Null),
+                    );
+                    screen.update(json!({ "login": waiting.shown() }));
+                    id
+                };
+                let screen = Arc::clone(&screen);
+                let logins = Arc::clone(&logins);
+                tokio::spawn(async move {
+                    time::sleep(AUTH_WAIT).await;
+                    let lapsed = {
+                        let mut waiting = logins.lock().expect("unpoisoned");
+                        let lapsed = waiting.take(id);
+                        if lapsed.is_some() {
+                            screen.update(json!({ "login": waiting.shown() }));
+                        }
+                        lapsed
+                    };
+                    if let Some(lapsed) = lapsed {
+                        let _ = answer_auth(&lapsed, None).await;
+                    }
+                });
+                None
+            }
             Some("Fetch.requestPaused") => {
                 let id = params.get("requestId").cloned().unwrap_or(Value::Null);
                 let url = params
@@ -876,6 +993,29 @@ async fn watch(
             let _ = cdp.send(method, params, session).await;
         }
     }
+}
+
+async fn answer_auth(
+    login: &Challenge<Arc<Cdp>>,
+    given: Option<(&str, &str)>,
+) -> Result<(), String> {
+    let response = match given {
+        Some((username, password)) => json!({
+            "response": "ProvideCredentials",
+            "username": username,
+            "password": password,
+        }),
+        None => json!({ "response": "CancelAuth" }),
+    };
+    login
+        .handle
+        .send(
+            "Fetch.continueWithAuth",
+            json!({ "requestId": login.request, "authChallengeResponse": response }),
+            login.session.as_deref(),
+        )
+        .await
+        .map(drop)
 }
 
 /// Whether a page may be loaded from `url`, by the same rule as webfetch.
@@ -1227,7 +1367,10 @@ async fn follow_popup(
     };
     page(
         "Fetch.enable",
-        json!({ "patterns": [{ "resourceType": "Document", "requestStage": "Request" }] }),
+        json!({
+            "patterns": [{ "resourceType": "Document", "requestStage": "Request" }],
+            "handleAuthRequests": true,
+        }),
     )
     .await?;
     page("Runtime.runIfWaitingForDebugger", json!({})).await?;

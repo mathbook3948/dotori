@@ -1,6 +1,7 @@
 //! dotori's MCP server: the tools every runner shares, such as webfetch and the browser, served
 //! over HTTP.
 
+mod auth;
 pub mod browser;
 mod cdp;
 mod chrome;
