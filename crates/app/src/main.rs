@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 mod browser_route;
 mod chat;
 mod confirm;

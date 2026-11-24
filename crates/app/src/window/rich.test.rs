@@ -141,3 +141,105 @@ fn only_ascii_spaces_indent_an_item_and_an_empty_heading_stays_a_line() {
         ]
     );
 }
+
+mod properties {
+    use proptest::collection::vec;
+    use proptest::prelude::*;
+
+    use super::*;
+
+    const MARKUP_HEAVY: &str = "[ a-z가-힣`*#•\\-.)0-9\t\r\n]{0,120}";
+
+    fn spelled(words: &[Word]) -> String {
+        words
+            .iter()
+            .map(|word| word.iter().map(|run| run.text.as_str()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    fn every_run(blocks: &[Block]) -> Vec<&Run> {
+        blocks
+            .iter()
+            .flat_map(|block| match block {
+                Block::Line(words) | Block::Heading(words) | Block::Item { words, .. } => {
+                    words.iter().flatten().collect()
+                }
+                Block::Gap | Block::Code(_) => Vec::new(),
+            })
+            .collect()
+    }
+
+    proptest! {
+        #[test]
+        fn rendering_any_string_never_panics(text in any::<String>()) {
+            let _ = blocks(&text);
+        }
+
+        #[test]
+        fn rendering_marks_in_any_order_never_panics(text in MARKUP_HEAVY) {
+            let _ = blocks(&text);
+        }
+
+        #[test]
+        fn a_reply_never_starts_or_ends_with_a_gap_nor_repeats_one(text in MARKUP_HEAVY) {
+            let shown = blocks(&text);
+            prop_assert!(!matches!(shown.first(), Some(Block::Gap)));
+            prop_assert!(!matches!(shown.last(), Some(Block::Gap)));
+            prop_assert!(!shown
+                .windows(2)
+                .any(|pair| pair[0] == Block::Gap && pair[1] == Block::Gap));
+        }
+
+        #[test]
+        fn an_item_never_hangs_deeper_than_the_limit(text in MARKUP_HEAVY) {
+            for block in blocks(&text) {
+                if let Block::Item { depth, .. } = block {
+                    prop_assert!(depth <= MAX_DEPTH);
+                }
+            }
+        }
+
+        #[test]
+        fn text_without_marks_is_one_plain_paragraph_with_the_same_text(
+            text in "[a-z가-힣][a-z가-힣 ,.!?]{0,60}",
+        ) {
+            let shown = blocks(&text);
+            prop_assert_eq!(shown.len(), 1);
+            let Block::Line(words) = &shown[0] else {
+                return Err(TestCaseError::fail(format!("not a line: {shown:?}")));
+            };
+            prop_assert_eq!(spelled(words), text.trim_end());
+            prop_assert!(every_run(&shown).iter().all(|run| !run.bold && !run.code));
+        }
+
+        #[test]
+        fn a_mark_without_its_pair_stays_as_written(
+            before in "[a-z가-힣 ]{0,20}",
+            after in "[a-z가-힣 ]{0,20}",
+            mark in prop_oneof![Just("`"), Just("**")],
+        ) {
+            let line = format!("x{before}{mark}{after}y");
+            let shown = words(&line);
+            prop_assert_eq!(spelled(&shown), line);
+            prop_assert!(shown.iter().flatten().all(|run| !run.bold && !run.code));
+        }
+
+        #[test]
+        fn a_particle_stays_in_the_word_of_the_code_it_follows(
+            span in "[a-z][a-z ]{0,10}",
+            particle in "[가-힣]{1,3}",
+        ) {
+            let shown = words(&format!("`{span}`{particle}"));
+            prop_assert_eq!(shown, vec![vec![code(&span), plain(&particle)]]);
+        }
+
+        #[test]
+        fn fenced_code_keeps_every_line_as_written(
+            lines in vec("[a-z0-9 #*\\-]{0,12}", 1..6),
+        ) {
+            let text = format!("```\n{}\n```", lines.join("\n"));
+            prop_assert_eq!(blocks(&text), vec![Block::Code(lines)]);
+        }
+    }
+}
