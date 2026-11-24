@@ -16,7 +16,11 @@ use gpui::px;
 
 use crate::home::Home;
 use crate::settings::Form;
+use crate::settings::SLACK_APP_KEY;
+use crate::settings::SLACK_BOT_KEY;
 use crate::settings::Settings;
+use crate::settings::SlackForm;
+use crate::settings::environment;
 use crate::window::input::TextInput;
 use crate::window::parts::header;
 use crate::window::parts::prose;
@@ -34,6 +38,10 @@ pub(crate) struct SettingsView {
     api_key_env: Entity<TextInput>,
     effort: Entity<TextInput>,
     other: Form,
+    slack_on: bool,
+    slack_owner: Entity<TextInput>,
+    slack_app_env: Entity<TextInput>,
+    slack_bot_env: Entity<TextInput>,
     note: Option<Note>,
     pcs: Entity<PcsView>,
     routines: Entity<RoutinesView>,
@@ -67,6 +75,7 @@ impl SettingsView {
             cx.new(|cx| PcsView::new(home, settings, cx))
         };
         let routines = cx.new(|cx| RoutinesView::new(&home, cx));
+        let slack = SlackForm::of(settings.slack.as_ref());
         Self {
             pcs,
             routines,
@@ -78,6 +87,10 @@ impl SettingsView {
             api_key_env: field("기본값", form.api_key_env, cx),
             effort: field("기본값", form.effort, cx),
             other,
+            slack_on: slack.on,
+            slack_owner: field("U012AB3CD", slack.owner, cx),
+            slack_app_env: field(SLACK_APP_KEY, slack.app_token_env, cx),
+            slack_bot_env: field(SLACK_BOT_KEY, slack.bot_token_env, cx),
             note: None,
         }
     }
@@ -118,14 +131,30 @@ impl SettingsView {
         }
     }
 
+    fn slack_form(&self, cx: &Context<Self>) -> SlackForm {
+        let read = |field: &Entity<TextInput>| {
+            let text = field.read(cx).text().trim().to_owned();
+            (!text.is_empty()).then_some(text)
+        };
+        SlackForm {
+            on: self.slack_on,
+            owner: read(&self.slack_owner),
+            app_token_env: read(&self.slack_app_env),
+            bot_token_env: read(&self.slack_bot_env),
+        }
+    }
+
     fn save(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
         let form = self.form(cx);
+        let slack = self.slack_form(cx);
         let saved = form.settings(&self.earlier.model).and_then(|model| {
+            let slack = slack.settings()?;
             let settings = Settings {
                 model,
+                slack,
                 ..Settings::load(&self.home.settings())?
             };
-            settings.save_parts(&self.home.settings(), &["model"])?;
+            settings.save_parts(&self.home.settings(), &["model", "slack"])?;
             self.earlier = settings;
             Ok(())
         });
@@ -296,6 +325,8 @@ impl Render for SettingsView {
                             .child(fields),
                     )
                     .child(div().h_4())
+                    .child(self.slack_card(&theme, window, cx))
+                    .child(div().h_4())
                     .child(self.routines.clone())
                     .child(div().h_4())
                     .child(self.pcs.clone()),
@@ -328,6 +359,194 @@ impl Render for SettingsView {
                             .on_click(cx.listener(Self::save)),
                     ),
             )
+    }
+}
+
+impl SettingsView {
+    fn slack_card(
+        &self,
+        theme: &Theme,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let on = self.slack_on;
+        let switch = div()
+            .id("slack-switch")
+            .flex()
+            .flex_none()
+            .items_center()
+            .w(px(40.))
+            .h(px(22.))
+            .p(px(2.))
+            .rounded_full()
+            .cursor_pointer()
+            .bg(if on { theme.accent } else { theme.line })
+            .when(on, |switch| switch.justify_end())
+            .child(
+                div()
+                    .size(px(18.))
+                    .rounded_full()
+                    .bg(theme.surface)
+                    .shadow_sm(),
+            )
+            .on_click(cx.listener(|view, _, _, cx| {
+                view.slack_on = !view.slack_on;
+                view.note = None;
+                cx.notify();
+            }));
+        let head = div()
+            .flex()
+            .items_center()
+            .gap_3()
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_base()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("Slack"),
+                    )
+                    .child(div().text_xs().text_color(theme.muted).child(
+                        "Slack에서도 dotori와 말할 수 있어요. DM이나 멘션으로 부르면 같은 대화로 이어져요.",
+                    )),
+            )
+            .child(switch);
+        let mut card = div()
+            .flex()
+            .flex_col()
+            .gap_4()
+            .p_5()
+            .rounded_2xl()
+            .bg(theme.surface)
+            .border_1()
+            .border_color(theme.line)
+            .shadow_xs()
+            .child(head);
+        if !on {
+            return card;
+        }
+        let step = |n: &'static str, words: &'static str| {
+            div()
+                .flex()
+                .items_start()
+                .gap_2()
+                .child(
+                    div()
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .justify_center()
+                        .size(px(18.))
+                        .mt(px(1.5))
+                        .rounded_full()
+                        .bg(theme.selection)
+                        .text_color(theme.accent)
+                        .text_size(px(11.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(n),
+                )
+                .child(div().flex_1().min_w_0().child(prose(words)))
+        };
+        let guide = div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .p_3()
+            .rounded_xl()
+            .bg(theme.canvas)
+            .text_xs()
+            .text_color(theme.muted)
+            .child(step(
+                "1",
+                "api.slack.com/apps에서 앱을 만들고 Socket Mode를 켜요. connections:write 권한으로 앱 토큰(xapp-)을 만들어요.",
+            ))
+            .child(step(
+                "2",
+                "봇 권한 app_mentions:read, chat:write, im:history, im:read, im:write, users:read, channels:read, groups:read를 주고, app_mention과 message.im 이벤트를 구독한 뒤 설치해서 봇 토큰(xoxb-)을 받아요.",
+            ))
+            .child(step(
+                "3",
+                "두 토큰을 아래 이름의 환경 변수에 넣고 dotori를 다시 시작해요. 토큰은 파일에 저장하지 않아요.",
+            ));
+        let found = |input: &Entity<TextInput>, default: &str, cx: &Context<Self>| {
+            let typed = input.read(cx).text().trim().to_owned();
+            let name = if typed.is_empty() {
+                default.to_owned()
+            } else {
+                typed
+            };
+            let there = environment(&name).is_some();
+            let (ink, soft, words) = if there {
+                (theme.ok, theme.ok_soft, format!("{name}이 이 PC에 있어요"))
+            } else {
+                (
+                    theme.warn,
+                    theme.warn_soft,
+                    format!("{name}이 이 PC에 아직 없어요"),
+                )
+            };
+            div().flex().child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1p5()
+                    .px_2()
+                    .py_0p5()
+                    .rounded_full()
+                    .bg(soft)
+                    .text_color(ink)
+                    .text_xs()
+                    .child(div().flex_none().size(px(6.)).rounded_full().bg(ink))
+                    .child(words),
+            )
+        };
+        let app_found = found(&self.slack_app_env, SLACK_APP_KEY, cx);
+        let bot_found = found(&self.slack_bot_env, SLACK_BOT_KEY, cx);
+        card = card
+            .child(guide)
+            .child(field(
+                theme,
+                window,
+                cx,
+                "내 Slack 멤버 ID",
+                "Slack에서 내 프로필을 열고 더보기 메뉴의 \"멤버 ID 복사\"로 얻어요. 이 사람의 말만 들어요.",
+                &self.slack_owner,
+            ))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1p5()
+                    .child(field(
+                        theme,
+                        window,
+                        cx,
+                        "앱 토큰이 든 환경 변수",
+                        "비워 두면 SLACK_APP_TOKEN이에요.",
+                        &self.slack_app_env,
+                    ))
+                    .child(app_found),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1p5()
+                    .child(field(
+                        theme,
+                        window,
+                        cx,
+                        "봇 토큰이 든 환경 변수",
+                        "비워 두면 SLACK_BOT_TOKEN이에요.",
+                        &self.slack_bot_env,
+                    ))
+                    .child(bot_found),
+            );
+        card
     }
 }
 

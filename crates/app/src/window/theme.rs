@@ -23,6 +23,7 @@ pub(crate) struct Theme {
     pub(crate) ok: Rgba,
     pub(crate) ok_soft: Rgba,
     pub(crate) warn: Rgba,
+    pub(crate) warn_soft: Rgba,
     pub(crate) danger: Rgba,
     pub(crate) danger_soft: Rgba,
 }
@@ -47,6 +48,7 @@ fn light() -> Theme {
         ok: rgb(0x3f9a5c),
         ok_soft: rgb(0xe3f2e7),
         warn: rgb(0xc9822b),
+        warn_soft: rgb(0xf8ead6),
         danger: rgb(0xc0453a),
         danger_soft: rgb(0xf8deda),
     }
@@ -70,6 +72,7 @@ fn dark() -> Theme {
         ok: rgb(0x5cbf7e),
         ok_soft: rgb(0x1f3326),
         warn: rgb(0xe0a458),
+        warn_soft: rgb(0x3a2c1b),
         danger: rgb(0xe07064),
         danger_soft: rgb(0x3e2422),
     }
