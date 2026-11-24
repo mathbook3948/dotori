@@ -116,7 +116,7 @@ pub(crate) async fn serve(home: Home) -> Result<(), String> {
         jobs: Some(home.jobs()),
     });
     tools.extend(memory.tools());
-    let (relays, wrong) = settings.relays(settings::environment);
+    let (relays, wrong) = settings.relays(settings::environment, false);
     let (relayed, failed) = relay(relays).await;
     for problem in wrong.iter().chain(&failed) {
         eprintln!("dotori: an MCP server is left out: {problem}");

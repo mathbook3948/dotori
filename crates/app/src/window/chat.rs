@@ -1,5 +1,8 @@
+use std::collections::HashMap;
+use std::collections::HashSet;
 use std::time::Duration;
 
+use dotori_connectors::channel::app::FromWindow;
 use dotori_connectors::channel::app::ToWindow;
 use gpui::AnyElement;
 use gpui::App;
@@ -38,6 +41,7 @@ use crate::window::when::marks;
 use crate::window::when::today;
 
 const COPIED_FOR: Duration = Duration::from_millis(1500);
+const SHOWN_VALUE: usize = 600;
 
 /// The chat window: the conversation with dotori and the traffic of every other channel.
 pub(crate) struct ChatView {
@@ -48,11 +52,14 @@ pub(crate) struct ChatView {
     answering: Option<(String, bool)>,
     browser_at: Option<(String, bool)>,
     input: Entity<TextInput>,
-    say: mpsc::UnboundedSender<String>,
+    say: mpsc::UnboundedSender<FromWindow>,
     scroll: ScrollHandle,
     zone: TimeZone,
     copied: Option<usize>,
     hovered: Option<usize>,
+    decided: HashMap<u64, Option<bool>>,
+    clicked: HashSet<u64>,
+    whole: HashSet<u64>,
     _uncopy: Option<Task<()>>,
     _pump: Task<()>,
 }
@@ -98,6 +105,9 @@ impl ChatView {
             zone: TimeZone::system(),
             copied: None,
             hovered: None,
+            decided: HashMap::new(),
+            clicked: HashSet::new(),
+            whole: HashSet::new(),
             _uncopy: None,
             _pump: pump,
         }
@@ -109,6 +119,9 @@ impl ChatView {
                 self.lines.clear();
                 self.copied = None;
                 self.hovered = None;
+                self.decided.clear();
+                self.clicked.clear();
+                self.whole.clear();
                 self.answering = None;
                 self.browser_at = None;
                 self.link = LinkState::Connected;
@@ -119,6 +132,14 @@ impl ChatView {
             }
             Update::Event(ToWindow::Alone) => {
                 self.answering = None;
+                return;
+            }
+            Update::Event(ToWindow::Decided { id, ok }) => {
+                self.decided.insert(id, Some(ok));
+                return;
+            }
+            Update::Event(ToWindow::Lapsed { id }) => {
+                self.decided.insert(id, None);
                 return;
             }
             Update::Event(ToWindow::BrowserAt { pc, here }) => {
@@ -147,7 +168,7 @@ impl ChatView {
             }
         });
         if let Some(text) = text {
-            let _ = self.say.send(text);
+            let _ = self.say.send(FromWindow::Say { text });
         }
     }
 
@@ -253,9 +274,16 @@ impl ChatView {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let row = match event {
-            ToWindow::Answering { .. } | ToWindow::Alone | ToWindow::BrowserAt { .. } => {
+            ToWindow::Answering { .. }
+            | ToWindow::Alone
+            | ToWindow::BrowserAt { .. }
+            | ToWindow::Decided { .. }
+            | ToWindow::Lapsed { .. } => {
                 return None;
             }
+            ToWindow::Ask {
+                id, tool, input, ..
+            } => self.ask_card(theme, n, (*id, tool, input), mark, cx),
             ToWindow::Owner { text, .. } => div()
                 .flex()
                 .justify_end()
@@ -356,6 +384,210 @@ impl ChatView {
                     cx.notify();
                 }))
                 .into_any_element(),
+        )
+    }
+
+    fn ask_card(
+        &self,
+        theme: &Theme,
+        n: usize,
+        (id, tool, input): (u64, &str, &str),
+        mark: &Mark,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let (server, name) = tool.split_once("__").unwrap_or(("", tool));
+        let (fields, cut) = asked_fields(input, self.whole.contains(&id));
+        let clicked = self.clicked.contains(&id);
+        let decided = self.decided.get(&id).copied();
+        let button = |key: &'static str, label: &'static str, ok: bool, cx: &mut Context<Self>| {
+            let main = ok;
+            div()
+                .id(SharedString::from(format!("{key}-{id}")))
+                .px_4()
+                .py_1p5()
+                .rounded_lg()
+                .cursor_pointer()
+                .font_weight(FontWeight::SEMIBOLD)
+                .when(main, |button| {
+                    button
+                        .bg(theme.accent)
+                        .text_color(theme.accent_text)
+                        .hover(|button| button.bg(theme.accent_hover))
+                })
+                .when(!main, |button| {
+                    button
+                        .border_1()
+                        .border_color(theme.line)
+                        .text_color(theme.muted)
+                        .hover(|button| button.bg(theme.canvas).text_color(theme.text))
+                })
+                .child(label)
+                .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                    if view.clicked.insert(id) {
+                        let _ = view.say.send(FromWindow::Decide { id, ok });
+                    }
+                    cx.notify();
+                }))
+        };
+        let footer = match decided {
+            Some(state) => {
+                let (ink, soft, words) = match state {
+                    Some(true) => (theme.ok, theme.ok_soft, "허락했어요"),
+                    Some(false) => (theme.muted, theme.canvas, "거절했어요"),
+                    None => (
+                        theme.warn,
+                        theme.warn_soft,
+                        "이제 할 수 없어요. 다시 부탁해 주세요",
+                    ),
+                };
+                div().flex().child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_1p5()
+                        .px_2p5()
+                        .py_0p5()
+                        .rounded_full()
+                        .bg(soft)
+                        .text_color(ink)
+                        .text_xs()
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(div().size(px(6.)).rounded_full().bg(ink))
+                        .child(words),
+                )
+            }
+            None if clicked => div().flex().child(
+                div()
+                    .px_2p5()
+                    .py_0p5()
+                    .rounded_full()
+                    .bg(theme.canvas)
+                    .text_color(theme.muted)
+                    .text_xs()
+                    .child("처리하는 중이에요"),
+            ),
+            None => div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(
+                    div()
+                        .flex_1()
+                        .text_xs()
+                        .text_color(theme.faint)
+                        .child("허락하면 바로 실행해요"),
+                )
+                .child(button("decline", "거절", false, cx))
+                .child(button("allow", "허락", true, cx)),
+        };
+        div().flex().child(
+            div()
+                .flex()
+                .flex_col()
+                .gap_3()
+                .w_full()
+                .px_4()
+                .py_3()
+                .rounded_xl()
+                .bg(theme.surface)
+                .border_1()
+                .border_color(if decided.is_some() {
+                    theme.line
+                } else {
+                    theme.warn
+                })
+                .shadow_xs()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(div().flex_none().size(px(7.)).rounded_full().bg(
+                            if decided.is_some() {
+                                theme.faint
+                            } else {
+                                theme.warn
+                            },
+                        ))
+                        .child(
+                            div()
+                                .flex_1()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child("dotori가 이 일을 해도 될지 물어요"),
+                        )
+                        .child(self.meta(theme, n, input, mark, true, cx)),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_1p5()
+                        .text_xs()
+                        .when(!server.is_empty(), |row| {
+                            row.child(
+                                div()
+                                    .px_1p5()
+                                    .rounded_sm()
+                                    .bg(theme.other)
+                                    .text_color(theme.other_text)
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(SharedString::from(server.to_owned())),
+                            )
+                        })
+                        .child(
+                            div()
+                                .font_family("monospace")
+                                .text_color(theme.text)
+                                .child(SharedString::from(name.to_owned())),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .px_3()
+                        .py_2()
+                        .rounded_lg()
+                        .bg(theme.canvas)
+                        .children(fields.into_iter().map(|(key, value)| {
+                            div()
+                                .flex()
+                                .gap_3()
+                                .child(
+                                    div()
+                                        .flex_none()
+                                        .w(px(88.))
+                                        .text_xs()
+                                        .text_color(theme.muted)
+                                        .child(SharedString::from(key)),
+                                )
+                                .child(div().flex_1().min_w_0().child(prose(&value)))
+                        }))
+                        .when(cut, |box_| {
+                            box_.child(
+                                div().flex().justify_end().child(
+                                    div()
+                                        .id(SharedString::from(format!("whole-{id}")))
+                                        .px_2()
+                                        .py_0p5()
+                                        .rounded_md()
+                                        .text_xs()
+                                        .text_color(theme.accent)
+                                        .cursor_pointer()
+                                        .hover(|more| more.bg(theme.selection))
+                                        .child("전체 보기")
+                                        .on_click(cx.listener(
+                                            move |view, _: &ClickEvent, _, cx| {
+                                                view.whole.insert(id);
+                                                cx.notify();
+                                            },
+                                        )),
+                                ),
+                            )
+                        }),
+                )
+                .child(footer),
         )
     }
 
@@ -665,12 +897,56 @@ fn day_line(theme: &Theme, day: &str) -> impl IntoElement {
         .child(div().flex_1().h(px(1.)).bg(theme.line))
 }
 
+fn asked_fields(input: &str, whole: bool) -> (Vec<(String, String)>, bool) {
+    let fields: Vec<(String, String)> = match serde_json::from_str::<serde_json::Value>(input) {
+        Ok(serde_json::Value::Object(fields)) if !fields.is_empty() => fields
+            .into_iter()
+            .map(|(key, value)| {
+                let shown = match value {
+                    serde_json::Value::String(text) => text,
+                    other => other.to_string(),
+                };
+                (key, shown)
+            })
+            .collect(),
+        _ => vec![(String::from("input"), input.to_owned())],
+    };
+    let mut cut = false;
+    let fields = fields
+        .into_iter()
+        .map(|(key, value)| {
+            let (shown, shortened) = shown_value(&value, whole);
+            cut |= shortened;
+            (key, shown)
+        })
+        .collect();
+    (fields, cut)
+}
+
+fn shown_value(value: &str, whole: bool) -> (String, bool) {
+    let mut lines: Vec<&str> = Vec::new();
+    for line in value.lines() {
+        if line.trim().is_empty() && lines.last().is_some_and(|last| last.trim().is_empty()) {
+            continue;
+        }
+        lines.push(line);
+    }
+    let joined = lines.join("\n");
+    let total = joined.chars().count();
+    if whole || total <= SHOWN_VALUE {
+        return (joined, false);
+    }
+    let cut: String = joined.chars().take(SHOWN_VALUE).collect();
+    (format!("{cut}\n(전체 {total}자 중 앞부분)"), true)
+}
+
 fn channel_name(channel: &str) -> String {
     match channel {
         "slack" => String::from("Slack"),
         "telegram" => String::from("Telegram"),
         "discord" => String::from("Discord"),
         "routine" => String::from("루틴"),
+        "decision" => String::from("허락한 일"),
         other => other.to_owned(),
     }
 }

@@ -32,8 +32,14 @@ pub(crate) fn marks(lines: &[ToWindow], zone: &TimeZone, today: Date) -> Vec<Mar
             let (speaker, at) = match line {
                 ToWindow::Owner { at, .. } => (Speaker::Owner, *at),
                 ToWindow::Reply { at, .. } => (Speaker::Dotori, *at),
-                ToWindow::Traffic { at, .. } => (Speaker::Elsewhere, *at),
-                ToWindow::Answering { .. } | ToWindow::Alone | ToWindow::BrowserAt { .. } => {
+                ToWindow::Traffic { at, .. } | ToWindow::Ask { at, .. } => {
+                    (Speaker::Elsewhere, *at)
+                }
+                ToWindow::Answering { .. }
+                | ToWindow::Alone
+                | ToWindow::BrowserAt { .. }
+                | ToWindow::Decided { .. }
+                | ToWindow::Lapsed { .. } => {
                     return None;
                 }
             };

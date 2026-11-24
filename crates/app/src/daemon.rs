@@ -30,9 +30,14 @@ use dotori_core::runtime::AgentConfig;
 use dotori_core::runtime::Ports;
 use dotori_core::sub_session::SubSessionRunner;
 use dotori_core::tool::Toolbox;
+use dotori_mcp::relay::relay;
 
 use crate::browser_route::BROWSER_JOB;
 use crate::browser_route::BrowserRoute;
+use crate::confirm;
+use crate::confirm::Asking;
+use crate::confirm::DecisionChannel;
+use crate::confirm::Guarded;
 use crate::device;
 use crate::door;
 use crate::door::Door;
@@ -113,14 +118,36 @@ pub(crate) async fn serve(
         routines: Arc::clone(&routines),
     });
     let browser = BrowserRoute::new(toolbox);
-    let toolbox: Arc<dyn Toolbox> = Arc::new(MainTools {
-        notes: Arc::clone(&notes),
-        routines: Arc::clone(&routines),
-        shared: Arc::clone(&browser) as Arc<dyn Toolbox>,
-    });
     let token = door::token()?;
     let (app, address) = AppChannel::bind(token.clone()).map_err(|error| error.to_string())?;
     let app = Arc::new(app);
+    let (guarded, wrong) = settings.relays(environment, true);
+    let (guarded, failed) = relay(guarded).await;
+    for problem in wrong.iter().chain(&failed) {
+        eprintln!("dotori: an MCP server is left out: {problem}");
+    }
+    let mut asked = settings.asked();
+    for name in asked.unmatched(guarded.iter().map(|tool| tool.name())) {
+        eprintln!(
+            "dotori: `confirm` names {name}, which no MCP server offers, so every tool of its server waits for the owner"
+        );
+        asked.close_server_of(&name);
+    }
+    let asking = Arc::new(Asking::new(
+        asked,
+        Arc::new(Guarded {
+            tools: guarded,
+            rest: Arc::clone(&browser) as Arc<dyn Toolbox>,
+        }),
+        Arc::clone(&app),
+    ));
+    let (outcomes, outcomes_heard) = mpsc::unbounded_channel();
+    let decision = Arc::new(DecisionChannel::new(outcomes_heard));
+    let toolbox: Arc<dyn Toolbox> = Arc::new(MainTools {
+        notes: Arc::clone(&notes),
+        routines: Arc::clone(&routines),
+        shared: Arc::clone(&asking) as Arc<dyn Toolbox>,
+    });
     match records.load().await {
         Ok(earlier) => app.show_earlier(&history::lines(&earlier)),
         Err(error) => eprintln!("dotori: the earlier conversation cannot be shown: {error}"),
@@ -178,6 +205,33 @@ pub(crate) async fn serve(
         });
     }
     let route = Route::new(linked.clone());
+    let (decide_tx, mut decisions) = mpsc::unbounded_channel::<((u64, bool), bool)>();
+    {
+        let mut clicked = app.decisions();
+        let decide_tx = decide_tx.clone();
+        tokio::spawn(async move {
+            while let Some(decision) = clicked.recv().await {
+                if decide_tx.send((decision, false)).is_err() {
+                    return;
+                }
+            }
+        });
+    }
+    {
+        let asking = Arc::clone(&asking);
+        let linked = linked.clone();
+        tokio::spawn(async move {
+            while let Some((decision, passed_on)) = decisions.recv().await {
+                let asking = Arc::clone(&asking);
+                let outcomes = outcomes.clone();
+                let linked = linked.clone();
+                tokio::spawn(async move {
+                    confirm::decided(&asking, &outcomes, linked.as_ref(), decision, passed_on)
+                        .await;
+                });
+            }
+        });
+    }
     if let (Some(linked), Some((mut heard, copies))) = (linked.clone(), heard) {
         let app = Arc::clone(&app);
         let route = Arc::clone(&route);
@@ -216,6 +270,10 @@ pub(crate) async fn serve(
         tokio::spawn(async move {
             while let Some(heard) = heard.recv().await {
                 linked.keeper.hear(&heard);
+                if let Some(decision) = confirm::heard(&heard) {
+                    let _ = decide_tx.send((decision, true));
+                    continue;
+                }
                 if settings_copies.hear(&linked, &heard) {
                     continue;
                 }
@@ -321,6 +379,7 @@ pub(crate) async fn serve(
             Vec::new()
         });
         channels.push(Arc::new(RoutineChannel::new(Arc::clone(&routines))) as Arc<dyn Channel>);
+        channels.push(Arc::clone(&decision) as Arc<dyn Channel>);
         let channels = channels
             .into_iter()
             .map(|channel| {
@@ -492,6 +551,7 @@ fn sub_session_runner(
         folder: home.work(),
         mcp: shared.map(|shared| shared as Arc<dyn McpServer>),
         limit: SUB_SESSION_LIMIT,
+        hidden_env: settings.guarded_secrets(),
     }))
 }
 

@@ -443,3 +443,21 @@ fn without_a_message_after_the_cut_the_last_message_starts_it() {
 
     assert_eq!(start(&conversation), last);
 }
+
+#[test]
+fn what_came_of_a_call_the_owner_decided_is_not_the_owners_message() {
+    let mut decided = heard(0, "sent to team@example.com");
+    if let Entry::Heard { message, .. } = &mut decided {
+        message.address = Address {
+            channel: ChannelId::parse(DECISION).expect("valid"),
+            place: Place::new("mail__send"),
+        };
+    }
+
+    let turns = build(&[decided], "anthropic");
+
+    assert_eq!(
+        notes(&turns[0]),
+        ["<decided_call tool=\"mail__send\">\nsent to team@example.com\n</decided_call>"]
+    );
+}

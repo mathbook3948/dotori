@@ -30,11 +30,11 @@ pub(crate) enum Update {
 
 /// A window's link to the daemon. It reconnects by itself, so a daemon restart or a hang-up for
 /// falling behind only shows as `Down` followed by `Connected`. A window does not send on
-/// `say` after `Down` until the next `Connected`, since that text would go out late and unseen.
+/// `say` after `Down` until the next `Connected`, since that would go out late and unseen.
 #[derive(Debug)]
 pub(crate) struct Link {
     pub(crate) updates: mpsc::UnboundedReceiver<Update>,
-    pub(crate) say: mpsc::UnboundedSender<String>,
+    pub(crate) say: mpsc::UnboundedSender<FromWindow>,
 }
 
 /// Starts the link on a thread of its own, so any UI loop can read `updates`.
@@ -58,7 +58,7 @@ pub(crate) fn open(home: Home) -> Link {
 async fn keep(
     home: Home,
     updates: mpsc::UnboundedSender<Update>,
-    mut said: mpsc::UnboundedReceiver<String>,
+    mut said: mpsc::UnboundedReceiver<FromWindow>,
 ) {
     loop {
         let reason = match session(&home, &updates, &mut said).await {
@@ -81,7 +81,7 @@ enum Ended {
 async fn session(
     home: &Home,
     updates: &mpsc::UnboundedSender<Update>,
-    said: &mut mpsc::UnboundedReceiver<String>,
+    said: &mut mpsc::UnboundedReceiver<FromWindow>,
 ) -> Result<Ended, String> {
     if !DaemonLock::held(&home.lock())? {
         return Err(String::from("dotori is not running"));
@@ -120,9 +120,9 @@ async fn session(
                 Ok(None) => return Ok(Ended::HungUp),
                 Err(error) => return Err(format!("dotori is not reachable: {error}")),
             },
-            text = said.recv() => match text {
-                Some(text) => {
-                    let said = serde_json::to_string(&FromWindow::Say { text }).map_err(|error| error.to_string())?;
+            message = said.recv() => match message {
+                Some(message) => {
+                    let said = serde_json::to_string(&message).map_err(|error| error.to_string())?;
                     line(&mut write, &said).await?;
                 }
                 None => return Ok(Ended::WindowClosed),

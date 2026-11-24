@@ -81,6 +81,50 @@ pub(crate) struct RelaySettings {
     pub(crate) args: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) tools: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) confirm: Vec<String>,
+}
+
+/// Which tools wait for the owner's OK.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Asked {
+    tools: Vec<String>,
+    servers: Vec<String>,
+}
+
+impl Asked {
+    /// The listed names that none of `offered` matches, as a typo would leave them.
+    pub(crate) fn unmatched<'a>(&self, offered: impl Iterator<Item = &'a str>) -> Vec<String> {
+        let offered: Vec<&str> = offered.collect();
+        self.tools
+            .iter()
+            .filter(|tool| !offered.contains(&tool.as_str()))
+            .chain(
+                self.servers
+                    .iter()
+                    .filter(|server| !offered.iter().any(|tool| tool.starts_with(server.as_str()))),
+            )
+            .cloned()
+            .collect()
+    }
+
+    /// Makes every tool of the server `listed` names wait, for a name that matched no tool.
+    pub(crate) fn close_server_of(&mut self, listed: &str) {
+        if let Some((server, _)) = listed.split_once("__") {
+            let prefix = format!("{server}__");
+            if !self.servers.contains(&prefix) {
+                self.servers.push(prefix);
+            }
+        }
+    }
+
+    pub(crate) fn needs(&self, tool: &str) -> bool {
+        self.tools.iter().any(|asked| asked == tool)
+            || self
+                .servers
+                .iter()
+                .any(|server| tool.starts_with(server.as_str()))
+    }
 }
 
 /// How memory is searched. Without embeddings it matches words only.
@@ -481,13 +525,57 @@ impl Settings {
 
     /// The MCP servers to relay, reading tokens through `key`. A server set up wrong is named
     /// in the second list and left out.
+    /// The variables that hold the tokens of the servers only the main session reaches, which
+    /// coding agents must not see.
+    pub(crate) fn guarded_secrets(&self) -> Vec<String> {
+        self.mcp
+            .iter()
+            .filter(|server| !server.confirm.is_empty())
+            .filter_map(|server| server.token_env.clone())
+            .collect()
+    }
+
+    /// The relayed tools the owner must allow before each call, by the name the model sees.
+    /// `"*"` stands for every tool of its server.
+    pub(crate) fn asked(&self) -> Asked {
+        let mut asked = Asked::default();
+        for server in &self.mcp {
+            for tool in &server.confirm {
+                if tool == "*" {
+                    asked.servers.push(format!("{}__", server.name));
+                } else {
+                    asked.tools.push(format!("{}__{tool}", server.name));
+                }
+            }
+        }
+        asked
+    }
+
+    /// The external MCP servers to relay, reading tokens through `key`. `guarded` picks the
+    /// servers with tools that wait for the owner, which only the daemon relays, so only the
+    /// main session reaches them; otherwise the rest, which the shared MCP server relays.
     pub(crate) fn relays(
         &self,
         key: impl Fn(&str) -> Option<String>,
+        guarded: bool,
     ) -> (Vec<RelayConfig>, Vec<String>) {
         let mut chosen = Vec::new();
         let mut wrong = Vec::new();
+        let mut named = Vec::new();
         for server in &self.mcp {
+            if named.contains(&server.name.as_str()) {
+                if server.confirm.is_empty() != guarded {
+                    wrong.push(format!(
+                        "{}: another MCP server already has this name",
+                        server.name
+                    ));
+                }
+                continue;
+            }
+            named.push(server.name.as_str());
+            if server.confirm.is_empty() == guarded {
+                continue;
+            }
             let reach = match (&server.url, &server.command) {
                 (Some(url), None) => {
                     let token = match &server.token_env {
