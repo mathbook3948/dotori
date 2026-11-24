@@ -1,0 +1,76 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - if: github.ref_type == 'tag'
+        name: Check the tag matches the version
+        shell: bash
+        run: test "$GITHUB_REF_NAME" = "v$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml)"
+      - uses: jdx/mise-action@v5
+        with:
+          install_args: rust
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libxkbcommon-x11-dev
+      - run: cargo build --release --locked --package dotori
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          host=$(rustc -vV | sed -n 's/^host: //p')
+          if [ "$GITHUB_REF_TYPE" = tag ]; then label=$GITHUB_REF_NAME; else label=${GITHUB_SHA::7}; fi
+          name="dotori-$label-$host"
+          mkdir "$name"
+          cp README.md LICENSE-MIT LICENSE-APACHE "$name/"
+          if [ "$RUNNER_OS" = Windows ]; then
+            cp target/release/dotori.exe "$name/"
+            7z a "$name.zip" "$name"
+          else
+            cp target/release/dotori "$name/"
+            tar -czf "$name.tar.gz" "$name"
+          fi
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dotori-${{ matrix.os }}
+          if-no-files-found: error
+          path: |
+            dotori-*.tar.gz
+            dotori-*.zip
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Write checksums
+        working-directory: dist
+        run: sha256sum dotori-* > SHA256SUMS && cat SHA256SUMS
+      - uses: actions/upload-artifact@v7
+        with:
+          name: checksums
+          path: dist/SHA256SUMS
+      - if: github.ref_type == 'tag'
+        name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --title "dotori $GITHUB_REF_NAME" --generate-notes

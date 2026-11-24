@@ -21,6 +21,7 @@
 
 ## engineering
 
+- [배포](engineering/release.md): dotori 실행 파일을 어떻게 만들어 사용자에게 내놓는지 정한다.
 - [견고함](engineering/robustness.md): 외부 입력, 파일, 자식 프로세스, 실패를 다루는 코드가 처음부터 지킬 것을 정한다.
 
 ## product

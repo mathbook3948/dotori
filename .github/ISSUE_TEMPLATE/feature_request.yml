@@ -1,0 +1,21 @@
+name: Feature request
+description: Ask dotori to do something it cannot do yet.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What you want to do
+      description: The task you want dotori to help with, and what gets in the way now.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: How it could work
+      description: What you would say to dotori, and what it would do.
+  - type: textarea
+    id: other
+    attributes:
+      label: Anything else
+      description: Other tools that do this, or decisions in docs/ that the idea touches.

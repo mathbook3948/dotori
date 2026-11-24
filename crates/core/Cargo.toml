@@ -3,6 +3,13 @@ name = "dotori-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "The runtime core of dotori: value types, the agent loop, and ports for the raw record"
+rust-version.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish = false
 
 [dependencies]
 tokio = { version = "1.54.1", default-features = false, features = ["sync", "rt", "time"] }

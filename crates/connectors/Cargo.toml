@@ -3,6 +3,13 @@ name = "dotori-connectors"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "The connectors of dotori: LLM APIs, chat channels, sub-session runners, the raw record, and links between PCs"
+rust-version.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish = false
 
 [dependencies]
 dotori-core = { path = "../core" }
