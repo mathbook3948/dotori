@@ -4,7 +4,7 @@ pub(crate) struct CallId(u64);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct ToolRunId(u64);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub(crate) struct SubSessionId(u64);
 
 /// The only source of internal ids. Lives in agent state, so ids follow queue order.

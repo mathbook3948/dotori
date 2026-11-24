@@ -32,17 +32,20 @@ pub(crate) struct AgentState {
 impl AgentState {
     /// Resumes a conversation loaded from the raw record. Threads are interned again in
     /// arrival order, so every recorded `ThreadRef` points at the same place, and recent
-    /// message ids are seen again. Work that was running when the process stopped never
-    /// returns, so it gets a result that says so, appended after the loaded entries.
+    /// message ids are seen again. Work this PC started that was running when it stopped never
+    /// returns, so it gets a result that says so, appended after the loaded entries. `here` says,
+    /// entry by entry, whether this PC made it; work another PC started is left for that PC.
     pub(crate) fn resume(
         wiring: Wiring,
         seen_capacity: NonZeroUsize,
         conversation: Vec<Entry>,
+        here: Vec<bool>,
     ) -> Self {
         let mut state = Self::new(wiring, seen_capacity);
         let mut tools = Vec::new();
         let mut delegated = Vec::new();
-        for entry in &conversation {
+        for (n, entry) in conversation.iter().enumerate() {
+            let mine = here.get(n).copied().unwrap_or(true);
             match entry {
                 Entry::Heard { message, .. } => {
                     state.threads.intern(message.address.clone());
@@ -51,7 +54,7 @@ impl AgentState {
                         message: message.id.clone(),
                     });
                 }
-                Entry::Acted { actions, .. } => {
+                Entry::Acted { actions, .. } if mine => {
                     for action in actions {
                         match action {
                             Action::UseTool(call) => tools.push(call.id.clone()),

@@ -26,6 +26,7 @@ use crate::message::Place;
 use crate::message::Role;
 use crate::message::Sender;
 use crate::sub_session::SubSessionOutcome;
+use crate::sub_session::SubSessionSpec;
 use crate::tool::ToolCallId;
 use crate::tool::ToolError;
 
@@ -218,6 +219,16 @@ fn on_channel_ended(
 
 fn on_shutdown(state: &mut AgentState) -> Vec<Effect> {
     let mut effects = Vec::new();
+    let mut stopped: Vec<(SubSessionId, SubSessionSpec)> = state.sub_sessions.drain().collect();
+    stopped.sort_by_key(|(id, _)| *id);
+    for (_, spec) in stopped {
+        state.conversation.push(Entry::SubSessionReturned {
+            spec,
+            outcome: SubSessionOutcome::Failed(String::from(
+                "stopped: the main session stopped running on this PC",
+            )),
+        });
+    }
     let waiting = match mem::replace(&mut state.phase, Phase::Idle) {
         Phase::Idle => HashMap::new(),
         Phase::Thinking { call, .. } => {
