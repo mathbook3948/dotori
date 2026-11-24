@@ -6,6 +6,8 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use dotori_connectors::channel::discord::DiscordChannel;
+use dotori_connectors::channel::discord::DiscordConfig;
 use dotori_connectors::channel::slack::SlackChannel;
 use dotori_connectors::channel::slack::SlackConfig;
 use dotori_connectors::channel::telegram::TelegramChannel;
@@ -31,6 +33,8 @@ const ANTHROPIC_KEY: &str = "ANTHROPIC_API_KEY";
 pub(crate) const SLACK_APP_KEY: &str = "SLACK_APP_TOKEN";
 /// Where the Telegram bot token is when the settings do not say.
 pub(crate) const TELEGRAM_KEY: &str = "TELEGRAM_BOT_TOKEN";
+/// Where the Discord bot token is when the settings do not say.
+pub(crate) const DISCORD_KEY: &str = "DISCORD_BOT_TOKEN";
 /// Where the Slack bot token is when the settings do not say.
 pub(crate) const SLACK_BOT_KEY: &str = "SLACK_BOT_TOKEN";
 
@@ -45,6 +49,8 @@ pub(crate) struct Settings {
     pub(crate) slack: Option<SlackSettings>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) telegram: Option<TelegramSettings>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) discord: Option<DiscordSettings>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) browser: Option<BrowserSettings>,
     #[serde(default, alias = "sub_tasks", skip_serializing_if = "Option::is_none")]
@@ -99,6 +105,16 @@ pub(crate) struct TelegramSettings {
     pub(crate) token_env: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) owner: Option<i64>,
+}
+
+/// The Discord channel: the bot token's variable and the owner's Discord user id.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct DiscordSettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) token_env: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) owner: Option<String>,
 }
 
 /// Which tools wait for the owner's OK.
@@ -351,6 +367,58 @@ impl TelegramForm {
             owner: Some(owner),
         }))
     }
+}
+
+/// The Discord part of the settings window, each field already trimmed.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct DiscordForm {
+    pub(crate) on: bool,
+    pub(crate) owner: Option<String>,
+    pub(crate) token_env: Option<String>,
+}
+
+impl DiscordForm {
+    pub(crate) fn of(discord: Option<&DiscordSettings>) -> Self {
+        match discord {
+            Some(discord) => Self {
+                on: true,
+                owner: discord.owner.clone(),
+                token_env: discord.token_env.clone(),
+            },
+            None => Self::default(),
+        }
+    }
+
+    /// The `[discord]` section this form asks for, or `None` when Discord is off.
+    pub(crate) fn settings(&self) -> Result<Option<DiscordSettings>, String> {
+        if !self.on {
+            return Ok(None);
+        }
+        let owner = self
+            .owner
+            .as_deref()
+            .ok_or("Discord를 쓰려면 내 Discord 사용자 ID를 적어 주세요")?;
+        if !discord_id(owner) {
+            return Err(String::from(
+                "Discord 사용자 ID는 123456789012345678처럼 긴 숫자예요",
+            ));
+        }
+        if let Some(name) = &self.token_env
+            && !variable_name(name)
+        {
+            return Err(format!(
+                "`{name}`은 환경 변수 이름이 아니에요. 토큰은 여기 말고 환경 변수에 넣어 주세요"
+            ));
+        }
+        Ok(Some(DiscordSettings {
+            token_env: self.token_env.clone(),
+            owner: Some(owner.to_owned()),
+        }))
+    }
+}
+
+fn discord_id(id: &str) -> bool {
+    (15..=21).contains(&id.len()) && id.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 fn variable_name(name: &str) -> bool {
@@ -688,6 +756,7 @@ impl Settings {
         for (name, built) in [
             ("Slack", self.slack_channel(&key)),
             ("Telegram", self.telegram_channel(&key)),
+            ("Discord", self.discord_channel(&key)),
         ] {
             match built {
                 Ok(built) => channels.extend(built),
@@ -712,6 +781,27 @@ impl Settings {
             key(variable).ok_or_else(|| format!("set {variable} to your Telegram bot token"))?;
         let channel = TelegramChannel::new(TelegramConfig::new(token, owner))
             .map_err(|error| error.detail)?;
+        Ok(vec![Arc::new(channel)])
+    }
+
+    fn discord_channel(
+        &self,
+        key: &impl Fn(&str) -> Option<String>,
+    ) -> Result<Vec<Arc<dyn Channel>>, String> {
+        let Some(discord) = &self.discord else {
+            return Ok(Vec::new());
+        };
+        let owner = discord
+            .owner
+            .as_deref()
+            .map(str::trim)
+            .filter(|owner| discord_id(owner))
+            .ok_or("set `owner` under [discord] to your Discord user id, such as \"123456789012345678\"")?;
+        let variable = discord.token_env.as_deref().unwrap_or(DISCORD_KEY);
+        let token =
+            key(variable).ok_or_else(|| format!("set {variable} to your Discord bot token"))?;
+        let channel =
+            DiscordChannel::new(DiscordConfig::new(token, owner)).map_err(|error| error.detail)?;
         Ok(vec![Arc::new(channel)])
     }
 
