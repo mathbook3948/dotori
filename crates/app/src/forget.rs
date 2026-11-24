@@ -177,7 +177,7 @@ pub(crate) fn line(record: &Described, zone: &TimeZone) -> String {
         .unwrap_or_default();
     let who = match (&record.sender, record.kind.as_str()) {
         (Some(sender), _) => sender.clone(),
-        (None, "acted") => String::from("dotori"),
+        (None, "acted") => String::from("비서"),
         (None, "tool_returned") => String::from("도구 결과"),
         (None, "sub_task_returned") => String::from("서브 세션 결과"),
         (None, kind) => kind.to_owned(),

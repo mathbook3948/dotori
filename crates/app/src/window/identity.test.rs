@@ -10,4 +10,11 @@ fn korean_names_take_the_particle_their_last_sound_asks_for() {
     assert!(!ends_closed("Jarvis2"));
     assert!(ends_closed("Ring"));
     assert!(!ends_closed(""));
+    assert!(ends_closed("Jane"));
+    assert!(ends_closed("Bob"));
+    assert!(ends_closed("Robot"));
+    assert!(!ends_closed("Kate"));
+    assert!(ends_closed("별⭐"));
+    assert!(ends_closed("R"));
+    assert!(!ends_closed("K"));
 }

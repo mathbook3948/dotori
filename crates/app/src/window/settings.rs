@@ -748,17 +748,32 @@ impl SettingsView {
         });
         let folder = self.home.icons();
         self.picking = Some(cx.spawn(async move |view, cx| {
-            let Ok(Ok(Some(paths))) = paths.await else {
-                return;
+            let path = match paths.await {
+                Ok(Ok(Some(paths))) => paths.into_iter().next(),
+                Ok(Ok(None)) | Err(_) => None,
+                Ok(Err(error)) => {
+                    eprintln!("dotori: no file picker: {error}");
+                    let _ = view.update(cx, |view, cx| {
+                        view.note = Some(Note::Failed(SharedString::new_static(
+                            "그림을 고르는 창을 열지 못했어요",
+                        )));
+                        cx.notify();
+                    });
+                    None
+                }
             };
-            let Some(path) = paths.into_iter().next() else {
+            let Some(path) = path else {
                 return;
             };
             let kept = cx
                 .background_executor()
                 .spawn(async move {
+                    let fail = |error: std::io::Error| format!("{}: {error}", path.display());
+                    if std::fs::metadata(&path).map_err(fail)?.len() > icons::given_longest() {
+                        return Err(String::from(TOO_LARGE));
+                    }
                     std::fs::read(&path)
-                        .map_err(|error| format!("{}: {error}", path.display()))
+                        .map_err(fail)
                         .and_then(|picture| icons::keep(&folder, &picture))
                 })
                 .await;
@@ -770,7 +785,13 @@ impl SettingsView {
         let set = kept
             .map_err(|error| {
                 eprintln!("dotori: the picture was not kept: {error}");
-                String::from("그림을 읽지 못했어요. PNG나 JPEG 그림을 골라 주세요")
+                if error == TOO_LARGE {
+                    String::from("20MB보다 작은 그림을 골라 주세요")
+                } else if error.contains("does not read as an image") {
+                    String::from("그림으로 읽지 못했어요. PNG, JPEG, GIF, WebP 그림을 골라 주세요")
+                } else {
+                    String::from("그림을 저장하지 못했어요. 잠시 뒤에 다시 해 보세요")
+                }
             })
             .and_then(|name| self.set_icon(Some(name)));
         self.note = set
@@ -785,6 +806,14 @@ impl SettingsView {
         assistant.icon = icon;
         settings.assistant = (assistant != AssistantSettings::default()).then_some(assistant);
         settings.save_parts(&self.home.settings(), &["assistant"])?;
+        let in_use = settings
+            .assistant
+            .as_ref()
+            .and_then(|assistant| assistant.icon.clone());
+        icons::prune(
+            &self.home.icons(),
+            &in_use.as_deref().into_iter().collect::<Vec<_>>(),
+        );
         self.earlier.assistant = settings.assistant;
         identity::choose(Identity::read(&self.home.settings(), &self.home.icons()));
         Ok(())
@@ -796,7 +825,11 @@ impl SettingsView {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let custom = identity::icon().is_some();
+        let custom = self
+            .earlier
+            .assistant
+            .as_ref()
+            .is_some_and(|assistant| assistant.icon.is_some());
         let button = |id: &'static str, label: &'static str| {
             div()
                 .id(id)
@@ -1136,6 +1169,8 @@ fn vault_failed(what: &str, error: &str) -> String {
         format!("키를 금고에 {what} 못했어요. 잠시 뒤에 다시 해 보세요")
     }
 }
+
+const TOO_LARGE: &str = "the picture is larger than 20 MB";
 
 fn assistant_named(
     assistant: Option<AssistantSettings>,

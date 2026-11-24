@@ -13,7 +13,10 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use dotori_connectors::peer::hub::Heard;
 use image::DynamicImage;
+use image::ImageDecoder;
 use image::ImageFormat;
+use image::ImageReader;
+use image::Limits;
 use image::imageops::FilterType;
 use serde_json::Value;
 use serde_json::json;
@@ -27,6 +30,8 @@ pub(crate) const SIDE: u32 = 256;
 const GIVEN_LONGEST: usize = 20 * 1024 * 1024;
 const KEPT_LONGEST: usize = 1024 * 1024;
 const NAME_LETTERS: usize = 16;
+const GIVEN_SIDE_LONGEST: u32 = 12_000;
+const KEPT_PICTURES: usize = 4;
 const LOOK_EVERY: Duration = Duration::from_secs(5);
 
 /// Cuts `picture`, in any common image format, to its middle square, makes it `SIDE` pixels on a
@@ -35,7 +40,7 @@ pub(crate) fn keep(folder: &Path, picture: &[u8]) -> Result<String, String> {
     if picture.len() > GIVEN_LONGEST {
         return Err(String::from("the picture is larger than 20 MB"));
     }
-    let image = image::load_from_memory(picture)
+    let image = decode(picture, None, GIVEN_SIDE_LONGEST)
         .map_err(|error| format!("the picture does not read as an image: {error}"))?;
     let side = image.width().min(image.height());
     if side == 0 {
@@ -67,6 +72,54 @@ pub(crate) fn keep(folder: &Path, picture: &[u8]) -> Result<String, String> {
     );
     write(folder, &name, &png)?;
     Ok(name)
+}
+
+/// The largest file a picture may be before it is read, in bytes.
+pub(crate) fn given_longest() -> u64 {
+    u64::try_from(GIVEN_LONGEST).unwrap_or(u64::MAX)
+}
+
+fn decode(
+    bytes: &[u8],
+    format: Option<ImageFormat>,
+    side_longest: u32,
+) -> image::ImageResult<DynamicImage> {
+    let mut reader = ImageReader::new(Cursor::new(bytes));
+    match format {
+        Some(format) => reader.set_format(format),
+        None => reader = reader.with_guessed_format()?,
+    }
+    let mut limits = Limits::default();
+    limits.max_image_width = Some(side_longest);
+    limits.max_image_height = Some(side_longest);
+    reader.limits(limits);
+    let mut decoder = reader.into_decoder()?;
+    let orientation = decoder.orientation()?;
+    let mut image = DynamicImage::from_decoder(decoder)?;
+    image.apply_orientation(orientation);
+    Ok(image)
+}
+
+/// Removes the kept pictures other than `keep` and the latest few.
+pub(crate) fn prune(folder: &Path, keep: &[&str]) {
+    let Ok(entries) = std::fs::read_dir(folder) else {
+        return;
+    };
+    let mut kept: Vec<(std::time::SystemTime, PathBuf, bool)> = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let name = entry.file_name().into_string().ok()?;
+            checked(&name)?;
+            let modified = entry.metadata().ok()?.modified().ok()?;
+            Some((modified, entry.path(), keep.contains(&name.as_str())))
+        })
+        .collect();
+    kept.sort_by_key(|(modified, _, _)| std::cmp::Reverse(*modified));
+    for (n, (_, path, wanted)) in kept.into_iter().enumerate() {
+        if !wanted && n >= KEPT_PICTURES {
+            let _ = std::fs::remove_file(path);
+        }
+    }
 }
 
 /// Where the picture kept as `name` is, when the name is one `keep` makes and the file is there.
@@ -115,26 +168,35 @@ pub(crate) fn hear(folder: &Path, settings: &Path, linked: &Linked, heard: &Hear
             false
         }
         Some("icon") => {
-            if let Err(error) = take(folder, &heard.message) {
-                eprintln!(
-                    "dotori: the picture from {} was not kept: {error}",
-                    heard.device
-                );
-            }
+            let (folder, settings) = (folder.to_path_buf(), settings.to_path_buf());
+            let (message, device) = (heard.message.clone(), heard.device.clone());
+            tokio::task::spawn_blocking(move || match take(&folder, &message) {
+                Ok(name) => {
+                    let in_use = in_use(&settings);
+                    let keep: Vec<&str> = [Some(name.as_str()), in_use.as_deref()]
+                        .into_iter()
+                        .flatten()
+                        .collect();
+                    prune(&folder, &keep);
+                }
+                Err(error) => {
+                    eprintln!("dotori: the picture from {device} was not kept: {error}");
+                }
+            });
             true
         }
         _ => false,
     }
 }
 
-fn take(folder: &Path, message: &Value) -> Result<(), String> {
+fn take(folder: &Path, message: &Value) -> Result<String, String> {
     let name = message
         .get("name")
         .and_then(Value::as_str)
         .and_then(checked)
         .ok_or("it has no name a picture is kept under")?;
     if path(folder, name).is_some() {
-        return Ok(());
+        return Ok(name.to_owned());
     }
     let encoded = message
         .get("png")
@@ -146,12 +208,13 @@ fn take(folder: &Path, message: &Value) -> Result<(), String> {
     let png = STANDARD
         .decode(encoded)
         .map_err(|error| format!("it does not decode: {error}"))?;
-    let image = image::load_from_memory_with_format(&png, ImageFormat::Png)
-        .map_err(|error| format!("it is not a PNG: {error}"))?;
+    let image = decode(&png, Some(ImageFormat::Png), SIDE)
+        .map_err(|error| format!("it is not a PNG of at most {SIDE} pixels a side: {error}"))?;
     if image.width() != SIDE || image.height() != SIDE {
         return Err(format!("it is not {SIDE} pixels on a side"));
     }
-    write(folder, name, &png)
+    write(folder, name, &png)?;
+    Ok(name.to_owned())
 }
 
 /// Looks at the picture in use every few seconds and sends it to the other PCs when it changed.

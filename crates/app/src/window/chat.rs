@@ -49,6 +49,7 @@ use crate::window::browser;
 use crate::window::browser::BrowserWindow;
 use crate::window::chrome::Frame;
 use crate::window::chrome::round_button;
+use crate::window::identity;
 use crate::window::identity::Particle;
 use crate::window::identity::called;
 use crate::window::input::Submit;
@@ -603,7 +604,11 @@ impl ChatView {
                     .child(
                         div()
                             .font_weight(FontWeight::MEDIUM)
-                            .child(SharedString::from(who.to_owned())),
+                            .child(SharedString::from(if who == "dotori" {
+                                identity::name()
+                            } else {
+                                who.to_owned()
+                            })),
                     )
                     .child(div().flex_1())
                     .children(self.meta(theme, n, text, mark, cx)),

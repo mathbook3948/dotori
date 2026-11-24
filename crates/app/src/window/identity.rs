@@ -89,15 +89,21 @@ pub(crate) fn called(particle: Particle) -> String {
 
 /// Whether `name`, read aloud in Korean, ends on a final consonant.
 pub(crate) fn ends_closed(name: &str) -> bool {
-    let lower = name.trim().to_lowercase();
+    let lower = name
+        .trim_end_matches(|c: char| !c.is_alphanumeric())
+        .to_lowercase();
     let Some(last) = lower.chars().last() else {
         return false;
     };
+    if lower.chars().count() == 1 && last.is_ascii_alphabetic() {
+        return matches!(last, 'l' | 'm' | 'n' | 'r');
+    }
     match last {
         '가'..='힣' => (u32::from(last) - u32::from('가')) % 28 != 0,
         '0' | '1' | '3' | '6' | '7' | '8' => true,
-        'l' | 'm' | 'n' => true,
+        'l' | 'm' | 'n' | 'b' | 'p' | 't' | 'k' => true,
         'g' => lower.ends_with("ng"),
+        'e' => lower.ends_with("ne") || lower.ends_with("me"),
         _ => false,
     }
 }

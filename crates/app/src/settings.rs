@@ -95,12 +95,16 @@ impl AssistantSettings {
     pub(crate) fn name_of(assistant: Option<&Self>) -> String {
         assistant
             .and_then(|assistant| assistant.name.as_deref())
-            .map(str::trim)
+            .map(|name| {
+                name.chars()
+                    .filter(|c| !c.is_control())
+                    .take(ASSISTANT_NAME_LONGEST)
+                    .collect::<String>()
+                    .trim()
+                    .to_owned()
+            })
             .filter(|name| !name.is_empty())
-            .map_or_else(
-                || ASSISTANT_NAME.to_owned(),
-                |name| name.chars().take(ASSISTANT_NAME_LONGEST).collect(),
-            )
+            .unwrap_or_else(|| ASSISTANT_NAME.to_owned())
     }
 }
 

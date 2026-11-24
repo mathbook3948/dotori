@@ -95,7 +95,7 @@ impl Home {
         self.root.join("notes.sqlite3")
     }
 
-    /// The pictures the owner gave the assistant, each named by its contents.
+    /// The pictures the owner gave the assistant, each named by random letters.
     pub(crate) fn icons(&self) -> PathBuf {
         self.root.join("icons")
     }

@@ -96,3 +96,20 @@ fn a_picture_from_another_pc_that_is_not_a_kept_icon_is_refused() {
     assert!(path(&folder, "0123456789abcdef.png").is_none());
     let _ = std::fs::remove_dir_all(&folder);
 }
+
+#[test]
+fn only_the_picture_in_use_and_the_latest_few_are_kept() {
+    let folder = folder();
+    let first = keep(&folder, &picture(64, 64, ImageFormat::Png)).expect("kept");
+    for _ in 0..6 {
+        std::thread::sleep(std::time::Duration::from_millis(15));
+        keep(&folder, &picture(64, 64, ImageFormat::Png)).expect("kept");
+    }
+
+    prune(&folder, &[&first]);
+
+    let left = std::fs::read_dir(&folder).expect("listed").count();
+    assert_eq!(left, KEPT_PICTURES + 1);
+    assert!(path(&folder, &first).is_some(), "the one in use stays");
+    let _ = std::fs::remove_dir_all(&folder);
+}
