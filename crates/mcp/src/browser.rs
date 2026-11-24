@@ -16,8 +16,8 @@ use tokio::io::BufReader;
 use tokio::process::Child;
 use tokio::process::Command;
 use tokio::sync::Mutex;
-use tokio::sync::Notify;
 use tokio::sync::mpsc;
+use tokio::sync::watch;
 use tokio::time;
 
 use crate::Tool;
@@ -86,7 +86,7 @@ pub struct Browser {
     owner: Mutex<Option<tokio::sync::OwnedMutexGuard<()>>>,
     logins: SharedChallenges,
     taking: AtomicBool,
-    give_up: Notify,
+    gave: watch::Sender<u64>,
 }
 
 type SharedChallenges = Arc<std::sync::Mutex<Challenges<Arc<Cdp>>>>;
@@ -194,7 +194,7 @@ impl Browser {
             owner: Mutex::new(None),
             logins: Arc::default(),
             taking: AtomicBool::new(false),
-            give_up: Notify::new(),
+            gave: watch::Sender::new(0),
         });
         if tokio::runtime::Handle::try_current().is_ok() {
             tokio::spawn(Arc::clone(&browser).listen(asks));
@@ -207,7 +207,7 @@ impl Browser {
             let done = match ask {
                 Ask::Watch(on) => {
                     if !on {
-                        self.give_up.notify_waiters();
+                        self.gave.send_modify(|gave| *gave += 1);
                     }
                     if !on && self.owner.lock().await.take().is_some() {
                         self.screen.update(json!({ "mode": "idle" }));
@@ -217,8 +217,9 @@ impl Browser {
                 Ask::Take => {
                     if !self.taking.swap(true, Ordering::SeqCst) {
                         let browser = Arc::clone(&self);
+                        let since = *self.gave.borrow();
                         tokio::spawn(async move {
-                            if let Err(error) = browser.take().await {
+                            if let Err(error) = browser.take(since).await {
                                 browser.screen.update(json!({ "error": error }));
                             }
                             browser.taking.store(false, Ordering::SeqCst);
@@ -227,7 +228,7 @@ impl Browser {
                     Ok(())
                 }
                 Ask::Give => {
-                    self.give_up.notify_waiters();
+                    self.gave.send_modify(|gave| *gave += 1);
                     self.owner.lock().await.take();
                     self.screen.update(json!({ "mode": "idle", "error": null }));
                     Ok(())
@@ -263,7 +264,8 @@ impl Browser {
         cdp.send(method, params, Some(&session)).await.map(drop)
     }
 
-    async fn take(&self) -> Result<(), String> {
+    async fn take(&self, since: u64) -> Result<(), String> {
+        let mut gave = self.gave.subscribe();
         if self.owner.lock().await.is_some() {
             self.screen.update(json!({ "mode": "owner" }));
             return Ok(());
@@ -271,7 +273,7 @@ impl Browser {
         self.screen.update(json!({ "mode": "waiting" }));
         let held = tokio::select! {
             held = Arc::clone(&self.acting).lock_owned() => held,
-            () = self.give_up.notified() => {
+            _ = gave.wait_for(|now| *now != since) => {
                 self.screen.update(json!({ "mode": "idle" }));
                 return Ok(());
             }
@@ -281,7 +283,14 @@ impl Browser {
             self.screen.update(json!({ "mode": "idle" }));
             return Err(error);
         }
-        *self.owner.lock().await = Some(held);
+        let mut owner = self.owner.lock().await;
+        if *self.gave.borrow() != since {
+            drop(held);
+            self.screen.update(json!({ "mode": "idle" }));
+            return Ok(());
+        }
+        *owner = Some(held);
+        drop(owner);
         self.screen
             .update(json!({ "mode": "owner", "asked": null, "error": null }));
         Ok(())
@@ -560,6 +569,8 @@ impl Browser {
         let events = cdp
             .events()
             .ok_or("the browser's events are already taken")?;
+        self.logins.lock().expect("unpoisoned").clear();
+        self.screen.update(json!({ "login": null }));
         let watcher = tokio::spawn(watch(
             Arc::clone(&cdp),
             events,
@@ -611,8 +622,6 @@ impl Browser {
             None,
         )
         .await?;
-        self.logins.lock().expect("unpoisoned").clear();
-        self.screen.update(json!({ "login": null }));
         *self.shown.lock().expect("unpoisoned") = Some(Shown {
             cdp: Arc::clone(&cdp),
             main: session.clone(),

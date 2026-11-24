@@ -406,7 +406,7 @@ impl TextInput {
     }
 
     /// A field of one line that shows a dot for each character, for a password. It never hands
-    /// the input method the real text and takes no composition.
+    /// the input method the real text.
     pub(crate) fn masked(placeholder: &'static str, cx: &mut Context<Self>) -> Self {
         Self {
             masked: true,
@@ -552,13 +552,9 @@ impl EntityInputHandler for TextInput {
         range_utf16: Option<Range<usize>>,
         new_text: &str,
         new_selected_range_utf16: Option<Range<usize>>,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.masked {
-            self.replace_text_in_range(range_utf16, new_text, window, cx);
-            return;
-        }
         let range = range_utf16
             .as_ref()
             .map(|range_utf16| self.range_from_utf16(range_utf16))

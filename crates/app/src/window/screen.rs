@@ -55,6 +55,7 @@ use crate::window::input::TextInput;
 use crate::window::parts::prose;
 use crate::window::theme::Theme;
 
+const ANSWERED_KEPT: usize = 16;
 const POINTER_SHOWN: Duration = Duration::from_millis(900);
 
 #[derive(Clone, Copy, PartialEq)]
@@ -79,7 +80,7 @@ pub(crate) struct ScreenView {
     typed: Option<Entity<TextInput>>,
     login: Option<(Entity<TextInput>, Entity<TextInput>)>,
     asked_login: Option<Value>,
-    answered: Option<u64>,
+    answered: Vec<u64>,
     focus_login: bool,
     down: bool,
     pointer: Option<(f64, f64, Instant)>,
@@ -115,7 +116,7 @@ impl ScreenView {
             typed: None,
             login: None,
             asked_login: None,
-            answered: None,
+            answered: Vec::new(),
             focus_login: false,
             down: true,
             pointer: None,
@@ -176,7 +177,10 @@ impl ScreenView {
                     .get("login")
                     .filter(|login| {
                         login.is_object()
-                            && login.get("id").and_then(Value::as_u64) != self.answered
+                            && !login
+                                .get("id")
+                                .and_then(Value::as_u64)
+                                .is_some_and(|id| self.answered.contains(&id))
                     })
                     .cloned();
                 let id = |login: &Option<Value>| {
@@ -718,7 +722,10 @@ impl ScreenView {
             }
             None => json!({ "kind": "auth", "id": id, "cancel": true }),
         });
-        self.answered = Some(id);
+        if self.answered.len() >= ANSWERED_KEPT {
+            self.answered.remove(0);
+        }
+        self.answered.push(id);
         self.asked_login = None;
         self.login = None;
         if self.mode == Mode::Owner {

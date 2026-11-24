@@ -736,3 +736,51 @@ async fn a_page_that_asks_for_a_login_waits_for_the_owners_answer() {
     );
     assert!(login(&browser).is_null());
 }
+
+#[tokio::test]
+#[ignore = "starts a real Chrome"]
+async fn giving_the_browser_back_while_waiting_leaves_it_with_the_agent() {
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let base = std::env::temp_dir().join(format!("dotori-browser-test-{}-{n}", std::process::id()));
+    let (screen, _) = Screen::new();
+    let (asks, heard) = mpsc::unbounded_channel();
+    let browser = Browser::with_screen(
+        BrowserConfig {
+            logins: None,
+            executable: std::env::var_os("DOTORI_TEST_CHROME").map(PathBuf::from),
+            downloads: base.join("chrome"),
+            profile: base.join("profile"),
+        },
+        screen,
+        heard,
+    );
+    let mode = |browser: &Browser| browser.screen.state.lock().expect("unpoisoned")["mode"].clone();
+    let acting = Arc::clone(&browser.acting).lock_owned().await;
+
+    asks.send(Ask::Take).expect("sent");
+    for _ in 0..50 {
+        if mode(&browser) == "waiting" {
+            break;
+        }
+        time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(mode(&browser), "waiting");
+    asks.send(Ask::Give).expect("sent");
+    time::sleep(Duration::from_millis(200)).await;
+    drop(acting);
+    time::sleep(Duration::from_secs(3)).await;
+
+    assert!(browser.owner.lock().await.is_none());
+    assert_eq!(mode(&browser), "idle");
+    assert!(browser.acting.try_lock().is_ok());
+
+    asks.send(Ask::Take).expect("sent");
+    for _ in 0..200 {
+        if mode(&browser) == "owner" {
+            break;
+        }
+        time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(mode(&browser), "owner");
+    assert!(browser.owner.lock().await.is_some());
+}
