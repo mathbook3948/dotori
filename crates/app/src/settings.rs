@@ -215,7 +215,8 @@ impl SlackForm {
         }
         let owner = self
             .owner
-            .clone()
+            .as_deref()
+            .map(str::to_ascii_uppercase)
             .ok_or("Slack을 쓰려면 내 Slack 멤버 ID를 적어 주세요")?;
         if !(owner.starts_with('U') || owner.starts_with('W'))
             || owner.len() < 3

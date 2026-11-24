@@ -76,6 +76,10 @@ impl SettingsView {
         };
         let routines = cx.new(|cx| RoutinesView::new(&home, cx));
         let slack = SlackForm::of(settings.slack.as_ref());
+        let slack_app_env = field(SLACK_APP_KEY, slack.app_token_env.clone(), cx);
+        let slack_bot_env = field(SLACK_BOT_KEY, slack.bot_token_env.clone(), cx);
+        cx.observe(&slack_app_env, |_, _, cx| cx.notify()).detach();
+        cx.observe(&slack_bot_env, |_, _, cx| cx.notify()).detach();
         Self {
             pcs,
             routines,
@@ -89,8 +93,8 @@ impl SettingsView {
             other,
             slack_on: slack.on,
             slack_owner: field("U012AB3CD", slack.owner, cx),
-            slack_app_env: field(SLACK_APP_KEY, slack.app_token_env, cx),
-            slack_bot_env: field(SLACK_BOT_KEY, slack.bot_token_env, cx),
+            slack_app_env,
+            slack_bot_env,
             note: None,
         }
     }

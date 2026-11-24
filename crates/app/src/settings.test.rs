@@ -352,7 +352,15 @@ fn the_slack_form_refuses_a_missing_owner_and_a_pasted_token() {
     assert!(form.settings().is_err());
     form.owner = Some(String::from("someone"));
     assert!(form.settings().is_err());
-    form.owner = Some(String::from("U012AB3CD"));
+    form.owner = Some(String::from("u012ab3cd"));
+    assert_eq!(
+        form.settings()
+            .expect("valid")
+            .expect("on")
+            .owner
+            .as_deref(),
+        Some("U012AB3CD")
+    );
     form.app_token_env = Some(String::from("xapp-1-A0-123-abc"));
     let refused = form.settings().expect_err("a token is not a name");
     assert!(refused.contains("환경 변수"), "{refused}");
