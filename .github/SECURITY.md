@@ -4,7 +4,7 @@ dotori runs on your PC with your accounts. It holds API keys in environment vari
 
 ## Supported versions
 
-dotori has no stable release yet. Only the latest release and the `main` branch get security fixes.
+dotori has no release yet. Security fixes go to the `main` branch and into the next release.
 
 ## Report a vulnerability
 
@@ -17,7 +17,7 @@ Report it through [GitHub private vulnerability reporting](https://github.com/ma
 - the steps that show the problem, and
 - what an attacker can do with it.
 
-The maintainer replies within 7 days. After a fix is released, the advisory is published with credit to you, unless you ask to stay anonymous.
+The maintainer replies in the advisory, and you can follow the fix there.
 
 ## In scope
 

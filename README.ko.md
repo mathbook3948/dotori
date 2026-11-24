@@ -67,7 +67,7 @@ dotori는 설정과 기록을 폴더 하나에 둡니다. 다른 폴더를 쓰�
 
 | OS | 폴더 |
 | --- | --- |
-| Linux | `~/.local/share/dotori` |
+| Linux | `$XDG_DATA_HOME/dotori`, 없으면 `~/.local/share/dotori` |
 | macOS | `~/Library/Application Support/dotori` |
 | Windows | `%APPDATA%\dotori` |
 

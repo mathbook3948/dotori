@@ -18,6 +18,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
+      - if: github.ref_type == 'tag'
+        name: Check the tag matches the version
+        shell: bash
+        run: test "$GITHUB_REF_NAME" = "v$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml)"
       - uses: jdx/mise-action@v5
         with:
           install_args: rust
@@ -66,11 +70,6 @@ jobs:
         with:
           name: checksums
           path: dist/SHA256SUMS
-      - if: github.ref_type == 'tag'
-        name: Check the tag matches the version
-        run: |
-          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml)
-          test "$GITHUB_REF_NAME" = "v$version"
       - if: github.ref_type == 'tag'
         name: Publish the release
         env:

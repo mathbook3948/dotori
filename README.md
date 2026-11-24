@@ -67,7 +67,7 @@ dotori keeps its settings and records in one folder. Set `DOTORI_HOME` to use an
 
 | OS | Folder |
 | --- | --- |
-| Linux | `~/.local/share/dotori` |
+| Linux | `$XDG_DATA_HOME/dotori`, or `~/.local/share/dotori` without it |
 | macOS | `~/Library/Application Support/dotori` |
 | Windows | `%APPDATA%\dotori` |
 

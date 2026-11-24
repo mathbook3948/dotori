@@ -43,7 +43,7 @@ This runs `rustfmt`, `clippy`, the tests, the `ast-grep` rules in `guards/`, the
 
 The checks enforce these rules, so you do not need to remember them:
 
-- Code has no comments. Write a doc comment only where the code cannot show why.
+- Code has no comments. Doc comments are only for public API contracts.
 - Unit tests live in a sibling `<name>.test.rs` file.
 - Files in the repository do not use en dashes, em dashes, middle dots, or CJK angle and corner brackets.
 - Only the entries in `guards/root-entries.txt` can sit at the repository root.
