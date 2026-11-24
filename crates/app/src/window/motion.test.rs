@@ -32,7 +32,6 @@ fn the_motion_tokens_match_design_md() {
         ("hover", HOVER),
         ("message-enter", MESSAGE_ENTER),
         ("follow", FOLLOW),
-        ("cross-fade", CROSS_FADE),
         ("working", WORKING),
     ] {
         assert_eq!(

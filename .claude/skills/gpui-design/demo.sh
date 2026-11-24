@@ -5,6 +5,7 @@
 #   demo.sh shot <home> <out.png> [look] [frames]   open the chat window and save it; frames > 1 saves out-1.png, out-2.png, ...
 #   demo.sh settings <home> <out.png> [look]       open the settings window and save it
 #   [look] is light, dark, a theme such as forest, or both as forest-dark
+#   demo.sh ask <home> <what dotori asks>   stand in for the browser and ask the owner; run it before shot
 #   demo.sh stop <home>                     stop what start started
 set -euo pipefail
 
@@ -13,9 +14,10 @@ display="${DEMO_DISPLAY:-97}"
 target="${CARGO_TARGET_DIR:-$repo/target}"
 dotori="$target/debug/dotori"
 model="$target/debug/examples/demo_model"
+screen="$target/debug/examples/demo_screen"
 offline="http://127.0.0.1:9"
 
-usage() { sed -n '2,8p' "$0" >&2; exit 2; }
+usage() { sed -n '2,9p' "$0" >&2; exit 2; }
 [ $# -ge 2 ] || usage
 command="$1"
 home="$(mkdir -p "$2" && cd "$2" && pwd)"
@@ -29,7 +31,7 @@ background() {
 
 case "$command" in
 start)
-  (cd "$repo" && mise exec -- cargo build --quiet -p dotori --bin dotori --example demo_model)
+  (cd "$repo" && mise exec -- cargo build --quiet -p dotori --bin dotori --example demo_model --example demo_screen)
   if ! pgrep -f "Xvfb :$display( |$)" >/dev/null; then
     rm -f "/tmp/.X11-unix/X$display" "/tmp/.X$display-lock"
     background "$home/xvfb.log" Xvfb ":$display" -screen 0 1280x900x24
@@ -96,6 +98,13 @@ shot|settings)
     done
   fi
   echo "saved: $out"
+  ;;
+ask)
+  [ $# -ge 3 ] || usage
+  pkill -f "$screen" 2>/dev/null || true
+  background "$home/screen.log" "$screen" "$home" "$3"
+  sleep 0.5
+  echo "asking: $3"
   ;;
 stop)
   pkill -f "$dotori window" 2>/dev/null || true

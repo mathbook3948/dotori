@@ -268,7 +268,7 @@ This file is the design the windows are moving to. Until a window has moved, `do
 
 - The owner picks a theme in the settings window and every window changes at once. Each theme has a light and a dark set, chosen by the system look or by the owner.
 - The themes are graphite, paper, forest, indigo and acorn. Graphite is the default.
-- `canvas` is the window background. `surface` is anything that sits on it, such as a card, a field or a button. `raised` is the header and the composer area.
+- `canvas` is the window background. `surface` is anything that sits on it, such as a card, a field or a button. `raised` is a window's top bar and the composer area.
 - `bubble` is the owner's message. It is a neutral shade of the canvas, never `primary`.
 - `primary` fills only the buttons for the action the owner most likely takes next, such as send or allow, and colors small marks such as list bullets. It never fills a large area. `primary-hover` is the same button under the pointer, and `on-primary` is the text on it.
 - `selection` is the background of selected text.
@@ -280,14 +280,15 @@ This file is the design the windows are moving to. Until a window has moved, `do
 
 - The windows use the system UI font, and code uses the fixed-width font each OS has.
 - dotori's replies use `reply`, everything else in the conversation uses `body`, and labels and notes use `small` or `caption`. Hints under fields use `hint`.
-- Headings in replies and the name in the header use `title`. Headings are never colored.
+- Headings in replies and window titles inside a window use `title`. Headings are never colored.
 - Korean text breaks only between words.
 - Bold marks a few words that matter, such as the time of an event.
 
 ## Layout
 
-- The chat window is a header, the conversation, and the composer.
-- The header shows the logo, the name, and the tabs. It shows no status while things work. When dotori cannot be reached, one quiet line under the header says so and what to do. When the owner's PCs are linked, the PC that answers is named on that line only when it is not this one.
+- The chat window is the conversation and the composer, with no header. A quiet strip of `canvas` at the top holds only the settings button on the right. The window's own title bar names dotori, and each reply carries the logo.
+- The strip shows no status while things work. When dotori cannot be reached, one quiet line on its left says so and what to do. When the owner's PCs are linked, the PC that answers is named there only when it is not this one.
+- dotori's browser has no place in the chat window. When it needs the owner, a card asks at the end of the conversation, showing the page as it is now, and the browser opens in a window of its own only when the owner opens it. A login it asks for is answered in the card.
 - The conversation keeps `spacing.turn` between turns and `spacing.xl` around its edge.
 - dotori's reply is plain text on the canvas, with no bubble. A small logo sits by the first line of each reply.
 - The owner's message is a `bubble` on the right, at most four fifths of the width.
@@ -300,7 +301,7 @@ This file is the design the windows are moving to. Until a window has moved, `do
 ## Elevation & Depth
 
 - Cards and fields are set apart by fill, not by borders. A card is `surface` or a `-soft` fill on the canvas.
-- Lines are used only to divide large areas, such as the header from the conversation.
+- Lines are used only to divide large areas, such as the conversation from the composer.
 - The composer alone has a light shadow, so it reads as the place to type.
 
 ## Shapes
@@ -316,7 +317,7 @@ This file is the design the windows are moving to. Until a window has moved, `do
 - When the pointer enters or leaves a button or a message, its color and anything that shows on hover change with `motion.hover`.
 - When the conversation is at the bottom, it follows new text with `motion.follow`. When the owner has scrolled up to read, it stays where it is.
 - A reply that is being written grows as its text arrives. While dotori works before the first word, the logo by the reply breathes with `motion.working` beside a short label such as "생각하는 중". This is the only motion that repeats.
-- Switching tabs or themes uses `motion.cross-fade`.
+- Switching themes uses `motion.cross-fade`.
 - Nothing bounces, overshoots or spins without a label. Apart from `motion.working`, nothing takes longer than `motion.message-enter`.
 - When the system asks for less motion, things change in place without moving.
 - Work that waits on a disk or the network never runs on the thread that draws the window.
@@ -335,7 +336,8 @@ This file is the design the windows are moving to. Until a window has moved, `do
 - **Permission card**: `warn-soft` fill, `rounded.lg`, a bold question, the command on `surface` in `code`, and the buttons 거절 (`surface`) and 허락 (`primary`).
 - **Failure card**: `danger-soft` fill, `rounded.lg`, what failed and what to do, in `danger` and `text`.
 - **Composer**: `surface` on `raised`, `rounded.composer`, a light shadow, a round `primary` send button, and a `hint` line under it.
-- **Tabs**: a `canvas` track with the chosen tab on `surface`.
+- **Browser card**: `warn-soft` fill, `rounded.lg`, what dotori asks, the page now at 16:10 on `surface` that opens the browser when clicked, and the buttons 나중에 (`surface`) and 브라우저 열기 (`primary`). While the browser window is open it turns `surface` and offers 창 다시 보기 and 다 했어요.
+- **Settings button**: a round `surface` button with a `muted` gear, top right.
 
 ## Do's and Don'ts
 

@@ -44,12 +44,15 @@ bash .claude/skills/gpui-design/demo.sh stop "$home"
 
 `talk` takes your own messages too. `shot ... light 5` saves five frames a few milliseconds apart, for checking that motion shows steps between its start and its end.
 
+`ask "$home" "<what dotori asks>"` stands in for dotori's browser and asks the owner for it, so the browser card shows; run it before `shot`. What the windows send back, such as `{"kind":"take"}`, lands in `$home/screen.log`, and the browser window opens as `dotori 브라우저`.
+
 Take every theme that exists in both looks. Read each screenshot yourself.
 
 ## 4a. Test what it does
 
 - A window's behavior is tested with GPUI's test platform in its `<name>.test.rs`: open the view with fake `Link` and `ScreenLink` channels, type with `simulate_input` and `simulate_keystrokes`, click an element found by its `debug_selector` with `simulate_click`, and assert what the window sent and what it holds. `crates/app/src/window/chat.test.rs` shows the pattern.
 - Give each control a test needs a `debug_selector`. It costs nothing outside tests.
+- GPUI 0.2.2 keeps every `debug_selector` it has ever drawn, so `debug_bounds` cannot show that something went away. Assert what the view holds instead, such as `browser_ask` in `chat.test.rs`.
 - `crates/app/tests/e2e.rs` runs the real daemon against the fake model in `crates/app/tests/support/model.rs`. When a change touches what the daemon sends the windows, extend it.
 
 ## 5. Critique, then fix
