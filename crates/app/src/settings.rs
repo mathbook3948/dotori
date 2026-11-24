@@ -8,6 +8,8 @@ use std::sync::Arc;
 
 use dotori_connectors::channel::slack::SlackChannel;
 use dotori_connectors::channel::slack::SlackConfig;
+use dotori_connectors::channel::telegram::TelegramChannel;
+use dotori_connectors::channel::telegram::TelegramConfig;
 use dotori_connectors::llm::anthropic::Anthropic;
 use dotori_connectors::llm::anthropic::AnthropicConfig;
 use dotori_connectors::llm::openai::OpenAi;
@@ -27,6 +29,8 @@ use crate::replace::replace;
 const ANTHROPIC_KEY: &str = "ANTHROPIC_API_KEY";
 /// Where the Slack app token is when the settings do not say.
 pub(crate) const SLACK_APP_KEY: &str = "SLACK_APP_TOKEN";
+/// Where the Telegram bot token is when the settings do not say.
+pub(crate) const TELEGRAM_KEY: &str = "TELEGRAM_BOT_TOKEN";
 /// Where the Slack bot token is when the settings do not say.
 pub(crate) const SLACK_BOT_KEY: &str = "SLACK_BOT_TOKEN";
 
@@ -39,6 +43,8 @@ pub(crate) struct Settings {
     pub(crate) model: ModelSettings,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) slack: Option<SlackSettings>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) telegram: Option<TelegramSettings>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) browser: Option<BrowserSettings>,
     #[serde(default, alias = "sub_tasks", skip_serializing_if = "Option::is_none")]
@@ -83,6 +89,16 @@ pub(crate) struct RelaySettings {
     pub(crate) tools: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) confirm: Vec<String>,
+}
+
+/// The Telegram channel: the bot token's variable and the owner's numeric user id.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct TelegramSettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) token_env: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) owner: Option<i64>,
 }
 
 /// Which tools wait for the owner's OK.
@@ -276,11 +292,7 @@ impl SlackForm {
             .into_iter()
             .flatten()
         {
-            let mut chars = name.chars();
-            let first = chars
-                .next()
-                .is_some_and(|c| c.is_ascii_alphabetic() || c == '_');
-            if !first || !chars.all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            if !variable_name(name) {
                 return Err(format!(
                     "`{name}`은 환경 변수 이름이 아니에요. 토큰은 여기 말고 환경 변수에 넣어 주세요"
                 ));
@@ -292,6 +304,61 @@ impl SlackForm {
             owner: Some(owner),
         }))
     }
+}
+
+/// The Telegram part of the settings window, each field already trimmed.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct TelegramForm {
+    pub(crate) on: bool,
+    pub(crate) owner: Option<String>,
+    pub(crate) token_env: Option<String>,
+}
+
+impl TelegramForm {
+    pub(crate) fn of(telegram: Option<&TelegramSettings>) -> Self {
+        match telegram {
+            Some(telegram) => Self {
+                on: true,
+                owner: telegram.owner.map(|owner| owner.to_string()),
+                token_env: telegram.token_env.clone(),
+            },
+            None => Self::default(),
+        }
+    }
+
+    /// The `[telegram]` section this form asks for, or `None` when Telegram is off.
+    pub(crate) fn settings(&self) -> Result<Option<TelegramSettings>, String> {
+        if !self.on {
+            return Ok(None);
+        }
+        let owner = self
+            .owner
+            .as_deref()
+            .ok_or("Telegram을 쓰려면 내 Telegram 사용자 ID를 적어 주세요")?
+            .parse::<i64>()
+            .ok()
+            .filter(|owner| *owner > 0)
+            .ok_or("Telegram 사용자 ID는 123456789처럼 숫자예요")?;
+        if let Some(name) = &self.token_env
+            && !variable_name(name)
+        {
+            return Err(format!(
+                "`{name}`은 환경 변수 이름이 아니에요. 토큰은 여기 말고 환경 변수에 넣어 주세요"
+            ));
+        }
+        Ok(Some(TelegramSettings {
+            token_env: self.token_env.clone(),
+            owner: Some(owner),
+        }))
+    }
+}
+
+fn variable_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// What the settings window holds, each field already trimmed. A blank field means the default.
@@ -615,6 +682,42 @@ impl Settings {
     pub(crate) fn channels(
         &self,
         key: impl Fn(&str) -> Option<String>,
+    ) -> (Vec<Arc<dyn Channel>>, Vec<String>) {
+        let mut channels = Vec::new();
+        let mut off = Vec::new();
+        for (name, built) in [
+            ("Slack", self.slack_channel(&key)),
+            ("Telegram", self.telegram_channel(&key)),
+        ] {
+            match built {
+                Ok(built) => channels.extend(built),
+                Err(error) => off.push(format!("{name} is off: {error}")),
+            }
+        }
+        (channels, off)
+    }
+
+    fn telegram_channel(
+        &self,
+        key: &impl Fn(&str) -> Option<String>,
+    ) -> Result<Vec<Arc<dyn Channel>>, String> {
+        let Some(telegram) = &self.telegram else {
+            return Ok(Vec::new());
+        };
+        let owner = telegram
+            .owner
+            .ok_or("set `owner` under [telegram] to your Telegram user id, such as 123456789")?;
+        let variable = telegram.token_env.as_deref().unwrap_or(TELEGRAM_KEY);
+        let token =
+            key(variable).ok_or_else(|| format!("set {variable} to your Telegram bot token"))?;
+        let channel = TelegramChannel::new(TelegramConfig::new(token, owner))
+            .map_err(|error| error.detail)?;
+        Ok(vec![Arc::new(channel)])
+    }
+
+    fn slack_channel(
+        &self,
+        key: &impl Fn(&str) -> Option<String>,
     ) -> Result<Vec<Arc<dyn Channel>>, String> {
         let Some(slack) = &self.slack else {
             return Ok(Vec::new());

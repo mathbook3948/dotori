@@ -374,10 +374,10 @@ pub(crate) async fn serve(
                 continue;
             }
         }
-        let mut channels = settings.channels(environment).unwrap_or_else(|error| {
-            eprintln!("dotori: Slack is off: {error}");
-            Vec::new()
-        });
+        let (mut channels, off) = settings.channels(environment);
+        for problem in off {
+            eprintln!("dotori: {problem}");
+        }
         channels.push(Arc::new(RoutineChannel::new(Arc::clone(&routines))) as Arc<dyn Channel>);
         channels.push(Arc::clone(&decision) as Arc<dyn Channel>);
         let channels = channels
