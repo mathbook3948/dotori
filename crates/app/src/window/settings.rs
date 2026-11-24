@@ -15,6 +15,7 @@ use gpui::prelude::*;
 use gpui::px;
 
 use crate::home::Home;
+use crate::settings::ANTHROPIC_KEY;
 use crate::settings::DISCORD_KEY;
 use crate::settings::DiscordForm;
 use crate::settings::Form;
@@ -77,6 +78,8 @@ impl SettingsView {
                 input
             })
         };
+        let api_key_env = field("기본값", form.api_key_env.clone(), cx);
+        cx.observe(&api_key_env, |_, _, cx| cx.notify()).detach();
         let other = Form {
             openai_compatible: !form.openai_compatible,
             ..Form::default()
@@ -110,7 +113,7 @@ impl SettingsView {
             openai_compatible: form.openai_compatible,
             model: field("기본값", form.model, cx),
             base_url: field("기본값", form.base_url, cx),
-            api_key_env: field("기본값", form.api_key_env, cx),
+            api_key_env,
             effort: field("기본값", form.effort, cx),
             other,
             slack_on: slack.on,
@@ -287,14 +290,29 @@ impl Render for SettingsView {
                 "비워 두면 공식 주소를 써요.",
                 &self.base_url,
             ))
-            .child(field(
-                &theme,
-                window,
-                cx,
-                "API 키가 든 환경 변수",
-                "키는 파일에 저장하지 않아요. 키가 든 환경 변수 이름만 적어요.",
-                &self.api_key_env,
-            ));
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1p5()
+                    .child(field(
+                        &theme,
+                        window,
+                        cx,
+                        "API 키가 든 환경 변수",
+                        if self.openai_compatible {
+                            "키는 파일에 저장하지 않아요. 키가 필요 없으면 비워 둬요."
+                        } else {
+                            "키는 파일에 저장하지 않아요. 비워 두면 ANTHROPIC_API_KEY예요."
+                        },
+                        &self.api_key_env,
+                    ))
+                    .when(
+                        !self.openai_compatible
+                            || !self.api_key_env.read(cx).text().trim().is_empty(),
+                        |key| key.child(found(&theme, &self.api_key_env, ANTHROPIC_KEY, cx)),
+                    ),
+            );
         if !self.openai_compatible {
             fields = fields.child(field(
                 &theme,

@@ -28,7 +28,8 @@ use serde::Serialize;
 
 use crate::replace::replace;
 
-const ANTHROPIC_KEY: &str = "ANTHROPIC_API_KEY";
+/// Where the Anthropic API key is when the settings do not say.
+pub(crate) const ANTHROPIC_KEY: &str = "ANTHROPIC_API_KEY";
 /// Where the Slack app token is when the settings do not say.
 pub(crate) const SLACK_APP_KEY: &str = "SLACK_APP_TOKEN";
 /// Where the Telegram bot token is when the settings do not say.

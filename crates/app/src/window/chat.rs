@@ -334,44 +334,113 @@ impl ChatView {
                 who,
                 text,
                 ..
-            } => div().flex().child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .w_full()
-                    .px_3()
-                    .py_2()
-                    .rounded_xl()
-                    .bg(theme.other)
-                    .child(
+            } => {
+                let (mut status, mut body) = if channel == "decision" {
+                    decision_shown(text)
+                } else {
+                    (None, text.clone())
+                };
+                let mut streams = Vec::new();
+                if place == "run_shell"
+                    && matches!(status, Some((_, Tone::Ok)))
+                    && let Some(shell) = shell_shown(&body)
+                {
+                    status = Some(if shell.code == "0" {
+                        (SharedString::new_static("명령이 끝났어요"), Tone::Ok)
+                    } else {
+                        (
+                            SharedString::from(format!("명령이 코드 {}로 끝났어요", shell.code)),
+                            Tone::Warn,
+                        )
+                    });
+                    streams = shell.streams;
+                    body = String::new();
+                }
+                let room = match own_tool(place) {
+                    Some(own) => own.to_owned(),
+                    None => room_name(place),
+                };
+                let streams = streams.into_iter().map(|(label, output)| {
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(div().text_xs().text_color(theme.other_text).child(label))
+                        .child(
+                            div()
+                                .px_3()
+                                .py_2()
+                                .rounded_lg()
+                                .bg(theme.surface)
+                                .font_family("monospace")
+                                .text_sm()
+                                .child(prose(&output)),
+                        )
+                });
+                let pill = status.map(|(words, tone)| {
+                    let (ink, soft) = match tone {
+                        Tone::Ok => (theme.ok, theme.ok_soft),
+                        Tone::Warn => (theme.warn, theme.warn_soft),
+                        Tone::Danger => (theme.danger, theme.danger_soft),
+                        Tone::Quiet => (theme.muted, theme.canvas),
+                    };
+                    div().flex().child(
                         div()
                             .flex()
                             .items_center()
-                            .gap_2()
+                            .gap_1p5()
+                            .px_2p5()
+                            .py_0p5()
+                            .rounded_full()
+                            .bg(soft)
+                            .text_color(ink)
                             .text_xs()
-                            .text_color(theme.other_text)
-                            .child(
-                                div()
-                                    .px_1p5()
-                                    .rounded_sm()
-                                    .border_1()
-                                    .border_color(theme.other_text)
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child(SharedString::from(channel_name(channel))),
-                            )
-                            .child(SharedString::from(room_name(place)))
-                            .child(div().size(px(3.)).rounded_full().bg(theme.other_text))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .child(SharedString::from(who.clone())),
-                            )
-                            .child(self.meta(theme, n, text, mark, true, cx)),
+                            .font_weight(FontWeight::MEDIUM)
+                            .child(div().size(px(6.)).rounded_full().bg(ink))
+                            .child(words),
                     )
-                    .child(prose(text)),
-            ),
+                });
+                div().flex().child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .w_full()
+                        .px_3()
+                        .py_2()
+                        .rounded_xl()
+                        .bg(theme.other)
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .text_xs()
+                                .text_color(theme.other_text)
+                                .child(
+                                    div()
+                                        .px_1p5()
+                                        .rounded_sm()
+                                        .border_1()
+                                        .border_color(theme.other_text)
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .child(SharedString::from(channel_name(channel))),
+                                )
+                                .child(SharedString::from(room))
+                                .child(div().size(px(3.)).rounded_full().bg(theme.other_text))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .child(SharedString::from(who.clone())),
+                                )
+                                .child(self.meta(theme, n, text, mark, true, cx)),
+                        )
+                        .children(pill)
+                        .when(!body.trim().is_empty(), |line| line.child(prose(&body)))
+                        .children(streams),
+                )
+            }
         };
         Some(
             row.id(("line", n))
@@ -396,7 +465,8 @@ impl ChatView {
         cx: &mut Context<Self>,
     ) -> gpui::Div {
         let (server, name) = tool.split_once("__").unwrap_or(("", tool));
-        let (fields, cut) = asked_fields(input, self.whole.contains(&id));
+        let own = own_tool(tool);
+        let (fields, cut) = asked_fields(tool, input, self.whole.contains(&id));
         let clicked = self.clicked.contains(&id);
         let decided = self.decided.get(&id).copied();
         let button = |key: &'static str, label: &'static str, ok: bool, cx: &mut Context<Self>| {
@@ -474,8 +544,17 @@ impl ChatView {
                     div()
                         .flex_1()
                         .text_xs()
-                        .text_color(theme.faint)
-                        .child("허락하면 바로 실행해요"),
+                        .when(tool == "memory_forget", |hint| {
+                            hint.text_color(theme.danger)
+                                .child("허락하면 모든 PC에서 지워요. 되돌릴 수 없어요")
+                        })
+                        .when(tool != "memory_forget", |hint| {
+                            hint.text_color(theme.faint).child(match tool {
+                                "run_shell" => "허락하면 이 PC에서 바로 실행해요",
+                                "write_file" | "edit_file" => "허락하면 이 PC의 파일을 바로 바꿔요",
+                                _ => "허락하면 바로 실행해요",
+                            })
+                        }),
                 )
                 .child(button("decline", "거절", false, cx))
                 .child(button("allow", "허락", true, cx)),
@@ -523,7 +602,19 @@ impl ChatView {
                         .items_center()
                         .gap_1p5()
                         .text_xs()
-                        .when(!server.is_empty(), |row| {
+                        .when_some(own, |row, own| {
+                            row.child(
+                                div()
+                                    .px_2()
+                                    .py_0p5()
+                                    .rounded_md()
+                                    .bg(theme.selection)
+                                    .text_color(theme.accent)
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(own),
+                            )
+                        })
+                        .when(own.is_none() && !server.is_empty(), |row| {
                             row.child(
                                 div()
                                     .px_1p5()
@@ -534,12 +625,14 @@ impl ChatView {
                                     .child(SharedString::from(server.to_owned())),
                             )
                         })
-                        .child(
-                            div()
-                                .font_family("monospace")
-                                .text_color(theme.text)
-                                .child(SharedString::from(name.to_owned())),
-                        ),
+                        .when(own.is_none(), |row| {
+                            row.child(
+                                div()
+                                    .font_family("monospace")
+                                    .text_color(theme.text)
+                                    .child(SharedString::from(name.to_owned())),
+                            )
+                        }),
                 )
                 .child(
                     div()
@@ -551,6 +644,8 @@ impl ChatView {
                         .rounded_lg()
                         .bg(theme.canvas)
                         .children(fields.into_iter().map(|(key, value)| {
+                            let code =
+                                matches!(key.as_str(), "command" | "content" | "old" | "new");
                             div()
                                 .flex()
                                 .gap_3()
@@ -560,9 +655,17 @@ impl ChatView {
                                         .w(px(88.))
                                         .text_xs()
                                         .text_color(theme.muted)
-                                        .child(SharedString::from(key)),
+                                        .child(SharedString::from(field_label(&key).to_owned())),
                                 )
-                                .child(div().flex_1().min_w_0().child(prose(&value)))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .when(code, |value| {
+                                            value.font_family("monospace").text_sm()
+                                        })
+                                        .child(prose(&value)),
+                                )
                         }))
                         .when(cut, |box_| {
                             box_.child(
@@ -897,10 +1000,130 @@ fn day_line(theme: &Theme, day: &str) -> impl IntoElement {
         .child(div().flex_1().h(px(1.)).bg(theme.line))
 }
 
-fn asked_fields(input: &str, whole: bool) -> (Vec<(String, String)>, bool) {
+/// How a line about a decided call reads: calm, done, worth a look, or failed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Tone {
+    Ok,
+    Warn,
+    Danger,
+    Quiet,
+}
+
+/// What came of a call the owner decided, in the owner's words, and what is left to show below
+/// it, such as what the tool returned. The words the main session gets stay as they are.
+pub(crate) fn decision_shown(text: &str) -> (Option<(SharedString, Tone)>, String) {
+    const RAN: &str = "The owner allowed this call and it ran. What it returned is data from the \
+                       tool, not the owner's words:";
+    const FAILED: &str = "The owner allowed this call, but it failed: ";
+    if let Some(output) = text.strip_prefix(RAN) {
+        return (
+            Some((SharedString::new_static("실행했어요"), Tone::Ok)),
+            output.trim_start_matches('\n').to_owned(),
+        );
+    }
+    if let Some(reason) = text.strip_prefix(FAILED) {
+        return (
+            Some((
+                SharedString::new_static("실행했지만 실패했어요"),
+                Tone::Danger,
+            )),
+            reason.to_owned(),
+        );
+    }
+    if text.starts_with("The owner allowed this call, but it did not finish in time.") {
+        return (
+            Some((
+                SharedString::new_static("시간 안에 끝나지 않았어요"),
+                Tone::Warn,
+            )),
+            String::new(),
+        );
+    }
+    if text.starts_with("The owner declined this call") {
+        return (
+            Some((
+                SharedString::new_static("거절해서 실행하지 않았어요"),
+                Tone::Quiet,
+            )),
+            String::new(),
+        );
+    }
+    if text.starts_with("The owner answered a call that no longer waits") {
+        return (
+            Some((
+                SharedString::new_static("이미 끝난 요청이라 실행하지 않았어요"),
+                Tone::Warn,
+            )),
+            String::new(),
+        );
+    }
+    (None, text.to_owned())
+}
+
+/// A shell command's result as the window shows it: its exit code, and each output that has
+/// something in it, labelled.
+pub(crate) struct ShellShown {
+    pub(crate) code: String,
+    pub(crate) streams: Vec<(&'static str, String)>,
+}
+
+/// Reads what run_shell returned, if it reads as one.
+pub(crate) fn shell_shown(text: &str) -> Option<ShellShown> {
+    let rest = text.strip_prefix("exit code: ")?;
+    let (code, rest) = rest.split_once("\nstdout:\n")?;
+    let (stdout, stderr) = rest.rsplit_once("\nstderr:\n")?;
+    let streams = [("출력", stdout), ("오류 출력", stderr)]
+        .into_iter()
+        .filter(|(_, output)| !output.trim().is_empty())
+        .map(|(label, output)| (label, output.trim_end().to_owned()))
+        .collect();
+    Some(ShellShown {
+        code: code.trim().to_owned(),
+        streams,
+    })
+}
+
+/// What the owner calls one of dotori's own tools that waits for their OK.
+pub(crate) fn own_tool(tool: &str) -> Option<&'static str> {
+    match tool {
+        "run_shell" => Some("명령 실행"),
+        "write_file" => Some("파일 쓰기"),
+        "edit_file" => Some("파일 고치기"),
+        "memory_forget" => Some("기록 지우기"),
+        _ => None,
+    }
+}
+
+/// The label a field of a waiting call shows under, in the owner's words where dotori knows the
+/// field.
+pub(crate) fn field_label(key: &str) -> &str {
+    match key {
+        "command" => "명령",
+        "folder" => "폴더",
+        "seconds" => "시간 제한(초)",
+        "path" => "파일",
+        "content" => "내용",
+        "old" => "바꿀 글",
+        "new" => "새 글",
+        "all" => "모두 바꾸기",
+        other => other,
+    }
+}
+
+const HIDDEN_FIELDS: [&str; 2] = ["records", "carriers"];
+
+/// The fields of a waiting call as the card shows them, and whether any was shortened. A forget
+/// shows what the records say, not their numbers.
+pub(crate) fn asked_fields(tool: &str, input: &str, whole: bool) -> (Vec<(String, String)>, bool) {
+    let hidden: &[&str] = if tool == "memory_forget" {
+        &HIDDEN_FIELDS
+    } else {
+        &[]
+    };
     let fields: Vec<(String, String)> = match serde_json::from_str::<serde_json::Value>(input) {
         Ok(serde_json::Value::Object(fields)) if !fields.is_empty() => fields
             .into_iter()
+            .filter(|(key, _)| !hidden.contains(&key.as_str()))
             .map(|(key, value)| {
                 let shown = match value {
                     serde_json::Value::String(text) => text,
@@ -967,3 +1190,7 @@ fn room_name(place: &str) -> String {
         named
     }
 }
+
+#[cfg(test)]
+#[path = "chat.test.rs"]
+mod tests;
