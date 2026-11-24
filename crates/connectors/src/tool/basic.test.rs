@@ -366,3 +366,31 @@ async fn output_already_written_is_kept_when_something_left_running_holds_the_pi
     assert!(ran.contains("left running"), "{ran}");
     let _ = std::fs::remove_dir_all(folder);
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_private_file_stays_private_while_it_is_replaced() {
+    use std::os::unix::fs::PermissionsExt;
+    let (tools, folder) = tools();
+    std::fs::create_dir_all(folder.join("work")).expect("made");
+    let secret = folder.join("work").join(".env");
+    std::fs::write(&secret, "KEY=1\n").expect("written");
+    std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o600)).expect("private");
+
+    run(
+        &tools,
+        EDIT_FILE,
+        json!({ "path": ".env", "old": "1", "new": "2" }),
+    )
+    .await
+    .expect("edited");
+
+    let mode = std::fs::metadata(&secret)
+        .expect("there")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o600);
+    assert_eq!(std::fs::read_to_string(&secret).expect("read"), "KEY=2\n");
+    let _ = std::fs::remove_dir_all(folder);
+}

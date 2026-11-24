@@ -388,6 +388,7 @@ impl BasicTools {
         let status = match time::timeout(limit, child.wait()).await {
             Ok(status) => status.map_err(|error| error.to_string())?,
             Err(_) => {
+                drop(tree);
                 return Err(format!(
                     "the command did not finish in {} seconds and was stopped. Its output so far:\nstdout:\n{}\nstderr:\n{}",
                     limit.as_secs(),
@@ -508,11 +509,14 @@ async fn replace(path: &Path, bytes: &[u8]) -> Result<(), String> {
         STAGED.fetch_add(1, Ordering::Relaxed)
     ));
     let written = async {
-        let mut file = tokio::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&staged)
-            .await?;
+        let mut open = tokio::fs::OpenOptions::new();
+        open.write(true).create_new(true);
+        #[cfg(unix)]
+        if let Ok(was) = tokio::fs::metadata(&target).await {
+            use std::os::unix::fs::PermissionsExt;
+            open.mode(was.permissions().mode() & 0o7777);
+        }
+        let mut file = open.open(&staged).await?;
         file.write_all(bytes).await?;
         file.sync_all().await?;
         drop(file);
