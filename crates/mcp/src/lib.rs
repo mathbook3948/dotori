@@ -1,4 +1,4 @@
-//! dotori's MCP server: the tools every runner shares, such as webfetch and the browser, served
+//! dotori's MCP server: the tools every runner shares, such as fetch_url and the browser, served
 //! over HTTP.
 
 mod auth;

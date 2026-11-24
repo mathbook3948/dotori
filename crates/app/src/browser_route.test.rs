@@ -25,12 +25,12 @@ async fn alone_every_tool_runs_here() {
     let route = BrowserRoute::new(Arc::new(Echo));
 
     assert_eq!(
-        route.run(call("browser_run")).await.expect("ran"),
-        "here browser_run"
+        route.run(call("run_in_browser")).await.expect("ran"),
+        "here run_in_browser"
     );
     assert_eq!(
-        route.run(call("webfetch")).await.expect("ran"),
-        "here webfetch"
+        route.run(call("fetch_url")).await.expect("ran"),
+        "here fetch_url"
     );
 }
 
@@ -182,19 +182,19 @@ mod linked {
         .expect("watched");
         learns_main(&b, &a).await;
 
-        let mut browser = call("browser_run");
+        let mut browser = call("run_in_browser");
         browser.input = String::from(r#"{"code":"1"}"#);
         assert_eq!(
             a_route.run(browser).await.expect("ran"),
-            r#"B ran browser_run with {"code":"1"}"#
+            r#"B ran run_in_browser with {"code":"1"}"#
         );
         assert_eq!(
-            a_route.run(call("webfetch")).await.expect("ran"),
-            "A ran webfetch with {}"
+            a_route.run(call("fetch_url")).await.expect("ran"),
+            "A ran fetch_url with {}"
         );
         assert_eq!(
-            b_route.run(call("browser_read")).await.expect("ran"),
-            "B ran browser_read with {}"
+            b_route.run(call("read_page")).await.expect("ran"),
+            "B ran read_page with {}"
         );
     }
 
@@ -252,7 +252,8 @@ mod linked {
         .expect("watched");
         learns_main(&b, &a).await;
 
-        let gave_up = time::timeout(Duration::from_secs(1), a_route.run(call("browser_run"))).await;
+        let gave_up =
+            time::timeout(Duration::from_secs(1), a_route.run(call("run_in_browser"))).await;
         assert!(
             gave_up.is_err(),
             "the call is still running when a gives up"

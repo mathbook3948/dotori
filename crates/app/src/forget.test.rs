@@ -115,7 +115,7 @@ async fn the_card_shows_what_would_be_forgotten_and_an_unknown_number_never_reac
         ))
         .await;
     previewed
-        .run(call("webfetch", json!({ "url": "https://example.com" })))
+        .run(call("fetch_url", json!({ "url": "https://example.com" })))
         .await
         .expect("passed");
 
@@ -123,7 +123,7 @@ async fn the_card_shows_what_would_be_forgotten_and_an_unknown_number_never_reac
         refused
             .expect_err("unknown")
             .detail
-            .contains("memory_search")
+            .contains("search_memory")
     );
     let calls = kept.0.lock().expect("unpoisoned");
     assert_eq!(calls.len(), 2);
@@ -135,7 +135,7 @@ async fn the_card_shows_what_would_be_forgotten_and_an_unknown_number_never_reac
         "{forgetting}"
     );
     assert!(!forgetting.contains("회의"));
-    assert_eq!(calls[1].name, "webfetch");
+    assert_eq!(calls[1].name, "fetch_url");
     let _ = std::fs::remove_dir_all(folder);
 }
 

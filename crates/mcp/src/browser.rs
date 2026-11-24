@@ -44,6 +44,15 @@ const RUN_WAIT: Duration = Duration::from_secs(100);
 const WIDTH: u32 = 1280;
 const HEIGHT: u32 = 800;
 const WORLD: &str = "dotori";
+
+/// The tool that runs Playwright-style code in dotori's browser.
+pub const RUN: &str = "run_in_browser";
+/// The tool that reads the page open in dotori's browser.
+pub const READ: &str = "read_page";
+/// The tool that asks the owner to take the browser over.
+pub const ASK: &str = "ask_owner_in_browser";
+/// Every browser tool, which run on the PC that holds the browser.
+pub const TOOLS: [&str; 3] = [RUN, READ, ASK];
 const AUTH_WAIT: Duration = Duration::from_secs(90);
 const LOGINS_EVERY: Duration = Duration::from_secs(60);
 
@@ -1018,7 +1027,7 @@ async fn answer_auth(
         .map(drop)
 }
 
-/// Whether a page may be loaded from `url`, by the same rule as webfetch.
+/// Whether a page may be loaded from `url`, by the same rule as fetch_url.
 pub(crate) fn document_allowed(url: &str) -> Result<(), String> {
     let url = Url::parse(url).map_err(|error| error.to_string())?;
     fetch::allowed(&url)
@@ -1265,9 +1274,9 @@ impl Page<'_> {
 impl Tool for BrowserTool {
     fn name(&self) -> &str {
         match self.action {
-            Action::Run => "browser_run",
-            Action::Read => "browser_read",
-            Action::Ask => "browser_ask_owner",
+            Action::Run => RUN,
+            Action::Read => READ,
+            Action::Ask => ASK,
         }
     }
 
@@ -1283,7 +1292,7 @@ impl Tool for BrowserTool {
                  page.waitForURL(url); page.evaluate(fn, arg) runs fn inside the page. Each action waits \
                  for its element, and a locator that matches several elements is refused. Use await as in \
                  Playwright. What console.log prints and what the code returns come first in the result, \
-                 then the page as browser_read shows it."
+                 then the page as read_page shows it."
             }
             Action::Read => {
                 "Returns the page now open in the browser, with interactive elements as [n]."
