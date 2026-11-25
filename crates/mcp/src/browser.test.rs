@@ -1527,6 +1527,7 @@ async fn the_owner_picks_one_of_several_accounts_and_trust_moves_to_it() {
     let card = window.card().await;
     assert_eq!(card["kind"], "log_in");
     assert_eq!(card["accounts"], json!(["me", "family"]));
+    assert_eq!(card["ids"], json!(["me@example.com", "family@example.com"]));
     accounts
         .keep(&card::Account {
             trusted: true,

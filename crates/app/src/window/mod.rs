@@ -1,7 +1,7 @@
 mod browser;
 mod chat;
 mod chrome;
-mod identity;
+pub(crate) mod identity;
 mod input;
 mod motion;
 mod notes;

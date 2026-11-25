@@ -132,7 +132,10 @@ fn channels(
 ) -> Result<Vec<Arc<dyn dotori_core::channel::Channel>>, String> {
     let (built, off) = settings.channels(key);
     if off.is_empty() {
-        Ok(built)
+        Ok(built
+            .into_iter()
+            .map(|built| built as Arc<dyn dotori_core::channel::Channel>)
+            .collect())
     } else {
         Err(off.join("; "))
     }

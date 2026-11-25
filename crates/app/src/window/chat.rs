@@ -45,6 +45,10 @@ use gpui::svg;
 use jiff::tz::TimeZone;
 use tokio::sync::mpsc;
 
+use crate::asked;
+use crate::asked::asked_fields;
+use crate::asked::field_label;
+use crate::asked::own_tool;
 use crate::link::Link;
 use crate::link::Update;
 use crate::screen_link::ScreenLink;
@@ -79,7 +83,6 @@ use crate::window::when::marks;
 use crate::window::when::today;
 
 const COPIED_FOR: Duration = Duration::from_millis(1500);
-const SHOWN_VALUE: usize = 600;
 const BOTTOM_SLACK: f32 = 8.;
 const TURN_SPACE: f32 = 18.;
 const PREVIEW_EVERY: Duration = Duration::from_millis(500);
@@ -724,11 +727,7 @@ impl ChatView {
         let footer = match decided {
             Some(Some(true)) => pill(theme.ok, theme.ok_soft, "허락했어요"),
             Some(Some(false)) => pill(theme.muted, theme.canvas, "거절했어요"),
-            Some(None) => pill(
-                theme.warn,
-                theme.warn_soft,
-                "이제 할 수 없어요. 다시 부탁해 주세요",
-            ),
+            Some(None) => pill(theme.warn, theme.warn_soft, asked::LAPSED),
             None if clicked => pill(theme.muted, theme.surface, "처리하는 중이에요"),
             None => div()
                 .flex()
@@ -738,23 +737,12 @@ impl ChatView {
                     div()
                         .flex_1()
                         .text_xs()
-                        .when(tool == "erase_records", |hint| {
-                            hint.text_color(theme.danger)
-                                .child("허락하면 모든 PC에서 지워요. 되돌릴 수 없어요")
+                        .text_color(if tool == "erase_records" {
+                            theme.danger
+                        } else {
+                            theme.muted
                         })
-                        .when(tool != "erase_records", |hint| {
-                            hint.text_color(theme.muted).child(match tool {
-                                "run_shell" => format!(
-                                    "허락하면 {} 이 명령을 바로 실행해요",
-                                    called(Particle::Subject)
-                                ),
-                                "write_file" | "edit_file" => format!(
-                                    "허락하면 {} 파일을 바로 바꿔요",
-                                    called(Particle::Subject)
-                                ),
-                                _ => String::from("허락하면 바로 실행해요"),
-                            })
-                        }),
+                        .child(asked::hint(tool, &called(Particle::Subject))),
                 )
                 .child(button("decline", "거절", false, cx))
                 .child(button("allow", "허락", true, cx)),
@@ -781,10 +769,7 @@ impl ChatView {
                             div()
                                 .flex_1()
                                 .font_weight(FontWeight::SEMIBOLD)
-                                .child(format!(
-                                    "{} 이 일을 해도 될지 물어요",
-                                    called(Particle::Subject)
-                                )),
+                                .child(asked::title(&called(Particle::Subject))),
                         )
                         .children(self.meta(theme, n, input, mark, cx)),
                 )
@@ -901,9 +886,7 @@ impl ChatView {
                                     .size(px(14.))
                                     .text_color(theme.muted),
                             )
-                            .child(prose(
-                                "샌드박스 안에서 실행해요. dotori의 금고와 기록은 보이지 않아요.",
-                            )),
+                            .child(prose(asked::SANDBOXED)),
                     )
                 })
                 .child(footer),
@@ -1497,7 +1480,7 @@ impl ChatView {
                                     screen.update(cx, |screen, cx| screen.choose_account(n, cx));
                                 })
                         })
-                        .child(format!("{host} ({site}), {account}"))
+                        .child(asked::log_in_account(&host, &site, &account))
                 });
                 let (allow, decline, trusting) = (
                     self.screen.clone(),
@@ -1551,7 +1534,7 @@ impl ChatView {
                             .child(
                                 div()
                                     .font_weight(FontWeight::SEMIBOLD)
-                                    .child(format!("금고의 {host} ({site}) 계정으로 로그인해도 될까요?")),
+                                    .child(asked::log_in_title(&host, &site)),
                             ),
                     )
                     .child(
@@ -1568,7 +1551,11 @@ impl ChatView {
                                     .w(px(88.))
                                     .text_xs()
                                     .text_color(theme.muted)
-                                    .child(if several { "계정 고르기" } else { "계정" }),
+                                    .child(if several {
+                                        "계정 고르기"
+                                    } else {
+                                        "계정"
+                                    }),
                             )
                             .child(
                                 div()
@@ -1580,10 +1567,9 @@ impl ChatView {
                                     .children(choices),
                             ),
                     )
-                    .child(div().text_xs().text_color(theme.muted).child(prose(&format!(
-                        "{} {host}{path} 로그인 칸에 직접 채워 넣어요. 대화하는 AI는 비밀번호를 보지 못해요.",
-                        called(Particle::Subject)
-                    ))))
+                    .child(div().text_xs().text_color(theme.muted).child(prose(
+                        &asked::log_in_note(&called(Particle::Subject), &host, &path),
+                    )))
                     .child(
                         div()
                             .flex()
@@ -2191,86 +2177,6 @@ fn counted<'a>(text: &'a str, head: &str) -> Option<(&'a str, &'a str)> {
         .nth(count)
         .map_or(rest.len(), |(at, _)| at);
     (rest.chars().count() >= count).then(|| (&rest[..end], &rest[end..]))
-}
-
-/// What the owner calls one of dotori's own tools that waits for their OK.
-pub(crate) fn own_tool(tool: &str) -> Option<&'static str> {
-    match tool {
-        "run_shell" => Some("명령 실행"),
-        "write_file" => Some("파일 쓰기"),
-        "edit_file" => Some("파일 고치기"),
-        "erase_records" => Some("기록 지우기"),
-        _ => None,
-    }
-}
-
-/// The label a field of a waiting call shows under, in the owner's words where dotori knows the
-/// field.
-pub(crate) fn field_label(key: &str) -> &str {
-    match key {
-        "command" => "명령",
-        "folder" => "폴더",
-        "seconds" => "시간 제한(초)",
-        "path" => "파일",
-        "content" => "내용",
-        "old" => "바꿀 글",
-        "new" => "새 글",
-        "all" => "모두 바꾸기",
-        other => other,
-    }
-}
-
-const HIDDEN_FIELDS: [&str; 2] = ["records", "carriers"];
-
-/// The fields of a waiting call as the card shows them, and whether any was shortened. A forget
-/// shows what the records say, not their numbers.
-pub(crate) fn asked_fields(tool: &str, input: &str, whole: bool) -> (Vec<(String, String)>, bool) {
-    let hidden: &[&str] = if tool == "erase_records" {
-        &HIDDEN_FIELDS
-    } else {
-        &[]
-    };
-    let fields: Vec<(String, String)> = match serde_json::from_str::<serde_json::Value>(input) {
-        Ok(serde_json::Value::Object(fields)) if !fields.is_empty() => fields
-            .into_iter()
-            .filter(|(key, _)| !hidden.contains(&key.as_str()))
-            .map(|(key, value)| {
-                let shown = match value {
-                    serde_json::Value::String(text) => text,
-                    other => other.to_string(),
-                };
-                (key, shown)
-            })
-            .collect(),
-        _ => vec![(String::from("input"), input.to_owned())],
-    };
-    let mut cut = false;
-    let fields = fields
-        .into_iter()
-        .map(|(key, value)| {
-            let (shown, shortened) = shown_value(&value, whole);
-            cut |= shortened;
-            (key, shown)
-        })
-        .collect();
-    (fields, cut)
-}
-
-fn shown_value(value: &str, whole: bool) -> (String, bool) {
-    let mut lines: Vec<&str> = Vec::new();
-    for line in value.lines() {
-        if line.trim().is_empty() && lines.last().is_some_and(|last| last.trim().is_empty()) {
-            continue;
-        }
-        lines.push(line);
-    }
-    let joined = lines.join("\n");
-    let total = joined.chars().count();
-    if whole || total <= SHOWN_VALUE {
-        return (joined, false);
-    }
-    let cut: String = joined.chars().take(SHOWN_VALUE).collect();
-    (format!("{cut}\n(전체 {total}자 중 앞부분)"), true)
 }
 
 fn channel_name(channel: &str) -> String {

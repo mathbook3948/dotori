@@ -32,9 +32,16 @@ use reqwest::header::CONTENT_TYPE;
 use reqwest::header::RETRY_AFTER;
 use serde_json::Value;
 use serde_json::json;
+use tokio::sync::mpsc;
 use tokio::time;
 use tokio::time::MissedTickBehavior;
 use tokio_tungstenite::tungstenite::Message;
+
+use crate::channel::card;
+use crate::channel::card::Card;
+use crate::channel::card::Cards;
+use crate::channel::card::Posted;
+use crate::channel::card::Press;
 
 /// The channel id of Discord.
 pub const DISCORD: &str = "discord";
@@ -53,6 +60,8 @@ const SERVER_WAIT: Duration = Duration::from_secs(5);
 const SERVER_FRESH: Duration = Duration::from_secs(10 * 60);
 const SERVERS_KEPT: usize = 256;
 const SEND_TRIES: usize = 4;
+const ROW: usize = 5;
+const ROWS: usize = 5;
 const UNCOUNTED: &str = "this Discord server, whose members could not be counted";
 
 /// What the Discord channel needs. The owner is the one Discord user id whose messages are
@@ -92,6 +101,8 @@ pub struct DiscordChannel {
     client: Client,
     direct: Mutex<Option<String>>,
     servers: Mutex<HashMap<String, (Instant, Audience)>>,
+    owner_name: Mutex<Option<String>>,
+    presses: Mutex<Option<mpsc::UnboundedSender<Press>>>,
 }
 
 impl fmt::Debug for DiscordChannel {
@@ -126,6 +137,18 @@ pub(crate) struct Bot {
     pub(crate) roles: HashSet<String>,
 }
 
+/// A button someone pressed on a message, with what Discord needs to answer the press.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Clicked {
+    pub(crate) id: String,
+    pub(crate) token: String,
+    pub(crate) user: String,
+    pub(crate) name: String,
+    pub(crate) channel: String,
+    pub(crate) message: String,
+    pub(crate) value: String,
+}
+
 /// One message the owner sent the bot.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Arrived {
@@ -151,6 +174,8 @@ impl DiscordChannel {
             client,
             direct: Mutex::new(None),
             servers: Mutex::new(HashMap::new()),
+            owner_name: Mutex::new(None),
+            presses: Mutex::new(None),
         })
     }
 
@@ -407,6 +432,7 @@ impl DiscordChannel {
                     let Ok(content) = Content::parse(arrived.text) else {
                         continue;
                     };
+                    *self.owner_name.lock().expect("unpoisoned") = Some(arrived.name.clone());
                     let audience = match &arrived.server {
                         Some(server) => self.audience(server).await,
                         None => Audience::Owner,
@@ -423,8 +449,55 @@ impl DiscordChannel {
                         return Ok(Ended::InboxClosed);
                     }
                 }
+                Some("INTERACTION_CREATE") => {
+                    if let Some(clicked) = clicked(data) {
+                        self.pressed(clicked).await;
+                    }
+                }
                 _ => {}
             }
+        }
+    }
+
+    async fn pressed(&self, clicked: Clicked) {
+        let owner = clicked.user == self.owner;
+        let answer = if owner {
+            *self.owner_name.lock().expect("unpoisoned") = Some(clicked.name.clone());
+            json!({ "type": 6 })
+        } else {
+            let name = self
+                .owner_name
+                .lock()
+                .expect("unpoisoned")
+                .clone()
+                .unwrap_or_else(|| self.owner.clone());
+            json!({ "type": 4, "data": {
+                "content": card::only_owner(&name),
+                "flags": 1 << 6,
+                "allowed_mentions": { "parse": [] },
+            } })
+        };
+        let path = format!("/interactions/{}/{}/callback", clicked.id, clicked.token);
+        if let Err(Failed::Fatal(detail) | Failed::Passing(detail, _)) =
+            self.call(Method::POST, &path, Some(answer)).await
+        {
+            eprintln!("dotori: Discord: {detail}");
+        }
+        if !owner {
+            return;
+        }
+        let Some((token, button)) = card::pressed(&clicked.value) else {
+            return;
+        };
+        if let Some(presses) = self.presses.lock().expect("unpoisoned").as_ref() {
+            let _ = presses.send(Press {
+                token,
+                button,
+                posted: Posted {
+                    room: clicked.channel,
+                    message: clicked.message,
+                },
+            });
         }
     }
 
@@ -483,16 +556,20 @@ impl DiscordChannel {
         Ok(id)
     }
 
-    async fn send(&self, channel: &str, body: Value) -> Result<(), Failed> {
-        let path = format!("/channels/{channel}/messages");
+    async fn send(&self, channel: &str, body: Value) -> Result<Value, Failed> {
+        self.patiently(Method::POST, &format!("/channels/{channel}/messages"), body)
+            .await
+    }
+
+    async fn patiently(&self, method: Method, path: &str, body: Value) -> Result<Value, Failed> {
         let mut tries = 1;
         loop {
-            match self.call(Method::POST, &path, Some(body.clone())).await {
+            match self.call(method.clone(), path, Some(body.clone())).await {
                 Err(Failed::Passing(_, Some(after))) if after <= MAX_WAIT && tries < SEND_TRIES => {
                     tries += 1;
                     time::sleep(after).await;
                 }
-                done => return done.map(drop),
+                done => return done,
             }
         }
     }
@@ -596,6 +673,74 @@ pub(crate) fn read(message: &Value, owner: &str, bot: &Bot) -> Option<Arrived> {
     })
 }
 
+/// The button press in an `INTERACTION_CREATE`, if it is a press of a message's button.
+pub(crate) fn clicked(interaction: &Value) -> Option<Clicked> {
+    if interaction.get("type").and_then(Value::as_u64) != Some(3) {
+        return None;
+    }
+    let text = |pointer: &str| {
+        interaction
+            .pointer(pointer)
+            .and_then(Value::as_str)
+            .filter(|text| !text.is_empty())
+    };
+    let user = interaction
+        .pointer("/member/user")
+        .or_else(|| interaction.get("user"))?;
+    let of_user = |key: &str| {
+        user.get(key)
+            .and_then(Value::as_str)
+            .filter(|text| !text.is_empty())
+    };
+    let name = text("/member/nick")
+        .or_else(|| of_user("global_name"))
+        .or_else(|| of_user("username"))
+        .or_else(|| of_user("id"))?;
+    Some(Clicked {
+        id: text("/id")?.to_owned(),
+        token: text("/token")?.to_owned(),
+        user: of_user("id")?.to_owned(),
+        name: name.to_owned(),
+        channel: text("/message/channel_id")
+            .or_else(|| text("/channel_id"))?
+            .to_owned(),
+        message: text("/message/id")?.to_owned(),
+        value: text("/data/custom_id")?.to_owned(),
+    })
+}
+
+/// A card's message: its text, then its buttons in rows unless it is settled with `said`.
+pub(crate) fn card_message(card: Option<&Card>, said: Option<&str>) -> Value {
+    let content = match card {
+        Some(card) => card.text(said, PIECE),
+        None => card::cut(said.unwrap_or_default(), PIECE),
+    };
+    let buttons: Vec<Value> = match card {
+        Some(card) if said.is_none() => card
+            .labels()
+            .take(ROW * ROWS)
+            .map(|(n, button, label)| {
+                json!({
+                    "type": 2,
+                    "style": if button.primary { 1 } else { 2 },
+                    "label": label,
+                    "custom_id": card.value(n),
+                })
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    let rows: Vec<Value> = buttons
+        .chunks(ROW)
+        .map(|row| json!({ "type": 1, "components": row }))
+        .collect();
+    json!({
+        "content": content,
+        "components": rows,
+        "allowed_mentions": { "parse": [] },
+    })
+}
+
 fn without_mention(text: &str, bot: &Bot) -> (bool, String) {
     let mut found = false;
     let mut kept = text.to_owned();
@@ -668,11 +813,6 @@ impl Channel for DiscordChannel {
 
     fn deliver(&self, place: Place, text: String) -> BoxFuture<'_, Result<(), ChannelError>> {
         Box::pin(async move {
-            let failed = |failed: Failed| ChannelError {
-                detail: match failed {
-                    Failed::Fatal(detail) | Failed::Passing(detail, _) => detail,
-                },
-            };
             let (channel, answering) = target(place.as_str()).ok_or_else(|| ChannelError {
                 detail: format!("{} is not a Discord channel", place.as_str()),
             })?;
@@ -696,6 +836,71 @@ impl Channel for DiscordChannel {
             }
             Ok(())
         })
+    }
+}
+
+impl Cards for DiscordChannel {
+    fn post(&self, place: Place, card: Card) -> BoxFuture<'_, Result<Posted, ChannelError>> {
+        Box::pin(async move {
+            let (channel, answering) = target(place.as_str()).ok_or_else(|| ChannelError {
+                detail: format!("{} is not a Discord channel", place.as_str()),
+            })?;
+            let channel = match channel {
+                Some(channel) => channel,
+                None => self.direct_channel().await.map_err(failed)?,
+            };
+            let mut body = card_message(Some(&card), None);
+            body["flags"] = json!(1 << 2);
+            if let Some(message) = &answering {
+                body["message_reference"] =
+                    json!({ "message_id": message, "fail_if_not_exists": false });
+            }
+            let sent = self.send(&channel, body).await.map_err(failed)?;
+            let message = sent
+                .get("id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| ChannelError {
+                    detail: String::from("Discord gave the card no message id"),
+                })?
+                .to_owned();
+            Ok(Posted {
+                room: channel,
+                message,
+            })
+        })
+    }
+
+    fn settle(
+        &self,
+        posted: Posted,
+        card: Option<Card>,
+        said: String,
+    ) -> BoxFuture<'_, Result<(), ChannelError>> {
+        Box::pin(async move {
+            let path = format!("/channels/{}/messages/{}", posted.room, posted.message);
+            self.patiently(
+                Method::PATCH,
+                &path,
+                card_message(card.as_ref(), Some(&said)),
+            )
+            .await
+            .map(drop)
+            .map_err(failed)
+        })
+    }
+
+    fn presses(&self) -> mpsc::UnboundedReceiver<Press> {
+        let (presses, heard) = mpsc::unbounded_channel();
+        *self.presses.lock().expect("unpoisoned") = Some(presses);
+        heard
+    }
+}
+
+fn failed(failed: Failed) -> ChannelError {
+    ChannelError {
+        detail: match failed {
+            Failed::Fatal(detail) | Failed::Passing(detail, _) => detail,
+        },
     }
 }
 

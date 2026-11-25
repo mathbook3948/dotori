@@ -266,6 +266,12 @@ impl AppChannel {
         self.hub.publish(&ToWindow::Lapsed { id });
     }
 
+    /// Takes what the owner decided about the call `id` somewhere other than a window here, such
+    /// as a chat room's card, as if they decided it in a window.
+    pub fn decide(&self, id: u64, ok: bool) {
+        self.hub.decide(id, ok);
+    }
+
     /// What the owner decides in the windows here, from now on. Only the last caller hears.
     pub fn decisions(&self) -> mpsc::UnboundedReceiver<(u64, bool)> {
         let (decisions, heard) = mpsc::unbounded_channel();
@@ -313,6 +319,17 @@ impl AppChannel {
 }
 
 impl Hub {
+    fn decide(&self, id: u64, ok: bool) {
+        if let Some(decisions) = self
+            .decisions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+        {
+            let _ = decisions.send((id, ok));
+        }
+    }
+
     fn publish(&self, event: &ToWindow) {
         let Ok(line) = serde_json::to_string(event) else {
             return;
@@ -502,14 +519,7 @@ async fn serve(stream: TcpStream, token: String, hub: Arc<Hub>, inbox: Arc<dyn I
             let text = match serde_json::from_slice::<FromWindow>(&line) {
                 Ok(FromWindow::Say { text }) => text,
                 Ok(FromWindow::Decide { id, ok }) => {
-                    if let Some(decisions) = hub
-                        .decisions
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner())
-                        .as_ref()
-                    {
-                        let _ = decisions.send((id, ok));
-                    }
+                    hub.decide(id, ok);
                     continue;
                 }
                 Err(_) => continue,

@@ -27,6 +27,7 @@ use crate::message::Role;
 use crate::message::Sender;
 use crate::sub_session::SubSessionOutcome;
 use crate::sub_session::SubSessionSpec;
+use crate::tool::Origin;
 use crate::tool::ToolCallId;
 use crate::tool::ToolError;
 
@@ -134,7 +135,7 @@ fn on_model_done(
         answered,
         trace: reply.trace,
     });
-    let (mut effects, waiting) = run_actions(state, reply.actions);
+    let (mut effects, waiting) = run_actions(state, reply.actions, answered);
     if !waiting.is_empty() {
         state.phase = Phase::UsingTools { waiting };
     } else if after == AfterReply::CallAgain {
@@ -361,7 +362,9 @@ fn destination(state: &AgentState, thread: ThreadRef, privately: bool) -> Option
 fn run_actions(
     state: &mut AgentState,
     actions: Vec<Action>,
+    answered: usize,
 ) -> (Vec<Effect>, HashMap<ToolRunId, ToolCallId>) {
+    let origin = origin(&state.conversation[..answered]);
     let mut effects = Vec::new();
     let mut waiting = HashMap::new();
     for action in actions {
@@ -381,7 +384,11 @@ fn run_actions(
             Action::UseTool(call) => {
                 let run = state.ids.next_tool_run();
                 waiting.insert(run, call.id.clone());
-                effects.push(Effect::RunTool { run, call });
+                effects.push(Effect::RunTool {
+                    run,
+                    call,
+                    origin: origin.clone(),
+                });
             }
             Action::Delegate(spec) => {
                 let sub_session = state.ids.next_sub_session();
@@ -391,6 +398,16 @@ fn run_actions(
         }
     }
     (effects, waiting)
+}
+
+fn origin(seen: &[Entry]) -> Option<Origin> {
+    seen.iter().rev().find_map(|entry| match entry {
+        Entry::Heard { message, .. } => Some(Origin {
+            address: message.address.clone(),
+            owner: message.sender.name.clone(),
+        }),
+        _ => None,
+    })
 }
 
 fn call_model(state: &mut AgentState) -> Effect {

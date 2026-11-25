@@ -97,7 +97,7 @@ const CARD_WAITING: &str = "a card waits for the owner in the chat window, so no
                             browser until they answer or it closes; read_page still works";
 const NO_WINDOW: &str = "No dotori chat window is open on the PC that holds the browser, so the \
                          owner cannot see a card. Ask the owner to open the dotori window on their PC and to ask \
-                         you there; a card never shows on Telegram, Slack or Discord.";
+                         you again; while it is closed no card shows on Telegram, Slack or Discord either.";
 const LOGINS_EVERY: Duration = Duration::from_secs(60);
 
 /// How the browser runs. The profile folder keeps logins between runs. Without an executable,
@@ -999,6 +999,10 @@ impl Browser {
             "accounts": kept
                 .iter()
                 .map(|account| account.id.as_deref().map(card::shortened))
+                .collect::<Vec<_>>(),
+            "ids": kept
+                .iter()
+                .map(|account| account.id.as_deref())
                 .collect::<Vec<_>>(),
             "host": card.host,
             "path": card.path,
@@ -2420,7 +2424,8 @@ impl Tool for BrowserTool {
                  what the owner types goes to the page, never to you. With `keep` and `site`, dotori \
                  seals the account (one secret field for the password, at most one text field for the \
                  id) in its vault for fill_login later. The owner answers in the dotori window on their \
-                 PC; when they talk to you on Telegram, Slack or Discord, ask them to do it there. \
+                 PC, never on Telegram, Slack or Discord; when they talk to you there, ask them to do \
+                 it on their PC, and dotori tells that room the card is showing. \
                  You learn which button or link they pressed, which fields were filled, and the page \
                  after."
             }
@@ -2428,8 +2433,9 @@ impl Tool for BrowserTool {
                 "Logs in to the page open in the browser with the account the vault keeps for its \
                  origin: dotori fills the id and password fields you name by their [n] and presses \
                  `submit`. Unless the owner said not to ask again for an account of this site, \
-                 dotori first asks them in the chat window, where they also pick the account when \
-                 the site has several. It fills only a page on the origin the account was kept for, \
+                 dotori first asks them in the chat window, and in the chat room they asked you in, \
+                 where they also pick the account when the site has several. It fills only a page on \
+                 the origin the account was kept for, \
                  and you never see the id or the password. Same page rules as ask_owner_to_fill. \
                  Fails when the vault keeps no account for the page."
             }

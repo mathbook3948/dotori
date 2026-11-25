@@ -481,3 +481,208 @@ async fn a_rate_limited_answer_waits_and_tries_again() {
         assert!(tried.head.starts_with("POST /channels/300/messages"));
     }
 }
+
+fn asking_card() -> Card {
+    Card {
+        token: String::from("00112233445566778899aabb"),
+        title: String::from("dotori가 이 일을 해도 될지 물어요"),
+        rows: vec![(String::from("명령"), String::from("ls"))],
+        cut: false,
+        notes: vec![String::from("허락하면 바로 실행해요")],
+        buttons: vec![
+            card::Button {
+                label: String::from("거절"),
+                primary: false,
+            },
+            card::Button {
+                label: String::from("허락"),
+                primary: true,
+            },
+        ],
+    }
+}
+
+fn press(user: Value, member: Option<Value>) -> Value {
+    let mut interaction = json!({
+        "id": "700",
+        "token": "interaction-token",
+        "type": 3,
+        "channel_id": "300",
+        "message": { "id": "650", "channel_id": "300" },
+        "data": { "custom_id": "00112233445566778899aabb:1", "component_type": 2 },
+    });
+    match member {
+        Some(member) => interaction["member"] = member,
+        None => interaction["user"] = user,
+    }
+    interaction
+}
+
+#[test]
+fn a_card_is_a_message_with_a_row_of_buttons_and_none_once_settled() {
+    let card = asking_card();
+
+    let posted = card_message(Some(&card), None);
+    let settled = card_message(Some(&card), Some("유노 님이 허락했어요"));
+
+    assert_eq!(
+        posted["components"],
+        json!([{ "type": 1, "components": [
+            { "type": 2, "style": 2, "label": "거절", "custom_id": "00112233445566778899aabb:0" },
+            { "type": 2, "style": 1, "label": "허락", "custom_id": "00112233445566778899aabb:1" },
+        ] }])
+    );
+    assert_eq!(posted["allowed_mentions"], json!({ "parse": [] }));
+    assert!(
+        posted["content"]
+            .as_str()
+            .expect("text")
+            .starts_with("dotori가")
+    );
+    assert_eq!(settled["components"], json!([]));
+    assert!(
+        settled["content"]
+            .as_str()
+            .expect("text")
+            .ends_with("\n\n유노 님이 허락했어요")
+    );
+}
+
+#[test]
+fn a_press_names_who_pressed_and_where_in_a_server_or_a_direct_message() {
+    let in_server = press(
+        Value::Null,
+        Some(json!({ "nick": "민지", "user": { "id": OWNER, "username": "minji" } })),
+    );
+    let direct = press(json!({ "id": "222", "global_name": "Mina" }), None);
+
+    let read = clicked(&in_server).expect("a press");
+    assert_eq!(read.user, OWNER);
+    assert_eq!(read.name, "민지");
+    assert_eq!(read.channel, "300");
+    assert_eq!(read.message, "650");
+    assert_eq!(read.value, "00112233445566778899aabb:1");
+    assert_eq!(clicked(&direct).expect("a press").name, "Mina");
+    let mut command = direct;
+    command["type"] = json!(2);
+    assert_eq!(clicked(&command), None);
+}
+
+#[tokio::test]
+async fn only_the_owners_press_is_passed_on_and_anyone_else_is_told_only_them() {
+    let mine = json!({ "op": 0, "s": 2, "t": "MESSAGE_CREATE", "d": message(OWNER, None, "안녕") });
+    let stranger = json!({ "op": 0, "s": 3, "t": "INTERACTION_CREATE",
+        "d": press(json!({ "id": "222", "username": "mina" }), None) });
+    let owner = json!({ "op": 0, "s": 4, "t": "INTERACTION_CREATE",
+        "d": press(json!({ "id": OWNER, "username": "yuno" }), None) });
+    let (socket, _heard) = gateway(vec![ready(), mine, stranger, owner], None).await;
+    let (base, mut requests) = mock::serve(vec![
+        (200, leaked(format!(r#"{{"url":"{socket}"}}"#))),
+        (204, ""),
+        (204, ""),
+    ])
+    .await;
+    let mut config = DiscordConfig::new("bot-token", OWNER);
+    config.api_base = base;
+    let channel = Arc::new(DiscordChannel::new(config).expect("built"));
+    let mut presses = channel.presses();
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let running = Arc::clone(&channel);
+    tokio::spawn(async move {
+        let _ = running.run(Arc::new(Collect(tx))).await;
+    });
+
+    time::timeout(WAIT, rx.recv()).await.expect("in time");
+    let pressed = time::timeout(WAIT, presses.recv())
+        .await
+        .expect("in time")
+        .expect("a press");
+
+    assert_eq!(
+        pressed,
+        Press {
+            token: String::from("00112233445566778899aabb"),
+            button: 1,
+            posted: Posted {
+                room: String::from("300"),
+                message: String::from("650"),
+            },
+        }
+    );
+    requests.recv().await.expect("gateway");
+    let refused = requests.recv().await.expect("stranger's answer");
+    assert!(
+        refused
+            .head
+            .starts_with("POST /interactions/700/interaction-token/callback"),
+        "{}",
+        refused.head
+    );
+    let body: Value = serde_json::from_str(&refused.body).expect("json");
+    assert_eq!(body["type"], 4);
+    assert_eq!(body["data"]["flags"], 64);
+    assert_eq!(
+        body["data"]["content"],
+        "이 버튼은 Yuno 님만 누를 수 있어요"
+    );
+    let taken = requests.recv().await.expect("owner's answer");
+    assert_eq!(
+        serde_json::from_str::<Value>(&taken.body).expect("json"),
+        json!({ "type": 6 })
+    );
+    assert!(
+        presses.try_recv().is_err(),
+        "the stranger's press went nowhere"
+    );
+}
+
+#[tokio::test]
+async fn a_card_is_posted_as_an_answer_and_edited_without_its_buttons() {
+    let (base, mut requests) = mock::serve(vec![
+        (200, r#"{"id":"650","channel_id":"300"}"#),
+        (200, r#"{"id":"650"}"#),
+    ])
+    .await;
+    let mut config = DiscordConfig::new("bot-token", OWNER);
+    config.api_base = base;
+    let channel = DiscordChannel::new(config).expect("built");
+
+    let posted = channel
+        .post(Place::new("300/500"), asking_card())
+        .await
+        .expect("posted");
+    channel
+        .settle(
+            posted.clone(),
+            Some(asking_card()),
+            String::from("유노 님이 거절했어요"),
+        )
+        .await
+        .expect("settled");
+
+    assert_eq!(
+        posted,
+        Posted {
+            room: String::from("300"),
+            message: String::from("650"),
+        }
+    );
+    let sent = requests.recv().await.expect("post");
+    let body: Value = serde_json::from_str(&sent.body).expect("json");
+    assert_eq!(body["message_reference"]["message_id"], "500");
+    assert_eq!(body["components"][0]["components"][1]["label"], "허락");
+    let edited = requests.recv().await.expect("edit");
+    assert!(
+        edited.head.starts_with("PATCH /channels/300/messages/650"),
+        "{}",
+        edited.head
+    );
+    let body: Value = serde_json::from_str(&edited.body).expect("json");
+    assert_eq!(body["components"], json!([]));
+    assert!(
+        body["content"]
+            .as_str()
+            .expect("text")
+            .ends_with("유노 님이 거절했어요")
+    );
+}

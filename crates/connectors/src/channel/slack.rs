@@ -24,11 +24,18 @@ use dotori_core::message::Incoming;
 use dotori_core::message::Place;
 use futures_util::SinkExt;
 use futures_util::StreamExt;
+use tokio::sync::mpsc;
 use tokio::time;
 use tokio_tungstenite::tungstenite::Message;
 
+use crate::channel::card;
+use crate::channel::card::Card;
+use crate::channel::card::Cards;
+use crate::channel::card::Posted;
+use crate::channel::card::Press;
 use crate::channel::slack::api::Api;
 use crate::channel::slack::api::ApiError;
+use crate::channel::slack::envelope::Clicked;
 use crate::channel::slack::envelope::Kind;
 
 /// The channel id of Slack.
@@ -93,6 +100,7 @@ pub struct SlackChannel {
     names: Mutex<HashMap<String, String>>,
     rooms: Mutex<HashMap<String, (Instant, Audience)>>,
     direct: tokio::sync::Mutex<Option<String>>,
+    presses: Mutex<Option<mpsc::UnboundedSender<Press>>>,
 }
 
 impl fmt::Debug for SlackChannel {
@@ -119,6 +127,7 @@ impl SlackChannel {
             names: Mutex::new(HashMap::new()),
             rooms: Mutex::new(HashMap::new()),
             direct: tokio::sync::Mutex::new(None),
+            presses: Mutex::new(None),
         })
     }
 
@@ -173,6 +182,7 @@ impl SlackChannel {
             }
             match frame.kind {
                 Kind::Hello | Kind::Nothing => {}
+                Kind::Pressed(clicked) => self.pressed(clicked).await,
                 Kind::Disconnect => return Ok(Ended::Again),
                 Kind::Message(arrived) => {
                     let Ok(content) = Content::parse(arrived.text) else {
@@ -196,6 +206,38 @@ impl SlackChannel {
                     }
                 }
             }
+        }
+    }
+
+    async fn pressed(&self, clicked: Clicked) {
+        if clicked.user != self.owner {
+            let told = card::only_owner(&self.name(&self.owner).await);
+            if let Err(error) = self
+                .api
+                .whisper(
+                    &clicked.channel,
+                    &clicked.user,
+                    clicked.thread.as_deref(),
+                    &told,
+                )
+                .await
+            {
+                eprintln!("dotori: Slack: {}", error.detail());
+            }
+            return;
+        }
+        let Some((token, button)) = card::pressed(&clicked.value) else {
+            return;
+        };
+        if let Some(presses) = self.presses.lock().expect("unpoisoned").as_ref() {
+            let _ = presses.send(Press {
+                token,
+                button,
+                posted: Posted {
+                    room: clicked.channel,
+                    message: clicked.ts,
+                },
+            });
         }
     }
 
@@ -262,6 +304,17 @@ impl SlackChannel {
         Ok(channel)
     }
 
+    async fn destination<'a>(
+        &self,
+        place: &'a Place,
+    ) -> Result<(String, Option<&'a str>), ChannelError> {
+        if place.as_str() == OWNER_DIRECT {
+            return Ok((self.owner_direct().await?, None));
+        }
+        let (channel, thread) = envelope::target(place.as_str());
+        Ok((channel.to_owned(), thread))
+    }
+
     async fn name(&self, user: &str) -> String {
         if let Some(name) = self.names.lock().expect("unpoisoned").get(user) {
             return name.clone();
@@ -299,15 +352,8 @@ impl Channel for SlackChannel {
 
     fn deliver(&self, place: Place, text: String) -> BoxFuture<'_, Result<(), ChannelError>> {
         Box::pin(async move {
-            let direct = if place.as_str() == OWNER_DIRECT {
-                Some(self.owner_direct().await?)
-            } else {
-                None
-            };
-            let (channel, thread) = match &direct {
-                Some(channel) => (channel.as_str(), None),
-                None => envelope::target(place.as_str()),
-            };
+            let (channel, thread) = self.destination(&place).await?;
+            let channel = channel.as_str();
             for piece in envelope::pieces(&text) {
                 self.api
                     .say(channel, thread, &envelope::escaped(piece))
@@ -318,6 +364,55 @@ impl Channel for SlackChannel {
             }
             Ok(())
         })
+    }
+}
+
+impl Cards for SlackChannel {
+    fn post(&self, place: Place, card: Card) -> BoxFuture<'_, Result<Posted, ChannelError>> {
+        Box::pin(async move {
+            let (channel, thread) = self.destination(&place).await?;
+            let channel = channel.as_str();
+            let (room, message) = self
+                .api
+                .say_blocks(
+                    channel,
+                    thread,
+                    &envelope::escaped(&card.title),
+                    envelope::blocks(Some(&card), None),
+                )
+                .await
+                .map_err(|error| ChannelError {
+                    detail: error.detail(),
+                })?;
+            Ok(Posted { room, message })
+        })
+    }
+
+    fn settle(
+        &self,
+        posted: Posted,
+        card: Option<Card>,
+        said: String,
+    ) -> BoxFuture<'_, Result<(), ChannelError>> {
+        Box::pin(async move {
+            self.api
+                .update(
+                    &posted.room,
+                    &posted.message,
+                    &envelope::escaped(&said),
+                    envelope::blocks(card.as_ref(), Some(&said)),
+                )
+                .await
+                .map_err(|error| ChannelError {
+                    detail: error.detail(),
+                })
+        })
+    }
+
+    fn presses(&self) -> mpsc::UnboundedReceiver<Press> {
+        let (presses, heard) = mpsc::unbounded_channel();
+        *self.presses.lock().expect("unpoisoned") = Some(presses);
+        heard
     }
 }
 

@@ -195,15 +195,65 @@ impl Api {
         if let Some(thread) = thread {
             body["thread_ts"] = json!(thread);
         }
+        self.send("chat.postMessage", &body).await.map(drop)
+    }
+
+    /// Posts `blocks`, with `text` for notifications, and says the conversation and the
+    /// message's timestamp.
+    pub(crate) async fn say_blocks(
+        &self,
+        channel: &str,
+        thread: Option<&str>,
+        text: &str,
+        blocks: Value,
+    ) -> Result<(String, String), ApiError> {
+        let mut body = json!({ "channel": channel, "text": text, "blocks": blocks });
+        if let Some(thread) = thread {
+            body["thread_ts"] = json!(thread);
+        }
+        let reply = self.send("chat.postMessage", &body).await?;
+        Ok((
+            text_at(&reply, "/channel", "chat.postMessage")?,
+            text_at(&reply, "/ts", "chat.postMessage")?,
+        ))
+    }
+
+    /// Replaces the message at `ts` in `channel` with `text` and `blocks`.
+    pub(crate) async fn update(
+        &self,
+        channel: &str,
+        ts: &str,
+        text: &str,
+        blocks: Value,
+    ) -> Result<(), ApiError> {
+        let body = json!({ "channel": channel, "ts": ts, "text": text, "blocks": blocks });
+        self.send("chat.update", &body).await.map(drop)
+    }
+
+    /// Shows `text` in `channel` to `user` alone.
+    pub(crate) async fn whisper(
+        &self,
+        channel: &str,
+        user: &str,
+        thread: Option<&str>,
+        text: &str,
+    ) -> Result<(), ApiError> {
+        let mut body = json!({ "channel": channel, "user": user, "text": text });
+        if let Some(thread) = thread {
+            body["thread_ts"] = json!(thread);
+        }
+        self.send("chat.postEphemeral", &body).await.map(drop)
+    }
+
+    async fn send(&self, method: &str, body: &Value) -> Result<Value, ApiError> {
         let body = body.to_string();
-        self.call("chat.postMessage", || {
-            self.post("chat.postMessage")
+        self.call(method, || {
+            self.post(method)
                 .bearer_auth(&self.bot_token)
                 .header(CONTENT_TYPE, "application/json; charset=utf-8")
                 .body(body.clone())
         })
         .await
-        .map(drop)
     }
 
     fn post(&self, method: &str) -> RequestBuilder {

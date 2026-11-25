@@ -275,3 +275,190 @@ async fn a_private_reply_opens_the_owners_direct_messages_once() {
         assert_eq!(body, serde_json::json!({ "channel": "D9", "text": text }));
     }
 }
+
+fn asking_card() -> Card {
+    Card {
+        token: String::from("00112233445566778899aabb"),
+        title: String::from("dotori가 이 일을 해도 될지 물어요"),
+        rows: vec![(String::from("명령"), String::from("rm <@U9> *a*"))],
+        cut: true,
+        notes: vec![String::from("허락하면 바로 실행해요")],
+        buttons: vec![
+            card::Button {
+                label: String::from("거절"),
+                primary: false,
+            },
+            card::Button {
+                label: String::from("허락"),
+                primary: true,
+            },
+        ],
+    }
+}
+
+fn pressed_by(user: &str, envelope: &str) -> String {
+    serde_json::json!({
+        "type": "interactive",
+        "envelope_id": envelope,
+        "payload": {
+            "type": "block_actions",
+            "user": { "id": user },
+            "channel": { "id": "C1" },
+            "container": { "type": "message", "message_ts": "20.1", "channel_id": "C1" },
+            "message": { "ts": "20.1", "thread_ts": "10.5" },
+            "actions": [{ "action_id": "dotori-1", "value": "00112233445566778899aabb:1" }],
+        },
+    })
+    .to_string()
+}
+
+#[tokio::test]
+async fn only_the_owners_press_is_passed_on_and_anyone_else_is_told_only_them() {
+    let (socket_url, mut heard) = socket(vec![
+        String::from(r#"{"type":"hello"}"#),
+        pressed_by("U2", "e0"),
+        pressed_by("U1", "e1"),
+    ])
+    .await;
+    let (base, mut requests) = mock::serve(vec![
+        (200, r#"{"ok":true,"user_id":"UBOT"}"#),
+        (200, leaked(format!(r#"{{"ok":true,"url":"{socket_url}"}}"#))),
+        (
+            200,
+            r#"{"ok":true,"user":{"name":"minji","real_name":"김민지","profile":{"display_name":""}}}"#,
+        ),
+        (200, r#"{"ok":true}"#),
+    ])
+    .await;
+    let channel = Arc::new(channel_at(base));
+    let mut presses = channel.presses();
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let running = Arc::clone(&channel);
+    tokio::spawn(async move {
+        let _ = running.run(Arc::new(Collect(tx))).await;
+    });
+
+    let pressed = time::timeout(WAIT, presses.recv())
+        .await
+        .expect("in time")
+        .expect("a press");
+
+    assert_eq!(
+        pressed,
+        Press {
+            token: String::from("00112233445566778899aabb"),
+            button: 1,
+            posted: Posted {
+                room: String::from("C1"),
+                message: String::from("20.1"),
+            },
+        }
+    );
+    for envelope in ["e0", "e1"] {
+        let ack = time::timeout(WAIT, heard.recv()).await.expect("in time");
+        assert_eq!(
+            ack.as_deref(),
+            Some(format!(r#"{{"envelope_id":"{envelope}"}}"#).as_str())
+        );
+    }
+    requests.recv().await.expect("auth.test");
+    requests.recv().await.expect("apps.connections.open");
+    let name = requests.recv().await.expect("users.info");
+    assert!(
+        name.head.starts_with("GET /users.info?user=U1"),
+        "{}",
+        name.head
+    );
+    let whisper = requests.recv().await.expect("chat.postEphemeral");
+    assert!(
+        whisper.head.starts_with("POST /chat.postEphemeral"),
+        "{}",
+        whisper.head
+    );
+    let body: serde_json::Value = serde_json::from_str(&whisper.body).expect("json");
+    assert_eq!(
+        body,
+        serde_json::json!({
+            "channel": "C1",
+            "user": "U2",
+            "thread_ts": "10.5",
+            "text": "이 버튼은 김민지 님만 누를 수 있어요",
+        })
+    );
+    assert!(
+        presses.try_recv().is_err(),
+        "the stranger's press went nowhere"
+    );
+}
+
+#[tokio::test]
+async fn a_card_is_posted_with_buttons_in_its_thread_and_settled_without_them() {
+    let (base, mut requests) = mock::serve(vec![
+        (200, r#"{"ok":true,"channel":"C1","ts":"20.1"}"#),
+        (200, r#"{"ok":true}"#),
+    ])
+    .await;
+    let channel = channel_at(base);
+
+    let posted = channel
+        .post(Place::new("C1/10.5"), asking_card())
+        .await
+        .expect("posted");
+    channel
+        .settle(
+            posted.clone(),
+            Some(asking_card()),
+            String::from("김민지 님이 허락했어요"),
+        )
+        .await
+        .expect("settled");
+
+    assert_eq!(
+        posted,
+        Posted {
+            room: String::from("C1"),
+            message: String::from("20.1"),
+        }
+    );
+    let sent = requests.recv().await.expect("chat.postMessage");
+    assert!(sent.head.starts_with("POST /chat.postMessage"));
+    let body: serde_json::Value = serde_json::from_str(&sent.body).expect("json");
+    assert_eq!(body["thread_ts"], "10.5");
+    let blocks = body["blocks"].as_array().expect("blocks");
+    let actions = blocks.last().expect("actions");
+    assert_eq!(actions["type"], "actions");
+    assert_eq!(
+        actions["elements"][1]["value"],
+        "00112233445566778899aabb:1"
+    );
+    assert_eq!(actions["elements"][1]["style"], "primary");
+    assert_eq!(blocks[1]["fields"][1]["type"], "plain_text");
+    assert_eq!(blocks[1]["fields"][1]["text"], "rm <@U9> *a*");
+    assert!(body.to_string().contains(card::WHOLE_ON_PC));
+    let updated = requests.recv().await.expect("chat.update");
+    assert!(updated.head.starts_with("POST /chat.update"));
+    let body: serde_json::Value = serde_json::from_str(&updated.body).expect("json");
+    assert_eq!(
+        (&body["channel"], &body["ts"]),
+        (&serde_json::json!("C1"), &serde_json::json!("20.1"))
+    );
+    let blocks = body["blocks"].as_array().expect("blocks");
+    assert!(blocks.iter().all(|block| block["type"] != "actions"));
+    assert_eq!(
+        blocks.last().expect("said")["text"]["text"],
+        "김민지 님이 허락했어요"
+    );
+}
+
+#[test]
+fn a_title_cannot_mention_anyone() {
+    let mut card = asking_card();
+    card.title = String::from("<!channel> 별이가 이 일을 해도 될지 물어요");
+
+    let blocks = envelope::blocks(Some(&card), None);
+
+    assert_eq!(
+        blocks[0]["text"]["text"],
+        "*&lt;!channel&gt; 별이가 이 일을 해도 될지 물어요*"
+    );
+}

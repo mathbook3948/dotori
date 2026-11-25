@@ -6,6 +6,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use dotori_connectors::channel::card::Cards;
 use dotori_connectors::channel::discord::DiscordChannel;
 use dotori_connectors::channel::discord::DiscordConfig;
 use dotori_connectors::channel::slack::SlackChannel;
@@ -19,7 +20,6 @@ use dotori_connectors::llm::openai::OpenAi;
 use dotori_connectors::llm::openai::OpenAiConfig;
 use dotori_connectors::sub_session::SUB_SESSION_SYSTEM;
 use dotori_connectors::sub_session::llm::LLM_SUB_SESSION_SYSTEM;
-use dotori_core::channel::Channel;
 use dotori_core::llm::Model;
 use dotori_mcp::memory::EmbeddingConfig;
 use dotori_mcp::relay::Reach;
@@ -884,7 +884,7 @@ impl Settings {
     pub(crate) fn channels(
         &self,
         key: impl Fn(&str) -> Option<String>,
-    ) -> (Vec<Arc<dyn Channel>>, Vec<String>) {
+    ) -> (Vec<Arc<dyn Cards>>, Vec<String>) {
         let mut channels = Vec::new();
         let mut off = Vec::new();
         for (name, built) in [
@@ -903,7 +903,7 @@ impl Settings {
     fn telegram_channel(
         &self,
         key: &impl Fn(&str) -> Option<String>,
-    ) -> Result<Vec<Arc<dyn Channel>>, String> {
+    ) -> Result<Vec<Arc<dyn Cards>>, String> {
         let Some(telegram) = &self.telegram else {
             return Ok(Vec::new());
         };
@@ -921,7 +921,7 @@ impl Settings {
     fn discord_channel(
         &self,
         key: &impl Fn(&str) -> Option<String>,
-    ) -> Result<Vec<Arc<dyn Channel>>, String> {
+    ) -> Result<Vec<Arc<dyn Cards>>, String> {
         let Some(discord) = &self.discord else {
             return Ok(Vec::new());
         };
@@ -942,7 +942,7 @@ impl Settings {
     fn slack_channel(
         &self,
         key: &impl Fn(&str) -> Option<String>,
-    ) -> Result<Vec<Arc<dyn Channel>>, String> {
+    ) -> Result<Vec<Arc<dyn Cards>>, String> {
         let Some(slack) = &self.slack else {
             return Ok(Vec::new());
         };
