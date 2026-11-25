@@ -27,9 +27,9 @@ pub struct ToolCall {
 
 /// The verbs a tool of dotori's own starts with. A tool is named as a verb, followed by what it
 /// acts on when the verb alone is unclear, such as `add_routine`, `read_page` or `say`.
-pub const TOOL_VERBS: [&str; 13] = [
+pub const TOOL_VERBS: [&str; 12] = [
     "add", "remove", "read", "write", "edit", "run", "search", "erase", "fetch", "ask", "say",
-    "fill", "delegate",
+    "delegate",
 ];
 
 /// Whether `name` follows that rule: lowercase words joined by `_`, the first a verb of

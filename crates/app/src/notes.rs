@@ -34,7 +34,6 @@ use serde_json::json;
 use tokio::sync::Notify;
 use tokio::time;
 
-use crate::accounts::LinkedSites;
 use crate::confirm;
 use crate::routines;
 use crate::routines::Routines;
@@ -406,20 +405,15 @@ pub(crate) struct Noted {
     pub(crate) model: Arc<dyn Model>,
     pub(crate) notes: Arc<Notes>,
     pub(crate) routines: Arc<Routines>,
-    pub(crate) sites: Option<Arc<LinkedSites>>,
 }
 
 impl Model for Noted {
     fn complete(&self, mut request: ModelRequest) -> BoxFuture<'_, Result<ModelReply, ModelError>> {
         self.notes.heard(&request.conversation);
-        let parts: Vec<String> = [
-            self.notes.context(),
-            self.routines.context(),
-            self.sites.as_ref().and_then(|sites| sites.context()),
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
+        let parts: Vec<String> = [self.notes.context(), self.routines.context()]
+            .into_iter()
+            .flatten()
+            .collect();
         request.context = (!parts.is_empty()).then(|| parts.join("\n\n"));
         self.model.complete(request)
     }

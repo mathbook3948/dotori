@@ -16,8 +16,6 @@ use dotori_core::tool::ToolCallId;
 use dotori_core::tool::ToolError;
 use dotori_core::tool::ToolSpec;
 use dotori_core::tool::Toolbox;
-use dotori_mcp::browser::CARD_WAIT;
-use dotori_mcp::browser::WAITS_FOR_OWNER;
 use serde_json::Value;
 use serde_json::json;
 use tokio::sync::oneshot;
@@ -102,11 +100,6 @@ impl BrowserRoute {
         pc: &str,
         call: ToolCall,
     ) -> Result<String, ToolError> {
-        let wait = if WAITS_FOR_OWNER.contains(&call.name.as_str()) {
-            CARD_WAIT + ANSWER_WAIT
-        } else {
-            ANSWER_WAIT
-        };
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
         self.waiting
@@ -140,7 +133,7 @@ impl BrowserRoute {
                 .await;
         };
         let answer = tokio::select! {
-            answer = time::timeout(wait, rx) => match answer {
+            answer = time::timeout(ANSWER_WAIT, rx) => match answer {
                 Ok(Ok(result)) => {
                     abandoned.answered = true;
                     result.map_err(failed)

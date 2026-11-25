@@ -38,7 +38,6 @@ use tokio::process::Command;
 use tokio::sync::Mutex;
 use tokio::time;
 
-use crate::accounts::VaultAccounts;
 use crate::door;
 use crate::door::Door;
 use crate::home::Home;
@@ -68,7 +67,7 @@ pub(crate) fn holds_job(jobs: &std::path::Path, job: &str) -> bool {
 
 pub(crate) async fn serve(home: Home) -> Result<(), String> {
     let settings = Settings::load(&home.settings())?;
-    let vault = Arc::new(Vault::new(&home.root));
+    let vault = Vault::new(&home.root);
     let chosen = settings.browser.clone().unwrap_or_default();
     let (screen, asks) = Screen::new();
     let browser = Browser::with_screen(
@@ -80,9 +79,6 @@ pub(crate) async fn serve(home: Home) -> Result<(), String> {
                 out: home.logins_out(),
                 into: home.logins_in(),
             }),
-            accounts: Some(Arc::new(VaultAccounts {
-                vault: Arc::clone(&vault),
-            })),
         },
         Arc::clone(&screen),
         asks,

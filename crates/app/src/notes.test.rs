@@ -342,7 +342,6 @@ async fn routines_follow_the_owner_like_notes_and_the_model_sees_both() {
         model: Arc::clone(&seen) as Arc<dyn Model>,
         notes: Arc::clone(&notes),
         routines: Arc::clone(&routines),
-        sites: None,
     };
     noted
         .complete(ModelRequest {
