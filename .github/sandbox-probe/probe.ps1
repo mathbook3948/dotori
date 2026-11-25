@@ -226,6 +226,7 @@ $Cases = @(
     NewCase '09a' 'cargo --version' 'works' 'cmd.exe /d /c cargo --version'
     NewCase '09b' 'cargo new hello' 'works' 'cmd.exe /d /c cargo new hello'
     NewCase '09c' 'cargo build hello' 'works' 'cmd.exe /d /c cd hello && cargo build' -Timeout 300 -ShowMax 10
+    NewCase '09d' 'cargo search serde (crates.io over HTTPS)' 'works' 'cmd.exe /d /c cargo search serde --limit 1' -Timeout 180 -Check { param($r) $r.ExitCode -eq 0 -and $r.Output -match 'serde' }
     NewCase '10a' 'cmdkey /list shows the probe credential' 'works' 'cmdkey.exe /list' -Check { param($r) $r.ExitCode -eq 0 -and $r.Output -match $CredTarget }
     NewCase '10b' 'CredRead of the probe credential' 'works' "`"$Pwsh`" -NoProfile -NonInteractive -File `"$Tools\credread.ps1`" $CredTarget" -Check { param($r) $r.ExitCode -eq 0 -and $r.Output -match $CredSecret } -Timeout 90
     NewCase '11a' 'reg query HKCU\Software\DotoriProbe' 'works' 'reg.exe query HKCU\Software\DotoriProbe /v seed'
@@ -511,11 +512,13 @@ Write-Host "SSH key fix: grant the SID on the private key: $keyGrant"
 Show (& icacls.exe $SshKey 2>&1 | Out-String) 8
 foreach ($c in $Cases | Where-Object { $_.Id -in '07g', '07j' }) { Invoke-Case 'fix' $MainToken $c | Out-Null }
 Write-Host 'Same key, parent without sandbox, after the SID was added to the key ACL:'
-foreach ($c in $Cases | Where-Object { $_.Id -in '07g' }) { Invoke-Case 'fix-baseline' ([IntPtr]::Zero) $c | Out-Null }
+foreach ($c in $Cases | Where-Object { $_.Id -in '07g', '07j' }) { Invoke-Case 'fix-baseline' ([IntPtr]::Zero) $c | Out-Null }
+Write-Host "Removing the SID from the key again: $(& $AclEdit purge $SshKey $Sid | Out-String)"
+foreach ($c in $Cases | Where-Object { $_.Id -in '07c', '07c3', '09d' }) { Invoke-Case 'fix' $MainToken $c | Out-Null }
 
 Section '8. Extra: token G (restricting SIDs include the user SID), to compare with design 3'
 $GToken = $Configs['G'].Token
-$GIds = '01a', '02a', '03a', '05a', '05b', '05c', '05f', '06b', '06c', '07c', '07c3', '07f', '07i', '07j', '10a', '10b', '11b', '12a', '13b', '13c'
+$GIds = '01a', '02a', '07b', '03a', '05a', '05b', '05c', '05f', '06b', '06c', '07c', '07c3', '07f', '07i', '07j', '10a', '10b', '11b', '12a', '13b', '13c'
 if ($GToken -and $GToken -ne [IntPtr]::Zero) {
     Write-Host '--- G with data folder variant D (deny SID, no OWNER RIGHTS ACE)'
     $Variant = 'D'
