@@ -80,6 +80,8 @@ mise install
 mise run check
 ```
 
+To run dotori from source, use `cargo run -p dotori`, or add `window` or `settings` to open just that window. A debug build keeps its files in `dotori-dev` next to the folder above, so it never touches the dotori you use.
+
 The design decisions are in [`docs/`](docs/README.md), in Korean. To contribute, read [CONTRIBUTING](.github/CONTRIBUTING.md). To report a security problem, follow the [security policy](.github/SECURITY.md).
 
 ## License
