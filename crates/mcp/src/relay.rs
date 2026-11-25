@@ -37,11 +37,21 @@ const PAGES: usize = 20;
 const NAME_LONGEST: usize = 64;
 const UNSENT_SO_SAFE_TO_RESEND: &str = "not delivered";
 
-/// How to reach one MCP server made elsewhere.
+/// How to reach one MCP server made elsewhere. A server started as a command is given `token`,
+/// the one secret it reads, by its variable's name and value, and inherits none of the variables
+/// in `hidden_env`, such as every other secret.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Reach {
-    Http { url: String, token: Option<String> },
-    Command { program: String, args: Vec<String> },
+    Http {
+        url: String,
+        token: Option<String>,
+    },
+    Command {
+        program: String,
+        args: Vec<String>,
+        token: Option<(String, String)>,
+        hidden_env: Vec<String>,
+    },
 }
 
 /// One server to relay. Without `tools`, every tool it lists is relayed.
@@ -205,8 +215,20 @@ impl Remote {
                 session: None,
                 version: String::from(VERSION),
             },
-            Reach::Command { program, args } => {
-                let mut child = Command::new(program)
+            Reach::Command {
+                program,
+                args,
+                token,
+                hidden_env,
+            } => {
+                let mut command = Command::new(program);
+                for hidden in hidden_env {
+                    command.env_remove(hidden);
+                }
+                if let Some((name, value)) = token {
+                    command.env(name, value);
+                }
+                let mut child = command
                     .args(args)
                     .stdin(Stdio::piped())
                     .stdout(Stdio::piped())

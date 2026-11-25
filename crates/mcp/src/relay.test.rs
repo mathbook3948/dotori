@@ -28,6 +28,21 @@ for line in sys.stdin:
     sys.stdout.flush()
 "#;
 
+const SHOWS_ENV: &str = r#"
+import json, os, sys
+for line in sys.stdin:
+    message = json.loads(line)
+    if "id" not in message:
+        continue
+    if message["method"] == "initialize":
+        result = {"protocolVersion": "2025-11-25", "capabilities": {"tools": {}}, "serverInfo": {"name": "env"}}
+    else:
+        seen = " ".join(os.environ.get(name, "unset") for name in ["CARGO_PKG_NAME", "DOTORI_GIVEN"])
+        result = {"tools": [{"name": "env", "description": seen, "inputSchema": {"type": "object"}}]}
+    sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": message["id"], "result": result}) + "\n")
+    sys.stdout.flush()
+"#;
+
 fn python() -> Option<String> {
     ["python3", "python"]
         .into_iter()
@@ -41,6 +56,36 @@ fn python() -> Option<String> {
 }
 
 #[tokio::test]
+async fn a_command_server_gets_its_own_token_and_none_of_the_hidden_variables() {
+    let Some(python) = python() else {
+        return;
+    };
+    assert!(
+        std::env::var_os("CARGO_PKG_NAME").is_some(),
+        "cargo sets it"
+    );
+    let config = RelayConfig {
+        name: String::from("env"),
+        reach: Reach::Command {
+            program: python,
+            args: vec![String::from("-c"), String::from(SHOWS_ENV)],
+            token: Some((String::from("DOTORI_GIVEN"), String::from("given"))),
+            hidden_env: vec![String::from("CARGO_PKG_NAME")],
+        },
+        tools: None,
+    };
+
+    let (tools, failed) = relay(vec![config]).await;
+
+    assert!(failed.is_empty(), "{failed:?}");
+    assert!(
+        tools[0].description().starts_with("unset given "),
+        "{}",
+        tools[0].description()
+    );
+}
+
+#[tokio::test]
 async fn a_command_servers_tools_are_relayed_under_its_name() {
     let Some(python) = python() else {
         return;
@@ -50,6 +95,8 @@ async fn a_command_servers_tools_are_relayed_under_its_name() {
         reach: Reach::Command {
             program: python,
             args: vec![String::from("-c"), String::from(FAKE)],
+            token: None,
+            hidden_env: Vec::new(),
         },
         tools: None,
     };
@@ -86,6 +133,8 @@ async fn a_call_the_server_died_on_is_not_sent_again_but_the_next_one_restarts_i
         reach: Reach::Command {
             program: python,
             args: vec![String::from("-c"), String::from(FAKE)],
+            token: None,
+            hidden_env: Vec::new(),
         },
         tools: None,
     };
@@ -108,6 +157,8 @@ async fn two_servers_with_one_name_relay_the_first_ones_tools() {
         reach: Reach::Command {
             program: python,
             args: vec![String::from("-c"), String::from(FAKE)],
+            token: None,
+            hidden_env: Vec::new(),
         },
         tools: None,
     };
@@ -125,6 +176,8 @@ async fn a_server_that_cannot_start_is_named_and_left_out() {
         reach: Reach::Command {
             program: String::from("/nonexistent/dotori-mcp-ghost"),
             args: Vec::new(),
+            token: None,
+            hidden_env: Vec::new(),
         },
         tools: None,
     }])
@@ -262,6 +315,8 @@ async fn a_server_named_outside_what_tool_names_allow_is_refused_at_once() {
         reach: Reach::Command {
             program: String::from("/nonexistent/dotori-mcp-ghost"),
             args: Vec::new(),
+            token: None,
+            hidden_env: Vec::new(),
         },
         tools: None,
     }])

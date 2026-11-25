@@ -168,6 +168,28 @@ async fn a_command_gives_its_code_and_output_and_a_slow_one_is_stopped_with_its_
 }
 
 #[tokio::test]
+async fn a_command_does_not_inherit_the_hidden_variables() {
+    let (mut tools, folder) = tools();
+    assert!(
+        std::env::var_os("CARGO_PKG_NAME").is_some(),
+        "cargo sets it"
+    );
+    tools.basic.hidden_env = vec![String::from("CARGO_PKG_NAME")];
+    let line = if cfg!(windows) {
+        "if defined CARGO_PKG_NAME (echo seen) else (echo hidden)"
+    } else {
+        "echo ${CARGO_PKG_NAME:-hidden}"
+    };
+
+    let ran = run(&tools, RUN_SHELL, json!({ "command": line }))
+        .await
+        .expect("ran");
+
+    assert!(ran.contains("hidden"), "{ran}");
+    let _ = std::fs::remove_dir_all(folder);
+}
+
+#[tokio::test]
 async fn other_tools_pass_through_and_the_basic_ones_come_first() {
     let (tools, folder) = tools();
 

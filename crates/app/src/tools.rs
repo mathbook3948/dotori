@@ -118,7 +118,11 @@ pub(crate) async fn serve(home: Home) -> Result<(), String> {
         jobs: Some(home.jobs()),
     });
     tools.extend(memory.tools());
-    let (relays, wrong) = settings.relays(vault::lookup(&vault), false);
+    let (relays, wrong) = settings.relays(
+        vault::lookup(&vault),
+        false,
+        &vault::secret_names(&settings, &vault),
+    );
     let (relayed, failed) = relay(relays).await;
     for problem in wrong.iter().chain(&failed) {
         eprintln!("dotori: an MCP server is left out: {problem}");

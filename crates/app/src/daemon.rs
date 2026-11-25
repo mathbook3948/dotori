@@ -145,7 +145,8 @@ pub(crate) async fn serve(
     let token = door::token()?;
     let (app, address) = AppChannel::bind(token.clone()).map_err(|error| error.to_string())?;
     let app = Arc::new(app);
-    let (guarded, wrong) = settings.relays(vault::lookup(&vault), true);
+    let secrets = vault::secret_names(&settings, &vault);
+    let (guarded, wrong) = settings.relays(vault::lookup(&vault), true, &secrets);
     let (mut guarded, failed) = relay(guarded).await;
     for problem in wrong.iter().chain(&failed) {
         eprintln!("dotori: an MCP server is left out: {problem}");
@@ -176,7 +177,7 @@ pub(crate) async fn serve(
     let asking = Arc::new(Asking::new(
         asked,
         Arc::new(WithBasic {
-            basic: basic(&home, &settings),
+            basic: basic(&home, &secrets),
             rest: Arc::new(Guarded {
                 tools: guarded,
                 rest: Arc::clone(&browser) as Arc<dyn Toolbox>,
@@ -620,11 +621,11 @@ async fn open_record(home: &Home) -> Result<SqliteStore, String> {
     Ok(SqliteStore::new(home.record(), device))
 }
 
-fn basic(home: &Home, settings: &Settings) -> BasicTools {
+fn basic(home: &Home, secrets: &[String]) -> BasicTools {
     BasicTools {
         folder: home.work(),
         limit: SHELL_LIMIT,
-        hidden_env: settings.guarded_secrets(),
+        hidden_env: secrets.to_vec(),
         private: home.work().parent().map(|dotori| Private {
             folder: dotori.to_path_buf(),
             open: home.work(),
@@ -644,7 +645,7 @@ fn sub_session_runner(
         RunnerChoice::Llm => {
             return Ok(Arc::new(LlmRunner {
                 model: settings.sub_session_model(vault::lookup(vault))?,
-                basic: basic(home, settings),
+                basic: basic(home, &vault::secret_names(settings, vault)),
                 rest: Arc::clone(toolbox),
                 max_turns: SUB_SESSION_TURNS,
                 tool_timeout: TOOL_TIMEOUT,
