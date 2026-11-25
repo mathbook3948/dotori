@@ -50,8 +50,8 @@ if ($env:USERPROFILE -ne $RealProfile) {
     $env:USERPROFILE = $RealProfile
     $env:HOMEDRIVE = $RealProfile.Substring(0, 2)
     $env:HOMEPATH = $RealProfile.Substring(2)
-    $env:APPDATA = [Environment]::GetFolderPath('ApplicationData')
-    $env:LOCALAPPDATA = [Environment]::GetFolderPath('LocalApplicationData')
+    $env:APPDATA = Join-Path $RealProfile 'AppData\Roaming'
+    $env:LOCALAPPDATA = Join-Path $RealProfile 'AppData\Local'
     $env:USERNAME = [Environment]::UserName
     $env:TEMP = Join-Path $env:LOCALAPPDATA 'Temp'
     $env:TMP = $env:TEMP
@@ -194,7 +194,7 @@ $Cases = @(
         $script:Facts["Data ACL changed by 05b-05e [$($script:CurrentMode)]"] = "$changed"
     }
     NewCase '06a' 'create planted.txt next to vault.key' 'fails' "cmd.exe /d /c echo planted> `"$Data\planted.txt`"" -Group acl -Check { param($r) Test-Path -LiteralPath (Join-Path $Data 'planted.txt') }
-    NewCase '06b' 'delete vault.key' 'fails' "cmd.exe /d /c del /f /q `"$Vault`"" -Group acl -Check { param($r) -not (Test-Path -LiteralPath $Vault) }
+    NewCase '06b' 'delete vault.key (DeleteFile)' 'fails' "`"$Pwsh`" -NoProfile -NonInteractive -Command `"[IO.File]::Delete('$Vault')`"" -Group acl -Timeout 90 -Check { param($r) -not (Test-Path -LiteralPath $Vault) }
     NewCase '06c' 'rename data folder' 'record' "cmd.exe /d /c ren `"$Data`" dotori-probe-renamed" -Group acl -Check { param($r) Test-Path -LiteralPath $DataRenamed } -After {
         param($r)
         if (Test-Path -LiteralPath $DataRenamed) {
@@ -211,10 +211,14 @@ $Cases = @(
     NewCase '07b' 'git init + add + commit' 'works' 'cmd.exe /d /c git init -q repo && cd repo && echo hi> f.txt && git add f.txt && git -c user.name=probe -c user.email=probe@example.invalid commit -q -m init && git log --oneline'
     NewCase '07c' 'git clone over HTTPS (octocat/Hello-World)' 'works' 'git.exe clone -q --depth 1 https://github.com/octocat/Hello-World.git hw' -Timeout 180
     NewCase '07d' 'git ls-remote over HTTPS' 'works' 'git.exe ls-remote https://github.com/octocat/Hello-World.git HEAD'
+    NewCase '07c2' 'git ls-remote HTTPS, http.sslBackend=openssl' 'works' 'git.exe -c http.sslBackend=openssl ls-remote https://github.com/octocat/Hello-World.git HEAD'
+    NewCase '07c3' 'curl.exe HTTPS (schannel)' 'works' 'curl.exe -sS -o NUL -w "%{http_code}" https://github.com/' -Check { param($r) $r.ExitCode -eq 0 -and $r.Output -match '200' }
+    NewCase '07c4' 'pwsh Invoke-WebRequest HTTPS (.NET SslStream)' 'works' "`"$Pwsh`" -NoProfile -NonInteractive -Command `"(Invoke-WebRequest https://github.com/ -UseBasicParsing).StatusCode`"" -Timeout 90 -Check { param($r) $r.ExitCode -eq 0 -and $r.Output -match '200' }
     NewCase '07e' 'ssh -V (Windows OpenSSH)' 'works' "`"$WinSsh`" -V"
     NewCase '07f' 'ssh -V (Git for Windows ssh)' 'works' "`"$GitSsh`" -V"
     NewCase '07g' 'ssh -T git@github.com with key (Windows OpenSSH)' 'works' "`"$WinSsh`" -v -i `"$SshKey`" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=accept-new -T git@github.com" -Group ssh -Check $SshCheck -ShowFilter $SshFilter -Timeout 60
     NewCase '07h' 'ssh -T git@github.com with key (Git ssh)' 'works' "`"$GitSsh`" -v -i `"$SshKey`" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=accept-new -T git@github.com" -Group ssh -Check $SshCheck -ShowFilter $SshFilter -Timeout 60
+    NewCase '07j' 'read the private key (ssh-keygen -y)' 'works' "`"$WinSshKeygen`" -y -f `"$SshKey`"" -Group ssh -Check { param($r) $r.ExitCode -eq 0 -and $r.Output -match 'ssh-ed25519' }
     NewCase '07i' 'git push to local bare repo over file://' 'works' "cmd.exe /d /c git init -q --bare bare.git && cd repo && git push -q $BareUrl HEAD:refs/heads/main && git ls-remote $BareUrl"
     NewCase '08a' 'npm --version' 'works' 'cmd.exe /d /c npm --version'
     NewCase '08b' 'npm init -y' 'works' 'cmd.exe /d /c mkdir npmproj && cd npmproj && npm init -y'
@@ -256,7 +260,7 @@ function Invoke-Case([string]$Mode, [IntPtr]$Token, $Case, [switch]$NoStore) {
         $got = if ($ok -and -not $r.TimedOut) { 'works' } else { 'fails' }
     }
     $exp = $Case.Expect
-    if (($Mode -like 'baseline*' -or $Mode -eq 'pregrant') -and $exp -ne 'record') { $exp = 'works' }
+    if (($Mode -like '*baseline*' -or $Mode -eq 'pregrant') -and $exp -ne 'record') { $exp = 'works' }
     $verdict = if ($exp -eq 'record') { 'INFO' } elseif ($got -eq $exp) { 'PASS' } else { 'FAIL' }
     $why = ''
     if ($r.LaunchError) { $why = 'launch error' }
@@ -299,6 +303,10 @@ function New-DataFolder([string]$Which, [switch]$Quiet) {
     $log += & icacls.exe $Data /setowner "*$UserSid" /t /c /q 2>&1
     if ($Which -eq 'D') {
         $log += & $AclEdit deny $Data $Sid
+    }
+    elseif ($Which -eq 'O') {
+        $log += & $AclEdit deny $Data $Sid
+        $log += & $AclEdit owner-rights $Data
     }
     else {
         $log += & $AclEdit protect-purge $Data $Sid
@@ -424,6 +432,7 @@ $Configs = [ordered]@{
     'D' = @{ Desc = 'C + token object DACL (user, SYSTEM, synthetic)'; Sids = $BaseLogon; Def = $true; Tok = $true }
     'E' = @{ Desc = 'D without the logon SID'; Sids = $Base; Def = $true; Tok = $true }
     'F' = @{ Desc = 'D + RESTRICTED (S-1-5-12)'; Sids = $BaseLogon + @('S-1-5-12'); Def = $true; Tok = $true }
+    'G' = @{ Desc = 'F + the user SID (NOT design 3; extra comparison)'; Sids = $BaseLogon + @('S-1-5-12', $UserSid); Def = $true; Tok = $true }
 }
 foreach ($key in $Configs.Keys) {
     $cfg = $Configs[$key]
@@ -477,7 +486,50 @@ New-DataFolder 'D' -Quiet
 Reset-HomeTest
 foreach ($c in $Cases) { Invoke-Case 'baseline' ([IntPtr]::Zero) $c | Out-Null }
 
-Section '7. Summary'
+Section '7. Fixes tried for the sandbox failures (token F, data folder variant D)'
+$Variant = 'D'
+New-DataFolder 'D' -Quiet
+Reset-HomeTest
+$sidObj = [Security.Principal.SecurityIdentifier]::new($Sid)
+try {
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Software', [Microsoft.Win32.RegistryKeyPermissionCheck]::ReadWriteSubTree, [Security.AccessControl.RegistryRights]'ChangePermissions, ReadPermissions')
+    $rs = $key.GetAccessControl([Security.AccessControl.AccessControlSections]::Access)
+    $rs.AddAccessRule([Security.AccessControl.RegistryAccessRule]::new($sidObj, [Security.AccessControl.RegistryRights]::FullControl, [Security.AccessControl.InheritanceFlags]::ContainerInherit, [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow))
+    $key.SetAccessControl($rs)
+    $key.Close()
+    Fact 'Registry fix: grant SID FullControl (CI) on HKCU\Software, time' ("{0:N1}s" -f $sw.Elapsed.TotalSeconds)
+    foreach ($rk in 'HKCU:\Software\DotoriProbe', 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer') {
+        $has = @((Get-Acl -LiteralPath $rk).GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) | Where-Object { $_.IdentityReference -eq $sidObj }).Count -gt 0
+        Write-Host "   $rk has the SID ACE after the grant: $has"
+    }
+}
+catch { Write-Host "   registry grant failed: $($_.Exception.Message)" }
+foreach ($c in $Cases | Where-Object { $_.Id -in '11b' }) { Invoke-Case 'fix' $MainToken $c | Out-Null }
+$keyGrant = & $AclEdit grant $SshKey $Sid | Out-String
+Write-Host "SSH key fix: grant the SID on the private key: $keyGrant"
+Show (& icacls.exe $SshKey 2>&1 | Out-String) 8
+foreach ($c in $Cases | Where-Object { $_.Id -in '07g', '07j' }) { Invoke-Case 'fix' $MainToken $c | Out-Null }
+Write-Host 'Same key, parent without sandbox, after the SID was added to the key ACL:'
+foreach ($c in $Cases | Where-Object { $_.Id -in '07g' }) { Invoke-Case 'fix-baseline' ([IntPtr]::Zero) $c | Out-Null }
+
+Section '8. Extra: token G (restricting SIDs include the user SID), to compare with design 3'
+$GToken = $Configs['G'].Token
+$GIds = '01a', '02a', '03a', '05a', '05b', '05c', '05f', '06b', '06c', '07c', '07c3', '07f', '07i', '07j', '10a', '10b', '11b', '12a', '13b', '13c'
+if ($GToken -and $GToken -ne [IntPtr]::Zero) {
+    Write-Host '--- G with data folder variant D (deny SID, no OWNER RIGHTS ACE)'
+    $Variant = 'D'
+    New-DataFolder 'D' -Quiet
+    Reset-HomeTest
+    foreach ($c in $Cases | Where-Object { $_.Id -in $GIds }) { Invoke-Case 'G-D' $GToken $c | Out-Null }
+    Write-Host '--- G with data folder variant O (deny SID + OWNER RIGHTS limited to READ_CONTROL)'
+    $Variant = 'O'
+    New-DataFolder 'O'
+    Reset-HomeTest
+    foreach ($c in $Cases | Where-Object { $_.Id -in $GIds }) { Invoke-Case 'G-O' $GToken $c | Out-Null }
+}
+
+Section '9. Summary'
 & $EscapeClean
 $md = [Text.StringBuilder]::new()
 [void]$md.AppendLine("## Sandbox probe: $Label")
@@ -497,11 +549,11 @@ foreach ($key in $Matrix.Keys) {
 [void]$md.AppendLine('')
 [void]$md.AppendLine("### Results (sandbox token shape $Chosen)")
 [void]$md.AppendLine('')
-[void]$md.AppendLine('| Id | Test | Expected in sandbox | Sandbox, DENY ACE (D) | Sandbox, no inheritance (P) | Baseline, no sandbox | Baseline before home grant |')
-[void]$md.AppendLine('|---|---|---|---|---|---|---|')
-foreach ($id in $Results.Keys) {
+[void]$md.AppendLine('| Id | Test | Expected in sandbox | Sandbox, DENY ACE (D) | Sandbox, no inheritance (P) | Baseline, no sandbox | Baseline before home grant | Sandbox after fix | Token G, variant D | Token G, variant O |')
+[void]$md.AppendLine('|---|---|---|---|---|---|---|---|---|---|')
+foreach ($id in ($Results.Keys | Sort-Object)) {
     $e = $Results[$id]
-    $cells = foreach ($m in 'sandbox-D', 'sandbox-P', 'baseline', 'pregrant') { if ($e.Modes.ContainsKey($m)) { $e.Modes[$m] } else { '' } }
+    $cells = foreach ($m in 'sandbox-D', 'sandbox-P', 'baseline', 'pregrant', 'fix', 'G-D', 'G-O') { if ($e.Modes.ContainsKey($m)) { $e.Modes[$m] } else { '' } }
     [void]$md.AppendLine("| $id | $($e.Name) | $($e.Expect) | " + ($cells -join ' | ') + ' |')
 }
 $text = $md.ToString()

@@ -12,6 +12,7 @@ try {
         'grant' { $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($sid, $full, $inherit, $none, 'Allow')) }
         'deny' { $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($sid, $full, $inherit, $none, 'Deny')) }
         'purge' { $acl.PurgeAccessRules($sid) }
+        'owner-rights' { $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new('S-1-3-4'), [Security.AccessControl.FileSystemRights]::ReadPermissions, $inherit, $none, 'Allow')) }
         'protect-purge' {
             $acl.SetAccessRuleProtection($true, $true)
             [IO.FileSystemAclExtensions]::SetAccessControl($info, $acl)
