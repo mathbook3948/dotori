@@ -114,7 +114,7 @@ fn a_second_id_adds_an_account_and_the_same_id_replaces_it() {
 }
 
 #[test]
-fn the_settings_list_each_account_and_the_model_only_sites_and_counts() {
+fn the_model_sees_each_site_and_its_ids_and_never_a_password() {
     let folder = folder();
     let accounts = accounts(&folder);
     accounts.keep(&coupang()).expect("kept");
@@ -150,14 +150,14 @@ fn the_settings_list_each_account_and_the_model_only_sites_and_counts() {
         ]
     );
     assert!(
-        told.contains("- 쿠팡 (https://www.coupang.com), 계정 2개"),
+        told.contains("- 쿠팡 (https://www.coupang.com): family@mail.com, minji.example@mail.com"),
         "{told}"
     );
     assert!(
-        told.contains("- 네이버 (https://nid.naver.com), 계정 1개"),
+        told.contains("- 네이버 (https://nid.naver.com): minji_k"),
         "{told}"
     );
-    for secret in ["minji", "family", "hunter22", "sk-ant"] {
+    for secret in ["hunter22", "other-pass", "sk-ant"] {
         assert!(!told.contains(secret), "{told}");
     }
     assert!(listed.iter().all(|site| is_account(&site.name)));
@@ -180,7 +180,10 @@ fn unlinking_one_of_two_accounts_leaves_the_other_on_every_linked_pc() {
         2
     );
     let told = LinkedSites::new(Arc::clone(&there.vault));
-    assert!(told.context().is_some_and(|told| told.contains("계정 2개")));
+    assert!(
+        told.context()
+            .is_some_and(|told| told.contains("minji.example@mail.com"))
+    );
 
     std::thread::sleep(std::time::Duration::from_millis(5));
     let first = sites(&here.vault)
@@ -198,7 +201,42 @@ fn unlinking_one_of_two_accounts_leaves_the_other_on_every_linked_pc() {
         plain(there.find("https://www.coupang.com").expect("read")),
         vec![second()]
     );
-    assert!(told.context().is_some_and(|told| told.contains("계정 1개")));
+    assert!(
+        told.context()
+            .is_some_and(|told| !told.contains("minji.example") && told.contains("family"))
+    );
+}
+
+#[test]
+fn unlinking_an_account_removes_every_copy_of_it() {
+    let accounts = accounts(&folder());
+    for (tag, kept_ms) in [("a", 10), ("b", 20)] {
+        accounts
+            .vault
+            .set(
+                &format!("site:https://www.coupang.com#{tag}"),
+                &serde_json::to_string(&Account {
+                    kept_ms,
+                    ..coupang()
+                })
+                .expect("json"),
+                now_ms(),
+            )
+            .expect("kept");
+    }
+    accounts.keep(&second()).expect("kept");
+    let shown = sites(&accounts.vault).expect("listed");
+    let chosen = shown
+        .iter()
+        .find(|site| site.id.as_deref() == Some("minji.example@mail.com"))
+        .expect("listed");
+
+    forget(&accounts.vault, &chosen.name).expect("unlinked");
+
+    assert_eq!(
+        plain(accounts.find("https://www.coupang.com").expect("read")),
+        vec![second()]
+    );
 }
 
 #[test]

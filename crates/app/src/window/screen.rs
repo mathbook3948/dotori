@@ -79,7 +79,7 @@ pub(crate) enum CardShown {
         checks: Vec<(u64, String, bool)>,
         submit: (u64, String),
         links: Vec<(u64, String)>,
-        note: String,
+        note: Option<String>,
     },
     LogIn {
         id: u64,
@@ -87,6 +87,7 @@ pub(crate) enum CardShown {
         accounts: Vec<String>,
         chosen: usize,
         host: String,
+        path: String,
         trust: bool,
     },
 }
@@ -273,7 +274,7 @@ impl ScreenView {
                     .collect(),
                 submit: card.get("submit").and_then(named)?,
                 links: list("links").iter().filter_map(named).collect(),
-                note: text(card, "note"),
+                note: Some(text(card, "note")).filter(|note| !note.is_empty()),
             }),
             Some("log_in") => Some(CardShown::LogIn {
                 id,
@@ -288,6 +289,7 @@ impl ScreenView {
                     .collect(),
                 chosen: self.chosen,
                 host: text(card, "host"),
+                path: text(card, "path"),
                 trust: self.trust,
             }),
             _ => None,

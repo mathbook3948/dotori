@@ -41,7 +41,7 @@ fn a_login_card_is_read_with_what_each_element_must_be() {
     );
     assert_eq!(
         spec.note(),
-        "금고에 안전하게 보관돼요. 대화하는 AI는 보지 못해요."
+        Some("비밀번호는 금고에 안전하게 보관돼요. 대화하는 AI는 비밀번호를 보지 못해요.")
     );
 }
 
@@ -111,8 +111,20 @@ fn each_card_says_what_happens_to_what_the_owner_types() {
     }))
     .expect("read");
 
-    assert_eq!(code.note(), "인증번호는 보관하지 않아요.");
-    assert_eq!(forgot.note(), "대화하는 AI는 적은 내용을 보지 못해요.");
+    let reset = FillSpec::parse(&json!({
+        "title": "쿠팡 새 비밀번호",
+        "fields": [{ "ref": 3, "label": "새 비밀번호", "kind": "secret" }],
+        "submit": { "ref": 4, "label": "바꾸기" }
+    }))
+    .expect("read");
+
+    assert_eq!(code.note(), Some("인증번호는 보관하지 않아요."));
+    assert_eq!(reset.note(), Some("대화하는 AI는 비밀번호를 보지 못해요."));
+    assert_eq!(
+        forgot.note(),
+        None,
+        "a card with no secret field says nothing"
+    );
     assert!(!forgot.keep);
 }
 
@@ -124,7 +136,7 @@ fn what_the_model_is_told_names_the_fields_but_never_their_values() {
 
     assert!(
         told.contains(
-            "주인이 '로그인'을 눌렀어요. 채운 칸: 아이디(이메일), 비밀번호 (값은 보이지 않아요)."
+            "주인이 '로그인'을 눌렀어요. 채운 칸: 아이디(이메일), 비밀번호 (비밀번호와 인증번호는 보이지 않아요)."
         ),
         "{told}"
     );
@@ -242,38 +254,39 @@ fn an_id_is_shortened_for_the_card() {
 }
 
 #[test]
-fn typed_values_are_hidden_from_what_the_tools_return() {
+fn a_result_holding_a_password_or_code_is_found_and_an_id_is_not() {
     let mut hidden = Hidden::default();
-    hidden.add("me+shop@example.com");
-    hidden.add("hunter22");
-    hidden.add("123");
+    hidden.add("hunter22!", "https://shop.example");
+    hidden.add("123", "https://bank.example");
+    let id = "me+shop@example.com";
 
-    let shown = hidden.scrub(
-        "[3] input email: Email = me+shop@example.com\nWelcome me+shop@example.com\n\
-         https://a.example/?u=me%2Bshop%40example.com pin 123 hunter22 order 41234 page 1",
-    );
+    let found = |text: &str| hidden.found_in(text);
 
-    assert!(!shown.contains("me+shop"), "{shown}");
-    assert!(!shown.contains("me%2Bshop"), "{shown}");
-    assert!(!shown.contains("hunter22"), "{shown}");
-    assert!(
-        shown.contains("pin [hidden]"),
-        "a short value is hidden where it stands alone: {shown}"
+    assert_eq!(found("you typed hunter22!"), ["https://shop.example"]);
+    assert_eq!(
+        found("https://evil.example/?q=hunter22%21"),
+        ["https://shop.example"],
+        "the way it reads in an address counts too"
     );
+    assert_eq!(found("pin 123 here"), ["https://bank.example"]);
     assert!(
-        shown.contains("order 41234 page 1"),
-        "and nowhere else: {shown}"
+        found("order 41234 page 1").is_empty(),
+        "a short value counts only alone"
     );
-    assert!(shown.contains("[hidden]"), "{shown}");
+    assert!(found(&format!("Welcome {id}")).is_empty());
     assert!(!format!("{hidden:?}").contains("hunter22"));
 }
 
 #[test]
 fn a_kept_account_logs_in_by_the_elements_the_model_names() {
-    let spec = LogInSpec::parse(&json!({ "id": 12, "password": 13, "submit": 16 })).expect("read");
+    let spec = LogInSpec::parse(
+        &json!({ "id": 12, "password": 13, "submit": 16, "account": "me@example.com" }),
+    )
+    .expect("read");
+    assert_eq!(spec.account.as_deref(), Some("me@example.com"));
     assert_eq!(
         spec.roles(),
-        [(12, Role::Text), (13, Role::Secret), (16, Role::Submit)]
+        [(12, Role::Id), (13, Role::Secret), (16, Role::Submit)]
     );
     let password_only = LogInSpec::parse(&json!({ "password": 13, "submit": 16 })).expect("read");
     assert_eq!(password_only.id, None);

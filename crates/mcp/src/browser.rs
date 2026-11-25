@@ -34,6 +34,7 @@ use crate::card::Accounts;
 use crate::card::Answer;
 use crate::card::FillSpec;
 use crate::card::Hidden;
+use crate::card::Kept;
 use crate::card::LogInSpec;
 use crate::card::Role;
 use crate::cdp::Cdp;
@@ -143,6 +144,7 @@ pub struct Browser {
     logins: SharedChallenges,
     taking: AtomicBool,
     gave: watch::Sender<u64>,
+    locked: std::sync::Mutex<HashSet<String>>,
     card: std::sync::Mutex<Option<Waiting>>,
     next_card: AtomicU64,
     hidden: std::sync::Mutex<Hidden>,
@@ -170,7 +172,7 @@ struct Checked {
 }
 
 enum Step {
-    Type(u64, String),
+    Type(u64, String, bool),
     Set(u64, bool),
     Click(u64),
 }
@@ -225,6 +227,7 @@ struct Marks {
     sealed: HashSet<String>,
     typed: HashMap<String, Vec<i64>>,
     scripting: bool,
+    current: Option<String>,
 }
 
 impl Drop for Running {
@@ -310,6 +313,7 @@ impl Browser {
             logins: Arc::default(),
             taking: AtomicBool::new(false),
             gave: watch::Sender::new(0),
+            locked: std::sync::Mutex::default(),
             card: std::sync::Mutex::new(None),
             next_card: AtomicU64::new(card_start()),
             hidden: std::sync::Mutex::new(Hidden::default()),
@@ -499,7 +503,7 @@ impl Browser {
         }
     }
 
-    async fn stored_secrets(&self, page: &Page<'_>) -> Vec<String> {
+    async fn stored_secrets(&self, page: &Page<'_>) -> Vec<Kept> {
         let Some(accounts) = &self.config.accounts else {
             return Vec::new();
         };
@@ -513,8 +517,63 @@ impl Browser {
             .find(origin)
             .unwrap_or_default()
             .into_iter()
-            .flat_map(|account| account.id.into_iter().chain([account.password]))
+            .map(|account| Kept {
+                value: account.password,
+                origin: origin.to_owned(),
+            })
             .collect()
+    }
+
+    fn released(&self, text: &str, stored: &[Kept]) -> Result<String, String> {
+        let hidden = self.hidden.lock().expect("unpoisoned").with(stored);
+        let origins = hidden.found_in(text);
+        if origins.is_empty() {
+            return Ok(text.to_owned());
+        }
+        self.locked
+            .lock()
+            .expect("unpoisoned")
+            .extend(origins.iter().cloned());
+        Err(format!(
+            "dotori withheld this result whole because it held a password or code from the vault \
+             or the owner. run_in_browser and read_page no longer work on {} until dotori's \
+             browser starts again.",
+            origins.join(", ")
+        ))
+    }
+
+    async fn locked_here(&self, page: &Page<'_>) -> Result<(), String> {
+        let origin = page.evaluate("location.origin").await?;
+        let origin = origin.as_str().unwrap_or_default();
+        if self.locked.lock().expect("unpoisoned").contains(origin) {
+            return Err(format!(
+                "a result on {origin} held a password or code, so dotori's browser takes no code \
+                 and shows nothing there until it starts again"
+            ));
+        }
+        Ok(())
+    }
+
+    async fn close_others(&self, page: &Page<'_>) -> Result<bool, String> {
+        let others = other_pages(page).await?;
+        for other in &others {
+            page.running
+                .cdp
+                .send("Target.closeTarget", json!({ "targetId": other }), None)
+                .await?;
+        }
+        let gone = async {
+            while !other_pages(page).await?.is_empty() {
+                time::sleep(POLL).await;
+            }
+            Ok::<(), String>(())
+        };
+        if !others.is_empty() {
+            time::timeout(CLOSE_WAIT, gone)
+                .await
+                .map_err(|_| String::from("another window of the browser did not close"))??;
+        }
+        Ok(!others.is_empty())
     }
 
     fn card_waits(&self) -> bool {
@@ -533,13 +592,8 @@ impl Browser {
         let (frame, loader) = page.document().await?;
         let (touched, sealed) = page.marked(&loader);
         if touched || sealed {
+            self.close_others(&page).await?;
             return Err(String::from(TOUCHED));
-        }
-        for other in other_pages(&page).await? {
-            page.running
-                .cdp
-                .send("Target.closeTarget", json!({ "targetId": other }), None)
-                .await?;
         }
         let refs = page.world(false).await?;
         let mut nodes = Vec::new();
@@ -568,6 +622,10 @@ impl Browser {
             .iter()
             .filter_map(|check| Some((check.get("ref")?.as_u64()?, check.get("on")?.as_bool()?)))
             .collect();
+        if self.close_others(&page).await? {
+            page.mark_touched().await?;
+            return Err(String::from(TOUCHED));
+        }
         Ok(Checked {
             origin,
             host: text("host")?,
@@ -629,8 +687,8 @@ impl Browser {
         drop(running);
         self.screen.update(json!({ "mode": "idle" }));
         done?;
-        let hidden = self.hidden.lock().expect("unpoisoned").with(&stored);
-        let shown = shown.map(|shown| fetch::window(&hidden.scrub(&shown), 0, SHOWN))?;
+        let shown = self.released(&shown?, &stored)?;
+        let shown = fetch::window(&shown, 0, SHOWN);
         Ok(if still {
             format!("{shown}\n\n{STILL_SEALED}")
         } else {
@@ -659,6 +717,7 @@ impl Browser {
             return Err(String::from(CHANGED));
         }
         let world = fresh_world(page, &frame).await?;
+        let mut plain = Vec::new();
         if steps.iter().any(|step| matches!(step, Step::Type(..))) {
             page.call_in(
                 world,
@@ -716,7 +775,7 @@ impl Browser {
         };
         for step in steps {
             match step {
-                Step::Type(at, value) => {
+                Step::Type(at, value, secret) => {
                     if value.is_empty() {
                         continue;
                     }
@@ -729,8 +788,11 @@ impl Browser {
                             "the cursor did not land in [{at}], so dotori typed nothing there and stopped"
                         ));
                     }
-                    self.hidden.lock().expect("unpoisoned").add(&value);
-                    {
+                    if secret {
+                        self.hidden
+                            .lock()
+                            .expect("unpoisoned")
+                            .add(&value, &card.origin);
                         let mut marks = page.running.marks.lock().expect("unpoisoned");
                         marks.sealed.insert(loader.clone());
                         marks
@@ -738,8 +800,11 @@ impl Browser {
                             .entry(loader.clone())
                             .or_default()
                             .push(node(at)?);
+                        drop(marks);
+                        typed.push(node(at)?);
+                    } else {
+                        plain.push(node(at)?);
                     }
-                    typed.push(node(at)?);
                     for event in key_events("Delete")? {
                         page.send("Input.dispatchKeyEvent", event).await?;
                     }
@@ -775,7 +840,7 @@ impl Browser {
             let changed = changed_nodes(page, world).await.unwrap_or_default();
             let mut marks = page.running.marks.lock().expect("unpoisoned");
             let kept = marks.typed.entry(loader.clone()).or_default();
-            for node in changed {
+            for node in changed.into_iter().filter(|node| !plain.contains(node)) {
                 if !kept.contains(&node) {
                     kept.push(node);
                 }
@@ -836,7 +901,7 @@ impl Browser {
                 if !value.is_empty() {
                     filled.push(field.at);
                 }
-                steps.push(Step::Type(field.at, value));
+                steps.push(Step::Type(field.at, value, field.kind != card::Kind::Text));
             }
             for check in &spec.checks {
                 if let Some((_, on)) = checks.iter().find(|(at, _)| *at == check.at) {
@@ -880,15 +945,23 @@ impl Browser {
             .into_iter()
             .filter(|account| account.origin == origin)
             .filter(|account| spec.id.is_none() || account.id.is_some())
+            .filter(|account| {
+                spec.account.is_none() || account.id.as_deref() == spec.account.as_deref()
+            })
             .collect();
         if kept.is_empty() {
             return Err(format!(
-                "the vault keeps no account for {origin} that fits these fields, so nothing was filled; to link one, show the owner a login card with ask_owner_to_fill and `keep`"
+                "the vault keeps no account for {origin} that fits these fields{}, so nothing was filled; to link one, show the owner a login card with ask_owner_to_fill and `keep`",
+                spec.account
+                    .as_deref()
+                    .map(|id| format!(" with the id {id}"))
+                    .unwrap_or_default()
             ));
         }
+        let on_its_page = |account: &&Account| account.page.as_deref() == Some(card.path.as_str());
         let trusted: Vec<&Account> = kept.iter().filter(|account| account.trusted).collect();
         let (account, asked) = match trusted.as_slice() {
-            [one] if one.page.as_deref() == Some(card.path.as_str()) => ((*one).clone(), false),
+            [one] if on_its_page(one) => ((*one).clone(), false),
             _ => match self.pick_account(id, &card, &kept, &*accounts).await? {
                 Ok(account) => (account, true),
                 Err(told) => return Ok(told),
@@ -896,14 +969,14 @@ impl Browser {
         };
         let mut steps = Vec::new();
         if let (Some(at), Some(id)) = (spec.id, account.id.clone()) {
-            steps.push(Step::Type(at, id));
+            steps.push(Step::Type(at, id, false));
         }
-        steps.push(Step::Type(spec.password, account.password.clone()));
+        steps.push(Step::Type(spec.password, account.password.clone(), true));
         steps.push(Step::Click(spec.submit));
         let shown = self.run_card(&card, steps).await?;
         Ok(format!(
             "{}\n\nThe page now:\n{shown}",
-            card::logged_in(&account.site, asked)
+            card::logged_in(&account.site, account.id.as_deref(), asked)
         ))
     }
 
@@ -928,6 +1001,7 @@ impl Browser {
                 .map(|account| account.id.as_deref().map(card::shortened))
                 .collect::<Vec<_>>(),
             "host": card.host,
+            "path": card.path,
         });
         let (trust, picked) = match self.wait_card(id, shown).await {
             Waited::Answer(Answer::Allow { trust, account }) => (trust, account),
@@ -1201,6 +1275,7 @@ impl Browser {
             .events()
             .ok_or("the browser's events are already taken")?;
         self.logins.lock().expect("unpoisoned").clear();
+        self.locked.lock().expect("unpoisoned").clear();
         self.screen.update(json!({ "login": null }));
         let marks: Arc<std::sync::Mutex<Marks>> = Arc::default();
         let watcher = tokio::spawn(watch(
@@ -1481,6 +1556,12 @@ async fn watch(
                     .map(str::to_owned);
                 let opened_here = info.get("type").and_then(Value::as_str) == Some("page");
                 let ours = target.as_deref() == Some(main_target.as_str());
+                if opened_here && !ours {
+                    let mut marks = marks.lock().expect("unpoisoned");
+                    if let Some(current) = marks.current.clone() {
+                        marks.touched.insert(current);
+                    }
+                }
                 if let (false, Some(attached), Some(target)) = (ours, attached, target) {
                     let cdp = Arc::clone(&cdp);
                     let screen = Arc::clone(&screen);
@@ -1572,6 +1653,7 @@ async fn watch(
                     if marks.scripting {
                         marks.touched.insert(loader.to_owned());
                     }
+                    marks.current = Some(loader.to_owned());
                 }
                 if let Some(url) = params.pointer("/frame/url").and_then(Value::as_str) {
                     screen.update(json!({ "url": url }));
@@ -1894,9 +1976,13 @@ impl BrowserTool {
             Action::LogIn => self.browser.log_in(arguments).await,
             Action::Run | Action::Read | Action::Ask => self.drive(arguments).await,
         };
-        let hidden = self.browser.hidden.lock().expect("unpoisoned");
-        done.map(|text| hidden.scrub(&text))
-            .map_err(|error| hidden.scrub(&error))
+        match done {
+            Ok(text) => self.browser.released(&text, &[]),
+            Err(error) => Err(self
+                .browser
+                .released(&error, &[])
+                .unwrap_or_else(|withheld| withheld)),
+        }
     }
 
     async fn drive(&self, arguments: Value) -> Result<String, String> {
@@ -1954,11 +2040,17 @@ impl BrowserTool {
         let _acting = self.browser.acting.lock().await;
         let running = self.browser.page().await?;
         let page = Page { running: &running };
+        if open.is_none() {
+            self.browser.locked_here(&page).await?;
+        }
         self.browser.screen.update(json!({ "mode": "agent" }));
         let mut stored = self.browser.stored_secrets(&page).await;
         let said = match (&script, &open) {
             (None, None) => Ok(String::new()),
-            (None, Some(url)) => page.go(url.as_str()).await.map(|()| String::new()),
+            (None, Some(url)) => match self.browser.close_others(&page).await {
+                Ok(_) => page.go(url.as_str()).await.map(|()| String::new()),
+                Err(error) => Err(error),
+            },
             (Some(body), _) => {
                 let driver = Driver {
                     page: Page { running: &running },
@@ -1986,6 +2078,7 @@ impl BrowserTool {
             Err(error) => Err(error),
         };
         stored.extend(self.browser.stored_secrets(&page).await);
+        let locked = self.browser.locked_here(&page).await;
         let broken = !running.cdp.open();
         drop(running);
         self.browser.screen.update(json!({ "mode": "idle" }));
@@ -1994,21 +2087,18 @@ impl BrowserTool {
         {
             self.browser.forget().await;
         }
-        let hidden = self
-            .browser
-            .hidden
-            .lock()
-            .expect("unpoisoned")
-            .with(&stored);
-        let shown = shown.map(|shown| fetch::window(&hidden.scrub(&shown), start, SHOWN));
-        let told = match (said, shown) {
+        locked?;
+        let whole = [&said, &shown]
+            .map(|part| part.as_ref().map_or_else(String::as_str, String::as_str))
+            .concat();
+        self.browser.released(&whole, &stored)?;
+        let shown = shown.map(|shown| fetch::window(&shown, start, SHOWN));
+        match (said, shown) {
             (Ok(said), Ok(shown)) => Ok(format!("{said}{shown}")),
             (Err(error), Ok(shown)) => Err(format!("{error}\n\nThe page now:\n{shown}")),
             (Err(error), Err(page)) => Err(format!("{error}\n\nThe page cannot be shown: {page}")),
             (Ok(said), Err(page)) => Err(format!("{said}{page}")),
-        };
-        told.map(|told| hidden.scrub(&told))
-            .map_err(|error| hidden.scrub(&error))
+        }
     }
 }
 
@@ -2409,7 +2499,8 @@ impl Tool for BrowserTool {
                 "properties": {
                     "id": { "type": "integer", "description": "The [n] of the id field, when the page shows one." },
                     "password": { "type": "integer", "description": "The [n] of the password field." },
-                    "submit": { "type": "integer", "description": "The [n] of the button that logs in." }
+                    "submit": { "type": "integer", "description": "The [n] of the button that logs in." },
+                    "account": { "type": "string", "description": "The id of the kept account to log in with, when the site has several and the owner named one." }
                 },
                 "required": ["password", "submit"]
             }),

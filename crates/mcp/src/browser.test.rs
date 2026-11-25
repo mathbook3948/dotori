@@ -835,7 +835,7 @@ async fn giving_the_browser_back_while_waiting_leaves_it_with_the_agent() {
 
 const LOGIN: &str = "<html><head><title>Log in</title></head><body>\
 <h1>Shop</h1><p id=said>nothing yet</p>\
-<form id=f method=post action=\"/session\" onsubmit=\"event.preventDefault();document.getElementById('said').textContent='got '+document.getElementById('who').value+' '+document.getElementById('word').value+' '+document.getElementById('stay').checked\">\
+<form id=f method=post action=\"/session\" onsubmit=\"event.preventDefault();document.getElementById('said').textContent='got '+document.getElementById('who').value+' '+document.getElementById('word').value.length+' '+document.getElementById('stay').checked\">\
 <input type=email id=who aria-label=Email><input type=password id=word aria-label=Password>\
 <label><input type=checkbox id=stay> Stay</label>\
 <button>Log in</button></form>\
@@ -1189,26 +1189,20 @@ async fn the_owner_fills_a_card_and_the_model_never_sees_what_they_typed() {
         window
             .in_page("document.getElementById('said').textContent")
             .await,
-        "got me@example.com hunter22! true"
+        "got me@example.com 9 true"
     );
     assert_eq!(
         window
-            .in_page("document.getElementById('who').value + document.getElementById('word').value")
+            .in_page("document.getElementById('word').value")
             .await,
         "",
         "what dotori typed is cleared once the page took it"
     );
     assert!(told.contains("주인이 'Log in'을(를) 눌렀어요."), "{told}");
     assert!(told.contains("채운 칸: Email, Password"), "{told}");
-    assert!(
-        !told.contains("me@example.com") && !told.contains("hunter22"),
-        "{told}"
-    );
+    assert!(!told.contains("hunter22"), "{told}");
     let again = window.read().await;
-    assert!(
-        !again.contains("me@example.com") && !again.contains("hunter22"),
-        "{again}"
-    );
+    assert!(!again.contains("hunter22"), "{again}");
     assert!(window.browser.screen.state.lock().expect("unpoisoned")["card"].is_null());
 }
 
@@ -1550,10 +1544,10 @@ async fn the_owner_picks_one_of_several_accounts_and_trust_moves_to_it() {
         window
             .in_page("document.getElementById('said').textContent")
             .await,
-        "got family@example.com second-pass false"
+        "got family@example.com 11 false"
     );
     assert!(
-        !told.contains("family") && !told.contains("second-pass"),
+        told.contains("family@example.com") && !told.contains("second-pass"),
         "{told}"
     );
     let trusted: Vec<Option<String>> = accounts
@@ -1576,8 +1570,62 @@ async fn the_owner_picks_one_of_several_accounts_and_trust_moves_to_it() {
         window
             .in_page("document.getElementById('said').textContent")
             .await,
-        "got family@example.com second-pass false"
+        "got family@example.com 11 false"
     );
+
+    window
+        .call(READ, json!({ "url": "https://shop.test/login" }))
+        .await
+        .expect("joined")
+        .expect("read");
+    let named = window.call(
+        FILL_LOGIN,
+        json!({ "id": 1, "password": 2, "submit": 4, "account": "me@example.com" }),
+    );
+    let asked = window.card().await;
+    window
+        .answer(json!({ "kind": "fill", "id": asked["id"], "allow": false }))
+        .await;
+    named.await.expect("joined").expect("declined");
+    assert_eq!(
+        asked["accounts"],
+        json!(["me"]),
+        "the account the model named, which is not trusted, is asked about alone"
+    );
+    let textarea = window
+        .call(FILL_LOGIN, json!({ "id": 2, "password": 2, "submit": 4 }))
+        .await
+        .expect("joined")
+        .expect_err("refused");
+    assert!(textarea.contains("named once"), "{textarea}");
+}
+
+const TEXTAREA_ID: &str = "<html><body><form method=post action=\"/session\">\
+<textarea aria-label=Email></textarea><input type=password aria-label=Password>\
+<button>Log in</button></form></body></html>";
+
+#[tokio::test]
+#[ignore = "starts a real Chrome; set DOTORI_TEST_CHROME"]
+async fn a_login_whose_id_field_is_not_a_text_input_is_refused() {
+    let accounts = Arc::new(KeptHere::default());
+    accounts
+        .keep(&account("me@example.com", "first-pass"))
+        .expect("kept");
+    let window = watched(
+        &[("/login", TEXTAREA_ID)],
+        Some(Arc::clone(&accounts) as Arc<dyn Accounts>),
+    )
+    .await;
+    window.open("https://shop.test/login").await;
+    window.read().await;
+
+    let refused = window
+        .call(FILL_LOGIN, json!({ "id": 1, "password": 2, "submit": 3 }))
+        .await
+        .expect("joined")
+        .expect_err("refused");
+
+    assert!(refused.contains("not a text input"), "{refused}");
 }
 
 #[tokio::test]
@@ -1632,7 +1680,7 @@ setTimeout(() => { document.getElementById('mirror').value = 'MIRROR' + document
 <input type=email id=who aria-label=Email><input type=password id=word aria-label=Password>\
 <input type=text id=mirror aria-label=Mirror><button>Log in</button></form>\
 <input type=text id=copy aria-label=Copy><p id=saved hidden></p>\
-<script>document.getElementById('who').addEventListener('beforeinput', (e) => { \
+<script>document.getElementById('word').addEventListener('beforeinput', (e) => { \
 const shout = (e.data || '').toUpperCase(); document.getElementById('copy').value = shout; \
 document.getElementById('saved').textContent = shout; });</script></body></html>";
 
@@ -1674,7 +1722,8 @@ async fn a_page_the_model_s_code_moved_to_counts_as_touched_and_is_never_run_aga
 
 #[tokio::test]
 #[ignore = "starts a real Chrome; set DOTORI_TEST_CHROME"]
-async fn another_window_is_closed_before_a_card_and_one_opened_during_it_stops_the_fill() {
+async fn another_window_refuses_a_card_until_read_page_reloads_and_one_opened_during_it_stops_the_fill()
+ {
     let mut window = watched(&[("/login", LOGIN)], None).await;
     window.open("https://shop.test/login").await;
     window.read().await;
@@ -1696,13 +1745,26 @@ async fn another_window_is_closed_before_a_card_and_one_opened_during_it_stops_t
     open_another(Arc::clone(&window.browser)).await;
     assert_eq!(pages(Arc::clone(&window.browser)).await, 1);
 
-    let filling = window.call(FILL, login_card(false));
-    let card = window.card().await;
+    let refused = window
+        .call(FILL, login_card(false))
+        .await
+        .expect("joined")
+        .expect_err("refused");
+    assert!(refused.contains("code ran on this page"), "{refused}");
+    assert_eq!(pages(Arc::clone(&window.browser)).await, 0, "closed");
+    open_another(Arc::clone(&window.browser)).await;
+    window
+        .call(READ, json!({ "url": "https://shop.test/login" }))
+        .await
+        .expect("joined")
+        .expect("loaded again");
     assert_eq!(
         pages(Arc::clone(&window.browser)).await,
         0,
-        "closed before the card"
+        "read_page with a url closes the other windows first"
     );
+    let filling = window.call(FILL, login_card(false));
+    let card = window.card().await;
     open_another(Arc::clone(&window.browser)).await;
     window
         .answer(json!({
@@ -1710,15 +1772,55 @@ async fn another_window_is_closed_before_a_card_and_one_opened_during_it_stops_t
             "values": [{ "ref": 1, "value": "me@example.com" }, { "ref": 2, "value": "hunter22!" }]
         }))
         .await;
-    let refused = filling.await.expect("joined").expect_err("refused");
+    let stopped = filling.await.expect("joined").expect_err("refused");
 
-    assert!(refused.contains("another window"), "{refused}");
+    assert!(
+        stopped.contains("code ran on this page") || stopped.contains("another window"),
+        "a window that opened during the card stops the fill: {stopped}"
+    );
     assert_eq!(
         window
             .in_page("document.getElementById('word').value")
             .await,
         ""
     );
+}
+
+#[tokio::test]
+#[ignore = "starts a real Chrome; set DOTORI_TEST_CHROME"]
+async fn a_result_holding_a_kept_password_is_withheld_and_the_site_closes() {
+    let accounts = Arc::new(KeptHere::default());
+    accounts
+        .keep(&account("me@example.com", "first-pass"))
+        .expect("kept");
+    let window = watched(
+        &[("/login", LOGIN)],
+        Some(Arc::clone(&accounts) as Arc<dyn Accounts>),
+    )
+    .await;
+    window.open("https://shop.test/login").await;
+    let read = window.read().await;
+
+    let guessed = window
+        .call(RUN, json!({ "code": "return 'first' + '-pass';" }))
+        .await
+        .expect("joined")
+        .expect_err("withheld");
+    let again = window
+        .call(READ, json!({}))
+        .await
+        .expect("joined")
+        .expect_err("closed");
+    let id = window
+        .call(RUN, json!({ "code": "return 'me@example.com';" }))
+        .await
+        .expect("joined");
+
+    assert!(read.contains("[1] input email"), "{read}");
+    assert!(guessed.contains("withheld"), "{guessed}");
+    assert!(!guessed.contains("first-pass"), "{guessed}");
+    assert!(again.contains("until it starts again"), "{again}");
+    assert!(id.is_err(), "the site stays closed: {id:?}");
 }
 
 #[tokio::test]
@@ -1798,9 +1900,9 @@ async fn a_page_that_copies_what_was_typed_shows_none_of_it_and_stays_closed_to_
         .await
         .expect("joined");
 
-    assert!(!told.contains("ME@EXAMPLE"), "{told}");
+    assert!(!told.contains("HUNTER22"), "{told}");
     assert!(
-        !read.contains("ME@EXAMPLE"),
+        !read.contains("HUNTER22"),
         "a field of the same form is masked: {read}"
     );
     assert!(told.contains("loads again"), "{told}");
@@ -1831,7 +1933,7 @@ async fn a_copy_outside_the_form_is_cleared_with_what_was_typed() {
         window
             .in_page("document.getElementById('saved').textContent")
             .await,
-        "ME@EXAMPLE.COM",
+        "HUNTER22!",
         "the page copied what was typed"
     );
     assert_eq!(

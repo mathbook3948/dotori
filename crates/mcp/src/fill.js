@@ -1,7 +1,7 @@
 function (command, arg, ...els) {
   const typing = ['', 'text', 'email', 'tel', 'number', 'search', 'url'];
   const clickable = 'button,a[href],input[type=submit],input[type=button],input[type=image],[role=button],[role=link],summary';
-  const wanted = { text: 'a text field', secret: 'a password field', code: 'a text or password field', check: 'a checkbox', submit: 'a button', link: 'a button or link' };
+  const wanted = { id: 'a text input', text: 'a text field', secret: 'a password field', code: 'a text or password field', check: 'a checkbox', submit: 'a button', link: 'a button or link' };
   const prop = (el, name) => {
     for (let proto = Object.getPrototypeOf(el); proto; proto = Object.getPrototypeOf(proto)) {
       const found = Object.getOwnPropertyDescriptor(proto, name);
@@ -33,7 +33,7 @@ function (command, arg, ...els) {
     return fields().filter((el) => before.get(el) !== prop(el, 'value') && (before.has(el) || prop(el, 'value')));
   }
   if (command === 'check') {
-    if (location.protocol !== 'https:' || !location.host) return { origin: location.origin, host: location.host, checks: [] };
+    if (location.protocol !== 'https:' || !location.host) return { error: 'this page is at ' + location.origin + ', and dotori shows cards and fills logins only on https pages' };
     if (navigator.serviceWorker && navigator.serviceWorker.controller) return { error: 'a service worker runs this page, so dotori fills nothing on it' };
     const checks = [];
     const sent = [];
@@ -46,8 +46,9 @@ function (command, arg, ...els) {
       const text = tag === 'textarea' || (tag === 'input' && typing.includes(type));
       const password = tag === 'input' && type === 'password';
       const what = tag + (type ? ' ' + type : '');
-      if (role === 'text' && password) return { error: '[' + ref + '] is a password field; give it the kind secret' };
+      if ((role === 'text' || role === 'id') && password) return { error: '[' + ref + '] is a password field; give it the kind secret' };
       const fits = {
+        id: tag === 'input' && typing.includes(type),
         text: text,
         secret: password,
         code: text || password,
@@ -57,9 +58,9 @@ function (command, arg, ...els) {
       }[role];
       if (!fits) return { error: '[' + ref + '] is ' + what + ', not ' + wanted[role] };
       if (role !== 'check' && !shown(el)) return { error: '[' + ref + '] is hidden on the page' };
-      if (['text', 'secret', 'code'].includes(role) && (el.disabled || el.readOnly)) return { error: '[' + ref + '] does not take text now' };
+      if (['id', 'text', 'secret', 'code'].includes(role) && (el.disabled || el.readOnly)) return { error: '[' + ref + '] does not take text now' };
       if (role === 'check') checks.push({ ref, on: el.checked === undefined ? el.getAttribute('aria-checked') === 'true' : !!el.checked });
-      if (['text', 'secret', 'code', 'submit'].includes(role)) sent.push({ ref, el, role });
+      if (['id', 'text', 'secret', 'code', 'submit'].includes(role)) sent.push({ ref, el, role });
     }
     const formOf = (el) => (['input', 'textarea', 'select', 'button'].includes(el.tagName.toLowerCase()) ? prop(el, 'form') || null : null);
     const forms = new Set(sent.map(({ el }) => formOf(el)));

@@ -18,6 +18,7 @@ use gpui::Window;
 use gpui::div;
 use gpui::prelude::*;
 use gpui::px;
+use gpui::svg;
 
 use crate::accounts;
 use crate::accounts::Site;
@@ -49,6 +50,8 @@ use crate::window::identity::Particle;
 use crate::window::identity::called;
 use crate::window::input::TextInput;
 use crate::window::notes::NotesView;
+use crate::window::parts::TRASH_ICON;
+use crate::window::parts::bolt;
 use crate::window::parts::lock;
 use crate::window::parts::logo;
 use crate::window::parts::prose;
@@ -784,34 +787,22 @@ impl SettingsView {
     }
 
     fn vault_card(&self, theme: &Theme, cx: &mut Context<Self>) -> gpui::Div {
-        let pill = |ink, soft, words: &'static str| {
-            div()
-                .flex_none()
-                .px_2p5()
-                .py_0p5()
-                .rounded_full()
-                .bg(soft)
-                .text_color(ink)
-                .text_xs()
-                .font_weight(FontWeight::MEDIUM)
-                .child(words)
-        };
-        let action = |id: SharedString, label: &'static str| {
+        let action = |id: SharedString, icon: &'static str| {
             let selector = id.to_string();
             div()
                 .id(id)
                 .debug_selector(move || selector.clone())
+                .flex()
                 .flex_none()
-                .px_2()
-                .py_0p5()
+                .items_center()
+                .justify_center()
+                .size(px(30.))
                 .rounded_md()
-                .text_xs()
-                .text_color(theme.muted)
                 .cursor_pointer()
-                .hover(|action| action.bg(theme.danger_soft).text_color(theme.danger))
-                .child(label)
+                .hover(|action| action.bg(theme.bubble))
+                .child(svg().path(icon).size(px(16.)).text_color(theme.muted))
         };
-        let row = |title: String, under: Option<String>| {
+        let row = |title: AnyElement, under: AnyElement| {
             div()
                 .flex()
                 .items_center()
@@ -825,15 +816,17 @@ impl SettingsView {
                         .flex_col()
                         .flex_1()
                         .min_w_0()
-                        .child(div().truncate().child(title))
-                        .children(under.map(|under| {
-                            div()
-                                .truncate()
-                                .text_xs()
-                                .text_color(theme.muted)
-                                .child(under)
-                        })),
+                        .child(title)
+                        .child(under),
                 )
+        };
+        let muted = |words: String| {
+            div()
+                .truncate()
+                .text_xs()
+                .text_color(theme.muted)
+                .child(words)
+                .into_any_element()
         };
         let group = |label: &'static str| {
             div()
@@ -859,21 +852,29 @@ impl SettingsView {
             keys.into_iter()
                 .map(|key| {
                     let name = key.name.clone();
-                    row(key.title, Some(key.what.to_owned()))
-                        .child(if key.from_environment {
-                            pill(theme.text, theme.bubble, "환경 변수에서 읽어요")
-                        } else {
-                            pill(theme.ok, theme.ok_soft, "보관됨")
-                        })
-                        .when(key.kept, |row| {
-                            row.child(
-                                action(SharedString::from(format!("forget-kept-{name}")), "지우기")
-                                    .on_click(cx.listener(move |view, _, _, cx| {
-                                        view.forget(&name, cx);
-                                    })),
+                    let under = if key.from_environment {
+                        format!("{}, 환경 변수에서 읽어요", key.what)
+                    } else {
+                        key.what.to_owned()
+                    };
+                    row(
+                        div().truncate().child(key.title).into_any_element(),
+                        muted(under),
+                    )
+                    .when(key.kept && !key.from_environment, |row| {
+                        row.child(
+                            action(
+                                SharedString::from(format!("forget-kept-{name}")),
+                                TRASH_ICON,
                             )
-                        })
-                        .into_any_element()
+                            .on_click(cx.listener(
+                                move |view, _, _, cx| {
+                                    view.forget(&name, cx);
+                                },
+                            )),
+                        )
+                    })
+                    .into_any_element()
                 })
                 .collect()
         };
@@ -884,10 +885,44 @@ impl SettingsView {
                 .iter()
                 .map(|site| {
                     let name = site.name.clone();
-                    row(site.site.clone(), site.id.clone())
-                        .child(pill(theme.ok, theme.ok_soft, "연동됨"))
+                    let title = div()
+                        .flex()
+                        .min_w_0()
+                        .gap_1()
+                        .child(div().truncate().child(accounts::host(&site.origin)))
                         .child(
-                            action(SharedString::from(format!("unlink-{name}")), "연동 끊기")
+                            div()
+                                .flex_none()
+                                .text_color(theme.muted)
+                                .child(format!("({})", site.site)),
+                        )
+                        .into_any_element();
+                    let under = muted(
+                        site.id
+                            .clone()
+                            .unwrap_or_else(|| String::from("아이디 없음")),
+                    );
+                    row(title, under)
+                        .when(site.trusted, |row| {
+                            row.child(
+                                div()
+                                    .flex()
+                                    .flex_none()
+                                    .items_center()
+                                    .gap_1()
+                                    .px_2p5()
+                                    .py_0p5()
+                                    .rounded_full()
+                                    .bg(theme.selection)
+                                    .text_color(theme.primary)
+                                    .text_xs()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(bolt(theme, 12.))
+                                    .child("묻지 않고 로그인"),
+                            )
+                        })
+                        .child(
+                            action(SharedString::from(format!("unlink-{name}")), TRASH_ICON)
                                 .on_click(cx.listener(move |view, _, _, cx| {
                                     view.unlink(&name, cx);
                                 })),
@@ -918,7 +953,7 @@ impl SettingsView {
                             .child("금고"),
                     )
                     .child(div().text_xs().text_color(theme.muted).child(prose(
-                        "API 키, 토큰, 연동한 사이트의 계정은 암호화되어 보관되고 있어요. 대화하는 AI는 어떤 사이트에 계정이 있는지만 알고, 아이디와 비밀번호는 보지 못해요.",
+                        "API 키, 토큰, 연동한 사이트의 계정은 암호화되어 보관되고 있어요. 대화하는 AI는 사이트와 아이디까지만 알고, 비밀번호는 보지 못해요.",
                     ))),
             )
             .child(
@@ -937,9 +972,6 @@ impl SettingsView {
                     .child(group("연동된 사이트"))
                     .children(site_rows),
             )
-            .child(div().text_xs().text_color(theme.muted).child(prose(
-                "사이트는 채팅창에서 \"쿠팡 연동해 줘\"처럼 부탁하면 더해지고, 여기서는 끊을 수 있어요. 묶인 PC에는 암호화해서 같이 보내요.",
-            )))
     }
 
     fn secret_field(

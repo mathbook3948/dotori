@@ -1438,7 +1438,7 @@ impl ChatView {
                                     .gap_x_3()
                                     .children(links),
                             )
-                            .child(
+                            .children(note.map(|note| {
                                 div()
                                     .flex()
                                     .justify_center()
@@ -1447,8 +1447,8 @@ impl ChatView {
                                     .text_xs()
                                     .text_color(theme.muted)
                                     .child(lock(theme, 12.))
-                                    .child(SharedString::from(note)),
-                            )
+                                    .child(SharedString::from(note))
+                            }))
                             .child(
                                 div().flex().justify_center().child(
                                     div()
@@ -1476,6 +1476,7 @@ impl ChatView {
                 accounts,
                 chosen,
                 host,
+                path,
                 trust,
                 ..
             } => {
@@ -1491,12 +1492,12 @@ impl ChatView {
                         .when(several, |choice| {
                             choice
                                 .cursor_pointer()
-                                .child(tick(theme, n == chosen))
+                                .child(radio(theme, n == chosen))
                                 .on_click(move |_, _, cx| {
                                     screen.update(cx, |screen, cx| screen.choose_account(n, cx));
                                 })
                         })
-                        .child(format!("{site} ({account})"))
+                        .child(format!("{host} ({site}), {account}"))
                 });
                 let (allow, decline, trusting) = (
                     self.screen.clone(),
@@ -1550,7 +1551,7 @@ impl ChatView {
                             .child(
                                 div()
                                     .font_weight(FontWeight::SEMIBOLD)
-                                    .child(format!("금고의 {site} 계정으로 로그인해도 될까요?")),
+                                    .child(format!("금고의 {host} ({site}) 계정으로 로그인해도 될까요?")),
                             ),
                     )
                     .child(
@@ -1580,7 +1581,7 @@ impl ChatView {
                             ),
                     )
                     .child(div().text_xs().text_color(theme.muted).child(prose(&format!(
-                        "{} {host} 로그인 칸에 직접 채워 넣어요. 대화하는 AI는 비밀번호를 보지 못해요.",
+                        "{} {host}{path} 로그인 칸에 직접 채워 넣어요. 대화하는 AI는 비밀번호를 보지 못해요.",
                         called(Particle::Subject)
                     ))))
                     .child(
@@ -1903,6 +1904,20 @@ fn tick(theme: &Theme, on: bool) -> Div {
                 .child("✓")
         })
         .when(!on, |tick| tick.bg(theme.bubble))
+}
+
+fn radio(theme: &Theme, on: bool) -> Div {
+    div()
+        .flex_none()
+        .size(px(16.))
+        .rounded_full()
+        .when(on, |radio| {
+            radio
+                .border(px(5.))
+                .border_color(theme.primary)
+                .bg(theme.surface)
+        })
+        .when(!on, |radio| radio.bg(theme.bubble))
 }
 
 fn object(word: &str) -> &'static str {

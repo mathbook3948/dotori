@@ -18,10 +18,9 @@ const MAX_TITLE: usize = 60;
 const MAX_HINT: usize = 80;
 const MAX_SITE: usize = 30;
 const MAX_VALUE: usize = 1024;
-const HIDDEN_KEPT: usize = 32;
-const SHORTEST_HIDDEN: usize = 4;
+const HIDDEN_KEPT: usize = 64;
+const SHORTEST_ALONE: usize = 4;
 const SHOWN_ID: usize = 16;
-const HIDDEN_MARK: &str = "[hidden]";
 
 /// What a field of a card takes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -59,6 +58,7 @@ pub(crate) enum Role {
     Check,
     Submit,
     Link,
+    Id,
 }
 
 impl From<Kind> for Role {
@@ -168,13 +168,16 @@ impl FillSpec {
     }
 
     /// What the card tells the owner about where their words go.
-    pub(crate) fn note(&self) -> &'static str {
+    pub(crate) fn note(&self) -> Option<&'static str> {
+        let has = |kind: Kind| self.fields.iter().any(|field| field.kind == kind);
         if self.keep {
-            "금고에 안전하게 보관돼요. 대화하는 AI는 보지 못해요."
-        } else if self.fields.iter().any(|field| field.kind == Kind::Code) {
-            "인증번호는 보관하지 않아요."
+            Some("비밀번호는 금고에 안전하게 보관돼요. 대화하는 AI는 비밀번호를 보지 못해요.")
+        } else if has(Kind::Secret) {
+            Some("대화하는 AI는 비밀번호를 보지 못해요.")
+        } else if has(Kind::Code) {
+            Some("인증번호는 보관하지 않아요.")
         } else {
-            "대화하는 AI는 적은 내용을 보지 못해요."
+            None
         }
     }
 
@@ -232,11 +235,12 @@ impl FillSpec {
 
 /// Which elements of the page now take a kept account: the id field if the page shows one, the
 /// password field, and the button that logs in.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct LogInSpec {
     pub(crate) id: Option<u64>,
     pub(crate) password: u64,
     pub(crate) submit: u64,
+    pub(crate) account: Option<String>,
 }
 
 impl LogInSpec {
@@ -255,6 +259,17 @@ impl LogInSpec {
             id: number("id")?,
             password: number("password")?.ok_or("`password` is required")?,
             submit: number("submit")?.ok_or("`submit` is required")?,
+            account: match input.get("account") {
+                None | Some(Value::Null) => None,
+                Some(account) => Some(
+                    account
+                        .as_str()
+                        .map(str::trim)
+                        .filter(|account| !account.is_empty())
+                        .ok_or("`account` is the id of a kept account")?
+                        .to_owned(),
+                ),
+            },
         };
         let roles = spec.roles();
         if roles
@@ -269,7 +284,7 @@ impl LogInSpec {
 
     pub(crate) fn roles(&self) -> Vec<(u64, Role)> {
         self.id
-            .map(|id| (id, Role::Text))
+            .map(|id| (id, Role::Id))
             .into_iter()
             .chain([(self.password, Role::Secret), (self.submit, Role::Submit)])
             .collect()
@@ -430,7 +445,7 @@ pub(crate) fn pressed(
         said.push_str(" 칸은 채우지 않고 그 링크만 눌렀어요.");
     } else if !filled_labels.is_empty() {
         said.push_str(&format!(
-            " 채운 칸: {} (값은 보이지 않아요).",
+            " 채운 칸: {} (비밀번호와 인증번호는 보이지 않아요).",
             filled_labels.join(", ")
         ));
     }
@@ -469,17 +484,21 @@ pub(crate) fn closed(title: &str, lapsed: bool) -> String {
 }
 
 /// What the model is told after dotori logged in with the account the vault keeps for `site`.
-pub(crate) fn logged_in(site: &str, asked: bool) -> String {
+pub(crate) fn logged_in(site: &str, id: Option<&str>, asked: bool) -> String {
     let shown = Shown::LoggedIn {
         site: site.to_owned(),
     };
+    let account = match id {
+        Some(id) => format!("{site} 계정({id})"),
+        None => format!("{site} 계정"),
+    };
     let said = if asked {
         format!(
-            "주인이 허락해서 금고의 {site} 계정으로 로그인 칸을 채우고 눌렀어요 (값은 보이지 않아요)."
+            "주인이 허락해서 금고의 {account}으로 로그인 칸을 채우고 눌렀어요 (비밀번호는 보이지 않아요)."
         )
     } else {
         format!(
-            "주인이 묻지 않기로 해 둔 {site} 계정이라, 금고의 값으로 로그인 칸을 채우고 눌렀어요 (값은 보이지 않아요)."
+            "주인이 묻지 않기로 해 둔 {account}이라, 금고의 값으로 로그인 칸을 채우고 눌렀어요 (비밀번호는 보이지 않아요)."
         )
     };
     format!("{}\n{said}", shown.head())
@@ -571,10 +590,19 @@ pub fn shortened(id: &str) -> String {
     format!("{cut}…")
 }
 
-/// The values dotori typed into pages, hidden from everything its browser tools return.
+/// A password or one-time code dotori typed into a page or keeps in the vault, and the site it
+/// belongs to.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct Kept {
+    pub(crate) value: String,
+    pub(crate) origin: String,
+}
+
+/// The passwords and codes dotori typed into pages and keeps. A browser result that holds one is
+/// withheld whole.
 #[derive(Clone, Default)]
 pub(crate) struct Hidden {
-    values: Vec<String>,
+    values: Vec<Kept>,
 }
 
 impl fmt::Debug for Hidden {
@@ -586,73 +614,72 @@ impl fmt::Debug for Hidden {
 }
 
 impl Hidden {
-    /// Hides `value` from now on, and the way it reads inside an address. A value too short to
-    /// tell from ordinary words is hidden only where it stands on its own.
-    pub(crate) fn add(&mut self, value: &str) {
-        let value = value.trim();
-        if value.is_empty() {
-            return;
-        }
-        for form in [value.to_owned(), escaped(value)] {
-            if !self.values.contains(&form) {
+    /// Keeps `value` from now on, and the way it reads inside an address. A value too short to
+    /// tell from ordinary words counts only where it stands on its own.
+    pub(crate) fn add(&mut self, value: &str, origin: &str) {
+        for kept in forms(value, origin) {
+            if !self.values.contains(&kept) {
                 if self.values.len() == HIDDEN_KEPT {
                     self.values.remove(0);
                 }
-                self.values.push(form);
+                self.values.push(kept);
             }
         }
     }
 
     /// These values and `more` besides.
-    pub(crate) fn with(&self, more: &[String]) -> Self {
+    pub(crate) fn with(&self, more: &[Kept]) -> Self {
         let mut with = self.clone();
-        for value in more.iter().map(|value| value.trim()) {
-            for form in [value.to_owned(), escaped(value)] {
-                if !value.is_empty() && !with.values.contains(&form) {
-                    with.values.push(form);
+        for each in more {
+            for kept in forms(&each.value, &each.origin) {
+                if !with.values.contains(&kept) {
+                    with.values.push(kept);
                 }
             }
         }
         with
     }
 
-    pub(crate) fn scrub(&self, text: &str) -> String {
-        let mut longest_first: Vec<&String> = self.values.iter().collect();
-        longest_first.sort_by_key(|value| std::cmp::Reverse(value.len()));
-        let mut text = text.to_owned();
-        for value in longest_first {
-            if !text.contains(value.as_str()) {
-                continue;
+    /// The sites whose password or code `text` holds.
+    pub(crate) fn found_in(&self, text: &str) -> Vec<String> {
+        let mut origins: Vec<String> = Vec::new();
+        for kept in &self.values {
+            if found(text, &kept.value) && !origins.contains(&kept.origin) {
+                origins.push(kept.origin.clone());
             }
-            text = if value.chars().count() >= SHORTEST_HIDDEN {
-                text.replace(value.as_str(), HIDDEN_MARK)
-            } else {
-                alone(&text, value)
-            };
         }
-        text
+        origins
     }
 }
 
-fn alone(text: &str, value: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut from = 0;
-    for (at, _) in text.match_indices(value) {
-        if at < from {
-            continue;
-        }
-        let end = at + value.len();
-        let before = text[..at].chars().next_back();
-        let after = text[end..].chars().next();
-        if before.is_some_and(char::is_alphanumeric) || after.is_some_and(char::is_alphanumeric) {
-            continue;
-        }
-        out.push_str(&text[from..at]);
-        out.push_str(HIDDEN_MARK);
-        from = end;
+fn forms(value: &str, origin: &str) -> Vec<Kept> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Vec::new();
     }
-    out.push_str(&text[from..]);
-    out
+    let mut forms = vec![value.to_owned()];
+    let escaped = escaped(value);
+    if escaped != value {
+        forms.push(escaped);
+    }
+    forms
+        .into_iter()
+        .map(|value| Kept {
+            value,
+            origin: origin.to_owned(),
+        })
+        .collect()
+}
+
+fn found(text: &str, value: &str) -> bool {
+    if value.chars().count() >= SHORTEST_ALONE {
+        return text.contains(value);
+    }
+    text.match_indices(value).any(|(at, _)| {
+        let before = text[..at].chars().next_back();
+        let after = text[at + value.len()..].chars().next();
+        !before.is_some_and(char::is_alphanumeric) && !after.is_some_and(char::is_alphanumeric)
+    })
 }
 
 fn escaped(value: &str) -> String {

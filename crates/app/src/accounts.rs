@@ -77,6 +77,15 @@ pub(crate) struct Site {
     pub(crate) site: String,
     pub(crate) origin: String,
     pub(crate) id: Option<String>,
+    pub(crate) trusted: bool,
+}
+
+/// The host of `origin` as the windows show it, without the scheme.
+pub(crate) fn host(origin: &str) -> String {
+    origin
+        .split_once("://")
+        .map_or(origin, |(_, host)| host)
+        .to_owned()
 }
 
 /// Whether `name` is where the vault keeps an account rather than a key.
@@ -142,6 +151,7 @@ pub(crate) fn sites(vault: &Vault) -> Result<Vec<Site>, String> {
         .into_iter()
         .map(|(name, account)| Site {
             name,
+            trusted: account.trusted,
             site: account.site,
             origin: account.origin,
             id: account.id,
@@ -156,7 +166,17 @@ pub(crate) fn forget(vault: &Vault, name: &str) -> Result<(), String> {
     if !is_account(name) {
         return Err(format!("{name} is not a linked account"));
     }
-    vault.remove(name, now_ms())
+    let chosen = read(vault, name);
+    vault.remove(name, now_ms())?;
+    let Some(chosen) = chosen else {
+        return Ok(());
+    };
+    for (copy, account) in every(vault)? {
+        if account.origin == chosen.origin && account.id == chosen.id {
+            vault.remove(&copy, now_ms())?;
+        }
+    }
+    Ok(())
 }
 
 /// What the main session is told about the linked sites, kept until the vault changes.
@@ -196,22 +216,27 @@ fn told(sites: &[Site]) -> Option<String> {
     if sites.is_empty() {
         return None;
     }
-    let mut counted: BTreeMap<(String, &str), usize> = BTreeMap::new();
+    let mut listed: BTreeMap<(String, &str), Vec<String>> = BTreeMap::new();
     for site in sites {
-        *counted
+        listed
             .entry((one_line(&site.site), site.origin.as_str()))
-            .or_default() += 1;
+            .or_default()
+            .push(
+                site.id
+                    .as_deref()
+                    .map_or_else(|| String::from("(no id)"), one_line),
+            );
     }
-    let lines: Vec<String> = counted
+    let lines: Vec<String> = listed
         .iter()
-        .map(|((site, origin), count)| format!("- {site} ({origin}), 계정 {count}개"))
+        .map(|((site, origin), ids)| format!("- {site} ({origin}): {}", ids.join(", ")))
         .collect();
     Some(format!(
-        "Sites the owner linked. dotori's vault keeps their accounts, and you never see an id or \
-         a password. On a page of one of these origins, log in with `fill_login`; when a site has \
-         several accounts, the owner picks one. To link another account, open the site's login \
-         page and show the owner a card with `ask_owner_to_fill` and `keep`; the owner unlinks \
-         accounts in the settings window.\n{}",
+        "Sites the owner linked, with the id of each account. dotori's vault keeps their \
+         passwords, which you never see. On a page of one of these origins, log in with \
+         `fill_login`, naming an `account` when the owner said which; otherwise the owner picks \
+         one. To link another account, open the site's login page and show the owner a card with \
+         `ask_owner_to_fill` and `keep`; the owner unlinks accounts in the settings window.\n{}",
         lines.join("\n")
     ))
 }
