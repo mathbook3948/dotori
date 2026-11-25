@@ -199,7 +199,7 @@ async fn a_shell_command_s_card_says_whether_it_runs_in_the_sandbox() {
         open: base.join("work"),
     };
     let sandbox = Arc::new(Sandbox::new(&private));
-    let works = sandbox.ready().await.is_some();
+    let works = matches!(sandbox.ready().await, Ok(Some(_)));
     let mut asked = Asked::default();
     asked.always(RUN_SHELL);
     asked.always("write_file");

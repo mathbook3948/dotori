@@ -83,11 +83,24 @@ impl Probe {
 
     async fn ready(&self) -> bool {
         let sandbox = self.tools.basic.sandbox.as_ref().expect("a sandbox");
-        if sandbox.ready().await.is_some() {
-            return true;
+        match sandbox.ready().await {
+            Ok(Some(_)) => return true,
+            Err(blocked) => panic!(
+                "the sandbox refused every command before any probe line ran: {blocked}. On macOS \
+                 this means sandbox-exec rejected dotori's Seatbelt profile; run the profile from \
+                 sandbox.rs by hand with sandbox-exec -p to see which rule it names"
+            ),
+            Ok(None) => {}
         }
         if cfg!(target_os = "macos") {
-            panic!("macOS always has its sandbox, but sandbox-exec did not run");
+            panic!("macOS always has sandbox-exec, but /usr/bin/sandbox-exec is not a file here");
+        }
+        if std::env::var_os("CI").is_some() {
+            panic!(
+                "CI is set, but no root-owned bubblewrap runs for this user here, so the escape \
+                 probe cannot run; the CI job installs bubblewrap and lifts the AppArmor \
+                 restriction on user namespaces before the tests"
+            );
         }
         eprintln!(
             "skipped: bubblewrap does not run for this user here, so commands are not sandboxed \
@@ -126,16 +139,53 @@ async fn a_sandboxed_command_cannot_read_dotori_s_folder_but_works_everywhere_el
         probe.elsewhere.display(),
     );
 
-    for line in [
-        format!("cat {dotori}/vault.sqlite3"),
-        format!("cat {dotori}/browser/Cookies"),
-        format!("cat {work}/../vault.sqlite3"),
-        format!("ln -s {dotori}/vault.sqlite3 {work}/link; cat {work}/link"),
-        format!("grep -r {SECRET} {dotori}"),
+    let base = probe.base.display();
+    for (how, line) in [
+        ("a plain read", format!("cat {dotori}/vault.sqlite3")),
+        (
+            "a read of the browser",
+            format!("cat {dotori}/browser/Cookies"),
+        ),
+        (
+            "`..` from the work folder",
+            format!("cat {work}/../vault.sqlite3"),
+        ),
+        (
+            "a symbolic link in the work folder",
+            format!("ln -s {dotori}/vault.sqlite3 {work}/link; cat {work}/link"),
+        ),
+        (
+            "a hard link in the work folder",
+            format!("ln {dotori}/vault.sqlite3 {work}/hard; cat {work}/hard"),
+        ),
+        (
+            "a clone into the work folder (cp -c)",
+            format!("cp -c {dotori}/vault.sqlite3 {work}/clone; cat {work}/clone"),
+        ),
+        (
+            "renaming a folder above dotori's",
+            format!("mv {base} {base}-moved && cat {base}-moved/dotori/vault.sqlite3"),
+        ),
+        (
+            "replacing the work folder with a link",
+            format!("rm -rf {work} && ln -s {dotori} {work} && cat {work}/vault.sqlite3"),
+        ),
+        ("a search", format!("grep -r {SECRET} {dotori}")),
     ] {
         let ran = probe.shell(&line).await;
-        assert!(!ran.contains(SECRET), "{line} read a secret:\n{ran}");
+        let moved = PathBuf::from(format!("{base}-moved"));
+        if moved.exists() {
+            let _ = std::fs::rename(&moved, &probe.base);
+        }
+        assert!(
+            !ran.contains(SECRET),
+            "the sandbox let {how} read dotori's vault.\ncommand: {line}\n{ran}"
+        );
     }
+    assert!(
+        std::fs::symlink_metadata(&probe.work).is_ok_and(|meta| meta.is_dir()),
+        "a sandboxed command replaced the work folder"
+    );
     let planted = probe
         .shell(&format!("echo planted > {dotori}/planted.txt"))
         .await;
@@ -168,6 +218,23 @@ async fn a_sandboxed_command_cannot_read_dotori_s_folder_but_works_everywhere_el
         std::fs::read_to_string(probe.dotori.join("vault.sqlite3")).expect("there"),
         SECRET
     );
+}
+
+#[tokio::test]
+async fn no_command_runs_once_the_work_folder_is_a_link() {
+    let probe = Probe::new("swapped");
+    if !probe.ready().await {
+        return;
+    }
+    std::fs::remove_dir(&probe.work).expect("removed");
+    std::os::unix::fs::symlink(&probe.dotori, &probe.work).expect("linked");
+
+    let ran = probe
+        .shell(&format!("cat {}/vault.sqlite3", probe.work.display()))
+        .await;
+
+    assert!(!ran.contains(SECRET), "{ran}");
+    assert!(ran.contains("not a plain folder"), "{ran}");
 }
 
 #[cfg(target_os = "linux")]

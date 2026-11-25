@@ -207,7 +207,7 @@ impl Toolbox for Asking {
             .insert(id, call);
         Box::pin(async move {
             let sandboxed = match &self.sandbox {
-                Some(sandbox) if tool == RUN_SHELL => sandbox.ready().await.is_some(),
+                Some(sandbox) if tool == RUN_SHELL => matches!(sandbox.ready().await, Ok(Some(_))),
                 _ => false,
             };
             self.app.ask(id, tool, input, sandboxed);

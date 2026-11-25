@@ -6,8 +6,10 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::OnceLock;
+use std::time::Duration;
 
 use tokio::process::Command;
+use tokio::time;
 
 use crate::tool::basic::Private;
 
@@ -16,12 +18,8 @@ use crate::tool::basic::Private;
 pub const HELPER: &str = "/usr/local/libexec/dotori/bwrap";
 
 const SEATBELT: &str = "/usr/bin/sandbox-exec";
-const PROFILE: &str = r#"(version 1)
-(allow default)
-(deny file-read* file-write* (subpath (param "HIDDEN")))
-(allow file-read-metadata (literal (param "HIDDEN")))
-(allow file-read* file-write* (subpath (param "OPEN")))
-"#;
+const BUBBLEWRAP: [&str; 3] = [HELPER, "/usr/bin/bwrap", "/bin/bwrap"];
+const PROBE: Duration = Duration::from_secs(10);
 
 /// What confines a command on this PC.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -32,12 +30,35 @@ pub enum Confinement {
     Bubblewrap(PathBuf),
 }
 
+/// Why a command the sandbox should hold is refused instead of run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Blocked {
+    /// The work folder is not a plain folder inside dotori's folder, so opening it again could
+    /// open more than it.
+    WorkNotPlain,
+    /// The sandbox this PC has did not run.
+    Failed,
+}
+
+impl std::fmt::Display for Blocked {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::WorkNotPlain => {
+                "dotori's work folder is not a plain folder inside dotori's folder, so no command \
+                 runs until it is one again"
+            }
+            Self::Failed => {
+                "the sandbox commands run in did not start on this PC, so no command runs until it does"
+            }
+        })
+    }
+}
+
 /// The sandbox for one dotori folder. It looks for a confinement that works each time it is
 /// asked until one does, and keeps that one.
 #[derive(Debug)]
 pub struct Sandbox {
-    hidden: PathBuf,
-    open: PathBuf,
+    private: Private,
     found: OnceLock<Confinement>,
 }
 
@@ -45,38 +66,56 @@ impl Sandbox {
     /// A sandbox that hides `private.folder` and opens `private.open` inside it again.
     pub fn new(private: &Private) -> Self {
         Self {
-            hidden: private.folder.clone(),
-            open: private.open.clone(),
+            private: private.clone(),
             found: OnceLock::new(),
         }
     }
 
-    /// The confinement a command runs in now, if one works on this PC.
-    pub async fn ready(&self) -> Option<&Confinement> {
-        if let Some(found) = self.found.get() {
-            return Some(found);
+    /// The confinement a command runs in now, `None` when this PC has none and commands run as
+    /// they are, or why a command must not run.
+    pub async fn ready(&self) -> Result<Option<&Confinement>, Blocked> {
+        let candidates = candidates();
+        if candidates.is_empty() {
+            return Ok(None);
         }
-        for candidate in candidates() {
+        if !self.private.plain_work() {
+            return Err(Blocked::WorkNotPlain);
+        }
+        if let Some(found) = self.found.get() {
+            return Ok(Some(found));
+        }
+        for candidate in candidates {
             if self.works(&candidate).await {
-                return Some(self.found.get_or_init(|| candidate));
+                return Ok(Some(self.found.get_or_init(|| candidate)));
             }
         }
-        None
+        if cfg!(target_os = "macos") {
+            Err(Blocked::Failed)
+        } else {
+            Ok(None)
+        }
     }
 
     /// `line` for `sh` to run in `folder`, inside `confinement`.
     pub fn command(&self, confinement: &Confinement, line: &str, folder: &Path) -> Command {
-        let (hidden, open) = (real(&self.hidden), real(&self.open));
+        let (hidden, open) = (real(&self.private.folder), real(&self.private.open));
         let mut command = match confinement {
             Confinement::Seatbelt => {
+                let above: Vec<&Path> = hidden
+                    .ancestors()
+                    .skip(1)
+                    .filter(|folder| folder.parent().is_some())
+                    .collect();
                 let mut command = Command::new(SEATBELT);
                 command
                     .arg("-D")
                     .arg(param("HIDDEN", &hidden))
                     .arg("-D")
-                    .arg(param("OPEN", &open))
-                    .arg("-p")
-                    .arg(PROFILE);
+                    .arg(param("OPEN", &open));
+                for (n, folder) in above.iter().enumerate() {
+                    command.arg("-D").arg(param(&format!("ABOVE{n}"), folder));
+                }
+                command.arg("-p").arg(profile(above.len()));
                 command
             }
             Confinement::Bubblewrap(program) => {
@@ -103,18 +142,34 @@ impl Sandbox {
     }
 
     async fn works(&self, candidate: &Confinement) -> bool {
-        if std::fs::create_dir_all(&self.open).is_err() {
-            return false;
-        }
-        self.command(candidate, "exit 0", &self.open)
+        let mut probe = self.command(candidate, "exit 0", &self.private.open);
+        probe
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .kill_on_drop(true)
-            .status()
-            .await
-            .is_ok_and(|status| status.success())
+            .kill_on_drop(true);
+        matches!(
+            time::timeout(PROBE, probe.status()).await,
+            Ok(Ok(status)) if status.success()
+        )
     }
+}
+
+fn profile(above: usize) -> String {
+    let mut profile = String::from(
+        "(version 1)\n\
+         (allow default)\n\
+         (deny file* (subpath (param \"HIDDEN\")))\n\
+         (allow file-read-metadata (literal (param \"HIDDEN\")))\n\
+         (allow file* (subpath (param \"OPEN\")))\n\
+         (deny file-write-unlink file-write-create (literal (param \"OPEN\")))\n",
+    );
+    for n in 0..above {
+        profile.push_str(&format!(
+            "(deny file-write-unlink file-write-create (literal (param \"ABOVE{n}\")))\n"
+        ));
+    }
+    profile
 }
 
 fn candidates() -> Vec<Confinement> {
@@ -128,15 +183,31 @@ fn candidates() -> Vec<Confinement> {
     if !cfg!(target_os = "linux") {
         return Vec::new();
     }
-    let on_path = std::env::var_os("PATH")
-        .into_iter()
-        .flat_map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
-        .map(|folder| folder.join("bwrap"));
-    std::iter::once(PathBuf::from(HELPER))
-        .chain(on_path)
-        .filter(|program| program.is_file())
+    BUBBLEWRAP
+        .iter()
+        .map(PathBuf::from)
+        .filter(|program| root_owned(program))
         .map(Confinement::Bubblewrap)
         .collect()
+}
+
+/// Whether `program` is a file that only root can change, in folders only root can change.
+#[cfg(unix)]
+pub fn root_owned(program: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(real) = program.canonicalize() else {
+        return false;
+    };
+    let closed = |path: &Path| {
+        std::fs::metadata(path).is_ok_and(|meta| meta.uid() == 0 && meta.mode() & 0o022 == 0)
+    };
+    std::fs::metadata(&real).is_ok_and(|meta| meta.is_file()) && real.ancestors().all(closed)
+}
+
+/// Whether `program` is a file that only root can change, in folders only root can change.
+#[cfg(not(unix))]
+pub fn root_owned(_program: &Path) -> bool {
+    false
 }
 
 fn real(path: &Path) -> PathBuf {

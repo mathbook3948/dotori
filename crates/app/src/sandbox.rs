@@ -10,6 +10,7 @@ use std::process::ExitCode;
 use std::process::Stdio;
 
 use dotori_connectors::sandbox::HELPER;
+use dotori_connectors::sandbox::root_owned;
 
 const PROFILE_PATH: &str = "/etc/apparmor.d/dotori-bwrap";
 const RESTRICTED: &str = "/proc/sys/kernel/apparmor_restrict_unprivileged_userns";
@@ -40,6 +41,9 @@ pub(crate) enum Failure {
     NoNamespaces,
     /// Everything was installed, but a sandboxed command still does not run.
     StillOff,
+    /// dotori's program, or a folder above it, can be changed by someone other than root, so
+    /// running it as root through the admin prompt would run whatever was put there.
+    UnsafePlace,
     /// Something else, such as not running as root.
     Other,
 }
@@ -83,6 +87,9 @@ impl Failure {
                 "이 PC는 사용자 네임스페이스가 꺼져 있어서 샌드박스를 만들 수 없어요."
             }
             Self::StillOff => "설치는 끝났지만 샌드박스가 아직 돌지 않아요.",
+            Self::UnsafePlace => {
+                "dotori 실행 파일이나 그 위 폴더를 관리자가 아닌 계정도 바꿀 수 있어서, 관리자 확인 창을 띄우지 않았어요."
+            }
             Self::Other => "설치하는 중에 문제가 생겼어요.",
         }
     }
@@ -93,12 +100,7 @@ pub(crate) fn by_hand() -> String {
     let program = std::env::current_exe()
         .map(|path| path.display().to_string())
         .unwrap_or_else(|_| String::from("dotori"));
-    let program = if program.contains(char::is_whitespace) {
-        format!("'{}'", program.replace('\'', r"'\''"))
-    } else {
-        program
-    };
-    format!("sudo {program} sandbox install")
+    format!("sudo '{}' sandbox install", program.replace('\'', r"'\''"))
 }
 
 /// Whether setting the sandbox up needs the admin prompt, as dotori does not run as root.
@@ -114,6 +116,9 @@ pub(crate) fn needs_admin() -> bool {
 /// waits until that ends.
 pub(crate) fn set_up() -> Result<(), Failure> {
     let program = std::env::current_exe().map_err(|_| Failure::Other)?;
+    if needs_admin() && !root_owned(&program) {
+        return Err(Failure::UnsafePlace);
+    }
     let mut command = if needs_admin() {
         let mut command = Command::new("pkexec");
         command.arg(program);
@@ -191,9 +196,10 @@ fn install() -> Result<String, (Failure, String)> {
         std::fs::create_dir_all(folder)
             .map_err(|error| apparmor(format!("{}: {error}", folder.display())))?;
     }
+    let group = owner_group().map_err(apparmor)?;
     let staged = helper.with_extension("new");
     std::fs::copy(&bwrap, &staged)
-        .and_then(|_| plain_program(&staged))
+        .and_then(|_| owned_program(&staged, group))
         .and_then(|()| std::fs::rename(&staged, helper))
         .map_err(|error| apparmor(format!("{HELPER}: {error}")))?;
     std::fs::write(PROFILE_PATH, profile())
@@ -239,22 +245,65 @@ fn install_bubblewrap() -> Result<(), (Failure, String)> {
     }
 }
 
-/// The AppArmor profile that lets dotori's copy of bubblewrap make user namespaces and leaves
-/// everything else about it unconfined, as the profiles Ubuntu ships for browsers do.
+/// The AppArmor profile for dotori's copy of bubblewrap, shaped like Ubuntu's
+/// `bwrap-userns-restrict`: the copy may make a user namespace and set the sandbox up in it, and
+/// every program it starts moves to a profile with no capabilities and no user namespaces.
 pub(crate) fn profile() -> String {
+    let rules = "  allow network,\n  allow unix,\n  allow ptrace,\n  allow signal,\n  \
+                 allow mqueue,\n  allow io_uring,\n  allow mount,\n  allow umount,\n  \
+                 allow pivot_root,\n  allow dbus,\n";
     format!(
-        "abi <abi/4.0>,\ninclude <tunables/global>\n\nprofile dotori-bwrap {HELPER} flags=(unconfined) {{\n  userns,\n\n  include if exists <local/dotori-bwrap>\n}}\n"
+        "abi <abi/4.0>,\n\
+         include <tunables/global>\n\
+         \n\
+         profile dotori-bwrap {HELPER} flags=(attach_disconnected,mediate_deleted) {{\n  \
+         allow capability,\n  \
+         allow file rwlkm /{{**,}},\n\
+         {rules}  \
+         allow userns,\n  \
+         allow px /** -> dotori-bwrap-child,\n\
+         \n  \
+         include if exists <local/dotori-bwrap>\n\
+         }}\n\
+         \n\
+         profile dotori-bwrap-child flags=(attach_disconnected,mediate_deleted) {{\n  \
+         allow file rwlkmix /{{**,}},\n\
+         {rules}  \
+         deny capability,\n  \
+         audit deny userns,\n\
+         \n  \
+         include if exists <local/dotori-bwrap-child>\n\
+         }}\n"
     )
 }
 
+fn owner_group() -> Result<u32, String> {
+    let Some(owner) = ["PKEXEC_UID", "SUDO_UID"]
+        .iter()
+        .find_map(|name| std::env::var(name).ok())
+    else {
+        return Ok(0);
+    };
+    let found = Command::new("id")
+        .args(["-g", owner.trim()])
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|error| format!("cannot find the group of user {owner}: {error}"))?;
+    String::from_utf8_lossy(&found.stdout)
+        .trim()
+        .parse()
+        .map_err(|_| format!("cannot find the group of user {owner}"))
+}
+
 #[cfg(unix)]
-fn plain_program(path: &Path) -> std::io::Result<()> {
+fn owned_program(path: &Path, group: u32) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+    std::os::unix::fs::chown(path, Some(0), Some(group))?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o750))
 }
 
 #[cfg(not(unix))]
-fn plain_program(_path: &Path) -> std::io::Result<()> {
+fn owned_program(_path: &Path, _group: u32) -> std::io::Result<()> {
     Ok(())
 }
 

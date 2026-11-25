@@ -44,7 +44,7 @@ jobs:
       - if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libxkbcommon-x11-dev bubblewrap
       - if: runner.os == 'Linux'
-        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - run: mise run check
 
   build:
