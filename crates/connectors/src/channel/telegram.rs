@@ -5,6 +5,7 @@
 use std::fmt;
 use std::mem;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Duration;
 use std::time::Instant;
 use std::time::SystemTime;
@@ -26,7 +27,15 @@ use reqwest::StatusCode;
 use reqwest::header::CONTENT_TYPE;
 use serde_json::Value;
 use serde_json::json;
+use tokio::sync::mpsc;
 use tokio::time;
+
+use crate::channel::card;
+use crate::channel::card::Card;
+use crate::channel::card::Cards;
+use crate::channel::card::Posted;
+use crate::channel::card::Press;
+use crate::channel::card::Refusals;
 
 /// The channel id of Telegram.
 pub const TELEGRAM: &str = "telegram";
@@ -43,6 +52,7 @@ const STEADY: Duration = Duration::from_secs(30);
 const PIECE: usize = 4000;
 const CONFLICT_WAIT: Duration = Duration::from_secs(30);
 const LATE_SECONDS: i64 = 60;
+const BUTTONS: usize = 25;
 const UNCOUNTED: &str = "this Telegram group, whose members could not be counted";
 
 /// What the Telegram channel needs. The owner is the one Telegram user id whose messages are
@@ -80,6 +90,9 @@ pub struct TelegramChannel {
     token: String,
     base: String,
     client: Client,
+    owner_name: Mutex<Option<String>>,
+    presses: Mutex<Option<mpsc::UnboundedSender<Press>>>,
+    refusals: Refusals,
 }
 
 impl fmt::Debug for TelegramChannel {
@@ -100,6 +113,17 @@ enum Failed {
 pub(crate) struct Bot {
     pub(crate) id: i64,
     pub(crate) username: String,
+}
+
+/// A button someone pressed under one of the bot's messages.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Clicked {
+    pub(crate) id: String,
+    pub(crate) user: i64,
+    pub(crate) name: String,
+    pub(crate) chat: i64,
+    pub(crate) message: i64,
+    pub(crate) value: String,
 }
 
 /// One message the owner sent the bot.
@@ -126,6 +150,9 @@ impl TelegramChannel {
             token: config.token,
             base: config.api_base.trim_end_matches('/').to_owned(),
             client,
+            owner_name: Mutex::new(None),
+            presses: Mutex::new(None),
+            refusals: Refusals::default(),
         })
     }
 
@@ -208,7 +235,7 @@ impl TelegramChannel {
             let asked = json!({
                 "offset": offset,
                 "timeout": POLL_SECONDS,
-                "allowed_updates": ["message"],
+                "allowed_updates": ["message", "callback_query"],
             });
             let updates = match self
                 .call(
@@ -243,12 +270,17 @@ impl TelegramChannel {
                 if let Some(id) = update.get("update_id").and_then(Value::as_i64) {
                     offset = offset.max(id + 1);
                 }
+                if let Some(query) = update.get("callback_query") {
+                    self.pressed(query).await;
+                    continue;
+                }
                 let Some(arrived) = read(update, self.owner, &bot, since) else {
                     continue;
                 };
                 let Ok(content) = Content::parse(arrived.text) else {
                     continue;
                 };
+                *self.owner_name.lock().expect("unpoisoned") = Some(arrived.name.clone());
                 let audience = if arrived.private {
                     Audience::Owner
                 } else {
@@ -266,6 +298,57 @@ impl TelegramChannel {
                     return Ok(());
                 }
             }
+        }
+    }
+
+    async fn pressed(&self, query: &Value) {
+        let Some(id) = query.get("id").and_then(Value::as_str) else {
+            return;
+        };
+        let user = query.pointer("/from/id").and_then(Value::as_i64);
+        let owner = user == Some(self.owner);
+        let message = format!(
+            "{}/{}",
+            query.pointer("/message/chat/id").unwrap_or(&Value::Null),
+            query.pointer("/message/message_id").unwrap_or(&Value::Null)
+        );
+        let mut answer = json!({ "callback_query_id": id });
+        if !owner
+            && let Some(user) = user
+            && self.refusals.first(&message, &user.to_string())
+        {
+            let name = self
+                .owner_name
+                .lock()
+                .expect("unpoisoned")
+                .clone()
+                .unwrap_or_else(|| self.owner.to_string());
+            answer["text"] = json!(card::only_owner(&name));
+        }
+        if let Err(Failed::Fatal(detail) | Failed::Passing(detail, _) | Failed::Conflict(detail)) =
+            self.call("answerCallbackQuery", answer, TIMEOUT).await
+        {
+            eprintln!("dotori: Telegram: {detail}");
+        }
+        if !owner {
+            return;
+        }
+        let Some(clicked) = clicked(query) else {
+            return;
+        };
+        *self.owner_name.lock().expect("unpoisoned") = Some(clicked.name.clone());
+        let Some((token, button)) = card::pressed(&clicked.value) else {
+            return;
+        };
+        if let Some(presses) = self.presses.lock().expect("unpoisoned").as_ref() {
+            let _ = presses.send(Press {
+                token,
+                button,
+                posted: Posted {
+                    room: clicked.chat.to_string(),
+                    message: clicked.message.to_string(),
+                },
+            });
         }
     }
 
@@ -361,6 +444,50 @@ pub(crate) fn read(update: &Value, owner: i64, bot: &Bot, since: i64) -> Option<
         }
         _ => None,
     }
+}
+
+/// The button press a `callback_query` holds, if it is a whole one.
+pub(crate) fn clicked(query: &Value) -> Option<Clicked> {
+    let from = query.get("from")?;
+    let user = from.get("id").and_then(Value::as_i64)?;
+    let name = [
+        from.get("first_name").and_then(Value::as_str),
+        from.get("last_name").and_then(Value::as_str),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join(" ");
+    Some(Clicked {
+        id: query.get("id").and_then(Value::as_str)?.to_owned(),
+        user,
+        name: if name.is_empty() {
+            user.to_string()
+        } else {
+            name
+        },
+        chat: query.pointer("/message/chat/id").and_then(Value::as_i64)?,
+        message: query
+            .pointer("/message/message_id")
+            .and_then(Value::as_i64)?,
+        value: query.get("data").and_then(Value::as_str)?.to_owned(),
+    })
+}
+
+/// The buttons of `card` under its message: side by side when there are two at most, else one
+/// to a row.
+pub(crate) fn keyboard(card: &Card) -> Value {
+    let buttons: Vec<Value> = card
+        .labels(BUTTONS)
+        .into_iter()
+        .map(|(n, _, label)| json!({ "text": label, "callback_data": card.value(n) }))
+        .collect();
+    let rows: Vec<Vec<Value>> = if buttons.len() <= 2 {
+        vec![buttons]
+    } else {
+        buttons.into_iter().map(|button| vec![button]).collect()
+    };
+    json!({ "inline_keyboard": rows })
 }
 
 fn without_mention(text: &str, bot: &str) -> (bool, String) {
@@ -468,16 +595,93 @@ impl Channel for TelegramChannel {
                 }
                 self.call("sendMessage", body, TIMEOUT)
                     .await
-                    .map_err(|failed| ChannelError {
-                        detail: match failed {
-                            Failed::Fatal(detail)
-                            | Failed::Passing(detail, _)
-                            | Failed::Conflict(detail) => detail,
-                        },
-                    })?;
+                    .map_err(failed)?;
             }
             Ok(())
         })
+    }
+}
+
+impl Cards for TelegramChannel {
+    fn post(&self, place: Place, card: Card) -> BoxFuture<'_, Result<Posted, ChannelError>> {
+        Box::pin(async move {
+            let (chat, answering) =
+                target(place.as_str(), self.owner).ok_or_else(|| ChannelError {
+                    detail: format!("{} is not a Telegram chat", place.as_str()),
+                })?;
+            let mut body = json!({
+                "chat_id": chat,
+                "text": card.text(None, PIECE),
+                "link_preview_options": { "is_disabled": true },
+            });
+            if !card.buttons.is_empty() {
+                body["reply_markup"] = keyboard(&card);
+            }
+            if let Some(message) = answering {
+                body["reply_parameters"] =
+                    json!({ "message_id": message, "allow_sending_without_reply": true });
+            }
+            let sent = self
+                .call("sendMessage", body, TIMEOUT)
+                .await
+                .map_err(failed)?;
+            let message = sent
+                .get("message_id")
+                .and_then(Value::as_i64)
+                .ok_or_else(|| ChannelError {
+                    detail: String::from("Telegram gave the card no message id"),
+                })?;
+            Ok(Posted {
+                room: chat.to_string(),
+                message: message.to_string(),
+            })
+        })
+    }
+
+    fn settle(
+        &self,
+        posted: Posted,
+        card: Option<Card>,
+        said: String,
+    ) -> BoxFuture<'_, Result<(), ChannelError>> {
+        Box::pin(async move {
+            let text = match &card {
+                Some(card) => card.text(Some(&said), PIECE),
+                None => card::cut(&said, PIECE),
+            };
+            let body = json!({
+                "chat_id": posted.room.parse::<i64>().map_err(|_| ChannelError {
+                    detail: format!("{} is not a Telegram chat", posted.room),
+                })?,
+                "message_id": posted.message.parse::<i64>().map_err(|_| ChannelError {
+                    detail: format!("{} is not a Telegram message", posted.message),
+                })?,
+                "text": text,
+                "link_preview_options": { "is_disabled": true },
+            });
+            self.call("editMessageText", body, TIMEOUT)
+                .await
+                .map(drop)
+                .map_err(failed)
+        })
+    }
+
+    fn presses(&self) -> mpsc::UnboundedReceiver<Press> {
+        let (presses, heard) = mpsc::unbounded_channel();
+        *self.presses.lock().expect("unpoisoned") = Some(presses);
+        heard
+    }
+
+    fn direct_place(&self) -> Option<Place> {
+        Some(Place::new(OWNER_DIRECT))
+    }
+}
+
+fn failed(failed: Failed) -> ChannelError {
+    ChannelError {
+        detail: match failed {
+            Failed::Fatal(detail) | Failed::Passing(detail, _) | Failed::Conflict(detail) => detail,
+        },
     }
 }
 

@@ -18,6 +18,7 @@ use tokio::net::TcpListener;
 use tokio::net::TcpStream;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc;
+use tokio::sync::watch;
 use tokio::time;
 
 const HELLO_WAIT: Duration = Duration::from_secs(5);
@@ -38,6 +39,7 @@ pub enum Ask {
 pub struct Screen {
     out: broadcast::Sender<Arc<str>>,
     pub(crate) state: Mutex<Value>,
+    states: watch::Sender<Arc<str>>,
     asks: mpsc::UnboundedSender<Ask>,
     watching: AtomicUsize,
 }
@@ -53,9 +55,11 @@ impl Screen {
     pub fn new() -> (Arc<Self>, mpsc::UnboundedReceiver<Ask>) {
         let (out, _) = broadcast::channel(KEPT);
         let (asks, heard) = mpsc::unbounded_channel();
+        let state = json!({ "kind": "state", "mode": "idle" });
         let screen = Arc::new(Self {
             out,
-            state: Mutex::new(json!({ "kind": "state", "mode": "idle" })),
+            states: watch::Sender::new(Arc::from(state.to_string())),
+            state: Mutex::new(state),
             asks,
             watching: AtomicUsize::new(0),
         });
@@ -88,7 +92,9 @@ impl Screen {
             }
             state.to_string()
         };
-        let _ = self.out.send(Arc::from(line));
+        let line: Arc<str> = Arc::from(line);
+        self.states.send_replace(Arc::clone(&line));
+        let _ = self.out.send(line);
     }
 
     /// Serves windows on `listener` until the process ends. A window proves itself with `token`.
@@ -119,6 +125,10 @@ impl Screen {
                 .and_then(Value::as_str)
                 == Some(&*token);
         if !proved {
+            return;
+        }
+        if hello.as_ref().and_then(|hello| hello.get("quiet")) == Some(&Value::Bool(true)) {
+            self.listen(lines, write).await;
             return;
         }
         let mut out = self.out.subscribe();
@@ -161,6 +171,38 @@ impl Screen {
             let _ = self.asks.send(Ask::Watch(false));
         }
     }
+
+    async fn listen(
+        self: Arc<Self>,
+        mut lines: BufReader<tokio::net::tcp::OwnedReadHalf>,
+        mut write: tokio::net::tcp::OwnedWriteHalf,
+    ) {
+        let mut states = self.states.subscribe();
+        let asks = self.asks.clone();
+        let mut heard = tokio::spawn(async move {
+            let mut line = String::new();
+            while let Ok(true) = read_line(&mut lines, &mut line).await {
+                if let Some(allowed) = allowed(line.trim()) {
+                    let _ = asks.send(Ask::Input(allowed));
+                }
+            }
+        });
+        loop {
+            let state = states.borrow_and_update().clone();
+            if write.write_all(state.as_bytes()).await.is_err()
+                || write.write_all(b"\n").await.is_err()
+            {
+                break;
+            }
+            tokio::select! {
+                changed = states.changed() => if changed.is_err() {
+                    break;
+                },
+                _ = &mut heard => break,
+            }
+        }
+        heard.abort();
+    }
 }
 
 async fn read_line(
@@ -178,6 +220,22 @@ async fn read_line(
     }
     *line = String::from_utf8_lossy(&bytes).into_owned();
     Ok(true)
+}
+
+/// The answer to a log-in card in a listener's line, if it is one: whether to log in, with which
+/// account, and whether to stop asking. A listener never types into a card.
+pub(crate) fn allowed(line: &str) -> Option<Value> {
+    let value: Value = serde_json::from_str(line).ok()?;
+    if value.get("kind").and_then(Value::as_str) != Some("fill") {
+        return None;
+    }
+    Some(json!({
+        "kind": "fill",
+        "id": value.get("id").and_then(Value::as_u64)?,
+        "allow": value.get("allow").and_then(Value::as_bool)?,
+        "trust": value.get("trust").and_then(Value::as_bool).unwrap_or(false),
+        "account": value.get("account").and_then(Value::as_u64).unwrap_or(0),
+    }))
 }
 
 /// What a window's line asks for, if it is something the browser does.

@@ -1,10 +1,10 @@
-//! Calls that act toward other people wait for the owner. dotori asks in the chat window, and
-//! only the owner's click there lets such a call run. The model can never answer for the owner.
+//! Calls that act toward other people wait for the owner. dotori asks in the chat window, and in
+//! the chat room the owner asked in, and only the owner's click lets such a call run. The model
+//! can never answer for the owner.
 //! The servers with such tools are relayed by the daemon alone, so only the main session, and
 //! only through this gate, reaches them; sub-sessions never see them.
 
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicU64;
@@ -32,6 +32,7 @@ use dotori_core::tool::ToolCall;
 use dotori_core::tool::ToolError;
 use dotori_core::tool::ToolSpec;
 use dotori_core::tool::Toolbox;
+use dotori_core::tool::origin;
 use dotori_mcp::Tool;
 use dotori_mcp::browser::OWNER_TOOLS;
 use dotori_mcp::browser::WAITS_FOR_OWNER;
@@ -41,17 +42,28 @@ use tokio::sync::mpsc;
 use tokio::time;
 
 use crate::main_session::Linked;
+use crate::room_cards::RoomCards;
 use crate::settings::Asked;
 
 pub(crate) use dotori_connectors::channel::DECISION;
 const WAITING: &str = "This call waits for the owner, as the owner set it or as every call of \
-                       this tool does: the chat window shows it with 허락 and 거절. What the owner decides, and the result \
+                       this tool does: the chat window shows it with 허락 and 거절, and so does Slack, \
+                       Telegram or Discord when the owner asked there. What the owner decides, and the result \
                        if it ran, arrive later on the `decision` channel. Do not call it again.";
 const RUN_FOR: Duration = Duration::from_secs(120);
-const CARD_SHOWN: &str = "dotori is showing the owner a card in the chat window for this call. Do not \
+const CARD_SHOWN: &str = "dotori is showing the owner a card in the chat window for this call, and \
+                          may show it in the Slack, Telegram or Discord room the owner asked in too. Do not \
                           wait for it and do not call it again: what the owner does with the card, or why it could not \
                           be shown, arrives later on the `decision` channel. Meanwhile tell the owner in a few words \
                           what the card is for.";
+
+/// Where a call that waited for the owner stands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Status {
+    Waiting,
+    Decided(bool),
+    Lapsed,
+}
 
 /// What came of a call the owner decided about, for the main session.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -106,18 +118,22 @@ pub(crate) struct Asking {
     sandbox: Option<Arc<Sandbox>>,
     inner: Arc<dyn Toolbox>,
     app: Arc<AppChannel>,
+    rooms: Arc<RoomCards>,
     waiting: Mutex<HashMap<u64, ToolCall>>,
-    decided: Mutex<HashSet<u64>>,
+    decided: Mutex<HashMap<u64, Option<bool>>>,
     next: AtomicU64,
 }
 
 impl Asking {
-    /// `sandbox` is where the commands `inner` runs are confined, so a card can say so.
+    /// `sandbox` is where the commands `inner` runs are confined, so a card can say so. Each
+    /// card shows in the windows of `app`, and in the chat room the owner asked in through
+    /// `rooms`.
     pub(crate) fn new(
         asked: Asked,
         sandbox: Option<Arc<Sandbox>>,
         inner: Arc<dyn Toolbox>,
         app: Arc<AppChannel>,
+        rooms: Arc<RoomCards>,
     ) -> Self {
         let start = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -129,8 +145,9 @@ impl Asking {
             sandbox,
             inner,
             app,
+            rooms,
             waiting: Mutex::new(HashMap::new()),
-            decided: Mutex::new(HashSet::new()),
+            decided: Mutex::new(HashMap::new()),
             next: AtomicU64::new(start),
         }
     }
@@ -147,25 +164,49 @@ impl Asking {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clear();
+        self.rooms.lapse_calls();
+    }
+
+    /// Whether the call `id` still waits for the owner, and if not, what came of it.
+    pub(crate) fn status(&self, id: u64) -> Status {
+        let waiting = self
+            .waiting
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if waiting.contains_key(&id) {
+            return Status::Waiting;
+        }
+        match self
+            .decided
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&id)
+        {
+            Some(Some(ok)) => Status::Decided(*ok),
+            _ => Status::Lapsed,
+        }
     }
 
     /// Runs or drops the call `id` as the owner decided, and says what came of it. A call decided
     /// already, as by a second click, gives `None`. A call this dotori never asked about, as one
     /// from before it started again, is shown to have lapsed.
     pub(crate) async fn decide(&self, id: u64, ok: bool) -> Option<Outcome> {
-        let call = self
-            .waiting
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .remove(&id);
-        let first = self
-            .decided
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(id);
-        if !first {
-            return None;
-        }
+        let call = {
+            let mut waiting = self
+                .waiting
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let call = waiting.remove(&id);
+            let mut decided = self
+                .decided
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if decided.contains_key(&id) {
+                return None;
+            }
+            decided.insert(id, call.is_some().then_some(ok));
+            call
+        };
         let Some(call) = call else {
             self.app.lapsed(id);
             return Some(Outcome {
@@ -211,6 +252,7 @@ impl Toolbox for Asking {
             return self.inner.run(call);
         }
         let id = self.next_id();
+        let origin = origin();
         let (tool, input) = (call.name.clone(), call.input.clone());
         self.waiting
             .lock()
@@ -221,6 +263,7 @@ impl Toolbox for Asking {
                 Some(sandbox) if tool == RUN_SHELL => matches!(sandbox.ready().await, Ok(Some(_))),
                 _ => false,
             };
+            self.rooms.ask(origin, id, &tool, &input, sandboxed);
             self.app.ask(id, tool, input, sandboxed);
             Ok(String::from(WAITING))
         })
@@ -253,6 +296,13 @@ impl Toolbox for Waits {
             return self.owner.run(call);
         }
         let id = self.asking.next_id();
+        let ticket = self.asking.rooms.browser_asked(origin());
+        let mut call = call;
+        if let Ok(Value::Object(mut input)) = serde_json::from_str::<Value>(&call.input) {
+            input.insert(String::from("ticket"), Value::from(ticket));
+            call.input = Value::Object(input).to_string();
+        }
+        let rooms = Arc::clone(&self.asking.rooms);
         let owner = Arc::clone(&self.owner);
         let outcomes = self.outcomes.clone();
         tokio::spawn(async move {
@@ -261,6 +311,7 @@ impl Toolbox for Waits {
                 Ok(output) => output,
                 Err(error) => format!("The card could not be shown or finished: {}", error.detail),
             };
+            rooms.browser_done(ticket, &text);
             let _ = outcomes.send(Outcome { id, tool, text });
         });
         Box::pin(async { Ok(String::from(CARD_SHOWN)) })

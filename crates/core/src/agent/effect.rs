@@ -6,6 +6,7 @@ use crate::conversation::Entry;
 use crate::conversation::ThreadRef;
 use crate::message::Address;
 use crate::sub_session::SubSessionSpec;
+use crate::tool::Origin;
 use crate::tool::ToolCall;
 
 /// The closed set of things the agent asks the world to do.
@@ -26,6 +27,7 @@ pub(crate) enum Effect {
     RunTool {
         run: ToolRunId,
         call: ToolCall,
+        origin: Option<Origin>,
     },
     SpawnSubSession {
         sub_session: SubSessionId,

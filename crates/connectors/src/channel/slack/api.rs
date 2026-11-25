@@ -40,11 +40,13 @@ impl ApiError {
 }
 
 /// The Slack Web API, with the app token for Socket Mode and the bot token for everything else.
+#[derive(Clone)]
 pub(crate) struct Api {
     client: Client,
     base: String,
     app_token: String,
     bot_token: String,
+    attempts: u32,
 }
 
 /// What a Slack conversation's info says about who can read it.
@@ -73,7 +75,16 @@ impl Api {
             base: base.trim_end_matches('/').to_owned(),
             app_token,
             bot_token,
+            attempts: ATTEMPTS,
         })
+    }
+
+    /// The same API, trying each call once.
+    pub(crate) fn once(&self) -> Self {
+        Self {
+            attempts: 1,
+            ..self.clone()
+        }
     }
 
     /// The assistant's own user id, so its own messages are not read as someone else's.
@@ -195,15 +206,65 @@ impl Api {
         if let Some(thread) = thread {
             body["thread_ts"] = json!(thread);
         }
+        self.send("chat.postMessage", &body).await.map(drop)
+    }
+
+    /// Posts `blocks`, with `text` for notifications, and says the conversation and the
+    /// message's timestamp.
+    pub(crate) async fn say_blocks(
+        &self,
+        channel: &str,
+        thread: Option<&str>,
+        text: &str,
+        blocks: Value,
+    ) -> Result<(String, String), ApiError> {
+        let mut body = json!({ "channel": channel, "text": text, "blocks": blocks });
+        if let Some(thread) = thread {
+            body["thread_ts"] = json!(thread);
+        }
+        let reply = self.send("chat.postMessage", &body).await?;
+        Ok((
+            text_at(&reply, "/channel", "chat.postMessage")?,
+            text_at(&reply, "/ts", "chat.postMessage")?,
+        ))
+    }
+
+    /// Replaces the message at `ts` in `channel` with `text` and `blocks`.
+    pub(crate) async fn update(
+        &self,
+        channel: &str,
+        ts: &str,
+        text: &str,
+        blocks: Value,
+    ) -> Result<(), ApiError> {
+        let body = json!({ "channel": channel, "ts": ts, "text": text, "blocks": blocks });
+        self.send("chat.update", &body).await.map(drop)
+    }
+
+    /// Shows `text` in `channel` to `user` alone.
+    pub(crate) async fn whisper(
+        &self,
+        channel: &str,
+        user: &str,
+        thread: Option<&str>,
+        text: &str,
+    ) -> Result<(), ApiError> {
+        let mut body = json!({ "channel": channel, "user": user, "text": text });
+        if let Some(thread) = thread {
+            body["thread_ts"] = json!(thread);
+        }
+        self.send("chat.postEphemeral", &body).await.map(drop)
+    }
+
+    async fn send(&self, method: &str, body: &Value) -> Result<Value, ApiError> {
         let body = body.to_string();
-        self.call("chat.postMessage", || {
-            self.post("chat.postMessage")
+        self.call(method, || {
+            self.post(method)
                 .bearer_auth(&self.bot_token)
                 .header(CONTENT_TYPE, "application/json; charset=utf-8")
                 .body(body.clone())
         })
         .await
-        .map(drop)
     }
 
     fn post(&self, method: &str) -> RequestBuilder {
@@ -238,7 +299,7 @@ impl Api {
                 }
                 Err(error) => return Err(ApiError::Passing(format!("{method} failed: {error}"))),
             };
-            if attempt >= ATTEMPTS {
+            if attempt >= self.attempts {
                 return Err(ApiError::Passing(detail));
             }
             tokio::time::sleep(retry_after.unwrap_or(wait).min(MAX_WAIT)).await;

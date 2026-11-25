@@ -1408,7 +1408,7 @@ impl SettingsView {
         card.child(guide(
             theme,
             &[
-                "api.slack.com/apps에서 앱을 만들고 Socket Mode를 켜요. connections:write 권한으로 앱 토큰(xapp-)을 만들어요.",
+                "api.slack.com/apps에서 앱을 만들고 Socket Mode와 Interactivity를 켜요. connections:write 권한으로 앱 토큰(xapp-)을 만들어요.",
                 "봇 권한 app_mentions:read, chat:write, im:history, im:read, im:write, users:read, channels:read, groups:read를 주고, app_mention과 message.im 이벤트를 구독한 뒤 설치해서 봇 토큰(xoxb-)을 받아요.",
                 "두 토큰을 아래에 붙여 넣고 저장한 뒤 dotori를 다시 시작해요.",
             ],

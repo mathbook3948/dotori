@@ -1,4 +1,5 @@
 pub mod app;
+pub mod card;
 pub mod discord;
 pub mod slack;
 pub mod telegram;

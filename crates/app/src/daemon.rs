@@ -43,6 +43,7 @@ use dotori_mcp::memory::MemoryConfig;
 use dotori_mcp::relay::relay;
 
 use crate::accounts::LinkedSites;
+use crate::asked;
 use crate::browser_route::BROWSER_JOB;
 use crate::browser_route::BrowserRoute;
 use crate::confirm;
@@ -80,9 +81,12 @@ use crate::notes::MainTools;
 use crate::notes::Noted;
 use crate::notes::Notes;
 use crate::peers;
+use crate::room_cards;
+use crate::room_cards::RoomCards;
 use crate::routines;
 use crate::routines::RoutineChannel;
 use crate::routines::Routines;
+use crate::settings::AssistantSettings;
 use crate::settings::RunnerChoice;
 use crate::settings::Settings;
 use crate::settings_copies::SettingsCopies;
@@ -156,6 +160,15 @@ pub(crate) async fn serve(
     let token = door::token()?;
     let (app, address) = AppChannel::bind(token.clone()).map_err(|error| error.to_string())?;
     let app = Arc::new(app);
+    let (rooms, screen_lines) = RoomCards::new(
+        asked::subject(&AssistantSettings::name_of(settings.assistant.as_ref())),
+        Arc::clone(&app),
+    );
+    tokio::spawn(room_cards::tap(
+        home.clone(),
+        Arc::clone(&rooms),
+        screen_lines,
+    ));
     let (guarded, wrong) = settings.relays(vault::lookup(&vault), true, &secrets);
     let (mut guarded, failed) = relay(guarded).await;
     for problem in wrong.iter().chain(&failed) {
@@ -195,7 +208,16 @@ pub(crate) async fn serve(
             }),
         }),
         Arc::clone(&app),
+        Arc::clone(&rooms),
     ));
+    {
+        let asking = Arc::clone(&asking);
+        tokio::spawn(room_cards::follow(
+            Arc::clone(&rooms),
+            app.published(),
+            move |id| asking.status(id),
+        ));
+    }
     let (outcomes, outcomes_heard) = mpsc::unbounded_channel();
     let decision = Arc::new(DecisionChannel::new(outcomes_heard));
     let toolbox: Arc<dyn Toolbox> = Arc::new(MainTools {
@@ -474,10 +496,15 @@ pub(crate) async fn serve(
                 continue;
             }
         }
-        let (mut channels, off) = settings.channels(vault::lookup(&vault));
+        let (chats, off) = settings.channels(vault::lookup(&vault));
         for problem in off {
             eprintln!("dotori: {problem}");
         }
+        rooms.connect(&chats);
+        let mut channels: Vec<Arc<dyn Channel>> = chats
+            .into_iter()
+            .map(|chat| chat as Arc<dyn Channel>)
+            .collect();
         channels.push(Arc::new(RoutineChannel::new(Arc::clone(&routines))) as Arc<dyn Channel>);
         channels.push(Arc::clone(&decision) as Arc<dyn Channel>);
         let channels = channels

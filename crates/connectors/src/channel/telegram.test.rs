@@ -175,7 +175,10 @@ async fn the_owners_message_reaches_the_inbox_and_a_reply_answers_it() {
     assert!(me.head.contains("/bot123:t/getMe"));
     let polled = requests.recv().await.expect("getUpdates");
     let asked: Value = serde_json::from_str(&polled.body).expect("json");
-    assert_eq!(asked["allowed_updates"], json!(["message"]));
+    assert_eq!(
+        asked["allowed_updates"],
+        json!(["message", "callback_query"])
+    );
 }
 
 #[tokio::test]
@@ -250,4 +253,244 @@ fn length_is_counted_as_telegram_counts_it_and_blank_text_sends_nothing() {
     );
     assert_eq!(split.concat(), wide);
     assert!(pieces("  \n ").is_empty());
+}
+
+fn log_in_card() -> Card {
+    let button = |label: &str, primary: bool| card::Button {
+        label: label.to_owned(),
+        primary,
+    };
+    Card {
+        token: String::from("00112233445566778899aabb"),
+        title: String::from("금고의 nid.naver.com (네이버) 계정으로 로그인해도 될까요?"),
+        rows: vec![(
+            String::from("계정"),
+            String::from("nid.naver.com (네이버), minji"),
+        )],
+        cut: false,
+        notes: Vec::new(),
+        buttons: vec![
+            button("거절", false),
+            button("로그인", true),
+            button("로그인, 다음부터 묻지 않기", false),
+        ],
+    }
+}
+
+fn callback(from: i64, first_name: &str) -> Value {
+    json!({
+        "update_id": 8,
+        "callback_query": {
+            "id": format!("q{from}"),
+            "from": { "id": from, "is_bot": false, "first_name": first_name },
+            "message": { "message_id": 77, "chat": { "id": -100 } },
+            "data": "00112233445566778899aabb:2",
+        },
+    })
+}
+
+#[test]
+fn a_card_with_more_than_two_buttons_puts_each_on_its_own_row() {
+    let mut card = log_in_card();
+
+    let three = keyboard(&card);
+    card.buttons.truncate(2);
+    let two = keyboard(&card);
+
+    assert_eq!(three["inline_keyboard"].as_array().expect("rows").len(), 3);
+    assert_eq!(
+        three["inline_keyboard"][2][0],
+        json!({ "text": "로그인, 다음부터 묻지 않기", "callback_data": "00112233445566778899aabb:2" })
+    );
+    assert_eq!(two["inline_keyboard"][0].as_array().expect("row").len(), 2);
+}
+
+#[test]
+fn a_press_names_who_pressed_and_where() {
+    let read = clicked(&callback(OWNER, "민지")["callback_query"]).expect("a press");
+
+    assert_eq!(
+        read,
+        Clicked {
+            id: format!("q{OWNER}"),
+            user: OWNER,
+            name: String::from("민지"),
+            chat: -100,
+            message: 77,
+            value: String::from("00112233445566778899aabb:2"),
+        }
+    );
+    assert_eq!(
+        clicked(&json!({ "id": "q1", "from": { "id": OWNER } })),
+        None
+    );
+}
+
+#[tokio::test]
+async fn only_the_owners_press_is_passed_on_and_anyone_else_is_told_only_them() {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("after 1970")
+        .as_secs();
+    let mut owner = message(OWNER, json!({ "id": OWNER, "type": "private" }), "안녕");
+    owner["message"]["date"] = json!(now);
+    let bare = json!({ "update_id": 9, "callback_query": { "id": "q-bare", "from": { "id": 9 } } });
+    let update = json!({ "ok": true, "result": [
+        owner,
+        callback(9, "지훈"),
+        callback(9, "지훈"),
+        bare,
+        callback(OWNER, "민지"),
+    ] })
+    .to_string();
+    let (base, mut requests) = mock::serve(vec![
+        (200, r#"{"ok":true,"result":{"username":"dotori_bot"}}"#),
+        (200, Box::leak(update.into_boxed_str())),
+        (200, r#"{"ok":true,"result":true}"#),
+        (200, r#"{"ok":true,"result":true}"#),
+        (200, r#"{"ok":true,"result":true}"#),
+        (200, r#"{"ok":true,"result":true}"#),
+    ])
+    .await;
+    let mut config = TelegramConfig::new("123:t", OWNER);
+    config.api_base = base;
+    let channel = Arc::new(TelegramChannel::new(config).expect("made"));
+    let mut presses = channel.presses();
+    let (tx, _inbox) = mpsc::unbounded_channel();
+    let running = Arc::clone(&channel);
+    tokio::spawn(async move { running.run(Arc::new(Collect(tx))).await });
+
+    let pressed = time::timeout(WAIT, presses.recv())
+        .await
+        .expect("in time")
+        .expect("a press");
+
+    assert_eq!(
+        pressed,
+        Press {
+            token: String::from("00112233445566778899aabb"),
+            button: 2,
+            posted: Posted {
+                room: String::from("-100"),
+                message: String::from("77"),
+            },
+        }
+    );
+    requests.recv().await.expect("getMe");
+    let polled = requests.recv().await.expect("getUpdates");
+    let asked: Value = serde_json::from_str(&polled.body).expect("json");
+    assert_eq!(
+        asked["allowed_updates"],
+        json!(["message", "callback_query"])
+    );
+    let refused = requests.recv().await.expect("stranger's answer");
+    assert!(
+        refused.head.contains("/answerCallbackQuery"),
+        "{}",
+        refused.head
+    );
+    assert_eq!(
+        serde_json::from_str::<Value>(&refused.body).expect("json"),
+        json!({ "callback_query_id": "q9", "text": "이 버튼은 지민 박 님만 누를 수 있어요" })
+    );
+    let again = requests.recv().await.expect("stranger's second answer");
+    assert_eq!(
+        serde_json::from_str::<Value>(&again.body).expect("json"),
+        json!({ "callback_query_id": "q9" }),
+        "told once per card"
+    );
+    let bare = requests
+        .recv()
+        .await
+        .expect("answer to a press missing its message");
+    assert_eq!(
+        serde_json::from_str::<Value>(&bare.body).expect("json")["callback_query_id"],
+        "q-bare"
+    );
+    let taken = requests.recv().await.expect("owner's answer");
+    assert_eq!(
+        serde_json::from_str::<Value>(&taken.body).expect("json"),
+        json!({ "callback_query_id": format!("q{OWNER}") })
+    );
+    assert!(
+        presses.try_recv().is_err(),
+        "the stranger's press went nowhere"
+    );
+}
+
+#[tokio::test]
+async fn a_card_is_posted_with_its_keyboard_and_settled_by_editing_it_away() {
+    let (base, mut requests) = mock::serve(vec![
+        (
+            200,
+            r#"{"ok":true,"result":{"message_id":77,"chat":{"id":-100}}}"#,
+        ),
+        (200, r#"{"ok":true,"result":{"message_id":77}}"#),
+    ])
+    .await;
+    let mut config = TelegramConfig::new("123:t", OWNER);
+    config.api_base = base;
+    let channel = TelegramChannel::new(config).expect("made");
+
+    let posted = channel
+        .post(Place::new("-100/31"), log_in_card())
+        .await
+        .expect("posted");
+    channel
+        .settle(
+            posted.clone(),
+            Some(log_in_card()),
+            String::from("민지 님이 허락했어요"),
+        )
+        .await
+        .expect("settled");
+
+    assert_eq!(
+        posted,
+        Posted {
+            room: String::from("-100"),
+            message: String::from("77"),
+        }
+    );
+    let sent: Value =
+        serde_json::from_str(&requests.recv().await.expect("sendMessage").body).expect("json");
+    assert_eq!(sent["reply_parameters"]["message_id"], 31);
+    assert_eq!(sent["reply_markup"], keyboard(&log_in_card()));
+    assert!(sent.get("parse_mode").is_none());
+    let edit = requests.recv().await.expect("editMessageText");
+    assert!(edit.head.contains("/editMessageText"), "{}", edit.head);
+    let edited: Value = serde_json::from_str(&edit.body).expect("json");
+    assert_eq!(
+        (&edited["chat_id"], &edited["message_id"]),
+        (&json!(-100), &json!(77))
+    );
+    assert!(edited.get("reply_markup").is_none());
+    assert!(
+        edited["text"]
+            .as_str()
+            .expect("text")
+            .ends_with("\n\n민지 님이 허락했어요")
+    );
+}
+
+#[test]
+fn thirty_accounts_keep_the_decline_button_on_the_keyboard() {
+    let mut card = log_in_card();
+    card.buttons = (0..30)
+        .map(|n| card::Button {
+            label: format!("user{n}로 로그인"),
+            primary: true,
+        })
+        .chain(std::iter::once(card::Button {
+            label: String::from("거절"),
+            primary: false,
+        }))
+        .collect();
+
+    let keyboard = keyboard(&card);
+    let rows = keyboard["inline_keyboard"].as_array().expect("rows");
+
+    assert_eq!(rows.len(), BUTTONS);
+    assert_eq!(rows[BUTTONS - 1][0]["text"], "거절");
+    assert_eq!(rows[BUTTONS - 1][0]["callback_data"], card.value(30));
 }

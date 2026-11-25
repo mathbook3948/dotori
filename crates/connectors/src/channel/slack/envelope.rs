@@ -1,6 +1,15 @@
 use serde::Deserialize;
+use serde_json::Value;
+use serde_json::json;
+
+use crate::channel::card::Card;
+use crate::channel::card::WHOLE_ON_PC;
+use crate::channel::card::cut;
 
 const PIECE: usize = 3900;
+const FIELD: usize = 1900;
+const SECTION: usize = 2900;
+const BUTTONS: usize = 25;
 
 /// What one Socket Mode frame asks of the connector.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -16,7 +25,19 @@ pub(crate) enum Kind {
     /// Slack is about to close this connection, so the connector opens a new one.
     Disconnect,
     Message(Arrived),
+    /// Someone pressed a button of a card dotori posted.
+    Pressed(Clicked),
     Nothing,
+}
+
+/// A button someone pressed, where its message is, and what the button carries.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Clicked {
+    pub(crate) user: String,
+    pub(crate) channel: String,
+    pub(crate) ts: String,
+    pub(crate) thread: Option<String>,
+    pub(crate) value: String,
 }
 
 /// The owner's message to the assistant: a direct message, or a mention in a channel.
@@ -43,6 +64,37 @@ struct Envelope {
 #[derive(Deserialize)]
 struct Payload {
     event: Option<Event>,
+    #[serde(rename = "type")]
+    kind: Option<String>,
+    user: Option<Id>,
+    channel: Option<Id>,
+    container: Option<Container>,
+    message: Option<Posted>,
+    #[serde(default)]
+    actions: Vec<Action>,
+}
+
+#[derive(Deserialize)]
+struct Id {
+    id: String,
+}
+
+#[derive(Deserialize)]
+struct Container {
+    channel_id: Option<String>,
+    message_ts: Option<String>,
+    thread_ts: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct Posted {
+    ts: Option<String>,
+    thread_ts: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct Action {
+    value: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -76,6 +128,10 @@ pub(crate) fn read(text: &str, bot: &str, owner: &str) -> Frame {
             .and_then(|payload| payload.event)
             .and_then(|event| arrived(event, bot, owner))
             .map_or(Kind::Nothing, Kind::Message),
+        "interactive" => envelope
+            .payload
+            .and_then(clicked)
+            .map_or(Kind::Nothing, Kind::Pressed),
         _ => Kind::Nothing,
     };
     Frame {
@@ -119,6 +175,90 @@ fn arrived(event: Event, bot: &str, owner: &str) -> Option<Arrived> {
         user,
         text,
     })
+}
+
+fn clicked(payload: Payload) -> Option<Clicked> {
+    if payload.kind.as_deref() != Some("block_actions") {
+        return None;
+    }
+    let container = payload.container;
+    let channel = payload
+        .channel
+        .map(|channel| channel.id)
+        .or_else(|| container.as_ref()?.channel_id.clone())?;
+    let ts = container
+        .as_ref()
+        .and_then(|container| container.message_ts.clone())
+        .or_else(|| payload.message.as_ref()?.ts.clone())?;
+    let thread = payload
+        .message
+        .and_then(|message| message.thread_ts)
+        .or_else(|| container?.thread_ts)
+        .filter(|thread| *thread != ts);
+    Some(Clicked {
+        user: payload.user?.id,
+        channel,
+        ts,
+        thread,
+        value: payload.actions.into_iter().next()?.value?,
+    })
+}
+
+/// The blocks of `card`: its title, rows and notes, then its buttons, or once it is settled,
+/// what came of it in their place.
+pub(crate) fn blocks(card: Option<&Card>, said: Option<&str>) -> Value {
+    let mut blocks = Vec::new();
+    if let Some(card) = card {
+        blocks.push(json!({
+            "type": "section",
+            "text": { "type": "mrkdwn", "text": format!("*{}*", escaped(&cut(&card.title, SECTION))) },
+        }));
+        for (label, value) in &card.rows {
+            blocks.push(json!({
+                "type": "section",
+                "fields": [
+                    { "type": "mrkdwn", "text": format!("*{}*", escaped(&cut(label, FIELD))) },
+                    { "type": "plain_text", "text": cut(value, FIELD), "emoji": false },
+                ],
+            }));
+        }
+        let notes: Vec<Value> = card
+            .cut
+            .then_some(WHOLE_ON_PC)
+            .into_iter()
+            .chain(card.notes.iter().map(String::as_str))
+            .map(|note| json!({ "type": "plain_text", "text": cut(note, SECTION), "emoji": false }))
+            .collect();
+        if !notes.is_empty() {
+            blocks.push(json!({ "type": "context", "elements": notes }));
+        }
+        if said.is_none() && !card.buttons.is_empty() {
+            let buttons: Vec<Value> = card
+                .labels(BUTTONS)
+                .into_iter()
+                .map(|(n, button, label)| {
+                    let mut element = json!({
+                        "type": "button",
+                        "action_id": format!("dotori-{n}"),
+                        "text": { "type": "plain_text", "text": label, "emoji": false },
+                        "value": card.value(n),
+                    });
+                    if button.primary {
+                        element["style"] = json!("primary");
+                    }
+                    element
+                })
+                .collect();
+            blocks.push(json!({ "type": "actions", "elements": buttons }));
+        }
+    }
+    if let Some(said) = said {
+        blocks.push(json!({
+            "type": "section",
+            "text": { "type": "plain_text", "text": cut(said, SECTION), "emoji": false },
+        }));
+    }
+    Value::Array(blocks)
 }
 
 fn plain(text: &str, bot: &str) -> String {

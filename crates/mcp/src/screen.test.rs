@@ -105,3 +105,43 @@ fn only_known_asks_are_taken() {
     assert_eq!(ask_of(r#"{"kind":"watch"}"#), None);
     assert_eq!(ask_of("not json"), None);
 }
+
+#[tokio::test]
+async fn a_quiet_listener_sees_each_state_but_no_frames_and_is_not_a_window() {
+    let (screen, mut asks, port) = served().await;
+    let stream = TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("connected");
+    let (read, mut write) = stream.into_split();
+    let mut lines = BufReader::new(read);
+    write
+        .write_all(b"{\"token\":\"secret\",\"quiet\":true}\n")
+        .await
+        .expect("sent");
+
+    assert_eq!(next_line(&mut lines).await["mode"], "idle");
+    screen.frame("AAAA", 1280.0, 800.0);
+    screen.update(json!({ "card": { "id": 7, "kind": "log_in" } }));
+    let state = next_line(&mut lines).await;
+    assert_eq!(state["kind"], "state");
+    assert_eq!(state["card"]["id"], 7);
+    assert!(!screen.watched());
+
+    write
+        .write_all(
+            b"{\"kind\":\"fill\",\"id\":7,\"press\":3,\"values\":[]}\n{\"kind\":\"take\"}\n{\"kind\":\"fill\",\"id\":7,\"allow\":true,\"account\":1,\"later\":true}\n",
+        )
+        .await
+        .expect("sent");
+    assert_eq!(
+        time::timeout(WAIT, asks.recv()).await.expect("in time"),
+        Some(Ask::Input(json!({
+            "kind": "fill",
+            "id": 7,
+            "allow": true,
+            "trust": false,
+            "account": 1,
+        })))
+    );
+    assert!(asks.try_recv().is_err());
+}

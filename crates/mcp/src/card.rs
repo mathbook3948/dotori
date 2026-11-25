@@ -203,6 +203,7 @@ impl FillSpec {
             "submit": self.submit,
             "links": self.links,
             "note": self.note(),
+            "keep": self.keep,
         })
     }
 

@@ -1213,3 +1213,31 @@ fn a_result_already_copied_here_but_not_answered_yet_still_wakes_the_agent() {
         );
     });
 }
+
+#[test]
+fn a_running_tool_knows_where_the_owner_asked_for_it() {
+    block_on(async {
+        let (app, probe) = FakeChannel::new("app");
+        let (seen_tx, mut seen) = mpsc::unbounded_channel();
+        let (origins_tx, mut origins) = mpsc::unbounded_channel();
+        let mut ports = ports(app, Vec::new());
+        ports.model = Arc::new(tool_then_report(seen_tx));
+        ports.toolbox = Arc::new(FnToolbox(Box::new(move |_| {
+            let _ = origins_tx.send(crate::tool::origin());
+            Box::pin(async { Ok(String::from("done")) })
+        })));
+        let agent = Agent::spawn(config(Duration::from_secs(1)), ports)
+            .await
+            .expect("valid");
+
+        owner_says(&probe, "m1", "read it");
+
+        let origin = next(&mut origins).await.expect("an origin");
+        assert_eq!(origin.address.place, Place::new("main"));
+        assert_eq!(origin.owner, "me");
+        assert_eq!(origin.audience, Some(Audience::Owner));
+        assert!(next(&mut seen).await.is_ok());
+        assert_eq!(crate::tool::origin(), None);
+        agent.shutdown().await;
+    });
+}

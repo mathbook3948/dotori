@@ -36,6 +36,7 @@ use crate::sub_session::SubSessionOutcome;
 use crate::sub_session::SubSessionRunner;
 use crate::tool::ToolError;
 use crate::tool::Toolbox;
+use crate::tool::asked_from;
 
 const RETRY_FIRST: Duration = Duration::from_millis(100);
 const RETRY_MAX: Duration = Duration::from_secs(30);
@@ -200,11 +201,11 @@ impl Shell {
                     handle.abort();
                 }
             }
-            Effect::RunTool { run, call } => {
+            Effect::RunTool { run, call, origin } => {
                 let toolbox = Arc::clone(&self.toolbox);
                 let tx = self.tx.clone();
                 let timeout = self.tool_timeout;
-                self.tasks.spawn(async move {
+                self.tasks.spawn(asked_from(origin, async move {
                     let result = match time::timeout(timeout, caught(|| toolbox.run(call))).await {
                         Ok(Ok(result)) => result,
                         Ok(Err(detail)) => Err(ToolError { detail }),
@@ -213,7 +214,7 @@ impl Shell {
                         }),
                     };
                     let _ = tx.send(Event::ToolDone { run, result }).await;
-                });
+                }));
             }
             Effect::SpawnSubSession { sub_session, spec } => {
                 let runner = Arc::clone(&self.sub_sessions);

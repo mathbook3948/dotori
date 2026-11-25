@@ -3,6 +3,8 @@ use std::fmt;
 use std::sync::Arc;
 
 use crate::BoxFuture;
+use crate::message::Address;
+use crate::message::Audience;
 
 /// The id the model provider gave one tool call, so its result can be paired with it.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -43,6 +45,31 @@ pub fn well_named(name: &str) -> bool {
         && name
             .split('_')
             .all(|word| !word.is_empty() && word.bytes().all(|byte| byte.is_ascii_lowercase()))
+}
+
+/// The owner's message a tool call follows: where the agent last heard the owner before the
+/// model asked for the call, the name the owner goes by there, and who else can read that room.
+/// A call that follows a sub-session's result has no origin.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Origin {
+    pub address: Address,
+    pub owner: String,
+    pub audience: Option<Audience>,
+}
+
+tokio::task_local! {
+    static ORIGIN: Option<Origin>;
+}
+
+/// Where the owner asked for the tool call that is running now, or `None` outside a tool call.
+/// A task the call spawns does not carry it, so a toolbox reads it before spawning.
+pub fn origin() -> Option<Origin> {
+    ORIGIN.try_with(Clone::clone).ok().flatten()
+}
+
+/// Runs `run` as the tool call that `origin` asked for.
+pub async fn asked_from<T>(origin: Option<Origin>, run: impl Future<Output = T>) -> T {
+    ORIGIN.scope(origin, run).await
 }
 
 #[derive(Clone, Debug)]
