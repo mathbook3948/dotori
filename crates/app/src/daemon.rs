@@ -113,6 +113,7 @@ pub(crate) async fn serve(
     ready: impl FnOnce(),
     quit: impl Future<Output = ()>,
 ) -> Result<(), String> {
+    keep_to_itself();
     let _lock = DaemonLock::take(&home.lock())?;
     let settings = Settings::load(&home.settings())?;
     let vault = Arc::new(Vault::new(&home.root));
@@ -621,6 +622,17 @@ async fn open_record(home: &Home) -> Result<SqliteStore, String> {
     Ok(SqliteStore::new(home.record(), device))
 }
 
+/// Keeps other programs of the owner's user from reading this process's memory and environment
+/// on Linux, where any of them may otherwise trace it. The daemon and the MCP server hold keys.
+pub(crate) fn keep_to_itself() {
+    #[cfg(target_os = "linux")]
+    if let Err(error) =
+        rustix::process::set_dumpable_behavior(rustix::process::DumpableBehavior::NotDumpable)
+    {
+        eprintln!("dotori: other programs may still read this process's memory: {error}");
+    }
+}
+
 fn basic(home: &Home, secrets: &[String]) -> BasicTools {
     BasicTools {
         folder: home.work(),
@@ -684,3 +696,7 @@ async fn stop_signal() -> Result<(), String> {
         .await
         .map_err(|error| error.to_string())
 }
+
+#[cfg(test)]
+#[path = "daemon.test.rs"]
+mod tests;

@@ -66,6 +66,7 @@ pub(crate) fn holds_job(jobs: &std::path::Path, job: &str) -> bool {
 }
 
 pub(crate) async fn serve(home: Home) -> Result<(), String> {
+    crate::daemon::keep_to_itself();
     let settings = Settings::load(&home.settings())?;
     let vault = Vault::new(&home.root);
     let chosen = settings.browser.clone().unwrap_or_default();
