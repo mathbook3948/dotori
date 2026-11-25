@@ -60,6 +60,8 @@ impl AssetSource for Assets {
             SharedString::new_static(CLOSE_ICON),
             SharedString::new_static(MINIMIZE_ICON),
             SharedString::new_static(MAXIMIZE_ICON),
+            SharedString::new_static(SHIELD_ICON),
+            SharedString::new_static(SHIELD_ON_ICON),
         ])
     }
 }
@@ -73,7 +75,19 @@ pub(crate) const CLOSE_ICON: &str = "icons/close.svg";
 pub(crate) const MINIMIZE_ICON: &str = "icons/minimize.svg";
 /// The square that maximizes such a window, or puts it back.
 pub(crate) const MAXIMIZE_ICON: &str = "icons/maximize.svg";
-const ICONS: [(&str, &str); 3] = [
+/// A shield, for what keeps the commands dotori's model runs away from its own files.
+pub(crate) const SHIELD_ICON: &str = "icons/shield.svg";
+/// The shield with a check, for when the sandbox is on.
+pub(crate) const SHIELD_ON_ICON: &str = "icons/shield-on.svg";
+const ICONS: [(&str, &str); 5] = [
+    (
+        SHIELD_ICON,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.5-3 8.5-7 10-4-1.5-7-5.5-7-10V6l7-3z"/></svg>"#,
+    ),
+    (
+        SHIELD_ON_ICON,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.5-3 8.5-7 10-4-1.5-7-5.5-7-10V6l7-3z"/><path d="M9 12l2 2 4-4"/></svg>"#,
+    ),
     (
         CLOSE_ICON,
         r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>"#,

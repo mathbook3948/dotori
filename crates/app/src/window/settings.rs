@@ -48,6 +48,7 @@ use crate::window::parts::logo;
 use crate::window::parts::prose;
 use crate::window::pcs::PcsView;
 use crate::window::routines::RoutinesView;
+use crate::window::sandbox::SandboxView;
 use crate::window::theme::Look;
 use crate::window::theme::Theme;
 
@@ -81,6 +82,7 @@ pub(crate) struct SettingsView {
     pcs: Entity<PcsView>,
     routines: Entity<RoutinesView>,
     notes: Entity<NotesView>,
+    sandbox: Entity<SandboxView>,
 }
 
 #[derive(Clone)]
@@ -118,6 +120,10 @@ impl SettingsView {
         };
         let routines = cx.new(|cx| RoutinesView::new(&home, cx));
         let notes = cx.new(|cx| NotesView::new(&home, cx));
+        let sandbox = {
+            let home = home.clone();
+            cx.new(|cx| SandboxView::new(home, cx))
+        };
         let slack = SlackForm::of(settings.slack.as_ref());
         let telegram = TelegramForm::of(settings.telegram.as_ref());
         let telegram_token = secret(cx);
@@ -139,6 +145,7 @@ impl SettingsView {
             pcs,
             routines,
             notes,
+            sandbox,
             home,
             earlier: settings,
             openai_compatible: form.openai_compatible,
@@ -442,6 +449,7 @@ impl Render for SettingsView {
                     .child(div().h_4())
                     .child(self.look_card(&theme, cx))
                     .child(div().h_4())
+                    .child(self.sandbox.clone())
                     .child(
                         div()
                             .flex()

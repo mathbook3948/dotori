@@ -27,6 +27,7 @@ use tokio::task::JoinHandle;
 use tokio::time;
 
 use crate::process::Tree;
+use crate::sandbox::Sandbox;
 
 /// The name of the tool that reads a text file.
 pub const READ_FILE: &str = "read_file";
@@ -56,6 +57,8 @@ pub struct BasicTools {
     pub hidden_env: Vec<String>,
     /// A folder whose files these tools leave alone, such as dotori's own.
     pub private: Option<Private>,
+    /// The sandbox commands run in when it works on this PC, which hides the private folder.
+    pub sandbox: Option<Arc<Sandbox>>,
 }
 
 /// A folder the basic tools leave alone, apart from `open` inside it.
@@ -380,7 +383,14 @@ impl BasicTools {
             .map(Duration::from_secs)
             .unwrap_or(self.limit)
             .min(self.limit);
-        let mut command = shell_command(&input.command);
+        let confinement = match &self.sandbox {
+            Some(sandbox) => sandbox.ready().await.map(|found| (sandbox, found)),
+            None => None,
+        };
+        let mut command = match confinement {
+            Some((sandbox, found)) => sandbox.command(found, &input.command, &folder),
+            None => shell_command(&input.command),
+        };
         command
             .current_dir(&folder)
             .stdin(Stdio::null())

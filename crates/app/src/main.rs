@@ -20,6 +20,7 @@ mod notes;
 mod peers;
 mod replace;
 mod routines;
+mod sandbox;
 mod screen_link;
 mod search_eval;
 mod settings;
@@ -36,11 +37,15 @@ use std::process::ExitCode;
 
 use crate::home::Home;
 
-const USAGE: &str = "usage: dotori [daemon | chat | window | settings | search-eval <file>]";
+const USAGE: &str =
+    "usage: dotori [daemon | chat | window | settings | search-eval <file> | sandbox install]";
 
 #[tokio::main]
 async fn main() -> ExitCode {
     let command = env::args().nth(1);
+    if command.as_deref() == Some("sandbox") {
+        return sandbox::run(env::args().nth(2).as_deref());
+    }
     let home = match Home::find() {
         Ok(home) => home,
         Err(error) => return fail(&error),

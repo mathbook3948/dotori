@@ -14,6 +14,7 @@
 - [메모리](architecture/memory.md): 비서가 몇 달에서 몇 년 동안 기억을 유지하는 방법을 정한다.
 - [프로세스 구조](architecture/processes.md): dotori를 어떤 프로세스로 나눠 실행하는지 정한다.
 - [루틴](architecture/routines.md): 주인이 정해 둔 시간에 비서가 알아서 하는 일을 어떻게 다루는지 정한다.
+- [샌드박스](architecture/sandbox.md): dotori의 모델이 실행하는 셸 명령을 어떤 샌드박스에서 돌리는지 정한다.
 - [세션](architecture/sessions.md): 주인이 어디서 비서와 말하고, 대화를 어떤 세션으로 나누는지 정한다.
 - [Slack 연결](architecture/slack.md): Slack을 채널과 연동으로 어떻게 쓰는지 정한다.
 - [Telegram 연결](architecture/telegram.md): Telegram을 주인이 비서와 말하는 채널로 어떻게 쓰는지 정한다.

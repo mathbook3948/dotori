@@ -36,6 +36,7 @@ fn tools() -> (WithBasic, PathBuf) {
                 folder: folder.clone(),
                 open: folder.join("work"),
             }),
+            sandbox: None,
         },
         rest: Arc::new(Nothing),
     };
