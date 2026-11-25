@@ -84,14 +84,16 @@ Fact 'Parent holds SeAssignPrimaryTokenPrivilege at launch' ([bool]($privAfter -
 Fact 'Parent holds SeIncreaseQuotaPrivilege at launch' ([bool]($privAfter -match 'SeIncreaseQuota'))
 
 Section '1. Choose the synthetic SID'
+$AclEdit = Join-Path $Source 'acledit.ps1'
+Write-Host 'icacls.exe cannot take an unmapped SID (it fails with error 1332), so ACEs for the synthetic SID go through .NET FileSystemAclExtensions.SetAccessControl, which calls SetNamedSecurityInfo.'
 $Scratch = Join-Path $env:TEMP 'probe-sid-scratch'
 New-Item -ItemType Directory -Force $Scratch | Out-Null
 $Sid = $null
 foreach ($candidate in 'S-1-5-21-0-0-0-4242', 'S-1-5-21-4242-4242-4242-4242', 'S-1-9-4242') {
     $parse = [Sandbox]::ParseSid($candidate)
-    $out = & icacls.exe $Scratch /grant "*${candidate}:(OI)(CI)F" 2>&1 | Out-String
+    $out = & $AclEdit grant $Scratch $candidate | Out-String
     $code = $LASTEXITCODE
-    Write-Host "   $candidate : $parse ; icacls /grant exit=$code"
+    Write-Host "   $candidate : $parse ; SetNamedSecurityInfo grant exit=$code"
     Show $out 2
     if (-not $Sid -and $code -eq 0 -and $parse.StartsWith('valid')) { $Sid = $candidate }
 }
@@ -178,8 +180,9 @@ $Cases = @(
     NewCase '04b' 'read dotori-probe\work\x.txt' 'works' "cmd.exe /d /c type `"$Work\x.txt`"" -Group acl -Check { param($r) $r.ExitCode -eq 0 -and $r.Output -match 'work-ok' }
     NewCase '04c' 'list dotori-probe\work' 'works' "cmd.exe /d /c dir /b `"$Work`"" -Group acl
     NewCase '05a' 'read data folder ACL (icacls, READ_CONTROL)' 'fails' "icacls.exe `"$Data`"" -Group acl -Before { $script:DataAclBefore = (& icacls.exe $Data 2>&1 | Out-String) }
-    NewCase '05b' 'icacls /grant SID:(OI)(CI)F on data folder' 'fails' "icacls.exe `"$Data`" /grant *${Sid}:(OI)(CI)F" -Group acl
-    NewCase '05c' 'icacls /remove:d SID on data folder' 'fails' "icacls.exe `"$Data`" /remove:d *$Sid" -Group acl
+    NewCase '05b' 'icacls /grant Everyone:(OI)(CI)F on data folder' 'fails' "icacls.exe `"$Data`" /grant *S-1-1-0:(OI)(CI)F" -Group acl
+    NewCase '05c' 'remove the SID ACEs on data folder (like /remove:d)' 'fails' "`"$Pwsh`" -NoProfile -NonInteractive -File `"$Tools\acledit.ps1`" purge `"$Data`" $Sid" -Group acl -Timeout 90
+    NewCase '05c2' 'grant the SID full control on data folder' 'fails' "`"$Pwsh`" -NoProfile -NonInteractive -File `"$Tools\acledit.ps1`" grant `"$Data`" $Sid" -Group acl -Timeout 90
     NewCase '05d' 'icacls /reset on data folder' 'fails' "icacls.exe `"$Data`" /reset" -Group acl
     NewCase '05e' 'takeown /f data folder' 'fails' "takeown.exe /f `"$Data`"" -Group acl
     NewCase '05f' 'read vault.key again after 05b-05e' 'fails' "cmd.exe /d /c type `"$Vault`"" -Group acl -Check $ReadVault -After {
@@ -295,13 +298,12 @@ function New-DataFolder([string]$Which, [switch]$Quiet) {
     $log = @()
     $log += & icacls.exe $Data /setowner "*$UserSid" /t /c /q 2>&1
     if ($Which -eq 'D') {
-        $log += & icacls.exe $Data /deny "*${Sid}:(OI)(CI)F" 2>&1
+        $log += & $AclEdit deny $Data $Sid
     }
     else {
-        $log += & icacls.exe $Data /inheritance:d 2>&1
-        $log += & icacls.exe $Data /remove:g "*$Sid" 2>&1
+        $log += & $AclEdit protect-purge $Data $Sid
     }
-    $log += & icacls.exe $Work /grant "*${Sid}:(OI)(CI)F" 2>&1
+    $log += & $AclEdit grant $Work $Sid
     if (-not $Quiet) {
         Write-Host "Data folder variant $Which built. icacls messages:"
         Show ($log | Out-String) 10
@@ -325,7 +327,7 @@ Remove-DataTree $Data
 Remove-DataTree $DataRenamed
 Reset-HomeTest
 New-Item -ItemType Directory -Force $Tools | Out-Null
-Copy-Item -LiteralPath (Join-Path $Source 'credread.ps1'), (Join-Path $Source 'openproc.ps1') -Destination $Tools -Force
+Copy-Item -LiteralPath (Join-Path $Source 'credread.ps1'), (Join-Path $Source 'openproc.ps1'), (Join-Path $Source 'acledit.ps1') -Destination $Tools -Force
 $Deep = Join-Path $HomeTest 'deep\a\b\c'
 New-Item -ItemType Directory -Force $Deep | Out-Null
 Set-Content -LiteralPath (Join-Path $Deep 'old.txt') -Value 'made before the home grant'
@@ -361,11 +363,11 @@ foreach ($f in [IO.Directory]::EnumerateFiles($UserHome, '*', $eo)) { $fileCount
 Fact 'Profile size' ("{0} folders, {1} files (counted in {2:N1}s)" -f $DirList.Count, $fileCount, $sw.Elapsed.TotalSeconds)
 
 Write-Host ''
-Write-Host "Applying the home grant: icacls `"$UserHome`" /grant *${Sid}:(OI)(CI)F"
+Write-Host "Applying the home grant: SetNamedSecurityInfo on `"$UserHome`" adding Allow $Sid FullControl (OI)(CI)"
 $script:GrantOut = ''
-$grantTime = Measure-Command { $script:GrantOut = & icacls.exe $UserHome /grant "*${Sid}:(OI)(CI)F" 2>&1 | Out-String; $script:GrantCode = $LASTEXITCODE }
+$grantTime = Measure-Command { $script:GrantOut = & $AclEdit grant $UserHome $Sid | Out-String; $script:GrantCode = $LASTEXITCODE }
 Show $script:GrantOut 10
-Fact 'Home grant (icacls on profile root, no /T) time' ("{0:N1}s, exit={1}" -f $grantTime.TotalSeconds, $script:GrantCode)
+Fact 'Home grant (one SetNamedSecurityInfo call on the profile root) time' ("{0:N1}s, exit={1}" -f $grantTime.TotalSeconds, $script:GrantCode)
 
 $probePaths = @(
     (Join-Path $Deep 'old.txt'), $SshKey, $env:APPDATA, $env:LOCALAPPDATA, $env:TEMP,
@@ -381,11 +383,7 @@ foreach ($p in $probePaths) {
 $oldState = Ace-State (Join-Path $Deep 'old.txt') $Sid
 Fact 'Pre-existing deep file got the ACE' $oldState
 if ($oldState -notmatch 'Allow') {
-    Write-Host 'Root grant did not propagate; trying again with /T'
-    $grantT = Measure-Command { $script:GrantOut = & icacls.exe $UserHome /grant "*${Sid}:(OI)(CI)F" /T /C /Q 2>&1 | Out-String }
-    Show $script:GrantOut 10
-    Fact 'Home grant with /T time' ("{0:N1}s" -f $grantT.TotalSeconds)
-    Fact 'Pre-existing deep file after /T' (Ace-State (Join-Path $Deep 'old.txt') $Sid)
+    Write-Host 'Root grant did not propagate to the pre-existing file.'
 }
 
 Write-Host ''

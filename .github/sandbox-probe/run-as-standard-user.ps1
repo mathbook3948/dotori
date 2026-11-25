@@ -6,7 +6,7 @@ Copy-Item -Path (Join-Path $PSScriptRoot '*') -Destination $Dir -Force
 
 $Name = 'probestd'
 $chars = [char[]]'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789'
-$Password = (-join (1..20 | ForEach-Object { $chars | Get-Random })) + 'Aa1!'
+$Password = (-join (1..10 | ForEach-Object { $chars | Get-Random })) + 'Aa1!'
 Write-Host "::add-mask::$Password"
 & net.exe user $Name $Password /add | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "net user /add failed with $LASTEXITCODE" }
