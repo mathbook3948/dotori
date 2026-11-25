@@ -31,6 +31,7 @@ use dotori_core::tool::ToolError;
 use dotori_core::tool::ToolSpec;
 use dotori_core::tool::Toolbox;
 use dotori_mcp::Tool;
+use dotori_mcp::browser::WAITS_FOR_OWNER;
 use serde_json::Value;
 use serde_json::json;
 use tokio::sync::mpsc;
@@ -44,6 +45,10 @@ const WAITING: &str = "This call waits for the owner, as the owner set it or as 
                        this tool does: the chat window shows it with 허락 and 거절. What the owner decides, and the result \
                        if it ran, arrive later on the `decision` channel. Do not call it again.";
 const RUN_FOR: Duration = Duration::from_secs(120);
+const CARD_SHOWN: &str = "dotori is showing the owner a card in the chat window for this call. Do not \
+                          wait for it and do not call it again: what the owner does with the card, or why it could not \
+                          be shown, arrives later on the `decision` channel. Meanwhile tell the owner in a few words \
+                          what the card is for.";
 
 /// What came of a call the owner decided about, for the main session.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -119,6 +124,11 @@ impl Asking {
         }
     }
 
+    /// A number no other call this dotori asks about has.
+    pub(crate) fn next_id(&self) -> u64 {
+        self.next.fetch_add(1, Ordering::SeqCst)
+    }
+
     /// Lets every call still waiting lapse, as when this PC takes up the main session again: a
     /// card from before shows it can no longer be done.
     pub(crate) fn lapse_waiting(&self) {
@@ -189,7 +199,7 @@ impl Toolbox for Asking {
         if !self.asked.needs(&call.name) {
             return self.inner.run(call);
         }
-        let id = self.next.fetch_add(1, Ordering::SeqCst);
+        let id = self.next_id();
         let (tool, input) = (call.name.clone(), call.input.clone());
         self.waiting
             .lock()
@@ -197,6 +207,38 @@ impl Toolbox for Asking {
             .insert(id, call);
         self.app.ask(id, tool, input);
         Box::pin(async { Ok(String::from(WAITING)) })
+    }
+}
+
+/// The main session's tools, where a browser call that waits for the owner's answer in the chat
+/// window runs on its own: the call returns at once, and what came of it arrives on the decision
+/// channel like a decided call.
+pub(crate) struct Waits {
+    pub(crate) asking: Arc<Asking>,
+    pub(crate) outcomes: mpsc::UnboundedSender<Outcome>,
+}
+
+impl Toolbox for Waits {
+    fn specs(&self) -> Vec<ToolSpec> {
+        self.asking.specs()
+    }
+
+    fn run(&self, call: ToolCall) -> BoxFuture<'_, Result<String, ToolError>> {
+        if !WAITS_FOR_OWNER.contains(&call.name.as_str()) {
+            return self.asking.run(call);
+        }
+        let id = self.asking.next_id();
+        let asking = Arc::clone(&self.asking);
+        let outcomes = self.outcomes.clone();
+        tokio::spawn(async move {
+            let tool = call.name.clone();
+            let text = match asking.run(call).await {
+                Ok(output) => output,
+                Err(error) => format!("The card could not be shown or finished: {}", error.detail),
+            };
+            let _ = outcomes.send(Outcome { id, tool, text });
+        });
+        Box::pin(async { Ok(String::from(CARD_SHOWN)) })
     }
 }
 

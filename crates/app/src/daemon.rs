@@ -41,12 +41,14 @@ use dotori_mcp::memory::Memory;
 use dotori_mcp::memory::MemoryConfig;
 use dotori_mcp::relay::relay;
 
+use crate::accounts::LinkedSites;
 use crate::browser_route::BROWSER_JOB;
 use crate::browser_route::BrowserRoute;
 use crate::confirm;
 use crate::confirm::Asking;
 use crate::confirm::DecisionChannel;
 use crate::confirm::Guarded;
+use crate::confirm::Waits;
 use crate::device;
 use crate::door;
 use crate::door::Door;
@@ -140,6 +142,7 @@ pub(crate) async fn serve(
         model,
         notes: Arc::clone(&notes),
         routines: Arc::clone(&routines),
+        sites: Some(Arc::new(LinkedSites::new(Arc::clone(&vault)))),
     });
     let browser = BrowserRoute::new(toolbox);
     let token = door::token()?;
@@ -190,7 +193,10 @@ pub(crate) async fn serve(
         notes: Arc::clone(&notes),
         routines: Arc::clone(&routines),
         shared: Arc::new(Previewed {
-            inner: Arc::clone(&asking) as Arc<dyn Toolbox>,
+            inner: Arc::new(Waits {
+                asking: Arc::clone(&asking),
+                outcomes: outcomes.clone(),
+            }),
             store: records.clone(),
         }),
     });

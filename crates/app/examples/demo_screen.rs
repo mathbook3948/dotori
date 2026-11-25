@@ -1,7 +1,8 @@
 //! Stands in for dotori's browser so an agent can see the windows ask the owner for it. Usage:
 //! `cargo run -p dotori --example demo_screen -- <home> <what dotori asks>`. It writes
 //! `<home>/screen.json` over the daemon's, sends one page asking the owner, and prints what the
-//! windows send back, such as `{"kind":"take"}`, until it is stopped.
+//! windows send back, such as `{"kind":"take"}`, until it is stopped. What dotori asks may also
+//! be a JSON object of the browser's state, such as `{"card": {...}}`, which is sent as it is.
 
 use std::io::BufRead;
 use std::io::BufReader;
@@ -32,12 +33,20 @@ fn main() {
         let page = page.clone();
         thread::spawn(move || {
             let mut write = stream.try_clone().expect("a stream");
-            let state = serde_json::json!({
+            let mut state = serde_json::json!({
                 "kind": "state",
                 "mode": "agent",
                 "url": "https://shop.example.com/login",
-                "asked": asked,
             });
+            match serde_json::from_str::<serde_json::Value>(&asked) {
+                Ok(serde_json::Value::Object(given)) => {
+                    state["mode"] = serde_json::json!("idle");
+                    for (key, value) in given {
+                        state[key] = value;
+                    }
+                }
+                _ => state["asked"] = serde_json::json!(asked),
+            }
             let frame = serde_json::json!({
                 "kind": "frame",
                 "jpeg": page,

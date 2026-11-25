@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
@@ -17,6 +18,7 @@ use tokio::process::Child;
 use tokio::process::Command;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 use tokio::sync::watch;
 use tokio::time;
 
@@ -24,10 +26,18 @@ use crate::Tool;
 use crate::ToolFuture;
 use crate::auth::Challenge;
 use crate::auth::Challenges;
+use crate::card;
+use crate::card::Accounts;
+use crate::card::Answer;
+use crate::card::FillSpec;
+use crate::card::Hidden;
+use crate::card::LogInSpec;
+use crate::card::Role;
 use crate::cdp::Cdp;
 use crate::chrome;
 use crate::fetch;
 use crate::playwright::Driver;
+use crate::playwright::key_events;
 use crate::screen::Ask;
 use crate::screen::Screen;
 use crate::script;
@@ -38,6 +48,7 @@ const LOAD_WAIT: Duration = Duration::from_secs(20);
 const SETTLE: Duration = Duration::from_millis(400);
 const POLL: Duration = Duration::from_millis(200);
 const SNAPSHOT: &str = include_str!("snapshot.js");
+const FILL_JS: &str = include_str!("fill.js");
 const SHOWN: usize = 20_000;
 const CLOSE_WAIT: Duration = Duration::from_secs(10);
 const RUN_WAIT: Duration = Duration::from_secs(100);
@@ -51,9 +62,21 @@ pub const RUN: &str = "run_in_browser";
 pub const READ: &str = "read_page";
 /// The tool that asks the owner to take the browser over.
 pub const ASK: &str = "ask_owner_in_browser";
+/// The tool that shows the owner a card to fill the page's fields.
+pub const FILL: &str = "ask_owner_to_fill";
+/// The tool that logs in with an account the vault keeps.
+pub const FILL_LOGIN: &str = "fill_login";
 /// Every browser tool, which run on the PC that holds the browser.
-pub const TOOLS: [&str; 3] = [RUN, READ, ASK];
+pub const TOOLS: [&str; 5] = [RUN, READ, ASK, FILL, FILL_LOGIN];
+/// The browser tools that may wait for the owner's answer in the chat window.
+pub const WAITS_FOR_OWNER: [&str; 2] = [FILL, FILL_LOGIN];
+/// How long a card waits for the owner before it closes.
+pub const CARD_WAIT: Duration = Duration::from_secs(240);
 const AUTH_WAIT: Duration = Duration::from_secs(90);
+const PRESS_PAUSE: Duration = Duration::from_millis(150);
+const NO_WINDOW: &str = "No dotori chat window is open on the PC that holds the browser, so the \
+                         owner cannot see a card. Ask the owner to open the dotori window on their PC and to ask \
+                         you there; a card never shows on Telegram, Slack or Discord.";
 const LOGINS_EVERY: Duration = Duration::from_secs(60);
 
 /// How the browser runs. The profile folder keeps logins between runs. Without an executable,
@@ -66,6 +89,8 @@ pub struct BrowserConfig {
     pub profile: PathBuf,
     /// Where the browser's logins go out to the owner's other PCs, and where theirs come in.
     pub logins: Option<Logins>,
+    /// Where the accounts the owner linked are kept.
+    pub accounts: Option<Arc<dyn Accounts>>,
 }
 
 /// Files that carry the browser's cookies between the owner's PCs. Only the user can read them.
@@ -96,6 +121,32 @@ pub struct Browser {
     logins: SharedChallenges,
     taking: AtomicBool,
     gave: watch::Sender<u64>,
+    card: std::sync::Mutex<Option<Waiting>>,
+    next_card: AtomicU64,
+    hidden: std::sync::Mutex<Hidden>,
+}
+
+struct Waiting {
+    id: u64,
+    answer: oneshot::Sender<Answer>,
+}
+
+enum Waited {
+    Answer(Answer),
+    Lapsed,
+    Replaced,
+}
+
+struct Checked {
+    origin: String,
+    host: String,
+    ticked: Vec<(u64, bool)>,
+}
+
+enum Step {
+    Type(u64, String),
+    Set(u64, bool),
+    Click(u64),
 }
 
 type SharedChallenges = Arc<std::sync::Mutex<Challenges<Arc<Cdp>>>>;
@@ -157,6 +208,8 @@ enum Action {
     Run,
     Read,
     Ask,
+    Fill,
+    LogIn,
 }
 
 /// One of the browser tools, all driving the same browser.
@@ -204,6 +257,9 @@ impl Browser {
             logins: Arc::default(),
             taking: AtomicBool::new(false),
             gave: watch::Sender::new(0),
+            card: std::sync::Mutex::new(None),
+            next_card: AtomicU64::new(1),
+            hidden: std::sync::Mutex::new(Hidden::default()),
         });
         if tokio::runtime::Handle::try_current().is_ok() {
             tokio::spawn(Arc::clone(&browser).listen(asks));
@@ -244,6 +300,10 @@ impl Browser {
                 }
                 Ask::Input(input) if input.get("kind").and_then(Value::as_str) == Some("auth") => {
                     self.auth(&input).await
+                }
+                Ask::Input(input) if input.get("kind").and_then(Value::as_str) == Some("fill") => {
+                    self.answer_card(&input);
+                    Ok(())
                 }
                 Ask::Input(input) => {
                     if self.owner.lock().await.is_some() {
@@ -361,6 +421,329 @@ impl Browser {
         answer_auth(&login, given).await
     }
 
+    fn answer_card(&self, input: &Value) {
+        let Some((id, answer)) = card::answer_of(input) else {
+            return;
+        };
+        let waiting = {
+            let mut card = self.card.lock().expect("unpoisoned");
+            if card.as_ref().is_none_or(|waiting| waiting.id != id) {
+                return;
+            }
+            card.take()
+        };
+        self.screen.update(json!({ "card": null }));
+        if let Some(waiting) = waiting {
+            let _ = waiting.answer.send(answer);
+        }
+    }
+
+    fn card_seen(&self) -> Result<(), String> {
+        if self.screen.watched() {
+            Ok(())
+        } else {
+            Err(String::from(NO_WINDOW))
+        }
+    }
+
+    async fn check_card(&self, id: u64, roles: &[(u64, Role)]) -> Result<Checked, String> {
+        if self.owner.lock().await.is_some() {
+            return Err(String::from(
+                "the owner is using the browser now; wait until they hand it back",
+            ));
+        }
+        let _acting = self.acting.lock().await;
+        let running = self.page().await?;
+        let page = Page { running: &running };
+        let roles: Vec<Value> = roles
+            .iter()
+            .map(|(at, role)| json!({ "ref": at, "role": role }))
+            .collect();
+        let checked = page
+            .evaluate(&format!(
+                "({FILL_JS})('check', {id}, {})",
+                Value::from(roles)
+            ))
+            .await?;
+        if let Some(error) = checked.get("error").and_then(Value::as_str) {
+            return Err(format!("{error}. Nothing was shown to the owner."));
+        }
+        let text = |key: &str| {
+            checked
+                .get(key)
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .ok_or_else(|| String::from("the page gave no origin"))
+        };
+        let ticked = checked
+            .get("checks")
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|check| Some((check.get("ref")?.as_u64()?, check.get("on")?.as_bool()?)))
+            .collect();
+        Ok(Checked {
+            origin: text("origin")?,
+            host: text("host")?,
+            ticked,
+        })
+    }
+
+    async fn wait_card(&self, id: u64, shown: Value) -> Waited {
+        let (answer, answered) = oneshot::channel();
+        *self.card.lock().expect("unpoisoned") = Some(Waiting { id, answer });
+        self.screen.update(json!({ "card": shown }));
+        let waited = match time::timeout(CARD_WAIT, answered).await {
+            Ok(Ok(answer)) => Waited::Answer(answer),
+            Ok(Err(_)) => Waited::Replaced,
+            Err(_) => Waited::Lapsed,
+        };
+        let mut card = self.card.lock().expect("unpoisoned");
+        if card.as_ref().is_some_and(|waiting| waiting.id == id) {
+            *card = None;
+            self.screen.update(json!({ "card": null }));
+        }
+        waited
+    }
+
+    async fn run_card(&self, id: u64, origin: &str, steps: Vec<Step>) -> Result<String, String> {
+        if self.owner.lock().await.is_some() {
+            return Err(String::from(
+                "the owner is using the browser now, so dotori filled nothing; ask again once they hand it back",
+            ));
+        }
+        let _acting = self.acting.lock().await;
+        self.screen.update(json!({ "mode": "agent" }));
+        let running = self.page().await?;
+        let page = Page { running: &running };
+        let done = self.steps(&page, id, origin, steps).await;
+        let shown = match page.guard().await {
+            Ok(()) => page.snapshot().await,
+            Err(error) => Err(error),
+        };
+        drop(running);
+        self.screen.update(json!({ "mode": "idle" }));
+        done?;
+        shown.map(|shown| fetch::window(&shown, 0, SHOWN))
+    }
+
+    async fn steps(
+        &self,
+        page: &Page<'_>,
+        id: u64,
+        origin: &str,
+        steps: Vec<Step>,
+    ) -> Result<(), String> {
+        let now = page.evaluate("location.origin").await?;
+        if now.as_str() != Some(origin) {
+            return Err(format!(
+                "the page moved to {} since the card was shown, so dotori filled nothing",
+                now.as_str().unwrap_or("another page")
+            ));
+        }
+        let on_card = |command: &'static str, at: u64| async move {
+            let done = page
+                .evaluate(&format!("({FILL_JS})('{command}', {id}, {at})"))
+                .await?;
+            if done.get("error").is_some() {
+                return Err(String::from(
+                    "the page changed since the card was shown, so dotori stopped; read the page and show the owner a new card",
+                ));
+            }
+            Ok(done)
+        };
+        let click = |at: u64| async move {
+            let point = on_card("at", at).await?;
+            let x = point.get("x").and_then(Value::as_f64).unwrap_or(0.0);
+            let y = point.get("y").and_then(Value::as_f64).unwrap_or(0.0);
+            page.running.screen.pointer(x, y);
+            page.send(
+                "Input.dispatchMouseEvent",
+                json!({ "type": "mouseMoved", "x": x, "y": y }),
+            )
+            .await?;
+            for kind in ["mousePressed", "mouseReleased"] {
+                page.send(
+                    "Input.dispatchMouseEvent",
+                    json!({ "type": kind, "x": x, "y": y, "button": "left", "clickCount": 1 }),
+                )
+                .await?;
+            }
+            Ok::<(), String>(())
+        };
+        for step in steps {
+            match step {
+                Step::Type(at, value) => {
+                    on_card("focus", at).await?;
+                    self.hidden.lock().expect("unpoisoned").add(&value);
+                    for event in key_events("Delete")? {
+                        page.send("Input.dispatchKeyEvent", event).await?;
+                    }
+                    if !value.is_empty() {
+                        page.send("Input.insertText", json!({ "text": value }))
+                            .await?;
+                    }
+                }
+                Step::Set(at, on) => {
+                    let now = on_card("checked", at).await?;
+                    if now.get("checked").and_then(Value::as_bool) != Some(on) {
+                        click(at).await?;
+                    }
+                }
+                Step::Click(at) => click(at).await?,
+            }
+        }
+        time::sleep(PRESS_PAUSE).await;
+        page.settle().await
+    }
+
+    async fn fill(&self, arguments: Value) -> Result<String, String> {
+        let spec = FillSpec::parse(&arguments)?;
+        self.card_seen()?;
+        if spec.keep && self.config.accounts.is_none() {
+            return Err(String::from("this dotori keeps no accounts"));
+        }
+        let id = self.next_card.fetch_add(1, Ordering::SeqCst);
+        let Checked {
+            origin,
+            host,
+            ticked,
+        } = self.check_card(id, &spec.roles()).await?;
+        if spec.keep && !card::keepable(&origin) {
+            return Err(format!(
+                "an account is kept only for a page sent over HTTPS, and this page is at {origin}; show the card without `keep`"
+            ));
+        }
+        let shown = spec.shown(id, &host, &ticked);
+        let (at, values, checks) = match self.wait_card(id, shown).await {
+            Waited::Answer(Answer::Press { at, values, checks }) => (at, values, checks),
+            Waited::Answer(_) => return Ok(card::closed(&spec.title, false)),
+            Waited::Lapsed => return Ok(card::closed(&spec.title, true)),
+            Waited::Replaced => {
+                return Err(String::from(
+                    "a newer card took this card's place before the owner answered",
+                ));
+            }
+        };
+        let link = at != spec.submit.at;
+        if link && !spec.links.iter().any(|named| named.at == at) {
+            return Err(String::from(
+                "the window pressed an element the card does not have, so dotori filled nothing",
+            ));
+        }
+        let typed = |at: u64| {
+            values
+                .iter()
+                .find(|(field, _)| *field == at)
+                .map(|(_, value)| value.clone())
+                .unwrap_or_default()
+        };
+        let mut steps = Vec::new();
+        let mut filled = Vec::new();
+        let mut set = Vec::new();
+        if !link {
+            for field in &spec.fields {
+                let value = typed(field.at);
+                if !value.trim().is_empty() {
+                    filled.push(field.at);
+                }
+                steps.push(Step::Type(field.at, value));
+            }
+            for check in &spec.checks {
+                if let Some((_, on)) = checks.iter().find(|(at, _)| *at == check.at) {
+                    steps.push(Step::Set(check.at, *on));
+                    set.push((check.at, *on));
+                }
+            }
+        }
+        steps.push(Step::Click(at));
+        let account = (spec.keep && !link).then(|| account_of(&spec, &origin, typed));
+        let shown = self.run_card(id, &origin, steps).await?;
+        let kept = match (account, &self.config.accounts) {
+            (Some(Ok(account)), Some(accounts)) => {
+                accounts.keep(&account).map(|()| Some(account.site.clone()))
+            }
+            (Some(Err(error)), _) => Err(error),
+            _ => Ok(None),
+        };
+        let told = card::pressed(
+            &spec,
+            at,
+            &filled,
+            &set,
+            kept.as_ref().map(Option::as_deref).map_err(String::as_str),
+        );
+        Ok(format!("{told}\n\nThe page now:\n{shown}"))
+    }
+
+    async fn log_in(&self, arguments: Value) -> Result<String, String> {
+        let spec = LogInSpec::parse(&arguments)?;
+        let accounts = self
+            .config
+            .accounts
+            .clone()
+            .ok_or("this dotori keeps no accounts")?;
+        let id = self.next_card.fetch_add(1, Ordering::SeqCst);
+        let Checked { origin, host, .. } = self.check_card(id, &spec.roles()).await?;
+        let found = if card::keepable(&origin) {
+            accounts.find(&origin)?
+        } else {
+            None
+        };
+        let Some(mut account) = found.filter(|account| account.origin == origin) else {
+            return Err(format!(
+                "the vault keeps no account for {origin}, so nothing was filled; to link one, show the owner a login card with ask_owner_to_fill and `keep`"
+            ));
+        };
+        if spec.id.is_some() && account.id.is_none() {
+            return Err(String::from(
+                "the account kept for this page has no id; name only `password` and `submit`",
+            ));
+        }
+        let asked = !account.trusted;
+        if asked {
+            self.card_seen()?;
+            let shown = json!({
+                "id": id,
+                "kind": "log_in",
+                "site": account.site,
+                "account": account.id.as_deref().map(card::shortened),
+                "host": host,
+            });
+            match self.wait_card(id, shown).await {
+                Waited::Answer(Answer::Allow { trust }) => {
+                    if trust {
+                        account.trusted = true;
+                        if let Err(error) = accounts.keep(&account) {
+                            eprintln!("dotori: the account stays one to ask about: {error}");
+                        }
+                    }
+                }
+                Waited::Answer(_) => return Ok(card::declined(&account.site)),
+                Waited::Lapsed => {
+                    return Ok(card::closed(&format!("{} 로그인", account.site), true));
+                }
+                Waited::Replaced => {
+                    return Err(String::from(
+                        "a newer card took this card's place before the owner answered",
+                    ));
+                }
+            }
+        }
+        let mut steps = Vec::new();
+        if let (Some(at), Some(id)) = (spec.id, account.id.clone()) {
+            steps.push(Step::Type(at, id));
+        }
+        steps.push(Step::Type(spec.password, account.password.clone()));
+        steps.push(Step::Click(spec.submit));
+        let shown = self.run_card(id, &origin, steps).await?;
+        Ok(format!(
+            "{}\n\nThe page now:\n{shown}",
+            card::logged_in(&account.site, asked)
+        ))
+    }
+
     async fn pick(&self, cdp: &Cdp, session: &str, input: &Value) -> Result<(), String> {
         let picker = self.screen.state.lock().expect("unpoisoned")["picker"].clone();
         self.screen.update(json!({ "picker": null }));
@@ -437,15 +820,21 @@ impl Browser {
 
     /// The tools that drive this browser.
     pub fn tools(self: &Arc<Self>) -> Vec<Box<dyn Tool>> {
-        [Action::Run, Action::Read, Action::Ask]
-            .into_iter()
-            .map(|action| {
-                Box::new(BrowserTool {
-                    browser: Arc::clone(self),
-                    action,
-                }) as Box<dyn Tool>
-            })
-            .collect()
+        [
+            Action::Run,
+            Action::Read,
+            Action::Ask,
+            Action::Fill,
+            Action::LogIn,
+        ]
+        .into_iter()
+        .map(|action| {
+            Box::new(BrowserTool {
+                browser: Arc::clone(self),
+                action,
+            }) as Box<dyn Tool>
+        })
+        .collect()
     }
 
     fn executable(&self) -> Result<PathBuf, String> {
@@ -1004,6 +1393,32 @@ async fn watch(
     }
 }
 
+fn account_of(
+    spec: &FillSpec,
+    origin: &str,
+    typed: impl Fn(u64) -> String,
+) -> Result<card::Account, String> {
+    let field = |kind: card::Kind| spec.fields.iter().find(|field| field.kind == kind);
+    let secret = field(card::Kind::Secret).ok_or("the card has no password field")?;
+    let password = typed(secret.at);
+    if password.trim().is_empty() {
+        return Err(String::from("the owner left the password empty"));
+    }
+    let id = field(card::Kind::Text).map(|field| (field.label.clone(), typed(field.at)));
+    if id.as_ref().is_some_and(|(_, id)| id.trim().is_empty()) {
+        return Err(String::from("the owner left the id empty"));
+    }
+    Ok(card::Account {
+        site: spec.site.clone().unwrap_or_default(),
+        origin: origin.to_owned(),
+        id_label: id.as_ref().map(|(label, _)| label.clone()),
+        id: id.map(|(_, id)| id.trim().to_owned()),
+        password_label: secret.label.clone(),
+        password,
+        trusted: false,
+    })
+}
+
 async fn answer_auth(
     login: &Challenge<Arc<Cdp>>,
     given: Option<(&str, &str)>,
@@ -1035,6 +1450,17 @@ pub(crate) fn document_allowed(url: &str) -> Result<(), String> {
 
 impl BrowserTool {
     async fn act(&self, arguments: Value) -> Result<String, String> {
+        let done = match self.action {
+            Action::Fill => self.browser.fill(arguments).await,
+            Action::LogIn => self.browser.log_in(arguments).await,
+            Action::Run | Action::Read | Action::Ask => self.drive(arguments).await,
+        };
+        let hidden = self.browser.hidden.lock().expect("unpoisoned");
+        done.map(|text| hidden.scrub(&text))
+            .map_err(|error| hidden.scrub(&error))
+    }
+
+    async fn drive(&self, arguments: Value) -> Result<String, String> {
         if self.action == Action::Ask {
             let reason = arguments
                 .get("reason")
@@ -1057,7 +1483,7 @@ impl BrowserTool {
                 .ok_or("`start_index` must be a whole number from 0")?,
         };
         let script = match self.action {
-            Action::Read | Action::Ask => None,
+            Action::Read | Action::Ask | Action::Fill | Action::LogIn => None,
             Action::Run => {
                 let code = arguments
                     .get("code")
@@ -1277,6 +1703,8 @@ impl Tool for BrowserTool {
             Action::Run => RUN,
             Action::Read => READ,
             Action::Ask => ASK,
+            Action::Fill => FILL,
+            Action::LogIn => FILL_LOGIN,
         }
     }
 
@@ -1298,9 +1726,30 @@ impl Tool for BrowserTool {
                 "Returns the page now open in the browser, with interactive elements as [n]."
             }
             Action::Ask => {
-                "Asks the owner, through a card in the chat window, to take the browser over, such as to log in, \
-                 since dotori never handles passwords. Returns at once; the owner hands it back \
-                 when done."
+                "Asks the owner, through a card in the chat window, to take the browser over and do \
+                 something themselves, such as passing a check dotori cannot. To log in, use fill_login \
+                 with an account the vault keeps, or ask_owner_to_fill to show the owner the page's \
+                 login fields. Returns at once; the owner hands the browser back when done."
+            }
+            Action::Fill => {
+                "Shows the owner a card in the dotori chat window to fill fields of the page open in \
+                 the browser, such as a login, a one-time code or a password reset, and to press its \
+                 button or one of its links. Read the page first and name its elements by their [n]. \
+                 dotori draws the card with the page's real host; you cannot put values in it, and \
+                 what the owner types goes to the page, never to you. With `keep` and `site`, dotori \
+                 seals the account (one secret field for the password, at most one text field for the \
+                 id) in its vault for fill_login later. The owner answers in the dotori window on their \
+                 PC; when they talk to you on Telegram, Slack or Discord, ask them to do it there. \
+                 You learn which button or link they pressed, which fields were filled, and the page \
+                 after."
+            }
+            Action::LogIn => {
+                "Logs in to the page open in the browser with the account the vault keeps for its \
+                 origin: dotori fills the id and password fields you name by their [n] and presses \
+                 `submit`. Unless the owner said not to ask again for this account, dotori first \
+                 asks them in the chat window. It fills only a page on the origin the account was \
+                 kept for, and you never see the id or the password. Fails when the vault keeps no \
+                 account for the page."
             }
         }
     }
@@ -1319,8 +1768,52 @@ impl Tool for BrowserTool {
             Action::Read => json!({ "type": "object", "properties": { "start_index": start } }),
             Action::Ask => json!({
                 "type": "object",
-                "properties": { "reason": { "type": "string", "description": "What the owner should do, such as `Log in to the bank`." } },
+                "properties": { "reason": { "type": "string", "description": "What the owner should do, such as `Pass the picture check`." } },
                 "required": ["reason"]
+            }),
+            Action::Fill => {
+                let named = json!({
+                    "type": "object",
+                    "properties": {
+                        "ref": { "type": "integer", "description": "The element's [n] in read_page." },
+                        "label": { "type": "string", "description": "What the card calls it, in Korean." }
+                    },
+                    "required": ["ref", "label"]
+                });
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "title": { "type": "string", "description": "The card's title, such as `쿠팡 로그인`." },
+                        "hint": { "type": "string", "description": "One short line under the title, such as `휴대폰으로 받은 인증번호를 적어 주세요`." },
+                        "site": { "type": "string", "description": "The name the owner knows the site by, such as `쿠팡`. Required with `keep`." },
+                        "fields": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "ref": { "type": "integer" },
+                                    "label": { "type": "string" },
+                                    "kind": { "type": "string", "enum": ["text", "secret", "code"], "description": "secret for a password, code for a one-time code dotori never keeps." }
+                                },
+                                "required": ["ref", "label", "kind"]
+                            }
+                        },
+                        "checks": { "type": "array", "items": named, "description": "Checkboxes the owner may tick, such as `로그인 상태 유지`." },
+                        "submit": named,
+                        "links": { "type": "array", "items": named, "description": "Links the owner may press instead, such as `비밀번호 찾기`." },
+                        "keep": { "type": "boolean", "description": "Keep the account in the vault for fill_login. Only for a login on an https page." }
+                    },
+                    "required": ["title", "fields", "submit"]
+                })
+            }
+            Action::LogIn => json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "integer", "description": "The [n] of the id field, when the page shows one." },
+                    "password": { "type": "integer", "description": "The [n] of the password field." },
+                    "submit": { "type": "integer", "description": "The [n] of the button that logs in." }
+                },
+                "required": ["password", "submit"]
             }),
         }
     }
