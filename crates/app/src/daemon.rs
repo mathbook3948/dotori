@@ -17,6 +17,7 @@ use dotori_connectors::peer::lease::Keeper;
 use dotori_connectors::record::jsonl::JsonlStore;
 use dotori_connectors::record::sqlite::SqliteStore;
 use dotori_connectors::record::sqlite::read_legacy;
+use dotori_connectors::sandbox::Sandbox;
 use dotori_connectors::sub_session::cli::CliRunner;
 use dotori_connectors::sub_session::cli::CodingAgent;
 use dotori_connectors::sub_session::cli::McpServer;
@@ -113,10 +114,13 @@ pub(crate) async fn serve(
     ready: impl FnOnce(),
     quit: impl Future<Output = ()>,
 ) -> Result<(), String> {
+    keep_to_itself();
     let _lock = DaemonLock::take(&home.lock())?;
     let settings = Settings::load(&home.settings())?;
     let vault = Arc::new(Vault::new(&home.root));
     let model = settings.model(vault::lookup(&vault))?;
+    let secrets = vault::secret_names(&settings, &vault);
+    let basic = basic(&home, &secrets);
     let shared = match tools::SharedTools::start().await {
         Ok(tools) => Some(Arc::new(tools)),
         Err(error) => {
@@ -131,7 +135,7 @@ pub(crate) async fn serve(
     let handoff = Arc::new(Handoff::default());
     let sub_sessions: Arc<dyn SubSessionRunner> = Arc::new(HandedOff {
         handoff: Arc::clone(&handoff),
-        inner: sub_session_runner(&home, &settings, &vault, &toolbox, shared)?,
+        inner: sub_session_runner(&home, &settings, &vault, &basic, &toolbox, shared)?,
     });
     let records = open_record(&home).await?;
     let notes = Notes::new(home.notes());
@@ -145,7 +149,7 @@ pub(crate) async fn serve(
     let token = door::token()?;
     let (app, address) = AppChannel::bind(token.clone()).map_err(|error| error.to_string())?;
     let app = Arc::new(app);
-    let (guarded, wrong) = settings.relays(vault::lookup(&vault), true);
+    let (guarded, wrong) = settings.relays(vault::lookup(&vault), true, &secrets);
     let (mut guarded, failed) = relay(guarded).await;
     for problem in wrong.iter().chain(&failed) {
         eprintln!("dotori: an MCP server is left out: {problem}");
@@ -175,8 +179,9 @@ pub(crate) async fn serve(
     }
     let asking = Arc::new(Asking::new(
         asked,
+        basic.sandbox.clone(),
         Arc::new(WithBasic {
-            basic: basic(&home, &settings),
+            basic,
             rest: Arc::new(Guarded {
                 tools: guarded,
                 rest: Arc::clone(&browser) as Arc<dyn Toolbox>,
@@ -620,15 +625,28 @@ async fn open_record(home: &Home) -> Result<SqliteStore, String> {
     Ok(SqliteStore::new(home.record(), device))
 }
 
-fn basic(home: &Home, settings: &Settings) -> BasicTools {
+/// Keeps other programs of the owner's user from reading this process's memory and environment
+/// on Linux, where any of them may otherwise trace it. The daemon and the MCP server hold keys.
+pub(crate) fn keep_to_itself() {
+    #[cfg(target_os = "linux")]
+    if let Err(error) =
+        rustix::process::set_dumpable_behavior(rustix::process::DumpableBehavior::NotDumpable)
+    {
+        eprintln!("dotori: other programs may still read this process's memory: {error}");
+    }
+}
+
+fn basic(home: &Home, secrets: &[String]) -> BasicTools {
+    let private = Private {
+        folder: home.root.clone(),
+        open: home.work(),
+    };
     BasicTools {
         folder: home.work(),
         limit: SHELL_LIMIT,
-        hidden_env: settings.guarded_secrets(),
-        private: home.work().parent().map(|dotori| Private {
-            folder: dotori.to_path_buf(),
-            open: home.work(),
-        }),
+        hidden_env: secrets.to_vec(),
+        sandbox: Some(Arc::new(Sandbox::new(&private))),
+        private: Some(private),
     }
 }
 
@@ -636,6 +654,7 @@ fn sub_session_runner(
     home: &Home,
     settings: &Settings,
     vault: &Vault,
+    basic: &BasicTools,
     toolbox: &Arc<dyn Toolbox>,
     shared: Option<Arc<tools::SharedTools>>,
 ) -> Result<Arc<dyn SubSessionRunner>, String> {
@@ -644,7 +663,7 @@ fn sub_session_runner(
         RunnerChoice::Llm => {
             return Ok(Arc::new(LlmRunner {
                 model: settings.sub_session_model(vault::lookup(vault))?,
-                basic: basic(home, settings),
+                basic: basic.clone(),
                 rest: Arc::clone(toolbox),
                 max_turns: SUB_SESSION_TURNS,
                 tool_timeout: TOOL_TIMEOUT,
@@ -683,3 +702,7 @@ async fn stop_signal() -> Result<(), String> {
         .await
         .map_err(|error| error.to_string())
 }
+
+#[cfg(test)]
+#[path = "daemon.test.rs"]
+mod tests;

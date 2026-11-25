@@ -15,6 +15,7 @@ fn browser() -> Arc<Browser> {
         executable: std::env::var_os("DOTORI_TEST_CHROME").map(PathBuf::from),
         downloads: base.join("chrome"),
         profile: base.join("profile"),
+        hidden_env: vec![String::from("CARGO_PKG_NAME")],
     })
 }
 
@@ -170,6 +171,20 @@ async fn a_playwright_script_fills_clicks_and_reads_the_page() {
 async fn a_page_is_read_and_a_move_to_a_refused_address_is_undone() {
     let browser = browser();
     let running = browser.page().await.expect("started");
+    assert_eq!(
+        browser.config.profile.join("DevToolsActivePort").exists(),
+        cfg!(windows),
+        "only Windows opens a DevTools port another program could find"
+    );
+    if cfg!(target_os = "linux")
+        && let Some(id) = running.child.id()
+    {
+        let environment = std::fs::read(format!("/proc/{id}/environ")).expect("environment");
+        assert!(
+            !String::from_utf8_lossy(&environment).contains("CARGO_PKG_NAME="),
+            "the browser inherited a hidden variable"
+        );
+    }
     let cdp = Arc::clone(&running.cdp);
     let page = Page { running: &running };
     page.go(FORM).await.expect("opened");
@@ -189,6 +204,21 @@ async fn a_page_is_read_and_a_move_to_a_refused_address_is_undone() {
         "{body}"
     );
     page.guard().await.expect("a data page is fine");
+    let file = format!(
+        "file://{}",
+        browser.config.profile.join("Local State").display()
+    );
+    page.send("Page.navigate", json!({ "url": file }))
+        .await
+        .expect("navigated");
+    page.settle().await.expect("settled");
+    let moved = page
+        .guard()
+        .await
+        .expect_err("a file in dotori's folder is refused");
+    assert!(moved.contains("refused"), "{moved}");
+    let at = page.evaluate("location.href").await.expect("read");
+    assert_eq!(at, json!("about:blank"));
 
     page.evaluate("location.href = 'http://127.0.0.1:9/'")
         .await
@@ -202,15 +232,17 @@ async fn a_page_is_read_and_a_move_to_a_refused_address_is_undone() {
     let read = tools[1].call(json!({})).await.expect("tool read");
     assert!(read.contains("Title: \nURL: about:blank"), "{read}");
 
-    let second = Browser::new(browser.config.clone());
+    let config = browser.config.clone();
+    browser.forget().await;
+    let second = Browser::new(config.clone());
     drop(
         second
             .page()
             .await
-            .expect("the left-over browser was closed"),
+            .expect("the browser of an owner that is gone made way"),
     );
     assert!(!cdp.open(), "the first browser is gone");
-    let _ = std::fs::remove_dir_all(&browser.config.profile);
+    let _ = std::fs::remove_dir_all(&config.profile);
 }
 
 #[tokio::test]
@@ -547,6 +579,7 @@ async fn logins_from_one_browser_are_taken_when_another_starts() {
             executable: std::env::var_os("DOTORI_TEST_CHROME").map(PathBuf::from),
             downloads: base.join("chrome"),
             profile: base.join(name).join("profile"),
+            hidden_env: Vec::new(),
             logins: Some(logins),
         })
     };
@@ -753,6 +786,7 @@ async fn giving_the_browser_back_while_waiting_leaves_it_with_the_agent() {
             executable: std::env::var_os("DOTORI_TEST_CHROME").map(PathBuf::from),
             downloads: base.join("chrome"),
             profile: base.join("profile"),
+            hidden_env: Vec::new(),
         },
         screen,
         heard,

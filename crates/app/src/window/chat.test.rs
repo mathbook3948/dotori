@@ -183,10 +183,16 @@ fn the_owner_allows_or_declines_a_call_from_its_card(cx: &mut TestAppContext) {
                 tool: String::from("run_shell"),
                 input: String::from(r#"{"command":"ls"}"#),
                 at: 0,
+                sandboxed: id == 7,
             }))
             .expect("sent");
     }
     cx.run_until_parked();
+    assert!(
+        cx.debug_bounds("sandboxed-7").is_some(),
+        "a sandboxed command says so"
+    );
+    assert!(cx.debug_bounds("sandboxed-8").is_none());
 
     click(cx, "allow-7");
     click(cx, "decline-8");
@@ -264,6 +270,7 @@ fn dotori_shows_it_works_while_the_daemon_says_so_and_not_while_it_waits_on_the_
             tool: String::from("run_shell"),
             input: String::from(r#"{"command":"ls"}"#),
             at: 0,
+            sandboxed: false,
         }))
         .expect("sent");
     cx.run_until_parked();

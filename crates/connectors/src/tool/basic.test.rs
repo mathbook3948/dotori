@@ -36,6 +36,7 @@ fn tools() -> (WithBasic, PathBuf) {
                 folder: folder.clone(),
                 open: folder.join("work"),
             }),
+            sandbox: None,
         },
         rest: Arc::new(Nothing),
     };
@@ -164,6 +165,28 @@ async fn a_command_gives_its_code_and_output_and_a_slow_one_is_stopped_with_its_
         .rsplit_once(')')
         .is_some_and(|(_, rest)| !rest.trim_start().starts_with(['Z', 'X']));
     assert!(!running, "the command's child was left running: {state}");
+    let _ = std::fs::remove_dir_all(folder);
+}
+
+#[tokio::test]
+async fn a_command_does_not_inherit_the_hidden_variables() {
+    let (mut tools, folder) = tools();
+    assert!(
+        std::env::var_os("CARGO_PKG_NAME").is_some(),
+        "cargo sets it"
+    );
+    tools.basic.hidden_env = vec![String::from("CARGO_PKG_NAME")];
+    let line = if cfg!(windows) {
+        "if defined CARGO_PKG_NAME (echo seen) else (echo hidden)"
+    } else {
+        "echo ${CARGO_PKG_NAME:-hidden}"
+    };
+
+    let ran = run(&tools, RUN_SHELL, json!({ "command": line }))
+        .await
+        .expect("ran");
+
+    assert!(ran.contains("hidden"), "{ran}");
     let _ = std::fs::remove_dir_all(folder);
 }
 
@@ -395,5 +418,96 @@ async fn a_private_file_stays_private_while_it_is_replaced() {
         & 0o777;
     assert_eq!(mode, 0o600);
     assert_eq!(std::fs::read_to_string(&secret).expect("read"), "KEY=2\n");
+    let _ = std::fs::remove_dir_all(folder);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_link_in_the_work_folder_does_not_lead_into_the_rest_of_dotori_s_folder() {
+    let (tools, folder) = tools();
+    let work = folder.join("work");
+    std::fs::create_dir_all(work.join("notes")).expect("made");
+    std::fs::write(folder.join("vault.sqlite3"), "sealed").expect("written");
+    std::os::unix::fs::symlink(&folder, work.join("up")).expect("linked");
+    std::os::unix::fs::symlink(folder.join("later.txt"), work.join("dangling")).expect("linked");
+    std::os::unix::fs::symlink(work.join("notes"), work.join("side")).expect("linked");
+
+    for (name, input) in [
+        (READ_FILE, json!({ "path": "up/vault.sqlite3" })),
+        (READ_FILE, json!({ "path": "missing/../up/vault.sqlite3" })),
+        (
+            WRITE_FILE,
+            json!({ "path": "missing/../up/new.txt", "content": "x" }),
+        ),
+        (WRITE_FILE, json!({ "path": "dangling", "content": "x" })),
+        (
+            EDIT_FILE,
+            json!({ "path": "up/vault.sqlite3", "old": "sealed", "new": "open" }),
+        ),
+    ] {
+        let refused = run(&tools, name, input.clone()).await;
+        let refused = refused.expect_err(&input.to_string());
+        assert!(refused.contains("dotori's own"), "{input}: {refused}");
+    }
+    assert!(!folder.join("new.txt").exists());
+    assert!(!folder.join("later.txt").exists());
+    assert_eq!(
+        std::fs::read_to_string(folder.join("vault.sqlite3")).expect("read"),
+        "sealed"
+    );
+    run(
+        &tools,
+        WRITE_FILE,
+        json!({ "path": "side/kept.md", "content": "ok" }),
+    )
+    .await
+    .expect("a link that stays in the work folder");
+    assert_eq!(
+        std::fs::read_to_string(work.join("notes").join("kept.md")).expect("read"),
+        "ok"
+    );
+    let _ = std::fs::remove_dir_all(folder);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn no_file_is_touched_once_the_work_folder_is_a_link() {
+    let (tools, folder) = tools();
+    std::fs::create_dir_all(&folder).expect("made");
+    std::fs::write(folder.join("vault.sqlite3"), "sealed").expect("written");
+    std::os::unix::fs::symlink(&folder, folder.join("work")).expect("linked");
+
+    for (name, input) in [
+        (READ_FILE, json!({ "path": "vault.sqlite3" })),
+        (WRITE_FILE, json!({ "path": "planted.txt", "content": "x" })),
+    ] {
+        let refused = run(&tools, name, input).await.expect_err("refused");
+        assert!(refused.contains("not a plain folder"), "{refused}");
+    }
+    assert!(!folder.join("planted.txt").exists());
+    let _ = std::fs::remove_dir_all(folder);
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn a_file_is_checked_where_its_handle_really_is() {
+    let (tools, folder) = tools();
+    std::fs::create_dir_all(folder.join("work")).expect("made");
+    std::fs::write(folder.join("vault.sqlite3"), "sealed").expect("written");
+    std::fs::write(folder.join("work").join("note.md"), "ok").expect("written");
+    let claimed = folder.join("work").join("note.md");
+
+    let swapped = File::open(folder.join("vault.sqlite3")).expect("opened");
+    let refused = tools
+        .basic
+        .held(&swapped, &claimed, &claimed)
+        .expect_err("the handle is dotori's own");
+    let kept = File::open(&claimed).expect("opened");
+
+    assert!(refused.contains("dotori's own"), "{refused}");
+    tools
+        .basic
+        .held(&kept, &claimed, &claimed)
+        .expect("the work folder");
     let _ = std::fs::remove_dir_all(folder);
 }

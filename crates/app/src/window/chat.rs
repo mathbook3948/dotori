@@ -62,6 +62,7 @@ use crate::window::motion::WORKING;
 use crate::window::motion::breath;
 use crate::window::parts::MONO;
 use crate::window::parts::SETTINGS_ICON;
+use crate::window::parts::SHIELD_ON_ICON;
 use crate::window::parts::logo;
 use crate::window::parts::prose;
 use crate::window::rich::rich;
@@ -458,9 +459,13 @@ impl ChatView {
                 return None;
             }
             ToWindow::Ask {
-                id, tool, input, ..
+                id,
+                tool,
+                input,
+                sandboxed,
+                ..
             } => self
-                .ask_card(theme, n, (*id, tool, input), mark, cx)
+                .ask_card(theme, n, (*id, tool, input, *sandboxed), mark, cx)
                 .pb(px(TURN_SPACE)),
             ToWindow::Owner { text, .. } => div()
                 .flex()
@@ -640,7 +645,7 @@ impl ChatView {
         &self,
         theme: &Theme,
         n: usize,
-        (id, tool, input): (u64, &str, &str),
+        (id, tool, input, sandboxed): (u64, &str, &str, bool),
         mark: &Mark,
         cx: &mut Context<Self>,
     ) -> gpui::Div {
@@ -864,6 +869,27 @@ impl ChatView {
                             )
                         }),
                 )
+                .when(sandboxed, |card| {
+                    card.child(
+                        div()
+                            .debug_selector(|| format!("sandboxed-{id}"))
+                            .flex()
+                            .items_center()
+                            .gap_1p5()
+                            .text_xs()
+                            .text_color(theme.muted)
+                            .child(
+                                svg()
+                                    .path(SHIELD_ON_ICON)
+                                    .flex_none()
+                                    .size(px(14.))
+                                    .text_color(theme.muted),
+                            )
+                            .child(prose(
+                                "샌드박스 안에서 실행해요. dotori의 금고와 기록은 보이지 않아요.",
+                            )),
+                    )
+                })
                 .child(footer),
         )
     }

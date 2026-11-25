@@ -66,6 +66,7 @@ pub(crate) fn holds_job(jobs: &std::path::Path, job: &str) -> bool {
 }
 
 pub(crate) async fn serve(home: Home) -> Result<(), String> {
+    crate::daemon::keep_to_itself();
     let settings = Settings::load(&home.settings())?;
     let vault = Vault::new(&home.root);
     let chosen = settings.browser.clone().unwrap_or_default();
@@ -75,6 +76,7 @@ pub(crate) async fn serve(home: Home) -> Result<(), String> {
             executable: chosen.path,
             downloads: home.chrome(),
             profile: home.browser(),
+            hidden_env: vault::secret_names(&settings, &vault),
             logins: Some(Logins {
                 out: home.logins_out(),
                 into: home.logins_in(),
@@ -118,7 +120,11 @@ pub(crate) async fn serve(home: Home) -> Result<(), String> {
         jobs: Some(home.jobs()),
     });
     tools.extend(memory.tools());
-    let (relays, wrong) = settings.relays(vault::lookup(&vault), false);
+    let (relays, wrong) = settings.relays(
+        vault::lookup(&vault),
+        false,
+        &vault::secret_names(&settings, &vault),
+    );
     let (relayed, failed) = relay(relays).await;
     for problem in wrong.iter().chain(&failed) {
         eprintln!("dotori: an MCP server is left out: {problem}");

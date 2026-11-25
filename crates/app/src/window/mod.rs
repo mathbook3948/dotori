@@ -9,6 +9,7 @@ mod parts;
 mod pcs;
 mod rich;
 mod routines;
+mod sandbox;
 mod screen;
 mod settings;
 mod theme;

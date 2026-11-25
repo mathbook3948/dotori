@@ -1,6 +1,10 @@
 //! The basic tools dotori's own loop has besides the shared MCP tools: reading and editing files
 //! and running a shell command. Coding agents bring their own.
 
+use std::fs::File;
+use std::io::Read;
+use std::io::Write;
+use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -20,12 +24,12 @@ use serde_json::Value;
 use serde_json::json;
 use tokio::io::AsyncRead;
 use tokio::io::AsyncReadExt;
-use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tokio::task::JoinHandle;
 use tokio::time;
 
 use crate::process::Tree;
+use crate::sandbox::Sandbox;
 
 /// The name of the tool that reads a text file.
 pub const READ_FILE: &str = "read_file";
@@ -41,6 +45,7 @@ const SHOWN: usize = 256 * 1024;
 const OUTPUT: usize = 30 * 1024;
 const LINE: usize = 4000;
 const DRAIN: Duration = Duration::from_secs(1);
+const HOPS: u8 = 40;
 
 static STAGED: AtomicU64 = AtomicU64::new(0);
 
@@ -54,6 +59,8 @@ pub struct BasicTools {
     pub hidden_env: Vec<String>,
     /// A folder whose files these tools leave alone, such as dotori's own.
     pub private: Option<Private>,
+    /// The sandbox commands run in when it works on this PC, which hides the private folder.
+    pub sandbox: Option<Arc<Sandbox>>,
 }
 
 /// A folder the basic tools leave alone, apart from `open` inside it.
@@ -61,6 +68,25 @@ pub struct BasicTools {
 pub struct Private {
     pub folder: PathBuf,
     pub open: PathBuf,
+}
+
+impl Private {
+    /// Whether the work folder is a plain folder, not a link, whose real place is inside the
+    /// private folder. It is made first when it is not there yet.
+    pub fn plain_work(&self) -> bool {
+        if std::fs::symlink_metadata(&self.open)
+            .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+        {
+            let _ = std::fs::create_dir_all(&self.folder);
+            let _ = std::fs::create_dir(&self.open);
+        }
+        let plain =
+            std::fs::symlink_metadata(&self.open).is_ok_and(|meta| meta.file_type().is_dir());
+        let (Ok(open), Ok(folder)) = (self.open.canonicalize(), self.folder.canonicalize()) else {
+            return false;
+        };
+        plain && open != folder && open.starts_with(&folder)
+    }
 }
 
 /// The basic tools in front of `rest`, which gets every other call.
@@ -201,9 +227,12 @@ impl BasicTools {
 
     async fn call(&self, call: &ToolCall) -> Result<String, String> {
         match call.name.as_str() {
-            READ_FILE => self.read(parse(&call.input)?).await,
-            WRITE_FILE => self.write(parse(&call.input)?).await,
-            EDIT_FILE => self.edit(parse(&call.input)?).await,
+            READ_FILE | WRITE_FILE | EDIT_FILE => {
+                let (tools, call) = (self.clone(), call.clone());
+                tokio::task::spawn_blocking(move || tools.file_call(&call))
+                    .await
+                    .map_err(|error| error.to_string())?
+            }
             RUN_SHELL => self.shell(parse(&call.input)?).await,
             other => Err(format!("{other} is not a basic tool")),
         }
@@ -221,58 +250,71 @@ impl BasicTools {
         })
     }
 
-    fn file(&self, path: &str) -> Result<PathBuf, String> {
-        let path = self.resolve(path)?;
-        let Some(private) = &self.private else {
-            return Ok(path);
-        };
-        let real = |path: &Path| {
-            path.ancestors()
-                .find_map(|known| {
-                    let rest = path.strip_prefix(known).ok()?;
-                    let mut real = known.canonicalize().ok()?;
-                    for part in rest.components() {
-                        match part {
-                            std::path::Component::ParentDir => {
-                                real.pop();
-                            }
-                            std::path::Component::CurDir => {}
-                            other => real.push(other),
-                        }
-                    }
-                    Some(real)
-                })
-                .unwrap_or_else(|| path.to_path_buf())
-        };
-        let (shown, open, private) = (real(&path), real(&private.open), real(&private.folder));
-        let inside = shown.starts_with(&private) || same_within(&shown, &private);
-        let work = shown.starts_with(&open) || same_within(&shown, &open);
-        if (inside && !work) || elsewhere_spelled(&shown) {
-            return Err(format!(
-                "{} is dotori's own; these tools work only in its work folder there",
-                path.display()
-            ));
+    fn file_call(&self, call: &ToolCall) -> Result<String, String> {
+        match call.name.as_str() {
+            READ_FILE => self.read(parse(&call.input)?),
+            WRITE_FILE => self.write(parse(&call.input)?),
+            _ => self.edit(parse(&call.input)?),
         }
-        Ok(path)
     }
 
-    async fn read(&self, input: ReadInput) -> Result<String, String> {
-        let path = self.file(&input.path)?;
+    fn file(&self, path: &str) -> Result<(PathBuf, PathBuf), String> {
+        let path = self.resolve(path)?;
+        if let Some(private) = &self.private
+            && !private.plain_work()
+        {
+            return Err(String::from(
+                "dotori's work folder is not a plain folder inside dotori's folder, so these \
+                 tools wait until it is one again",
+            ));
+        }
+        let real = followed(&path, &mut HOPS.clone());
+        self.allowed(&real, &path)?;
+        Ok((path, real))
+    }
+
+    fn allowed(&self, real: &Path, shown: &Path) -> Result<(), String> {
+        let Some(private) = &self.private else {
+            return Ok(());
+        };
+        let open = followed(&private.open, &mut HOPS.clone());
+        let folder = followed(&private.folder, &mut HOPS.clone());
+        let inside = real.starts_with(&folder) || same_within(real, &folder);
+        let work = real.starts_with(&open) || same_within(real, &open);
+        if (inside && !work) || elsewhere_spelled(real) {
+            return Err(format!(
+                "{} is dotori's own; these tools work only in its work folder there",
+                shown.display()
+            ));
+        }
+        Ok(())
+    }
+
+    fn held(&self, opened: &File, real: &Path, shown: &Path) -> Result<(), String> {
+        if self.private.is_none() {
+            return Ok(());
+        }
+        let at =
+            opened_at(opened, real).map_err(|error| format!("{}: {error}", shown.display()))?;
+        self.allowed(&at, shown)
+    }
+
+    fn read(&self, input: ReadInput) -> Result<String, String> {
+        let (path, real) = self.file(&input.path)?;
         let shown = path.display();
-        let kind = tokio::fs::metadata(&path)
-            .await
-            .map_err(|error| format!("{shown}: {error}"))?;
-        if !kind.is_file() {
+        let fail = |error: std::io::Error| format!("{shown}: {error}");
+        if !std::fs::metadata(&real).map_err(fail)?.is_file() {
+            return Err(format!("{shown} is not a file"));
+        }
+        let file = opening(&real).map_err(fail)?;
+        self.held(&file, &real, &path)?;
+        if !file.metadata().map_err(fail)?.is_file() {
             return Err(format!("{shown} is not a file"));
         }
         let mut bytes = Vec::new();
-        tokio::fs::File::open(&path)
-            .await
-            .map_err(|error| format!("{shown}: {error}"))?
-            .take(READ_BYTES + 1)
+        file.take(READ_BYTES + 1)
             .read_to_end(&mut bytes)
-            .await
-            .map_err(|error| format!("{shown}: {error}"))?;
+            .map_err(fail)?;
         if bytes.len() as u64 > READ_BYTES {
             return Err(format!(
                 "{shown} is too large to read whole; read parts of it with run_shell"
@@ -311,14 +353,9 @@ impl BasicTools {
         Ok(out)
     }
 
-    async fn write(&self, input: WriteInput) -> Result<String, String> {
-        let path = self.file(&input.path)?;
-        if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .map_err(|error| format!("{}: {error}", parent.display()))?;
-        }
-        replace(&path, input.content.as_bytes()).await?;
+    fn write(&self, input: WriteInput) -> Result<String, String> {
+        let (path, real) = self.file(&input.path)?;
+        self.replace(&path, &real, input.content.as_bytes())?;
         Ok(format!(
             "Wrote {} bytes to {}.",
             input.content.len(),
@@ -326,16 +363,26 @@ impl BasicTools {
         ))
     }
 
-    async fn edit(&self, input: EditInput) -> Result<String, String> {
-        let path = self.file(&input.path)?;
+    fn edit(&self, input: EditInput) -> Result<String, String> {
+        let (path, real) = self.file(&input.path)?;
         if input.old.is_empty() {
             return Err(String::from(
                 "`old` is empty; use write_file for a new file",
             ));
         }
-        let bytes = tokio::fs::read(&path)
-            .await
-            .map_err(|error| format!("{}: {error}", path.display()))?;
+        let fail = |error: std::io::Error| format!("{}: {error}", path.display());
+        let file = opening(&real).map_err(fail)?;
+        self.held(&file, &real, &path)?;
+        let mut bytes = Vec::new();
+        file.take(READ_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(fail)?;
+        if bytes.len() as u64 > READ_BYTES {
+            return Err(format!(
+                "{} is too large to edit here; change it with run_shell",
+                path.display()
+            ));
+        }
         let text = String::from_utf8(bytes).map_err(|_| {
             format!(
                 "{} is not UTF-8 text, so it is not edited; change it with run_shell",
@@ -366,12 +413,97 @@ impl BasicTools {
         } else {
             text.replacen(&old, &new, 1)
         };
-        replace(&path, changed.as_bytes()).await?;
+        self.replace(&path, &real, changed.as_bytes())?;
         Ok(format!(
             "Replaced {} place(s) in {}.",
             if input.all { found } else { 1 },
             path.display()
         ))
+    }
+
+    #[cfg(unix)]
+    fn replace(&self, shown: &Path, real: &Path, bytes: &[u8]) -> Result<(), String> {
+        use std::os::unix::fs::PermissionsExt;
+
+        use rustix::fs::AtFlags;
+        use rustix::fs::Mode;
+        use rustix::fs::OFlags;
+        use rustix::fs::RawMode;
+
+        let fail = |error: std::io::Error| format!("{}: {error}", shown.display());
+        let failed = |error: rustix::io::Errno| fail(error.into());
+        let (Some(parent), Some(name)) = (real.parent(), real.file_name()) else {
+            return Err(format!("{} is not a file", shown.display()));
+        };
+        std::fs::create_dir_all(parent).map_err(fail)?;
+        let folder = File::open(parent).map_err(fail)?;
+        self.held(&folder, parent, shown)?;
+        let kept = std::fs::symlink_metadata(real)
+            .ok()
+            .filter(std::fs::Metadata::is_file)
+            .map(|was| was.permissions().mode() & 0o7777);
+        let staged = format!(
+            ".{}.dotori-{}-{}",
+            name.to_string_lossy(),
+            std::process::id(),
+            STAGED.fetch_add(1, Ordering::Relaxed)
+        );
+        let fd = rustix::fs::openat(
+            &folder,
+            staged.as_str(),
+            OFlags::CREATE | OFlags::EXCL | OFlags::WRONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::from_bits_truncate(kept.unwrap_or(0o666) as RawMode),
+        )
+        .map_err(failed)?;
+        let written = (|| {
+            if let Some(kept) = kept {
+                rustix::fs::fchmod(&fd, Mode::from_bits_truncate(kept as RawMode))?;
+            }
+            let mut file = File::from(fd);
+            file.write_all(bytes)?;
+            file.sync_all()?;
+            drop(file);
+            rustix::fs::renameat(&folder, staged.as_str(), &folder, name)?;
+            Ok::<(), std::io::Error>(())
+        })();
+        written.map_err(|error| {
+            let _ = rustix::fs::unlinkat(&folder, staged.as_str(), AtFlags::empty());
+            fail(error)
+        })
+    }
+
+    #[cfg(not(unix))]
+    fn replace(&self, shown: &Path, real: &Path, bytes: &[u8]) -> Result<(), String> {
+        let fail = |error: std::io::Error| format!("{}: {error}", shown.display());
+        let (Some(parent), Some(name)) = (real.parent(), real.file_name()) else {
+            return Err(format!("{} is not a file", shown.display()));
+        };
+        std::fs::create_dir_all(parent).map_err(fail)?;
+        let staged = parent.join(format!(
+            ".{}.dotori-{}-{}",
+            name.to_string_lossy(),
+            std::process::id(),
+            STAGED.fetch_add(1, Ordering::Relaxed)
+        ));
+        let written = (|| {
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&staged)?;
+            self.held(&file, &staged, shown)
+                .map_err(std::io::Error::other)?;
+            file.write_all(bytes)?;
+            file.sync_all()?;
+            drop(file);
+            if let Ok(was) = std::fs::metadata(real) {
+                std::fs::set_permissions(&staged, was.permissions())?;
+            }
+            std::fs::rename(&staged, real)
+        })();
+        written.map_err(|error| {
+            let _ = std::fs::remove_file(&staged);
+            fail(error)
+        })
     }
 
     async fn shell(&self, input: ShellInput) -> Result<String, String> {
@@ -392,7 +524,18 @@ impl BasicTools {
             .map(Duration::from_secs)
             .unwrap_or(self.limit)
             .min(self.limit);
-        let mut command = shell_command(&input.command);
+        let confinement = match &self.sandbox {
+            Some(sandbox) => sandbox
+                .ready()
+                .await
+                .map_err(|blocked| blocked.to_string())?
+                .map(|found| (sandbox, found)),
+            None => None,
+        };
+        let mut command = match confinement {
+            Some((sandbox, found)) => sandbox.command(found, &input.command, &folder),
+            None => shell_command(&input.command),
+        };
         command
             .current_dir(&folder)
             .stdin(Stdio::null())
@@ -431,6 +574,32 @@ impl BasicTools {
             outputs(&drained(stdout).await, &drained(stderr).await)
         ))
     }
+}
+
+fn followed(path: &Path, hops: &mut u8) -> PathBuf {
+    let mut real = PathBuf::new();
+    for part in path.components() {
+        match part {
+            Component::ParentDir => {
+                real.pop();
+            }
+            Component::CurDir => {}
+            Component::Prefix(_) | Component::RootDir => real.push(part),
+            Component::Normal(_) => {
+                real.push(part);
+                if let Ok(resolved) = real.canonicalize() {
+                    real = resolved;
+                } else if *hops > 0
+                    && let Ok(target) = std::fs::read_link(&real)
+                {
+                    *hops -= 1;
+                    real.pop();
+                    real = followed(&real.join(target), hops);
+                }
+            }
+        }
+    }
+    real
 }
 
 #[cfg(unix)]
@@ -526,43 +695,38 @@ async fn drained(reading: Option<(Kept, JoinHandle<()>)>) -> String {
     shown
 }
 
-async fn replace(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let shown = path.display();
-    let target = match tokio::fs::canonicalize(path).await {
-        Ok(real) => real,
-        Err(_) => path.to_path_buf(),
-    };
-    let name = target
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let staged = target.with_file_name(format!(
-        ".{name}.dotori-{}-{}",
-        std::process::id(),
-        STAGED.fetch_add(1, Ordering::Relaxed)
-    ));
-    let written = async {
-        let mut open = tokio::fs::OpenOptions::new();
-        open.write(true).create_new(true);
-        #[cfg(unix)]
-        if let Ok(was) = tokio::fs::metadata(&target).await {
-            use std::os::unix::fs::PermissionsExt;
-            open.mode(was.permissions().mode() & 0o7777);
-        }
-        let mut file = open.open(&staged).await?;
-        file.write_all(bytes).await?;
-        file.sync_all().await?;
-        drop(file);
-        if let Ok(was) = tokio::fs::metadata(&target).await {
-            tokio::fs::set_permissions(&staged, was.permissions()).await?;
-        }
-        tokio::fs::rename(&staged, &target).await
-    }
-    .await;
-    written.map_err(|error| {
-        let _ = std::fs::remove_file(&staged);
-        format!("{shown}: {error}")
-    })
+#[cfg(unix)]
+fn opening(path: &Path) -> std::io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(rustix::fs::OFlags::NONBLOCK.bits() as i32)
+        .open(path)
+}
+
+#[cfg(not(unix))]
+fn opening(path: &Path) -> std::io::Result<File> {
+    File::open(path)
+}
+
+#[cfg(target_os = "linux")]
+fn opened_at(opened: &File, _real: &Path) -> std::io::Result<PathBuf> {
+    use std::os::fd::AsRawFd;
+    std::fs::read_link(format!("/proc/self/fd/{}", opened.as_raw_fd()))
+}
+
+#[cfg(target_os = "macos")]
+fn opened_at(opened: &File, _real: &Path) -> std::io::Result<PathBuf> {
+    use std::os::unix::ffi::OsStringExt;
+    let path = rustix::fs::getpath(opened)?;
+    Ok(PathBuf::from(std::ffi::OsString::from_vec(
+        path.into_bytes(),
+    )))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn opened_at(_opened: &File, real: &Path) -> std::io::Result<PathBuf> {
+    real.canonicalize()
 }
 
 impl std::fmt::Debug for WithBasic {

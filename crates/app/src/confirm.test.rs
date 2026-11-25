@@ -28,6 +28,7 @@ fn asking() -> (Asking, Arc<Counting>, Arc<AppChannel>) {
     let app = Arc::new(app);
     let asking = Asking::new(
         settings.asked(),
+        None,
         Arc::clone(&counting) as Arc<dyn Toolbox>,
         Arc::clone(&app),
     );
@@ -188,4 +189,39 @@ fn what_came_of_a_call_arrives_as_data_not_as_the_owner() {
     assert_eq!(incoming.id.as_str(), "decision-3");
     assert_eq!(incoming.place.as_str(), "mail__send");
     assert_eq!(incoming.sender_id.as_str(), DECISION);
+}
+
+#[tokio::test]
+async fn a_shell_command_s_card_says_whether_it_runs_in_the_sandbox() {
+    let base = std::env::temp_dir().join(format!("dotori-confirm-sandbox-{}", std::process::id()));
+    let private = dotori_connectors::tool::basic::Private {
+        folder: base.clone(),
+        open: base.join("work"),
+    };
+    let sandbox = Arc::new(Sandbox::new(&private));
+    let works = matches!(sandbox.ready().await, Ok(Some(_)));
+    let mut asked = Asked::default();
+    asked.always(RUN_SHELL);
+    asked.always("write_file");
+    let (app, _) = AppChannel::bind("token").expect("bound");
+    let app = Arc::new(app);
+    let asking = Asking::new(
+        asked,
+        Some(sandbox),
+        Arc::new(Counting(AtomicUsize::new(0))),
+        Arc::clone(&app),
+    );
+    let mut published = app.published();
+
+    for (tool, sandboxed) in [(RUN_SHELL, works), ("write_file", false)] {
+        asking.run(call(tool)).await.expect("waits");
+        let ToWindow::Ask {
+            sandboxed: said, ..
+        } = shown(&published.recv().await.expect("asked").line)
+        else {
+            panic!("an ask");
+        };
+        assert_eq!(said, sandboxed, "{tool}");
+    }
+    let _ = std::fs::remove_dir_all(base);
 }

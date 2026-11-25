@@ -112,6 +112,7 @@ impl Dotori {
                 folder: self.root.join("dotori"),
                 open: self.work.clone(),
             }),
+            sandbox: None,
         }
     }
 }
@@ -150,6 +151,7 @@ fn runner(replies: Vec<Vec<Action>>, max_turns: usize) -> (LlmRunner, Arc<Script
         limit: Duration::from_secs(5),
         hidden_env: Vec::new(),
         private: None,
+        sandbox: None,
     };
     runner_with(basic, replies, max_turns)
 }

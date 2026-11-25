@@ -38,7 +38,9 @@ use serde_json::json;
 use tokio::time;
 
 use crate::main_session::Linked;
+use crate::settings::Settings;
 use crate::settings::environment;
+use crate::settings::reserved;
 use crate::versioned;
 
 const VERSION: i64 = 1;
@@ -637,6 +639,19 @@ fn write_keychain(account: &str, key: &Key) -> bool {
         return false;
     };
     entry.set_secret(key).is_ok() && entry.get_secret().is_ok_and(|kept| kept == key)
+}
+
+/// Every name a secret goes by here: those the settings read and those the vault keeps. Programs
+/// dotori starts for the model, and MCP servers, do not inherit variables of these names.
+pub(crate) fn secret_names(settings: &Settings, vault: &Vault) -> Vec<String> {
+    let mut names = settings.secret_names();
+    match vault.names() {
+        Ok(kept) => names.extend(kept.into_iter().filter(|name| !reserved(name))),
+        Err(error) => eprintln!("dotori: the vault's names cannot be read: {error}"),
+    }
+    names.sort();
+    names.dedup();
+    names
 }
 
 /// Reads a key or token by the name it goes by: from the environment variable of that name when

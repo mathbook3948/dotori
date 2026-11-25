@@ -272,14 +272,17 @@ fn relayed_servers_come_by_address_or_command_and_take_tokens_from_variables() {
          [[mcp]]\nname = \"both\"\nurl = \"https://a\"\ncommand = \"b\"",
     )
     .expect("parsed");
-    let (chosen, wrong) = settings.relays(|_| None, false);
+    let (chosen, wrong) = settings.relays(|_| None, false, &[]);
     assert_eq!(chosen.len(), 1);
     assert_eq!(chosen[0].name, "files");
     assert_eq!(chosen[0].tools, Some(vec![String::from("read")]));
     assert_eq!(wrong.len(), 2);
     assert!(wrong[0].contains("NOTES"));
-    let (chosen, wrong) =
-        settings.relays(|name| (name == "NOTES").then(|| String::from("t")), false);
+    let (chosen, wrong) = settings.relays(
+        |name| (name == "NOTES").then(|| String::from("t")),
+        false,
+        &[],
+    );
     assert_eq!(chosen.len(), 2);
     assert_eq!(wrong.len(), 1);
     let text = toml::to_string(&settings).expect("written");
@@ -389,13 +392,13 @@ fn relayed_tools_the_owner_listed_wait_for_their_ok() {
     let asked = settings.asked();
 
     let shared: Vec<String> = settings
-        .relays(|_| None, false)
+        .relays(|_| None, false, &[])
         .0
         .into_iter()
         .map(|config| config.name)
         .collect();
     let guarded: Vec<String> = settings
-        .relays(|_| None, true)
+        .relays(|_| None, true, &[])
         .0
         .into_iter()
         .map(|config| config.name)
@@ -436,7 +439,7 @@ fn a_mistyped_confirm_name_makes_its_whole_server_wait_and_its_token_stays_hidde
     assert!(asked.needs("mail__read"));
     assert!(!asked.needs("notes__write"));
     assert_eq!(settings.guarded_secrets(), ["MAIL_TOKEN"]);
-    let (shared, wrong) = settings.relays(|_| Some(String::from("t")), false);
+    let (shared, wrong) = settings.relays(|_| Some(String::from("t")), false, &[]);
     let names: Vec<&str> = shared.iter().map(|config| config.name.as_str()).collect();
     assert_eq!(names, ["notes"]);
     assert!(wrong[0].contains("already has this name"), "{wrong:?}");
@@ -568,4 +571,85 @@ fn the_assistant_is_told_the_name_the_owner_gave_it() {
             .named(SUB_SESSION_SYSTEM)
             .contains("sub-session of 별,")
     );
+}
+
+#[test]
+fn every_name_a_secret_is_read_under_is_a_secret_name() {
+    for model in [
+        "[model]\nprovider = \"anthropic\"\napi_key_env = \"MY_ANTHROPIC\"",
+        "[model]\nprovider = \"anthropic\"",
+        "[model]\nprovider = \"openai-compatible\"\nbase_url = \"http://a\"\nmodel = \"m\"\napi_key_env = \"MY_OPENAI\"",
+    ] {
+        let settings = parse(&format!(
+            "{model}\n\n[slack]\napp_token_env = \"MY_APP\"\nbot_token_env = \"MY_BOT\"\nowner = \"U1\"\n\n\
+             [telegram]\nowner = 42\ntoken_env = \"MY_TG\"\n\n\
+             [discord]\nowner = \"123456789012345678\"\n\n\
+             [memory.embeddings]\nbase_url = \"http://e\"\nmodel = \"e\"\napi_key_env = \"MY_EMBED\"\n\n\
+             [[mcp]]\nname = \"mail\"\nurl = \"https://mail.example/mcp\"\ntoken_env = \"MAIL_TOKEN\"\nconfirm = [\"*\"]\n\n\
+             [[mcp]]\nname = \"notes\"\ncommand = \"notes-mcp\"\ntoken_env = \"NOTES_TOKEN\""
+        ))
+        .expect("parsed");
+        let asked = std::cell::RefCell::new(Vec::new());
+        let key = |name: &str| {
+            asked.borrow_mut().push(name.to_owned());
+            Some(String::from("value"))
+        };
+
+        settings.model(key).expect("model");
+        settings.sub_session_model(key).expect("sub-session model");
+        settings.embedding(key).expect("embedding");
+        let (_, off) = settings.channels(key);
+        assert!(off.is_empty(), "{off:?}");
+        settings.relays(key, true, &[]);
+        settings.relays(key, false, &[]);
+
+        let names = settings.secret_names();
+        let asked = asked.into_inner();
+        assert!(asked.len() >= 8, "{asked:?}");
+        for name in asked {
+            assert!(names.contains(&name), "{name} is read but not hidden");
+        }
+        assert!(names.iter().any(|name| name == MODEL_KEY));
+    }
+}
+
+#[test]
+fn a_command_server_gets_its_token_by_name_and_the_hidden_names() {
+    let settings =
+        parse("[[mcp]]\nname = \"notes\"\ncommand = \"notes-mcp\"\ntoken_env = \"NOTES\"")
+            .expect("parsed");
+    let hidden = vec![String::from("NOTES"), String::from("ANTHROPIC_API_KEY")];
+
+    let (left_out, wrong) = settings.relays(|_| None, false, &hidden);
+    assert!(left_out.is_empty());
+    assert!(wrong[0].contains("NOTES"), "{wrong:?}");
+    let (chosen, _) = settings.relays(|_| Some(String::from("t")), false, &hidden);
+
+    assert_eq!(
+        chosen[0].reach,
+        Reach::Command {
+            program: String::from("notes-mcp"),
+            args: Vec::new(),
+            token: Some((String::from("NOTES"), String::from("t"))),
+            hidden_env: hidden,
+        }
+    );
+}
+
+#[test]
+fn a_system_variable_is_never_a_token_nor_kept_from_commands() {
+    let settings = parse(
+        "[[mcp]]\nname = \"notes\"\ncommand = \"notes-mcp\"\ntoken_env = \"PATH\"\n\n\
+         [[mcp]]\nname = \"files\"\nurl = \"https://files.example/mcp\"\ntoken_env = \"home\"",
+    )
+    .expect("parsed");
+
+    let (chosen, wrong) = settings.relays(|_| Some(String::from("t")), false, &[]);
+
+    assert!(chosen.is_empty(), "{chosen:?}");
+    assert_eq!(wrong.len(), 2, "{wrong:?}");
+    assert!(wrong[0].contains("PATH"), "{wrong:?}");
+    let names = settings.secret_names();
+    assert!(!names.iter().any(|name| reserved(name)), "{names:?}");
+    assert!(reserved("LC_ALL") && reserved("XDG_RUNTIME_DIR") && !reserved("NOTES_TOKEN"));
 }

@@ -15,6 +15,8 @@ use std::time::UNIX_EPOCH;
 
 use dotori_connectors::channel::app::AppChannel;
 use dotori_connectors::peer::hub::Heard;
+use dotori_connectors::sandbox::Sandbox;
+use dotori_connectors::tool::basic::RUN_SHELL;
 use dotori_core::BoxFuture;
 use dotori_core::channel::Channel;
 use dotori_core::channel::ChannelError;
@@ -95,6 +97,7 @@ impl Toolbox for Guarded {
 /// The tools the main session uses, where the owner must allow each call the settings name.
 pub(crate) struct Asking {
     asked: Asked,
+    sandbox: Option<Arc<Sandbox>>,
     inner: Arc<dyn Toolbox>,
     app: Arc<AppChannel>,
     waiting: Mutex<HashMap<u64, ToolCall>>,
@@ -103,7 +106,13 @@ pub(crate) struct Asking {
 }
 
 impl Asking {
-    pub(crate) fn new(asked: Asked, inner: Arc<dyn Toolbox>, app: Arc<AppChannel>) -> Self {
+    /// `sandbox` is where the commands `inner` runs are confined, so a card can say so.
+    pub(crate) fn new(
+        asked: Asked,
+        sandbox: Option<Arc<Sandbox>>,
+        inner: Arc<dyn Toolbox>,
+        app: Arc<AppChannel>,
+    ) -> Self {
         let start = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|since| u64::try_from(since.as_millis()).unwrap_or(u64::MAX / 2))
@@ -111,6 +120,7 @@ impl Asking {
             .saturating_mul(1000);
         Self {
             asked,
+            sandbox,
             inner,
             app,
             waiting: Mutex::new(HashMap::new()),
@@ -195,8 +205,14 @@ impl Toolbox for Asking {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(id, call);
-        self.app.ask(id, tool, input);
-        Box::pin(async { Ok(String::from(WAITING)) })
+        Box::pin(async move {
+            let sandboxed = match &self.sandbox {
+                Some(sandbox) if tool == RUN_SHELL => matches!(sandbox.ready().await, Ok(Some(_))),
+                _ => false,
+            };
+            self.app.ask(id, tool, input, sandboxed);
+            Ok(String::from(WAITING))
+        })
     }
 }
 

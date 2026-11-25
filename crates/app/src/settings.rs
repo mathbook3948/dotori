@@ -745,6 +745,55 @@ impl Settings {
             .collect()
     }
 
+    /// Every name the settings read a secret under, given or not, with dotori's own model key and
+    /// each default name.
+    pub(crate) fn secret_names(&self) -> Vec<String> {
+        let mut names = [
+            MODEL_KEY,
+            ANTHROPIC_KEY,
+            SLACK_APP_KEY,
+            SLACK_BOT_KEY,
+            TELEGRAM_KEY,
+            DISCORD_KEY,
+        ]
+        .map(str::to_owned)
+        .to_vec();
+        let model = match &self.model {
+            ModelSettings::Anthropic { api_key_env, .. }
+            | ModelSettings::OpenaiCompatible { api_key_env, .. } => api_key_env,
+        };
+        let slack = self.slack.as_ref();
+        names.extend(
+            [
+                model.as_ref(),
+                self.memory
+                    .as_ref()
+                    .and_then(|memory| memory.embeddings.as_ref())
+                    .and_then(|embeddings| embeddings.api_key_env.as_ref()),
+                slack.and_then(|slack| slack.app_token_env.as_ref()),
+                slack.and_then(|slack| slack.bot_token_env.as_ref()),
+                self.telegram
+                    .as_ref()
+                    .and_then(|telegram| telegram.token_env.as_ref()),
+                self.discord
+                    .as_ref()
+                    .and_then(|discord| discord.token_env.as_ref()),
+            ]
+            .into_iter()
+            .flatten()
+            .chain(
+                self.mcp
+                    .iter()
+                    .filter_map(|server| server.token_env.as_ref()),
+            )
+            .cloned(),
+        );
+        names.retain(|name| !reserved(name));
+        names.sort();
+        names.dedup();
+        names
+    }
+
     /// The relayed tools the owner must allow before each call, by the name the model sees.
     /// `"*"` stands for every tool of its server.
     pub(crate) fn asked(&self) -> Asked {
@@ -764,10 +813,13 @@ impl Settings {
     /// The external MCP servers to relay, reading tokens through `key`. `guarded` picks the
     /// servers with tools that wait for the owner, which only the daemon relays, so only the
     /// main session reaches them; otherwise the rest, which the shared MCP server relays.
+    /// A server started as a command inherits none of the variables in `hidden` and gets only
+    /// its own token.
     pub(crate) fn relays(
         &self,
         key: impl Fn(&str) -> Option<String>,
         guarded: bool,
+        hidden: &[String],
     ) -> (Vec<RelayConfig>, Vec<String>) {
         let mut chosen = Vec::new();
         let mut wrong = Vec::new();
@@ -786,26 +838,33 @@ impl Settings {
             if server.confirm.is_empty() == guarded {
                 continue;
             }
-            let reach = match (&server.url, &server.command) {
-                (Some(url), None) => {
-                    let token = match &server.token_env {
-                        None => None,
-                        Some(variable) => match key(variable) {
-                            Some(token) => Some(token),
-                            None => {
-                                wrong.push(format!("{}: set {variable} to its token", server.name));
-                                continue;
-                            }
-                        },
-                    };
-                    Reach::Http {
-                        url: url.clone(),
-                        token,
-                    }
+            let token = match &server.token_env {
+                Some(variable) if reserved(variable) => {
+                    wrong.push(format!(
+                        "{}: {variable} holds a setting of the system, not a token",
+                        server.name
+                    ));
+                    continue;
                 }
+                None => None,
+                Some(variable) => match key(variable) {
+                    Some(token) => Some((variable.clone(), token)),
+                    None => {
+                        wrong.push(format!("{}: set {variable} to its token", server.name));
+                        continue;
+                    }
+                },
+            };
+            let reach = match (&server.url, &server.command) {
+                (Some(url), None) => Reach::Http {
+                    url: url.clone(),
+                    token: token.map(|(_, token)| token),
+                },
                 (None, Some(command)) => Reach::Command {
                     program: command.clone(),
                     args: server.args.clone(),
+                    token,
+                    hidden_env: hidden.to_vec(),
                 },
                 _ => {
                     wrong.push(format!("{}: give either `url` or `command`", server.name));
@@ -904,6 +963,39 @@ impl Settings {
         let channel = SlackChannel::new(config).map_err(|error| error.detail)?;
         Ok(vec![Arc::new(channel)])
     }
+}
+
+/// Whether `name` is a variable the system and programs set for themselves, such as `PATH`, which
+/// never holds a token and is never kept from a command.
+pub(crate) fn reserved(name: &str) -> bool {
+    const RESERVED: [&str; 24] = [
+        "PATH",
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "SHELL",
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+        "LANG",
+        "LANGUAGE",
+        "TERM",
+        "PWD",
+        "DISPLAY",
+        "WAYLAND_DISPLAY",
+        "DBUS_SESSION_BUS_ADDRESS",
+        "SSH_AUTH_SOCK",
+        "USERPROFILE",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "SYSTEMROOT",
+        "WINDIR",
+        "COMSPEC",
+        "PATHEXT",
+        "DOTORI_HOME",
+    ];
+    let name = name.to_ascii_uppercase();
+    RESERVED.contains(&name.as_str()) || name.starts_with("LC_") || name.starts_with("XDG_")
 }
 
 pub(crate) fn environment(variable: &str) -> Option<String> {
