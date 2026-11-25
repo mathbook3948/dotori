@@ -635,3 +635,21 @@ fn a_command_server_gets_its_token_by_name_and_the_hidden_names() {
         }
     );
 }
+
+#[test]
+fn a_system_variable_is_never_a_token_nor_kept_from_commands() {
+    let settings = parse(
+        "[[mcp]]\nname = \"notes\"\ncommand = \"notes-mcp\"\ntoken_env = \"PATH\"\n\n\
+         [[mcp]]\nname = \"files\"\nurl = \"https://files.example/mcp\"\ntoken_env = \"home\"",
+    )
+    .expect("parsed");
+
+    let (chosen, wrong) = settings.relays(|_| Some(String::from("t")), false, &[]);
+
+    assert!(chosen.is_empty(), "{chosen:?}");
+    assert_eq!(wrong.len(), 2, "{wrong:?}");
+    assert!(wrong[0].contains("PATH"), "{wrong:?}");
+    let names = settings.secret_names();
+    assert!(!names.iter().any(|name| reserved(name)), "{names:?}");
+    assert!(reserved("LC_ALL") && reserved("XDG_RUNTIME_DIR") && !reserved("NOTES_TOKEN"));
+}

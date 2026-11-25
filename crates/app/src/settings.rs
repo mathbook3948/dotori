@@ -788,6 +788,7 @@ impl Settings {
             )
             .cloned(),
         );
+        names.retain(|name| !reserved(name));
         names.sort();
         names.dedup();
         names
@@ -838,6 +839,13 @@ impl Settings {
                 continue;
             }
             let token = match &server.token_env {
+                Some(variable) if reserved(variable) => {
+                    wrong.push(format!(
+                        "{}: {variable} holds a setting of the system, not a token",
+                        server.name
+                    ));
+                    continue;
+                }
                 None => None,
                 Some(variable) => match key(variable) {
                     Some(token) => Some((variable.clone(), token)),
@@ -955,6 +963,39 @@ impl Settings {
         let channel = SlackChannel::new(config).map_err(|error| error.detail)?;
         Ok(vec![Arc::new(channel)])
     }
+}
+
+/// Whether `name` is a variable the system and programs set for themselves, such as `PATH`, which
+/// never holds a token and is never kept from a command.
+pub(crate) fn reserved(name: &str) -> bool {
+    const RESERVED: [&str; 24] = [
+        "PATH",
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "SHELL",
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+        "LANG",
+        "LANGUAGE",
+        "TERM",
+        "PWD",
+        "DISPLAY",
+        "WAYLAND_DISPLAY",
+        "DBUS_SESSION_BUS_ADDRESS",
+        "SSH_AUTH_SOCK",
+        "USERPROFILE",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "SYSTEMROOT",
+        "WINDIR",
+        "COMSPEC",
+        "PATHEXT",
+        "DOTORI_HOME",
+    ];
+    let name = name.to_ascii_uppercase();
+    RESERVED.contains(&name.as_str()) || name.starts_with("LC_") || name.starts_with("XDG_")
 }
 
 pub(crate) fn environment(variable: &str) -> Option<String> {

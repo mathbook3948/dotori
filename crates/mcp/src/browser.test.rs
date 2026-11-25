@@ -15,6 +15,7 @@ fn browser() -> Arc<Browser> {
         executable: std::env::var_os("DOTORI_TEST_CHROME").map(PathBuf::from),
         downloads: base.join("chrome"),
         profile: base.join("profile"),
+        hidden_env: vec![String::from("CARGO_PKG_NAME")],
     })
 }
 
@@ -175,6 +176,15 @@ async fn a_page_is_read_and_a_move_to_a_refused_address_is_undone() {
         cfg!(windows),
         "only Windows opens a DevTools port another program could find"
     );
+    if cfg!(target_os = "linux")
+        && let Some(id) = running.child.id()
+    {
+        let environment = std::fs::read(format!("/proc/{id}/environ")).expect("environment");
+        assert!(
+            !String::from_utf8_lossy(&environment).contains("CARGO_PKG_NAME="),
+            "the browser inherited a hidden variable"
+        );
+    }
     let cdp = Arc::clone(&running.cdp);
     let page = Page { running: &running };
     page.go(FORM).await.expect("opened");
@@ -194,20 +204,21 @@ async fn a_page_is_read_and_a_move_to_a_refused_address_is_undone() {
         "{body}"
     );
     page.guard().await.expect("a data page is fine");
-    page.evaluate("location.href = 'file:///etc/hosts'")
-        .await
-        .ok();
-    page.settle().await.expect("settled");
-    let at = page.evaluate("location.href").await.expect("read");
-    if at.as_str().is_some_and(|at| at.starts_with("file:")) {
-        let moved = page.guard().await.expect_err("a file on this PC");
-        assert!(moved.contains("refused"), "{moved}");
-    }
-    let at = page.evaluate("location.href").await.expect("read");
-    assert!(
-        !at.as_str().unwrap_or_default().starts_with("file:"),
-        "{at}"
+    let file = format!(
+        "file://{}",
+        browser.config.profile.join("Local State").display()
     );
+    page.send("Page.navigate", json!({ "url": file }))
+        .await
+        .expect("navigated");
+    page.settle().await.expect("settled");
+    let moved = page
+        .guard()
+        .await
+        .expect_err("a file in dotori's folder is refused");
+    assert!(moved.contains("refused"), "{moved}");
+    let at = page.evaluate("location.href").await.expect("read");
+    assert_eq!(at, json!("about:blank"));
 
     page.evaluate("location.href = 'http://127.0.0.1:9/'")
         .await
@@ -568,6 +579,7 @@ async fn logins_from_one_browser_are_taken_when_another_starts() {
             executable: std::env::var_os("DOTORI_TEST_CHROME").map(PathBuf::from),
             downloads: base.join("chrome"),
             profile: base.join(name).join("profile"),
+            hidden_env: Vec::new(),
             logins: Some(logins),
         })
     };
@@ -774,6 +786,7 @@ async fn giving_the_browser_back_while_waiting_leaves_it_with_the_agent() {
             executable: std::env::var_os("DOTORI_TEST_CHROME").map(PathBuf::from),
             downloads: base.join("chrome"),
             profile: base.join("profile"),
+            hidden_env: Vec::new(),
         },
         screen,
         heard,

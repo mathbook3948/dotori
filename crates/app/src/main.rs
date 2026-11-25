@@ -55,8 +55,14 @@ async fn main() -> ExitCode {
         None | Some("daemon") => daemon::run(home).await,
         Some("chat") => chat::run(home).await,
         Some("mcp") => tools::serve(home).await,
-        Some("window") => window::run(home, window::Which::Chat),
-        Some("settings") => window::run(home, window::Which::Settings),
+        Some("window") => {
+            daemon::keep_to_itself();
+            window::run(home, window::Which::Chat)
+        }
+        Some("settings") => {
+            daemon::keep_to_itself();
+            window::run(home, window::Which::Settings)
+        }
         Some("search-eval") => search_eval::run(home, env::args().nth(2)).await,
         Some(_) => return fail(USAGE),
     };

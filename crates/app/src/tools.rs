@@ -76,6 +76,7 @@ pub(crate) async fn serve(home: Home) -> Result<(), String> {
             executable: chosen.path,
             downloads: home.chrome(),
             profile: home.browser(),
+            hidden_env: vault::secret_names(&settings, &vault),
             logins: Some(Logins {
                 out: home.logins_out(),
                 into: home.logins_in(),

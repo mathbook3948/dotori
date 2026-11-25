@@ -40,6 +40,7 @@ use tokio::time;
 use crate::main_session::Linked;
 use crate::settings::Settings;
 use crate::settings::environment;
+use crate::settings::reserved;
 use crate::versioned;
 
 const VERSION: i64 = 1;
@@ -645,7 +646,7 @@ fn write_keychain(account: &str, key: &Key) -> bool {
 pub(crate) fn secret_names(settings: &Settings, vault: &Vault) -> Vec<String> {
     let mut names = settings.secret_names();
     match vault.names() {
-        Ok(kept) => names.extend(kept),
+        Ok(kept) => names.extend(kept.into_iter().filter(|name| !reserved(name))),
         Err(error) => eprintln!("dotori: the vault's names cannot be read: {error}"),
     }
     names.sort();

@@ -65,6 +65,8 @@ pub struct BrowserConfig {
     pub executable: Option<PathBuf>,
     pub downloads: PathBuf,
     pub profile: PathBuf,
+    /// Variables the browser does not inherit from dotori, such as every secret.
+    pub hidden_env: Vec<String>,
     /// Where the browser's logins go out to the owner's other PCs, and where theirs come in.
     pub logins: Option<Logins>,
 }
@@ -518,6 +520,10 @@ impl Browser {
             let mut command = devtools_command(&executable);
             command
                 .arg(format!("--user-data-dir={}", self.config.profile.display()))
+                .arg(format!(
+                    "--disk-cache-dir={}",
+                    self.config.profile.join("Cache").display()
+                ))
                 .arg("--no-first-run")
                 .arg("--no-default-browser-check")
                 .arg("--disable-blink-features=AutomationControlled")
@@ -528,6 +534,9 @@ impl Browser {
                 .arg(format!("--window-size={WIDTH},{HEIGHT}"));
             if root() {
                 command.arg("--no-sandbox");
+            }
+            for hidden in &self.config.hidden_env {
+                command.env_remove(hidden);
             }
             let mut child = command
                 .spawn()
