@@ -5,6 +5,7 @@
 
 mod auth;
 pub mod browser;
+pub mod card;
 mod cdp;
 mod chrome;
 pub mod fetch;

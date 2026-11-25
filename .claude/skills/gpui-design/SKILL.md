@@ -46,7 +46,7 @@ bash .claude/skills/gpui-design/demo.sh stop "$home"
 
 `talk` takes your own messages too. `shot ... light 5` saves five frames a few milliseconds apart, for checking that motion shows steps between its start and its end.
 
-`ask "$home" "<what dotori asks>"` stands in for dotori's browser and asks the owner for it, so the browser card shows; run it before `shot`. What the windows send back, such as `{"kind":"take"}`, lands in `$home/screen.log`, and the browser window opens as `dotori 브라우저`.
+`ask "$home" "<what dotori asks>"` stands in for dotori's browser and asks the owner for it, so the browser card shows; run it before `shot`. Given a JSON object instead, such as `'{"card": {...}}'`, it sends that as the browser's state, so a login card or an account card shows. What the windows send back, such as `{"kind":"take"}`, lands in `$home/screen.log`, and the browser window opens as `dotori 브라우저`.
 
 Take every theme that exists in both looks. Read each screenshot yourself.
 

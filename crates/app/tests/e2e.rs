@@ -226,6 +226,12 @@ async fn the_owner_talks_to_dotori_and_decides_on_a_command() {
     window.reply(model::REMINDED).await;
     let named: Vec<String> = tools.lock().expect("tools").clone();
     assert!(named.len() > 5, "dotori offers its tools: {named:?}");
+    for owner in ["ask_owner_in_browser", "ask_owner_to_fill", "fill_login"] {
+        assert!(
+            named.iter().any(|name| name == owner),
+            "the main session has {owner}: {named:?}"
+        );
+    }
     let misnamed: Vec<&String> = named
         .iter()
         .filter(|name| !dotori_core::tool::well_named(name))

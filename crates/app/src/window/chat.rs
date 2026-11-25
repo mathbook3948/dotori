@@ -4,8 +4,11 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
+use dotori_connectors::channel::DECISION;
 use dotori_connectors::channel::app::FromWindow;
 use dotori_connectors::channel::app::ToWindow;
+use dotori_mcp::browser::WAITS_FOR_OWNER;
+use dotori_mcp::card::Shown;
 use gpui::AnimationElement;
 use gpui::AnimationExt;
 use gpui::AnyElement;
@@ -52,6 +55,7 @@ use crate::window::chrome::round_button;
 use crate::window::identity;
 use crate::window::identity::Particle;
 use crate::window::identity::called;
+use crate::window::identity::ends_closed;
 use crate::window::input::Submit;
 use crate::window::input::TextInput;
 use crate::window::motion::FOLLOW;
@@ -63,9 +67,11 @@ use crate::window::motion::breath;
 use crate::window::parts::MONO;
 use crate::window::parts::SETTINGS_ICON;
 use crate::window::parts::SHIELD_ON_ICON;
+use crate::window::parts::lock;
 use crate::window::parts::logo;
 use crate::window::parts::prose;
 use crate::window::rich::rich;
+use crate::window::screen::CardShown;
 use crate::window::screen::ScreenView;
 use crate::window::theme::Theme;
 use crate::window::when::Mark;
@@ -109,6 +115,7 @@ pub(crate) struct ChatView {
     preview_pending: bool,
     dismissed: Option<SharedString>,
     preview: Option<Arc<RenderImage>>,
+    focus_card: bool,
     _uncopy: Option<Task<()>>,
     _pump: Task<()>,
 }
@@ -181,6 +188,7 @@ impl ChatView {
             preview_pending: false,
             dismissed: None,
             preview: None,
+            focus_card: false,
             _uncopy: None,
             _pump: pump,
         }
@@ -501,6 +509,14 @@ impl ChatView {
                         .child(rich(text, theme))
                         .child(self.under(theme, n, text, mark, cx)),
                 ),
+            ToWindow::Traffic {
+                channel,
+                place,
+                text,
+                ..
+            } if channel == DECISION && WAITS_FOR_OWNER.contains(&place.as_str()) => {
+                self.card_result(theme, Shown::read(text)?.0)
+            }
             ToWindow::Traffic {
                 channel,
                 place,
@@ -933,6 +949,7 @@ impl ChatView {
             if key.kind.is_some() && self.at_bottom() {
                 self.follow = Some((Instant::now(), 0.0));
             }
+            self.focus_card = key.kind == Some("card");
             self.card = key;
             self.card_picture = picture;
             self.preview_at = Some(Instant::now());
@@ -961,10 +978,13 @@ impl ChatView {
     }
 
     fn browser_ask(&self, cx: &App) -> Option<BrowserAsk> {
+        let screen = self.screen.read(cx);
+        if let Some(card) = screen.card() {
+            return Some(BrowserAsk::Card(card));
+        }
         if self.browser_open(cx) {
             return Some(BrowserAsk::Opened);
         }
-        let screen = self.screen.read(cx);
         if !screen.asking() {
             return None;
         }
@@ -1008,6 +1028,7 @@ impl ChatView {
             self.preview = shown_picture.clone();
         }
         let (opened, login, asked) = match ask? {
+            BrowserAsk::Card(card) => return Some(self.page_card(theme, card, window, cx)),
             BrowserAsk::Opened => (true, None, None),
             BrowserAsk::Login {
                 site,
@@ -1238,6 +1259,456 @@ impl ChatView {
         )
     }
 
+    fn page_card(
+        &mut self,
+        theme: &Theme,
+        card: CardShown,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        match card {
+            CardShown::Fill {
+                id,
+                title,
+                hint,
+                host,
+                fields,
+                checks,
+                submit,
+                links,
+                note,
+            } => {
+                if self.focus_card {
+                    self.focus_card = false;
+                    if let Some((_, _, first)) = fields.first() {
+                        window.focus(&first.focus_handle(cx));
+                    }
+                }
+                let submit_at = submit.0;
+                let inputs: Vec<Entity<TextInput>> =
+                    fields.iter().map(|(_, _, input)| input.clone()).collect();
+                let rows = fields
+                    .into_iter()
+                    .enumerate()
+                    .map(|(n, (at, label, input))| {
+                        let focus = input.focus_handle(cx);
+                        let focused = focus.is_focused(window);
+                        let next = inputs.get(n + 1).cloned();
+                        let screen = self.screen.clone();
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .on_action(move |_: &Submit, window, cx| match &next {
+                                Some(next) => window.focus(&next.focus_handle(cx)),
+                                None => {
+                                    screen.update(cx, |screen, cx| screen.press_card(submit_at, cx))
+                                }
+                            })
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(theme.muted)
+                                    .child(SharedString::from(label)),
+                            )
+                            .child(
+                                div()
+                                    .id(("card-field", at))
+                                    .debug_selector(move || format!("card-field-{at}"))
+                                    .px_3()
+                                    .py_2()
+                                    .rounded_md()
+                                    .bg(theme.canvas)
+                                    .border_1()
+                                    .border_color(if focused {
+                                        theme.primary.into()
+                                    } else {
+                                        gpui::transparent_black()
+                                    })
+                                    .cursor_text()
+                                    .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                                        window.focus(&focus);
+                                        cx.stop_propagation();
+                                    })
+                                    .child(input),
+                            )
+                    });
+                let checks = checks.into_iter().map(|(at, label, on)| {
+                    let screen = self.screen.clone();
+                    div()
+                        .id(("card-check", at))
+                        .debug_selector(move || format!("card-check-{at}"))
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .cursor_pointer()
+                        .text_size(px(13.))
+                        .line_height(px(18.))
+                        .child(tick(theme, on))
+                        .child(SharedString::from(label))
+                        .on_click(move |_, _, cx| {
+                            screen.update(cx, |screen, cx| screen.toggle_check(at, cx));
+                        })
+                });
+                let links = links.into_iter().map(|(at, label)| {
+                    let screen = self.screen.clone();
+                    div()
+                        .id(("card-link", at))
+                        .debug_selector(move || format!("card-link-{at}"))
+                        .text_size(px(13.))
+                        .line_height(px(18.))
+                        .text_color(theme.muted)
+                        .underline()
+                        .cursor_pointer()
+                        .hover(|link| link.text_color(theme.text))
+                        .child(SharedString::from(label))
+                        .on_click(move |_, _, cx| {
+                            screen.update(cx, |screen, cx| screen.press_card(at, cx));
+                        })
+                });
+                let press = self.screen.clone();
+                let later = self.screen.clone();
+                div()
+                    .flex()
+                    .justify_center()
+                    .mb(px(TURN_SPACE))
+                    .child(
+                        div()
+                            .id(("fill-card", id))
+                            .flex()
+                            .flex_col()
+                            .gap_3()
+                            .w_full()
+                            .max_w(relative(0.8))
+                            .p_5()
+                            .rounded_xl()
+                            .bg(theme.surface)
+                            .border_t_1()
+                            .border_color(theme.rim)
+                            .shadow_md()
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .items_center()
+                                    .text_center()
+                                    .child(
+                                        div()
+                                            .text_base()
+                                            .line_height(px(24.))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .child(SharedString::from(title)),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(theme.muted)
+                                            .child(SharedString::from(host)),
+                                    )
+                                    .children(hint.map(|hint| {
+                                        div().text_xs().text_color(theme.muted).child(prose(&hint))
+                                    })),
+                            )
+                            .children(rows)
+                            .children(checks)
+                            .child(
+                                div()
+                                    .id("card-submit")
+                                    .debug_selector(|| String::from("card-submit"))
+                                    .py_2()
+                                    .rounded_md()
+                                    .text_center()
+                                    .cursor_pointer()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .bg(theme.primary)
+                                    .text_color(theme.on_primary)
+                                    .hover(|button| button.bg(theme.primary_hover))
+                                    .child(SharedString::from(submit.1))
+                                    .on_click(move |_, _, cx| {
+                                        press.update(cx, |screen, cx| {
+                                            screen.press_card(submit_at, cx);
+                                        });
+                                    }),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_wrap()
+                                    .justify_center()
+                                    .gap_x_3()
+                                    .children(links),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .justify_center()
+                                    .items_center()
+                                    .gap_1p5()
+                                    .text_xs()
+                                    .text_color(theme.muted)
+                                    .child(lock(theme, 12.))
+                                    .child(SharedString::from(note)),
+                            )
+                            .child(
+                                div().flex().justify_center().child(
+                                    div()
+                                        .id("card-later")
+                                        .debug_selector(|| String::from("card-later"))
+                                        .px_2()
+                                        .rounded_md()
+                                        .text_xs()
+                                        .text_color(theme.muted)
+                                        .cursor_pointer()
+                                        .hover(|later| {
+                                            later.bg(theme.bubble).text_color(theme.text)
+                                        })
+                                        .child("나중에 할게요")
+                                        .on_click(move |_, _, cx| {
+                                            later.update(cx, |screen, cx| screen.card_later(cx));
+                                        }),
+                                ),
+                            ),
+                    )
+                    .into_any_element()
+            }
+            CardShown::LogIn {
+                site,
+                accounts,
+                chosen,
+                host,
+                trust,
+                ..
+            } => {
+                let several = accounts.len() > 1;
+                let choices = accounts.into_iter().enumerate().map(|(n, account)| {
+                    let screen = self.screen.clone();
+                    div()
+                        .id(("card-account", n))
+                        .debug_selector(move || format!("card-account-{n}"))
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .when(several, |choice| {
+                            choice
+                                .cursor_pointer()
+                                .child(tick(theme, n == chosen))
+                                .on_click(move |_, _, cx| {
+                                    screen.update(cx, |screen, cx| screen.choose_account(n, cx));
+                                })
+                        })
+                        .child(format!("{site} ({account})"))
+                });
+                let (allow, decline, trusting) = (
+                    self.screen.clone(),
+                    self.screen.clone(),
+                    self.screen.clone(),
+                );
+                let button = |id: &'static str, label: &'static str, primary: bool| {
+                    div()
+                        .id(id)
+                        .debug_selector(move || id.to_owned())
+                        .flex_none()
+                        .px_4()
+                        .py_1p5()
+                        .rounded_md()
+                        .cursor_pointer()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .when(primary, |button| {
+                            button
+                                .bg(theme.primary)
+                                .text_color(theme.on_primary)
+                                .hover(|button| button.bg(theme.primary_hover))
+                        })
+                        .when(!primary, |button| {
+                            button
+                                .bg(theme.surface)
+                                .border_t_1()
+                                .border_color(theme.rim)
+                                .text_color(theme.text)
+                                .hover(|button| button.bg(theme.bubble))
+                        })
+                        .child(label)
+                };
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .px_4()
+                    .py_3()
+                    .mb(px(TURN_SPACE))
+                    .rounded_xl()
+                    .bg(theme.warn_soft)
+                    .border_t_1()
+                    .border_color(theme.rim)
+                    .shadow_sm()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(lock(theme, 16.).text_color(theme.text))
+                            .child(
+                                div()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(format!("금고의 {site} 계정으로 로그인해도 될까요?")),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .gap_3()
+                            .px_3()
+                            .py_2()
+                            .rounded_lg()
+                            .bg(theme.surface)
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .w(px(88.))
+                                    .text_xs()
+                                    .text_color(theme.muted)
+                                    .child(if several { "계정 고르기" } else { "계정" }),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap_1p5()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .children(choices),
+                            ),
+                    )
+                    .child(div().text_xs().text_color(theme.muted).child(prose(&format!(
+                        "{} {host} 로그인 칸에 직접 채워 넣어요. 대화하는 AI는 비밀번호를 보지 못해요.",
+                        called(Particle::Subject)
+                    ))))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .id("card-trust")
+                                    .debug_selector(|| String::from("card-trust"))
+                                    .flex()
+                                    .flex_1()
+                                    .items_center()
+                                    .gap_2()
+                                    .cursor_pointer()
+                                    .text_xs()
+                                    .text_color(theme.muted)
+                                    .child(tick(theme, trust))
+                                    .child("이 계정은 다음부터 묻지 않기")
+                                    .on_click(move |_, _, cx| {
+                                        trusting.update(cx, |screen, cx| screen.toggle_trust(cx));
+                                    }),
+                            )
+                            .child(button("card-decline", "거절", false).on_click(
+                                move |_, _, cx| {
+                                    decline.update(cx, |screen, cx| screen.allow_card(false, cx));
+                                },
+                            ))
+                            .child(button("card-allow", "로그인", true).on_click(
+                                move |_, _, cx| {
+                                    allow.update(cx, |screen, cx| screen.allow_card(true, cx));
+                                },
+                            )),
+                    )
+                    .into_any_element()
+            }
+        }
+    }
+
+    fn card_result(&self, theme: &Theme, shown: Shown) -> Div {
+        let chip = |words: String| {
+            div()
+                .flex()
+                .items_center()
+                .gap_2p5()
+                .px_4()
+                .py_2p5()
+                .rounded_xl()
+                .bg(theme.surface)
+                .border_t_1()
+                .border_color(theme.rim)
+                .shadow_xs()
+                .child(lock(theme, 14.))
+                .child(div().flex_1().min_w_0().child(prose(&words)))
+        };
+        let aside = |words: String| {
+            div()
+                .flex()
+                .justify_end()
+                .text_xs()
+                .text_color(theme.muted)
+                .child(words)
+        };
+        let pressed = |label: &str| format!("{label}{} 눌렀어요", object(label));
+        let shown = match shown {
+            Shown::Pressed {
+                pressed: label,
+                link: true,
+                ..
+            } => aside(pressed(&label)),
+            Shown::Pressed {
+                title,
+                pressed: label,
+                filled,
+                codes,
+                kept,
+                ..
+            } => {
+                let words = if filled.is_empty() {
+                    pressed(&label)
+                } else if codes {
+                    String::from("인증번호를 넣었어요")
+                } else {
+                    format!("{title} 정보를 넣었어요")
+                };
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .child(chip(words))
+                    .children(kept.map(|site| {
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_3()
+                            .child(
+                                chip(format!("{site} 연동")).child(
+                                    div()
+                                        .flex_none()
+                                        .px_2p5()
+                                        .py_0p5()
+                                        .rounded_full()
+                                        .bg(theme.ok_soft)
+                                        .text_color(theme.ok)
+                                        .text_xs()
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .child("연동됨"),
+                                ),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .justify_center()
+                                    .text_xs()
+                                    .text_color(theme.muted)
+                                    .child("연동은 설정의 금고에서 언제든 끊을 수 있어요"),
+                            )
+                    }))
+            }
+            Shown::Closed { lapsed: false, .. } => aside(String::from("나중에 하기로 했어요")),
+            Shown::Closed { title, .. } => aside(format!("{title} 카드는 답이 없어서 닫았어요")),
+            Shown::LoggedIn { site } => chip(format!("금고의 {site} 계정으로 로그인했어요")),
+            Shown::Declined { site } => aside(format!("{site} 로그인을 거절했어요")),
+        };
+        shown.pb(px(TURN_SPACE))
+    }
+
     fn notice(&self) -> Option<(String, Option<String>)> {
         match &self.link {
             LinkState::Connecting => None,
@@ -1416,6 +1887,28 @@ fn settings_button(theme: &Theme) -> impl IntoElement {
         .on_click(|_, _, _| crate::tray::open("settings"))
 }
 
+fn tick(theme: &Theme, on: bool) -> Div {
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .size(px(16.))
+        .rounded_sm()
+        .text_size(px(11.))
+        .font_weight(FontWeight::BOLD)
+        .when(on, |tick| {
+            tick.bg(theme.primary)
+                .text_color(theme.on_primary)
+                .child("✓")
+        })
+        .when(!on, |tick| tick.bg(theme.bubble))
+}
+
+fn object(word: &str) -> &'static str {
+    if ends_closed(word) { "을" } else { "를" }
+}
+
 fn entering(row: Div, progress: f32) -> Div {
     row.relative()
         .top(px(RISE * (1.0 - progress)))
@@ -1423,6 +1916,7 @@ fn entering(row: Div, progress: f32) -> Div {
 }
 
 enum BrowserAsk {
+    Card(CardShown),
     Opened,
     Login {
         site: String,
@@ -1447,6 +1941,13 @@ impl CardKey {
     fn of(ask: Option<&BrowserAsk>) -> Self {
         match ask {
             None => Self::default(),
+            Some(BrowserAsk::Card(CardShown::Fill { id, .. } | CardShown::LogIn { id, .. })) => {
+                Self {
+                    kind: Some("card"),
+                    asked: Some(SharedString::from(id.to_string())),
+                    login: None,
+                }
+            }
             Some(BrowserAsk::Opened) => Self {
                 kind: Some("opened"),
                 ..Self::default()

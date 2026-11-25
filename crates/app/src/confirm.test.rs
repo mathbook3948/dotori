@@ -225,3 +225,43 @@ async fn a_shell_command_s_card_says_whether_it_runs_in_the_sandbox() {
     }
     let _ = std::fs::remove_dir_all(base);
 }
+
+#[tokio::test]
+async fn a_card_call_returns_at_once_and_what_came_of_it_arrives_on_the_decision_channel() {
+    let (asking, counting, _) = asking();
+    let owner = Arc::new(Counting(AtomicUsize::new(0)));
+    let (outcomes, mut heard) = mpsc::unbounded_channel();
+    let waits = Waits {
+        asking: Arc::new(asking),
+        owner: Arc::clone(&owner) as Arc<dyn Toolbox>,
+        outcomes,
+    };
+
+    let shown = waits
+        .run(call(dotori_mcp::browser::FILL))
+        .await
+        .expect("shown");
+    let ran = waits.run(call("mail__read")).await.expect("ran");
+
+    assert_eq!(shown, CARD_SHOWN);
+    assert_eq!(ran, "ran mail__read");
+    let outcome = time::timeout(Duration::from_secs(5), heard.recv())
+        .await
+        .expect("in time")
+        .expect("an outcome");
+    assert_eq!(outcome.tool, "ask_owner_to_fill");
+    assert_eq!(outcome.text, "ran ask_owner_to_fill");
+    assert_eq!(counting.0.load(Ordering::SeqCst), 1);
+    assert_eq!(owner.0.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        waits
+            .run(call(dotori_mcp::browser::ASK))
+            .await
+            .expect("ran"),
+        "ran ask_owner_in_browser",
+        "an owner tool that does not wait runs at once and never waits for an OK"
+    );
+    let incoming = incoming(&outcome).expect("a message");
+    assert_eq!(incoming.place, Place::new("ask_owner_to_fill"));
+    assert_eq!(incoming.audience, Audience::Owner);
+}
