@@ -2,6 +2,9 @@
 //! A button carries only the card's token and its own number, never what the card says, and only
 //! the owner's presses are passed on.
 
+use std::collections::HashSet;
+use std::sync::Mutex;
+
 use dotori_core::BoxFuture;
 use dotori_core::channel::Channel;
 use dotori_core::channel::ChannelError;
@@ -12,6 +15,7 @@ use tokio::sync::mpsc;
 pub const WHOLE_ON_PC: &str = "전체 보기는 PC의 dotori 창에서 해요";
 const TOKEN_BYTES: usize = 12;
 const LABEL: usize = 70;
+const REFUSALS_KEPT: usize = 1024;
 
 /// A question for the owner, as a chat room shows it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -63,6 +67,25 @@ pub trait Cards: Channel {
 
     /// The owner's presses from now on. Only the last caller hears.
     fn presses(&self) -> mpsc::UnboundedReceiver<Press>;
+
+    /// The place in this channel that only the owner reads, if it has one.
+    fn direct_place(&self) -> Option<Place>;
+}
+
+/// Who was already told that a card's buttons are the owner's, so each person hears it once per
+/// card.
+#[derive(Debug, Default)]
+pub struct Refusals(Mutex<HashSet<(String, String)>>);
+
+impl Refusals {
+    /// Whether `user` is to be told about the card at `message` now, the first time they press it.
+    pub fn first(&self, message: &str, user: &str) -> bool {
+        let mut told = self.0.lock().expect("unpoisoned");
+        if told.len() >= REFUSALS_KEPT {
+            told.clear();
+        }
+        told.insert((message.to_owned(), user.to_owned()))
+    }
 }
 
 impl Card {
@@ -71,12 +94,16 @@ impl Card {
         format!("{}:{n}", self.token)
     }
 
-    /// The labels of the buttons, each short enough for every platform.
-    pub fn labels(&self) -> impl Iterator<Item = (usize, &Button, String)> {
+    /// The buttons with their numbers and labels short enough for every platform, at most
+    /// `most` of them. When there are more, the last one, which declines, is always kept.
+    pub fn labels(&self, most: usize) -> Vec<(usize, &Button, String)> {
+        let last = self.buttons.len().saturating_sub(1);
         self.buttons
             .iter()
             .enumerate()
+            .filter(|(n, _)| self.buttons.len() <= most || *n + 1 < most || *n == last)
             .map(|(n, button)| (n, button, cut(&button.label, LABEL)))
+            .collect()
     }
 
     /// The card as plain text, ending with `said` once it is settled, at most `limit` characters.

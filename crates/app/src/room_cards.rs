@@ -1,8 +1,8 @@
-//! A card that waits for the owner also goes to the chat room the owner asked in, with a button
-//! for each answer. The window's card stays. Whichever answer comes first decides, through the
-//! same path a window's answer takes, and the card in the room then says who decided or that it
-//! can no longer be done. A card that takes typed values never goes to a room: the room only
-//! hears that the window shows it.
+//! A card that waits for the owner also goes to Slack, Discord or Telegram when the owner asked
+//! there, with a button for each answer. The window's card stays. Whichever answer comes first
+//! decides, through the same path a window's answer takes, and the card in the chat then says who
+//! decided or that it can no longer be done. A card that takes typed values never goes to a chat:
+//! the room only hears that the window shows it.
 
 use std::collections::HashMap;
 use std::collections::VecDeque;
@@ -21,6 +21,8 @@ use dotori_connectors::channel::card::Card;
 use dotori_connectors::channel::card::Cards;
 use dotori_connectors::channel::card::Posted;
 use dotori_connectors::channel::card::Press;
+use dotori_core::message::Audience;
+use dotori_core::message::Place;
 use dotori_core::tool::Origin;
 use dotori_mcp::card::Shown;
 use serde_json::Value;
@@ -36,6 +38,7 @@ use tokio::sync::mpsc;
 use tokio::time;
 
 use crate::asked;
+use crate::confirm::Status;
 use crate::door::Door;
 use crate::home::Home;
 
@@ -43,17 +46,33 @@ const RETRY: Duration = Duration::from_secs(1);
 const CONNECT_WAIT: Duration = Duration::from_secs(5);
 const LINE: u64 = 256 * 1024;
 const CLOSED_KEPT: usize = 256;
+/// The most accounts a chat card offers as buttons; the window offers the rest.
+pub(crate) const MOST_ACCOUNTS: usize = 8;
+/// What a room that others can read hears in place of a card sent to the owner's direct place.
+pub(crate) const POINTER: &str = "확인할 일을 DM으로 보냈어요.";
+const REST_ON_PC: &str = "나머지는 PC의 dotori 창에서 골라 주세요";
+const NO_ID: &str = "아이디 없이";
 
-/// The cards posted in chat rooms that still wait, and the rooms they can go to.
+/// The cards posted in chats that still wait, and the chats they can go to.
 pub(crate) struct RoomCards {
     subject: String,
     app: Arc<AppChannel>,
     rooms: Mutex<HashMap<String, Arc<dyn Cards>>>,
-    open: Mutex<HashMap<String, Open>>,
-    closed: Mutex<VecDeque<String>>,
-    browsing: Mutex<Browsing>,
+    desk: Mutex<Desk>,
     next: AtomicU64,
     screen: mpsc::UnboundedSender<Value>,
+}
+
+#[derive(Default)]
+struct Desk {
+    cards: HashMap<String, Open>,
+    closed: VecDeque<String>,
+    calls: HashMap<u64, BrowserCall>,
+}
+
+struct BrowserCall {
+    origin: Origin,
+    shown: Option<u64>,
 }
 
 struct Open {
@@ -87,17 +106,7 @@ enum Answer {
     },
 }
 
-#[derive(Default)]
-struct Browsing {
-    asked: Option<BrowserCall>,
-    seen: Option<u64>,
-}
-
-struct BrowserCall {
-    ticket: u64,
-    origin: Origin,
-    card: Option<u64>,
-}
+type Face = (String, Vec<(String, String)>, bool, Vec<String>);
 
 impl RoomCards {
     /// The cards for an assistant that `subject` names with its particle, such as "dotori가",
@@ -111,9 +120,7 @@ impl RoomCards {
             subject,
             app,
             rooms: Mutex::new(HashMap::new()),
-            open: Mutex::new(HashMap::new()),
-            closed: Mutex::new(VecDeque::new()),
-            browsing: Mutex::new(Browsing::default()),
+            desk: Mutex::new(Desk::default()),
             next: AtomicU64::new(1),
             screen,
         });
@@ -137,19 +144,17 @@ impl RoomCards {
         }
     }
 
-    fn room(&self, origin: Option<Origin>) -> Option<(Arc<dyn Cards>, Origin)> {
-        let origin = origin?;
-        let room = self
-            .rooms
+    fn room(&self, origin: &Origin) -> Option<Arc<dyn Cards>> {
+        self.rooms
             .lock()
             .expect("unpoisoned")
             .get(origin.address.channel.as_str())
-            .cloned()?;
-        Some((room, origin))
+            .cloned()
     }
 
-    /// Posts the call `id` that waits for the owner in the room `origin` names, if it is a chat
-    /// room.
+    /// Posts the call `id` that waits for the owner where `origin` says they asked, if it was a
+    /// chat. A room only the owner reads gets the card. Any other room gets only a pointer, and
+    /// the card goes to the place in that chat only the owner reads, or nowhere if it has none.
     pub(crate) fn ask(
         self: &Arc<Self>,
         origin: Option<Origin>,
@@ -158,7 +163,10 @@ impl RoomCards {
         input: &str,
         sandboxed: bool,
     ) {
-        let Some((room, origin)) = self.room(origin) else {
+        let Some(origin) = origin else {
+            return;
+        };
+        let Some(room) = self.room(&origin) else {
             return;
         };
         let (fields, cut) = asked::asked_fields(tool, input, false);
@@ -182,28 +190,53 @@ impl RoomCards {
             .into_iter()
             .map(|(label, ok)| (button(label, ok), Answer::Call { id, ok }))
             .collect();
+        let face = (asked::title(&self.subject), rows, cut, notes);
+        let key = Key::Call(id);
+        if origin.audience == Some(Audience::Owner) {
+            self.open(key, room, origin.address.place, origin.owner, face, choices);
+            return;
+        }
+        let Some(direct) = room.direct_place() else {
+            return;
+        };
         self.open(
-            Key::Call(id),
-            room,
-            origin,
-            (asked::title(&self.subject), rows, cut, notes),
+            key,
+            Arc::clone(&room),
+            direct,
+            origin.owner.clone(),
+            face,
             choices,
+        );
+        let pointer = (String::from(POINTER), Vec::new(), false, Vec::new());
+        self.open(
+            key,
+            room,
+            origin.address.place,
+            origin.owner,
+            pointer,
+            Vec::new(),
         );
     }
 
-    /// Says in every room that the call `id` was decided, or with `None` that it no longer
+    /// Says in every chat that the call `id` was decided, or with `None` that it no longer
     /// waits.
     pub(crate) fn decided(&self, id: u64, ok: Option<bool>) {
         self.settle(Key::Call(id), |owner| said(owner, ok));
     }
 
-    /// Says in every room that no call waits any more, as when this PC takes up the main session
+    /// Says in every chat that no call waits any more, as when this PC takes up the main session
     /// again or gives it up.
     pub(crate) fn lapse_calls(&self) {
+        self.resync(|_| Status::Lapsed);
+    }
+
+    /// Settles the cards of every call `status` no longer counts as waiting.
+    pub(crate) fn resync(&self, status: impl Fn(u64) -> Status) {
         let ids: Vec<u64> = self
-            .open
+            .desk
             .lock()
             .expect("unpoisoned")
+            .cards
             .values()
             .filter_map(|open| match open.key {
                 Key::Call(id) => Some(id),
@@ -211,46 +244,54 @@ impl RoomCards {
             })
             .collect();
         for id in ids {
-            self.decided(id, None);
+            match status(id) {
+                Status::Waiting => {}
+                Status::Decided(ok) => self.decided(id, Some(ok)),
+                Status::Lapsed => self.decided(id, None),
+            }
         }
     }
 
-    /// Starts a browser call that may show a card, asked for in the room `origin` names, and
-    /// gives its ticket for `browser_done`.
+    /// Starts a browser call that may show a card, asked for where `origin` says, and gives its
+    /// ticket. The call carries the ticket to the browser, whose card carries it back.
     pub(crate) fn browser_asked(&self, origin: Option<Origin>) -> u64 {
         let ticket = self.next.fetch_add(1, Ordering::Relaxed);
-        let mut browsing = self.browsing.lock().expect("unpoisoned");
-        let card = browsing.seen;
-        browsing.asked = origin.map(|origin| BrowserCall {
-            ticket,
-            origin,
-            card,
-        });
+        if let Some(origin) = origin.filter(|origin| self.room(origin).is_some()) {
+            self.desk.lock().expect("unpoisoned").calls.insert(
+                ticket,
+                BrowserCall {
+                    origin,
+                    shown: None,
+                },
+            );
+        }
         ticket
     }
 
-    /// Takes the browser screen's state. A card the browser shows for the call asked for in a
-    /// chat room goes there: a log-in card with its buttons, and for a card that takes typed
-    /// values only a note that the window shows it.
+    /// Takes the browser screen's state. A card the browser shows for a call asked for in a
+    /// chat goes there: a log-in card with its buttons, and for a card that takes typed values
+    /// only a note that the window shows it.
     pub(crate) fn browser_state(self: &Arc<Self>, state: &Value) {
         let Some(shown) = state.get("card").filter(|card| card.is_object()) else {
             return;
         };
-        let Some(id) = shown.get("id").and_then(Value::as_u64) else {
+        let (Some(id), Some(ticket)) = (
+            shown.get("id").and_then(Value::as_u64),
+            shown.get("ticket").and_then(Value::as_u64),
+        ) else {
             return;
         };
-        let (ticket, origin) = {
-            let mut browsing = self.browsing.lock().expect("unpoisoned");
-            browsing.seen = Some(id);
-            match &mut browsing.asked {
-                Some(call) if call.card != Some(id) => {
-                    call.card = Some(id);
-                    (call.ticket, call.origin.clone())
+        let origin = {
+            let mut desk = self.desk.lock().expect("unpoisoned");
+            match desk.calls.get_mut(&ticket) {
+                Some(call) if call.shown != Some(id) => {
+                    call.shown = Some(id);
+                    call.origin.clone()
                 }
                 _ => return,
             }
         };
-        let Some((room, origin)) = self.room(Some(origin)) else {
+        let Some(room) = self.room(&origin) else {
             return;
         };
         let text = |key: &str| {
@@ -263,39 +304,44 @@ impl RoomCards {
         let host = text("host");
         match shown.get("kind").and_then(Value::as_str) {
             Some("log_in") => {
-                let ids: Vec<String> = shown
+                let ids: Vec<Option<String>> = shown
                     .get("ids")
                     .and_then(Value::as_array)
                     .map(Vec::as_slice)
                     .unwrap_or_default()
                     .iter()
-                    .map(|id| id.as_str().unwrap_or("아이디 없이").to_owned())
+                    .map(|id| id.as_str().map(str::to_owned))
                     .collect();
                 let (site, path) = (text("site"), text("path"));
                 let face = log_in(&self.subject, &host, &site, &path, &ids);
                 let choices = log_in_choices(id, &ids);
-                self.open(Key::LogIn(ticket), room, origin, face, choices);
+                self.open(
+                    Key::LogIn(ticket),
+                    room,
+                    origin.address.place,
+                    origin.owner,
+                    face,
+                    choices,
+                );
             }
             Some("fill") => {
-                let note = format!("PC의 dotori 창에 {host} 로그인 카드를 띄웠어요.");
-                self.open_note(room, origin, note);
+                let note = if origin.audience == Some(Audience::Owner) {
+                    format!(
+                        "PC의 dotori 창에 {host} {} 카드를 띄웠어요.",
+                        fill_kind(shown)
+                    )
+                } else {
+                    String::from("PC의 dotori 창에 입력 카드를 띄웠어요.")
+                };
+                note_in(room, origin.address.place, note);
             }
             _ => {}
         }
     }
 
-    /// Says in the room what came of the browser call `ticket`, as `told` reads.
+    /// Says in the chat what came of the browser call `ticket`, as `told` reads.
     pub(crate) fn browser_done(&self, ticket: u64, told: &str) {
-        {
-            let mut browsing = self.browsing.lock().expect("unpoisoned");
-            if browsing
-                .asked
-                .as_ref()
-                .is_some_and(|call| call.ticket == ticket)
-            {
-                browsing.asked = None;
-            }
-        }
+        self.desk.lock().expect("unpoisoned").calls.remove(&ticket);
         let ok = match Shown::read(told) {
             Some((Shown::LoggedIn { .. }, _)) => Some(true),
             Some((Shown::Declined { .. }, _)) => Some(false),
@@ -308,12 +354,13 @@ impl RoomCards {
         self: &Arc<Self>,
         key: Key,
         room: Arc<dyn Cards>,
-        origin: Origin,
+        place: Place,
+        owner: String,
         (title, rows, cut, notes): Face,
         choices: Vec<(Button, Answer)>,
     ) {
         let Ok(token) = card::token() else {
-            eprintln!("dotori: no card goes to the chat room, as no token could be made");
+            eprintln!("dotori: no card goes to the chat, as no token could be made");
             return;
         };
         let (buttons, answers) = choices.into_iter().unzip();
@@ -325,29 +372,36 @@ impl RoomCards {
             notes,
             buttons,
         };
-        self.open.lock().expect("unpoisoned").insert(
-            token.clone(),
-            Open {
-                key,
-                channel: origin.address.channel.as_str().to_owned(),
-                card: card.clone(),
-                owner: origin.owner.clone(),
-                answers,
-                posted: None,
-                settled: None,
-                answered: false,
-            },
-        );
+        {
+            let mut desk = self.desk.lock().expect("unpoisoned");
+            if let Key::LogIn(ticket) = key
+                && !desk.calls.contains_key(&ticket)
+            {
+                return;
+            }
+            desk.cards.insert(
+                token.clone(),
+                Open {
+                    key,
+                    channel: room.id().as_str().to_owned(),
+                    card: card.clone(),
+                    owner,
+                    answers,
+                    posted: None,
+                    settled: None,
+                    answered: false,
+                },
+            );
+        }
         let cards = Arc::clone(self);
         tokio::spawn(async move {
-            let posted = room.post(origin.address.place.clone(), card.clone()).await;
+            let posted = room.post(place, card.clone()).await;
             let settled = {
-                let mut open = cards.open.lock().expect("unpoisoned");
-                match (&posted, open.get_mut(&token)) {
+                let mut desk = cards.desk.lock().expect("unpoisoned");
+                match (&posted, desk.cards.get_mut(&token)) {
                     (Ok(posted), Some(waiting)) => match waiting.settled.take() {
                         Some(said) => {
-                            open.remove(&token);
-                            cards.close(&token);
+                            desk.close(&token);
                             Some((posted.clone(), said))
                         }
                         None => {
@@ -356,7 +410,7 @@ impl RoomCards {
                         }
                     },
                     _ => {
-                        open.remove(&token);
+                        desk.cards.remove(&token);
                         None
                     }
                 }
@@ -364,7 +418,7 @@ impl RoomCards {
             if let Err(error) = &posted {
                 eprintln!(
                     "dotori: a card did not go to {}: {}",
-                    origin.address.channel.as_str(),
+                    room.id().as_str(),
                     error.detail
                 );
             }
@@ -374,39 +428,18 @@ impl RoomCards {
         });
     }
 
-    fn open_note(&self, room: Arc<dyn Cards>, origin: Origin, note: String) {
-        let Ok(token) = card::token() else {
-            return;
-        };
-        let card = Card {
-            token,
-            title: note,
-            rows: Vec::new(),
-            cut: false,
-            notes: Vec::new(),
-            buttons: Vec::new(),
-        };
-        tokio::spawn(async move {
-            if let Err(error) = room.post(origin.address.place, card).await {
-                eprintln!(
-                    "dotori: a note did not go to the chat room: {}",
-                    error.detail
-                );
-            }
-        });
-    }
-
     fn settle(&self, key: Key, said: impl Fn(&str) -> String) {
         let mut edits = Vec::new();
         {
-            let mut open = self.open.lock().expect("unpoisoned");
-            let tokens: Vec<String> = open
+            let mut desk = self.desk.lock().expect("unpoisoned");
+            let tokens: Vec<String> = desk
+                .cards
                 .iter()
                 .filter(|(_, open)| open.key == key)
                 .map(|(token, _)| token.clone())
                 .collect();
             for token in tokens {
-                let Some(waiting) = open.get_mut(&token) else {
+                let Some(waiting) = desk.cards.get_mut(&token) else {
                     continue;
                 };
                 let told = said(&waiting.owner);
@@ -414,10 +447,9 @@ impl RoomCards {
                     waiting.settled = Some(told);
                     continue;
                 }
-                if let Some(done) = open.remove(&token)
+                if let Some(done) = desk.close(&token)
                     && let Some(posted) = done.posted
                 {
-                    self.close(&token);
                     edits.push((done.channel, posted, done.card, told));
                 }
             }
@@ -435,20 +467,13 @@ impl RoomCards {
         }
     }
 
-    fn close(&self, token: &str) {
-        let mut closed = self.closed.lock().expect("unpoisoned");
-        if closed.len() == CLOSED_KEPT {
-            closed.pop_front();
-        }
-        closed.push_back(token.to_owned());
-    }
-
     /// Takes the owner's press of a card's button in `channel`. The first answer decides, as a
     /// window's would; a card that no longer waits says so.
     pub(crate) async fn press(&self, channel: &str, press: Press) {
         let answer = {
-            let mut open = self.open.lock().expect("unpoisoned");
-            match open.get_mut(&press.token) {
+            let mut desk = self.desk.lock().expect("unpoisoned");
+            let closed = desk.closed.contains(&press.token);
+            match desk.cards.get_mut(&press.token) {
                 Some(waiting) if waiting.channel == channel => {
                     if waiting.answered {
                         return;
@@ -459,6 +484,7 @@ impl RoomCards {
                     waiting.answered = true;
                     Some(answer)
                 }
+                _ if closed => return,
                 _ => None,
             }
         };
@@ -479,14 +505,6 @@ impl RoomCards {
                 }));
             }
             None => {
-                if self
-                    .closed
-                    .lock()
-                    .expect("unpoisoned")
-                    .contains(&press.token)
-                {
-                    return;
-                }
                 let room = self.rooms.lock().expect("unpoisoned").get(channel).cloned();
                 if let Some(room) = room {
                     edit(room, press.posted, None, String::from(asked::LAPSED)).await;
@@ -496,7 +514,34 @@ impl RoomCards {
     }
 }
 
-type Face = (String, Vec<(String, String)>, bool, Vec<String>);
+impl Desk {
+    fn close(&mut self, token: &str) -> Option<Open> {
+        if self.closed.len() == CLOSED_KEPT {
+            self.closed.pop_front();
+        }
+        self.closed.push_back(token.to_owned());
+        self.cards.remove(token)
+    }
+}
+
+fn note_in(room: Arc<dyn Cards>, place: Place, note: String) {
+    let Ok(token) = card::token() else {
+        return;
+    };
+    let card = Card {
+        token,
+        title: note,
+        rows: Vec::new(),
+        cut: false,
+        notes: Vec::new(),
+        buttons: Vec::new(),
+    };
+    tokio::spawn(async move {
+        if let Err(error) = room.post(place, card).await {
+            eprintln!("dotori: a note did not go to the chat: {}", error.detail);
+        }
+    });
+}
 
 fn button(label: &str, primary: bool) -> Button {
     Button {
@@ -513,25 +558,46 @@ fn said(owner: &str, ok: Option<bool>) -> String {
     }
 }
 
-fn log_in(subject: &str, host: &str, site: &str, path: &str, ids: &[String]) -> Face {
+fn fill_kind(shown: &Value) -> &'static str {
+    let secret = shown
+        .get("fields")
+        .and_then(Value::as_array)
+        .is_some_and(|fields| {
+            fields
+                .iter()
+                .any(|field| field.get("kind").and_then(Value::as_str) == Some("secret"))
+        });
+    if secret && shown.get("keep").and_then(Value::as_bool) == Some(true) {
+        "로그인"
+    } else {
+        "입력"
+    }
+}
+
+fn log_in(subject: &str, host: &str, site: &str, path: &str, ids: &[Option<String>]) -> Face {
     let accounts: Vec<String> = ids
         .iter()
-        .map(|id| asked::log_in_account(host, site, id))
+        .take(MOST_ACCOUNTS)
+        .map(|id| asked::log_in_account(host, site, id.as_deref().unwrap_or(NO_ID)))
         .collect();
     let label = if ids.len() > 1 {
         "계정 고르기"
     } else {
         "계정"
     };
+    let mut notes = vec![asked::log_in_note(subject, host, path)];
+    if ids.len() > MOST_ACCOUNTS {
+        notes.push(String::from(REST_ON_PC));
+    }
     (
         asked::log_in_title(host, site),
         vec![(String::from(label), accounts.join("\n"))],
         false,
-        vec![asked::log_in_note(subject, host, path)],
+        notes,
     )
 }
 
-fn log_in_choices(card: u64, ids: &[String]) -> Vec<(Button, Answer)> {
+fn log_in_choices(card: u64, ids: &[Option<String>]) -> Vec<(Button, Answer)> {
     let answer = |allow: bool, account: usize, trust: bool| Answer::LogIn {
         card,
         allow,
@@ -550,12 +616,14 @@ fn log_in_choices(card: u64, ids: &[String]) -> Vec<(Button, Answer)> {
         ];
     }
     ids.iter()
+        .take(MOST_ACCOUNTS)
         .enumerate()
         .map(|(n, id)| {
-            (
-                button(&format!("{id}로 로그인"), true),
-                answer(true, n, false),
-            )
+            let label = match id {
+                Some(id) => format!("{id}로 로그인"),
+                None => String::from("아이디 없는 계정으로 로그인"),
+            };
+            (button(&label, true), answer(true, n, false))
         })
         .chain(std::iter::once(decline))
         .collect()
@@ -571,12 +639,20 @@ async fn edit(room: Arc<dyn Cards>, posted: Posted, card: Option<Card>, said: St
     }
 }
 
-/// Settles the rooms' cards for calls as every window is told what came of them.
-pub(crate) async fn follow(cards: Arc<RoomCards>, mut published: broadcast::Receiver<Published>) {
+/// Settles the chats' cards for calls as every window is told what came of them. When some of
+/// those lines were missed, the cards are settled by what `status` says of each call instead.
+pub(crate) async fn follow(
+    cards: Arc<RoomCards>,
+    mut published: broadcast::Receiver<Published>,
+    status: impl Fn(u64) -> Status + Send,
+) {
     loop {
         let line = match published.recv().await {
             Ok(published) => published.line,
-            Err(RecvError::Lagged(_)) => continue,
+            Err(RecvError::Lagged(_)) => {
+                cards.resync(&status);
+                continue;
+            }
             Err(RecvError::Closed) => return,
         };
         match serde_json::from_str::<ToWindow>(&line) {
@@ -588,7 +664,7 @@ pub(crate) async fn follow(cards: Arc<RoomCards>, mut published: broadcast::Rece
 }
 
 /// Listens to the browser's screen on this PC as no window does, so the cards it shows can go
-/// to a chat room, and sends it `lines`, the owner's answers from the rooms. It connects again
+/// to a chat, and sends it `lines`, the owner's answers from the chats. It connects again
 /// whenever the MCP server starts again.
 pub(crate) async fn tap(
     home: Home,

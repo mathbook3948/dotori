@@ -1235,6 +1235,7 @@ fn a_running_tool_knows_where_the_owner_asked_for_it() {
         let origin = next(&mut origins).await.expect("an origin");
         assert_eq!(origin.address.place, Place::new("main"));
         assert_eq!(origin.owner, "me");
+        assert_eq!(origin.audience, Some(Audience::Owner));
         assert!(next(&mut seen).await.is_ok());
         assert_eq!(crate::tool::origin(), None);
         agent.shutdown().await;

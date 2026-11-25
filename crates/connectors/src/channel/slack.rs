@@ -33,6 +33,7 @@ use crate::channel::card::Card;
 use crate::channel::card::Cards;
 use crate::channel::card::Posted;
 use crate::channel::card::Press;
+use crate::channel::card::Refusals;
 use crate::channel::slack::api::Api;
 use crate::channel::slack::api::ApiError;
 use crate::channel::slack::envelope::Clicked;
@@ -101,6 +102,7 @@ pub struct SlackChannel {
     rooms: Mutex<HashMap<String, (Instant, Audience)>>,
     direct: tokio::sync::Mutex<Option<String>>,
     presses: Mutex<Option<mpsc::UnboundedSender<Press>>>,
+    refusals: Refusals,
 }
 
 impl fmt::Debug for SlackChannel {
@@ -128,6 +130,7 @@ impl SlackChannel {
             rooms: Mutex::new(HashMap::new()),
             direct: tokio::sync::Mutex::new(None),
             presses: Mutex::new(None),
+            refusals: Refusals::default(),
         })
     }
 
@@ -182,7 +185,7 @@ impl SlackChannel {
             }
             match frame.kind {
                 Kind::Hello | Kind::Nothing => {}
-                Kind::Pressed(clicked) => self.pressed(clicked).await,
+                Kind::Pressed(clicked) => self.pressed(clicked),
                 Kind::Disconnect => return Ok(Ended::Again),
                 Kind::Message(arrived) => {
                     let Ok(content) = Content::parse(arrived.text) else {
@@ -209,21 +212,32 @@ impl SlackChannel {
         }
     }
 
-    async fn pressed(&self, clicked: Clicked) {
+    fn pressed(&self, clicked: Clicked) {
         if clicked.user != self.owner {
-            let told = card::only_owner(&self.name(&self.owner).await);
-            if let Err(error) = self
-                .api
-                .whisper(
-                    &clicked.channel,
-                    &clicked.user,
-                    clicked.thread.as_deref(),
-                    &told,
-                )
-                .await
-            {
-                eprintln!("dotori: Slack: {}", error.detail());
+            if !self.refusals.first(&clicked.ts, &clicked.user) {
+                return;
             }
+            let api = self.api.once();
+            let owner = self.owner.clone();
+            let known = self.names.lock().expect("unpoisoned").get(&owner).cloned();
+            tokio::spawn(async move {
+                let name = match known {
+                    Some(name) => name,
+                    None => api.user_name(&owner).await.unwrap_or(owner),
+                };
+                let told = card::only_owner(&name);
+                if let Err(error) = api
+                    .whisper(
+                        &clicked.channel,
+                        &clicked.user,
+                        clicked.thread.as_deref(),
+                        &told,
+                    )
+                    .await
+                {
+                    eprintln!("dotori: Slack: {}", error.detail());
+                }
+            });
             return;
         }
         let Some((token, button)) = card::pressed(&clicked.value) else {
@@ -413,6 +427,10 @@ impl Cards for SlackChannel {
         let (presses, heard) = mpsc::unbounded_channel();
         *self.presses.lock().expect("unpoisoned") = Some(presses);
         heard
+    }
+
+    fn direct_place(&self) -> Option<Place> {
+        Some(Place::new(OWNER_DIRECT))
     }
 }
 

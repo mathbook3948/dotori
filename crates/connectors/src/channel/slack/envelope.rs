@@ -9,6 +9,7 @@ use crate::channel::card::cut;
 const PIECE: usize = 3900;
 const FIELD: usize = 1900;
 const SECTION: usize = 2900;
+const BUTTONS: usize = 25;
 
 /// What one Socket Mode frame asks of the connector.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -233,7 +234,8 @@ pub(crate) fn blocks(card: Option<&Card>, said: Option<&str>) -> Value {
         }
         if said.is_none() && !card.buttons.is_empty() {
             let buttons: Vec<Value> = card
-                .labels()
+                .labels(BUTTONS)
+                .into_iter()
                 .map(|(n, button, label)| {
                     let mut element = json!({
                         "type": "button",

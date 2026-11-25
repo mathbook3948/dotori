@@ -401,13 +401,20 @@ fn run_actions(
 }
 
 fn origin(seen: &[Entry]) -> Option<Origin> {
-    seen.iter().rev().find_map(|entry| match entry {
-        Entry::Heard { message, .. } => Some(Origin {
-            address: message.address.clone(),
-            owner: message.sender.name.clone(),
-        }),
-        _ => None,
-    })
+    for entry in seen.iter().rev() {
+        match entry {
+            Entry::Heard { message, .. } => {
+                return Some(Origin {
+                    address: message.address.clone(),
+                    owner: message.sender.name.clone(),
+                    audience: message.audience.clone(),
+                });
+            }
+            Entry::SubSessionReturned { .. } => return None,
+            _ => {}
+        }
+    }
+    None
 }
 
 fn call_model(state: &mut AgentState) -> Effect {

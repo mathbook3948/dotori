@@ -1523,10 +1523,14 @@ async fn the_owner_picks_one_of_several_accounts_and_trust_moves_to_it() {
     window.open("https://shop.test/login").await;
     window.read().await;
 
-    let logging = window.call(FILL_LOGIN, json!({ "id": 1, "password": 2, "submit": 4 }));
+    let logging = window.call(
+        FILL_LOGIN,
+        json!({ "id": 1, "password": 2, "submit": 4, "ticket": 5 }),
+    );
     let card = window.card().await;
     assert_eq!(card["kind"], "log_in");
     assert_eq!(card["accounts"], json!(["me", "family"]));
+    assert_eq!(card["ticket"], 5);
     assert_eq!(card["ids"], json!(["me@example.com", "family@example.com"]));
     accounts
         .keep(&card::Account {

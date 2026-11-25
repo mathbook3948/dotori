@@ -865,7 +865,8 @@ impl Browser {
         {
             accounts.room(&card.origin)?;
         }
-        let shown = spec.shown(id, &card.host, &card.ticked);
+        let mut shown = spec.shown(id, &card.host, &card.ticked);
+        shown["ticket"] = ticket_of(&arguments);
         let (at, values, checks) = match self.wait_card(id, shown).await {
             Waited::Answer(Answer::Press { at, values, checks }) => (at, values, checks),
             Waited::Answer(_) => return Ok(card::closed(&spec.title, false)),
@@ -962,7 +963,10 @@ impl Browser {
         let trusted: Vec<&Account> = kept.iter().filter(|account| account.trusted).collect();
         let (account, asked) = match trusted.as_slice() {
             [one] if on_its_page(one) => ((*one).clone(), false),
-            _ => match self.pick_account(id, &card, &kept, &*accounts).await? {
+            _ => match self
+                .pick_account((id, ticket_of(&arguments)), &card, &kept, &*accounts)
+                .await?
+            {
                 Ok(account) => (account, true),
                 Err(told) => return Ok(told),
             },
@@ -982,7 +986,7 @@ impl Browser {
 
     async fn pick_account(
         &self,
-        id: u64,
+        (id, ticket): (u64, Value),
         card: &Checked,
         kept: &[Account],
         accounts: &dyn Accounts,
@@ -995,6 +999,7 @@ impl Browser {
         let shown = json!({
             "id": id,
             "kind": "log_in",
+            "ticket": ticket,
             "site": site,
             "accounts": kept
                 .iter()
@@ -2787,6 +2792,13 @@ fn root() -> bool {
                 .and_then(|ids| ids.split_whitespace().next())
                 == Some("0")
         })
+}
+
+fn ticket_of(arguments: &Value) -> Value {
+    arguments
+        .get("ticket")
+        .and_then(Value::as_u64)
+        .map_or(Value::Null, Value::from)
 }
 
 #[cfg(test)]

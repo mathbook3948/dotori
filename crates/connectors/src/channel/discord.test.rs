@@ -575,9 +575,11 @@ async fn only_the_owners_press_is_passed_on_and_anyone_else_is_told_only_them() 
         "d": press(json!({ "id": "222", "username": "mina" }), None) });
     let owner = json!({ "op": 0, "s": 4, "t": "INTERACTION_CREATE",
         "d": press(json!({ "id": OWNER, "username": "yuno" }), None) });
-    let (socket, _heard) = gateway(vec![ready(), mine, stranger, owner], None).await;
+    let again = stranger.clone();
+    let (socket, _heard) = gateway(vec![ready(), mine, stranger, again, owner], None).await;
     let (base, mut requests) = mock::serve(vec![
         (200, leaked(format!(r#"{{"url":"{socket}"}}"#))),
+        (204, ""),
         (204, ""),
         (204, ""),
     ])
@@ -624,6 +626,12 @@ async fn only_the_owners_press_is_passed_on_and_anyone_else_is_told_only_them() 
     assert_eq!(
         body["data"]["content"],
         "이 버튼은 Yuno 님만 누를 수 있어요"
+    );
+    let quiet = requests.recv().await.expect("stranger's second answer");
+    assert_eq!(
+        serde_json::from_str::<Value>(&quiet.body).expect("json"),
+        json!({ "type": 6 }),
+        "told once per card"
     );
     let taken = requests.recv().await.expect("owner's answer");
     assert_eq!(
@@ -684,5 +692,34 @@ async fn a_card_is_posted_as_an_answer_and_edited_without_its_buttons() {
             .as_str()
             .expect("text")
             .ends_with("유노 님이 거절했어요")
+    );
+}
+
+#[test]
+fn thirty_accounts_keep_the_decline_button_within_five_rows() {
+    let mut card = asking_card();
+    card.buttons = (0..30)
+        .map(|n| card::Button {
+            label: format!("user{n}로 로그인"),
+            primary: true,
+        })
+        .chain(std::iter::once(card::Button {
+            label: String::from("거절"),
+            primary: false,
+        }))
+        .collect();
+
+    let message = card_message(Some(&card), None);
+    let rows = message["components"].as_array().expect("rows");
+
+    assert_eq!(rows.len(), ROWS);
+    assert!(
+        rows.iter()
+            .all(|row| row["components"].as_array().expect("row").len() <= ROW)
+    );
+    assert_eq!(rows[ROWS - 1]["components"][ROW - 1]["label"], "거절");
+    assert_eq!(
+        rows[ROWS - 1]["components"][ROW - 1]["custom_id"],
+        card.value(30)
     );
 }

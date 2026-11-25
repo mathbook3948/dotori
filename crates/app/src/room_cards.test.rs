@@ -25,6 +25,7 @@ struct Room {
     settles: mpsc::UnboundedSender<(Posted, Option<Card>, String)>,
     presses: Mutex<Option<mpsc::UnboundedSender<Press>>>,
     next: AtomicU64,
+    direct: Option<Place>,
 }
 
 struct Seen {
@@ -77,6 +78,10 @@ impl Cards for Room {
         *self.presses.lock().expect("unpoisoned") = Some(presses);
         heard
     }
+
+    fn direct_place(&self) -> Option<Place> {
+        self.direct.clone()
+    }
 }
 
 struct Desk {
@@ -89,6 +94,10 @@ struct Desk {
 
 impl Desk {
     fn new() -> Self {
+        Self::with(Some(Place::new("@owner")))
+    }
+
+    fn with(direct: Option<Place>) -> Self {
         let (app, _) = AppChannel::bind("token").expect("bound");
         let app = Arc::new(app);
         let (cards, screen) = RoomCards::new(String::from("dotori가"), Arc::clone(&app));
@@ -100,6 +109,7 @@ impl Desk {
             settles,
             presses: Mutex::new(None),
             next: AtomicU64::new(1),
+            direct,
         });
         cards.connect(&[Arc::clone(&room) as Arc<dyn Cards>]);
         Self {
@@ -154,6 +164,14 @@ fn from(channel: &str) -> Option<Origin> {
             place: Place::new("C1/10.5"),
         },
         owner: String::from("김민지"),
+        audience: Some(Audience::Owner),
+    })
+}
+
+fn shared(channel: &str) -> Option<Origin> {
+    from(channel).map(|origin| Origin {
+        audience: Some(Audience::Anyone(String::from("the Slack workspace"))),
+        ..origin
     })
 }
 
@@ -245,7 +263,11 @@ async fn a_long_value_is_shortened_and_the_card_says_the_window_shows_it_whole()
 async fn the_owners_press_decides_as_a_window_would_and_the_card_says_who() {
     let mut desk = Desk::new();
     let mut decisions = desk.app.decisions();
-    tokio::spawn(follow(Arc::clone(&desk.cards), desk.app.published()));
+    tokio::spawn(follow(
+        Arc::clone(&desk.cards),
+        desk.app.published(),
+        |_| Status::Waiting,
+    ));
     desk.cards.ask(from("slack"), 7, "mail__send", "{}", false);
     let (_, card) = desk.posted().await;
 
@@ -266,7 +288,11 @@ async fn the_owners_press_decides_as_a_window_would_and_the_card_says_who() {
 async fn the_first_answer_wins_and_a_second_press_is_ignored() {
     let mut desk = Desk::new();
     let mut decisions = desk.app.decisions();
-    tokio::spawn(follow(Arc::clone(&desk.cards), desk.app.published()));
+    tokio::spawn(follow(
+        Arc::clone(&desk.cards),
+        desk.app.published(),
+        |_| Status::Waiting,
+    ));
     desk.cards.ask(from("slack"), 7, "mail__send", "{}", false);
     desk.cards.ask(from("slack"), 8, "mail__send", "{}", false);
     let (_, first) = desk.posted().await;
@@ -303,7 +329,11 @@ async fn the_first_answer_wins_and_a_second_press_is_ignored() {
 #[tokio::test]
 async fn a_call_that_no_longer_waits_says_it_can_no_longer_be_done() {
     let mut desk = Desk::new();
-    tokio::spawn(follow(Arc::clone(&desk.cards), desk.app.published()));
+    tokio::spawn(follow(
+        Arc::clone(&desk.cards),
+        desk.app.published(),
+        |_| Status::Waiting,
+    ));
     desk.cards.ask(from("slack"), 7, "mail__send", "{}", false);
     desk.cards.ask(from("slack"), 8, "mail__send", "{}", false);
     desk.posted().await;
@@ -376,7 +406,11 @@ async fn a_window_answer_first_closes_the_rooms_card_and_a_later_press_changes_n
     );
     let mut decisions = desk.app.decisions();
     let mut published = desk.app.published();
-    tokio::spawn(follow(Arc::clone(&desk.cards), desk.app.published()));
+    tokio::spawn(follow(
+        Arc::clone(&desk.cards),
+        desk.app.published(),
+        |_| Status::Waiting,
+    ));
     let call = ToolCall {
         id: ToolCallId::new("c"),
         name: String::from("mail__send"),
@@ -405,11 +439,12 @@ async fn a_window_answer_first_closes_the_rooms_card_and_a_later_press_changes_n
     assert_eq!(asking.decide(id, false).await, None);
 }
 
-fn log_in_state(id: u64, ids: Value) -> Value {
+fn log_in_state(id: u64, ticket: u64, ids: Value) -> Value {
     json!({
         "kind": "state",
         "card": {
             "id": id,
+            "ticket": ticket,
             "kind": "log_in",
             "site": "쿠팡",
             "accounts": ["minji"],
@@ -426,9 +461,9 @@ async fn a_log_in_card_offers_to_stop_asking_and_answers_the_browser_as_the_wind
     let ticket = desk.cards.browser_asked(from("slack"));
 
     desk.cards
-        .browser_state(&log_in_state(40, json!(["minji@example.com"])));
+        .browser_state(&log_in_state(40, ticket, json!(["minji@example.com"])));
     desk.cards
-        .browser_state(&log_in_state(40, json!(["minji@example.com"])));
+        .browser_state(&log_in_state(40, ticket, json!(["minji@example.com"])));
 
     let (_, card) = desk.posted().await;
     assert!(desk.seen.posts.try_recv().is_err(), "posted once");
@@ -474,20 +509,26 @@ async fn a_log_in_card_offers_to_stop_asking_and_answers_the_browser_as_the_wind
 #[tokio::test]
 async fn several_accounts_get_a_button_each_with_the_whole_id_and_no_trust() {
     let mut desk = Desk::new();
-    desk.cards.browser_asked(from("slack"));
+    let ticket = desk.cards.browser_asked(shared("slack"));
 
     desk.cards.browser_state(&log_in_state(
         41,
-        json!(["minji.example@example.com", "family@example.com"]),
+        ticket,
+        json!(["minji.example@example.com", null]),
     ));
 
-    let (_, card) = desk.posted().await;
+    let (place, card) = desk.posted().await;
+    assert_eq!(
+        place,
+        Place::new("C1/10.5"),
+        "a log-in card stays where it was asked"
+    );
     assert_eq!(card.rows[0].0, "계정 고르기");
     assert_eq!(
         labels(&card),
         [
             "minji.example@example.com로 로그인",
-            "family@example.com로 로그인",
+            "아이디 없는 계정으로 로그인",
             "거절"
         ]
     );
@@ -503,18 +544,19 @@ async fn several_accounts_get_a_button_each_with_the_whole_id_and_no_trust() {
 #[tokio::test]
 async fn a_log_in_card_that_waited_too_long_says_it_can_no_longer_be_done() {
     let mut desk = Desk::new();
-    let ticket = desk.cards.browser_asked(from("telegram"));
     let telegram = Arc::new(Room {
         id: ChannelId::parse("telegram").expect("valid"),
         posts: desk.room.posts.clone(),
         settles: desk.room.settles.clone(),
         presses: Mutex::new(None),
         next: AtomicU64::new(1),
+        direct: None,
     });
     desk.cards.connect(&[telegram as Arc<dyn Cards>]);
+    let ticket = desk.cards.browser_asked(from("telegram"));
 
     desk.cards
-        .browser_state(&log_in_state(42, json!(["minji@example.com"])));
+        .browser_state(&log_in_state(42, ticket, json!(["minji@example.com"])));
     desk.posted().await;
     desk.cards.browser_done(
         ticket,
@@ -527,27 +569,12 @@ async fn a_log_in_card_that_waited_too_long_says_it_can_no_longer_be_done() {
     assert_eq!(desk.settled().await.2, asked::LAPSED);
 }
 
-#[tokio::test]
-async fn a_card_that_takes_typed_values_only_tells_the_room_the_window_shows_it() {
-    let mut desk = Desk::new();
-    desk.cards.browser_state(&json!({
-        "kind": "state",
-        "card": { "id": 50, "kind": "fill", "host": "old.example.com" },
-    }));
-    desk.cards.browser_asked(from("slack"));
-    desk.cards.browser_state(&json!({
-        "kind": "state",
-        "card": { "id": 50, "kind": "fill", "host": "old.example.com" },
-    }));
-    assert!(
-        desk.seen.posts.try_recv().is_err(),
-        "a card shown before the call is not the call's"
-    );
-
-    desk.cards.browser_state(&json!({
+fn fill_state(id: u64, ticket: u64, keep: bool) -> Value {
+    json!({
         "kind": "state",
         "card": {
-            "id": 51,
+            "id": id,
+            "ticket": ticket,
             "kind": "fill",
             "title": "은행 로그인",
             "host": "bank.example.com",
@@ -557,18 +584,187 @@ async fn a_card_that_takes_typed_values_only_tells_the_room_the_window_shows_it(
             ],
             "submit": { "ref": 5, "label": "로그인" },
             "note": "대화하는 AI는 비밀번호를 보지 못해요.",
+            "keep": keep,
         },
-    }));
+    })
+}
 
-    let (_, card) = desk.posted().await;
+#[tokio::test]
+async fn a_card_that_takes_typed_values_only_tells_the_room_the_window_shows_it() {
+    let mut desk = Desk::new();
+    let alone = desk.cards.browser_asked(from("slack"));
+    desk.cards.browser_state(&fill_state(51, alone, false));
+    let (_, note) = desk.posted().await;
+    let kept = desk.cards.browser_asked(from("slack"));
+    desk.cards.browser_state(&fill_state(52, kept, true));
+    let (_, log_in) = desk.posted().await;
+    let others = desk.cards.browser_asked(shared("slack"));
+    desk.cards.browser_state(&fill_state(53, others, true));
+    let (_, plain) = desk.posted().await;
+
     assert_eq!(
-        card.title,
+        note.title,
+        "PC의 dotori 창에 bank.example.com 입력 카드를 띄웠어요."
+    );
+    assert_eq!(
+        log_in.title,
         "PC의 dotori 창에 bank.example.com 로그인 카드를 띄웠어요."
     );
-    assert!(card.rows.is_empty() && card.notes.is_empty() && card.buttons.is_empty());
-    let text = card.text(None, 4000);
-    assert!(
-        !text.contains("아이디") && !text.contains("비밀번호"),
-        "{text}"
+    assert_eq!(plain.title, "PC의 dotori 창에 입력 카드를 띄웠어요.");
+    for card in [note, log_in, plain] {
+        assert!(card.rows.is_empty() && card.notes.is_empty() && card.buttons.is_empty());
+        let text = card.text(None, 4000);
+        assert!(
+            !text.contains("아이디") && !text.contains("비밀번호"),
+            "{text}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_shared_room_gets_only_a_pointer_and_the_card_goes_to_the_owners_direct_place() {
+    let mut desk = Desk::new();
+    let mut decisions = desk.app.decisions();
+    tokio::spawn(follow(
+        Arc::clone(&desk.cards),
+        desk.app.published(),
+        |_| Status::Waiting,
+    ));
+
+    desk.cards.ask(
+        shared("slack"),
+        7,
+        "run_shell",
+        &json!({ "command": "cat ~/secret" }).to_string(),
+        false,
     );
+
+    let (direct, card) = desk.posted().await;
+    let (room, pointer) = desk.posted().await;
+    assert_eq!(direct, Place::new("@owner"));
+    assert_eq!(card.rows[1].1, "cat ~/secret");
+    assert_eq!(room, Place::new("C1/10.5"));
+    assert_eq!(pointer.title, POINTER);
+    assert!(pointer.rows.is_empty() && pointer.notes.is_empty() && pointer.buttons.is_empty());
+
+    desk.press(&card, 1, "1");
+    assert_eq!(
+        time::timeout(WAIT, decisions.recv())
+            .await
+            .expect("in time"),
+        Some((7, true))
+    );
+    desk.app.decided(7, true);
+    let mut settled = [desk.settled().await, desk.settled().await];
+    settled.sort_by(|one, other| one.0.message.cmp(&other.0.message));
+    assert_eq!(settled[0].1.as_ref(), Some(&card));
+    assert_eq!(settled[1].1.as_ref(), Some(&pointer));
+    assert!(
+        settled
+            .iter()
+            .all(|(_, _, said)| said == "김민지 님이 허락했어요")
+    );
+}
+
+#[tokio::test]
+async fn a_shared_room_in_a_chat_with_no_direct_place_gets_nothing() {
+    let mut desk = Desk::with(None);
+
+    desk.cards
+        .ask(shared("slack"), 7, "mail__send", "{}", false);
+    desk.cards.ask(from("slack"), 8, "mail__send", "{}", false);
+
+    let (place, card) = desk.posted().await;
+    assert_eq!(place, Place::new("C1/10.5"));
+    assert_eq!(card.buttons.len(), 2);
+    time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        desk.seen.posts.try_recv().is_err(),
+        "only the owner-only room's card"
+    );
+}
+
+#[tokio::test]
+async fn a_log_in_card_goes_to_the_call_its_ticket_names() {
+    let mut desk = Desk::new();
+    let first = desk.cards.browser_asked(from("slack"));
+    let second = desk.cards.browser_asked(None);
+
+    desk.cards
+        .browser_state(&log_in_state(60, second, json!(["minji@example.com"])));
+    time::sleep(Duration::from_millis(20)).await;
+    assert!(
+        desk.seen.posts.try_recv().is_err(),
+        "the window's call stays there"
+    );
+    desk.cards
+        .browser_state(&log_in_state(61, first, json!(["minji@example.com"])));
+    desk.posted().await;
+    desk.cards.browser_done(
+        first,
+        &told(&Shown::Declined {
+            site: String::from("쿠팡"),
+        }),
+    );
+    assert_eq!(desk.settled().await.2, "김민지 님이 거절했어요");
+
+    desk.cards
+        .browser_state(&log_in_state(62, first, json!(["minji@example.com"])));
+    time::sleep(Duration::from_millis(20)).await;
+    assert!(
+        desk.seen.posts.try_recv().is_err(),
+        "a call that ended posts no card that nothing would settle"
+    );
+}
+
+#[tokio::test]
+async fn thirty_accounts_show_a_few_and_leave_the_rest_to_the_window() {
+    let mut desk = Desk::new();
+    let ticket = desk.cards.browser_asked(from("slack"));
+    let ids: Vec<String> = (0..30).map(|n| format!("user{n}@example.com")).collect();
+
+    desk.cards
+        .browser_state(&log_in_state(70, ticket, json!(ids)));
+
+    let (_, card) = desk.posted().await;
+    assert_eq!(card.buttons.len(), MOST_ACCOUNTS + 1);
+    assert_eq!(card.buttons[MOST_ACCOUNTS].label, "거절");
+    assert_eq!(card.rows[0].1.lines().count(), MOST_ACCOUNTS);
+    assert!(card.notes.contains(&String::from(REST_ON_PC)));
+}
+
+#[tokio::test]
+async fn missed_lines_settle_the_cards_by_what_became_of_each_call() {
+    let mut desk = Desk::new();
+    let (published, heard) = broadcast::channel(1);
+    desk.cards.ask(from("slack"), 7, "mail__send", "{}", false);
+    desk.cards.ask(from("slack"), 8, "mail__send", "{}", false);
+    desk.cards.ask(from("slack"), 9, "mail__send", "{}", false);
+    for _ in 0..3 {
+        desk.posted().await;
+    }
+    time::sleep(Duration::from_millis(20)).await;
+    for _ in 0..3 {
+        let _ = published.send(Published {
+            line: String::from("{}"),
+            origin: None,
+        });
+    }
+
+    tokio::spawn(follow(Arc::clone(&desk.cards), heard, |id| match id {
+        7 => Status::Decided(true),
+        8 => Status::Lapsed,
+        _ => Status::Waiting,
+    }));
+
+    let mut settled = [desk.settled().await, desk.settled().await];
+    settled.sort_by(|one, other| one.0.message.cmp(&other.0.message));
+    assert_eq!(settled[0].2, "김민지 님이 허락했어요");
+    assert_eq!(settled[1].2, asked::LAPSED);
+    time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        desk.seen.settles.try_recv().is_err(),
+        "the call still waiting keeps its card"
+    );
+    drop(published);
 }

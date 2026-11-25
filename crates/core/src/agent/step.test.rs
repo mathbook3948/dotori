@@ -646,6 +646,37 @@ fn a_tool_call_carries_the_room_the_owner_last_spoke_in() {
                 place: Place::new("C1/10.5"),
             },
             owner: String::from("me"),
+            audience: Some(Audience::People {
+                some: vec![String::from("Mina")],
+                total: 2,
+            }),
         })]
+    );
+}
+
+#[test]
+fn a_tool_call_after_a_sub_session_returned_has_no_room() {
+    let mut h = Harness::new();
+    h.owner_says_on_slack("C1/10.5", "book a table");
+    h.model_answers(vec![Action::Delegate(SubSessionSpec {
+        title: String::from("booking"),
+        brief: String::from("book a table for two"),
+        folder: None,
+    })]);
+    let sub_session = h
+        .effects
+        .iter()
+        .find_map(|effect| match effect {
+            Effect::SpawnSubSession { sub_session, .. } => Some(*sub_session),
+            _ => None,
+        })
+        .expect("sub-session spawned");
+    h.sub_session_finishes(sub_session);
+    h.model_answers(vec![use_tool("t1")]);
+
+    assert!(
+        h.effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::RunTool { origin: None, .. }))
     );
 }

@@ -35,6 +35,7 @@ use crate::channel::card::Card;
 use crate::channel::card::Cards;
 use crate::channel::card::Posted;
 use crate::channel::card::Press;
+use crate::channel::card::Refusals;
 
 /// The channel id of Telegram.
 pub const TELEGRAM: &str = "telegram";
@@ -51,6 +52,7 @@ const STEADY: Duration = Duration::from_secs(30);
 const PIECE: usize = 4000;
 const CONFLICT_WAIT: Duration = Duration::from_secs(30);
 const LATE_SECONDS: i64 = 60;
+const BUTTONS: usize = 25;
 const UNCOUNTED: &str = "this Telegram group, whose members could not be counted";
 
 /// What the Telegram channel needs. The owner is the one Telegram user id whose messages are
@@ -90,6 +92,7 @@ pub struct TelegramChannel {
     client: Client,
     owner_name: Mutex<Option<String>>,
     presses: Mutex<Option<mpsc::UnboundedSender<Press>>>,
+    refusals: Refusals,
 }
 
 impl fmt::Debug for TelegramChannel {
@@ -149,6 +152,7 @@ impl TelegramChannel {
             client,
             owner_name: Mutex::new(None),
             presses: Mutex::new(None),
+            refusals: Refusals::default(),
         })
     }
 
@@ -266,8 +270,8 @@ impl TelegramChannel {
                 if let Some(id) = update.get("update_id").and_then(Value::as_i64) {
                     offset = offset.max(id + 1);
                 }
-                if let Some(clicked) = clicked(update) {
-                    self.pressed(clicked).await;
+                if let Some(query) = update.get("callback_query") {
+                    self.pressed(query).await;
                     continue;
                 }
                 let Some(arrived) = read(update, self.owner, &bot, since) else {
@@ -297,12 +301,22 @@ impl TelegramChannel {
         }
     }
 
-    async fn pressed(&self, clicked: Clicked) {
-        let owner = clicked.user == self.owner;
-        let mut answer = json!({ "callback_query_id": clicked.id });
-        if owner {
-            *self.owner_name.lock().expect("unpoisoned") = Some(clicked.name.clone());
-        } else {
+    async fn pressed(&self, query: &Value) {
+        let Some(id) = query.get("id").and_then(Value::as_str) else {
+            return;
+        };
+        let user = query.pointer("/from/id").and_then(Value::as_i64);
+        let owner = user == Some(self.owner);
+        let message = format!(
+            "{}/{}",
+            query.pointer("/message/chat/id").unwrap_or(&Value::Null),
+            query.pointer("/message/message_id").unwrap_or(&Value::Null)
+        );
+        let mut answer = json!({ "callback_query_id": id });
+        if !owner
+            && let Some(user) = user
+            && self.refusals.first(&message, &user.to_string())
+        {
             let name = self
                 .owner_name
                 .lock()
@@ -319,6 +333,10 @@ impl TelegramChannel {
         if !owner {
             return;
         }
+        let Some(clicked) = clicked(query) else {
+            return;
+        };
+        *self.owner_name.lock().expect("unpoisoned") = Some(clicked.name.clone());
         let Some((token, button)) = card::pressed(&clicked.value) else {
             return;
         };
@@ -428,9 +446,8 @@ pub(crate) fn read(update: &Value, owner: i64, bot: &Bot, since: i64) -> Option<
     }
 }
 
-/// The button press in `update`, if it is one.
-pub(crate) fn clicked(update: &Value) -> Option<Clicked> {
-    let query = update.get("callback_query")?;
+/// The button press a `callback_query` holds, if it is a whole one.
+pub(crate) fn clicked(query: &Value) -> Option<Clicked> {
     let from = query.get("from")?;
     let user = from.get("id").and_then(Value::as_i64)?;
     let name = [
@@ -461,7 +478,8 @@ pub(crate) fn clicked(update: &Value) -> Option<Clicked> {
 /// to a row.
 pub(crate) fn keyboard(card: &Card) -> Value {
     let buttons: Vec<Value> = card
-        .labels()
+        .labels(BUTTONS)
+        .into_iter()
         .map(|(n, _, label)| json!({ "text": label, "callback_data": card.value(n) }))
         .collect();
     let rows: Vec<Vec<Value>> = if buttons.len() <= 2 {
@@ -652,6 +670,10 @@ impl Cards for TelegramChannel {
         let (presses, heard) = mpsc::unbounded_channel();
         *self.presses.lock().expect("unpoisoned") = Some(presses);
         heard
+    }
+
+    fn direct_place(&self) -> Option<Place> {
+        Some(Place::new(OWNER_DIRECT))
     }
 }
 

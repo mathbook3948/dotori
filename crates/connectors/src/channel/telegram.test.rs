@@ -307,7 +307,7 @@ fn a_card_with_more_than_two_buttons_puts_each_on_its_own_row() {
 
 #[test]
 fn a_press_names_who_pressed_and_where() {
-    let read = clicked(&callback(OWNER, "민지")).expect("a press");
+    let read = clicked(&callback(OWNER, "민지")["callback_query"]).expect("a press");
 
     assert_eq!(
         read,
@@ -321,11 +321,7 @@ fn a_press_names_who_pressed_and_where() {
         }
     );
     assert_eq!(
-        clicked(&message(
-            OWNER,
-            json!({ "id": OWNER, "type": "private" }),
-            "안녕"
-        )),
+        clicked(&json!({ "id": "q1", "from": { "id": OWNER } })),
         None
     );
 }
@@ -338,12 +334,20 @@ async fn only_the_owners_press_is_passed_on_and_anyone_else_is_told_only_them() 
         .as_secs();
     let mut owner = message(OWNER, json!({ "id": OWNER, "type": "private" }), "안녕");
     owner["message"]["date"] = json!(now);
-    let update =
-        json!({ "ok": true, "result": [owner, callback(9, "지훈"), callback(OWNER, "민지")] })
-            .to_string();
+    let bare = json!({ "update_id": 9, "callback_query": { "id": "q-bare", "from": { "id": 9 } } });
+    let update = json!({ "ok": true, "result": [
+        owner,
+        callback(9, "지훈"),
+        callback(9, "지훈"),
+        bare,
+        callback(OWNER, "민지"),
+    ] })
+    .to_string();
     let (base, mut requests) = mock::serve(vec![
         (200, r#"{"ok":true,"result":{"username":"dotori_bot"}}"#),
         (200, Box::leak(update.into_boxed_str())),
+        (200, r#"{"ok":true,"result":true}"#),
+        (200, r#"{"ok":true,"result":true}"#),
         (200, r#"{"ok":true,"result":true}"#),
         (200, r#"{"ok":true,"result":true}"#),
     ])
@@ -388,6 +392,20 @@ async fn only_the_owners_press_is_passed_on_and_anyone_else_is_told_only_them() 
     assert_eq!(
         serde_json::from_str::<Value>(&refused.body).expect("json"),
         json!({ "callback_query_id": "q9", "text": "이 버튼은 지민 박 님만 누를 수 있어요" })
+    );
+    let again = requests.recv().await.expect("stranger's second answer");
+    assert_eq!(
+        serde_json::from_str::<Value>(&again.body).expect("json"),
+        json!({ "callback_query_id": "q9" }),
+        "told once per card"
+    );
+    let bare = requests
+        .recv()
+        .await
+        .expect("answer to a press missing its message");
+    assert_eq!(
+        serde_json::from_str::<Value>(&bare.body).expect("json")["callback_query_id"],
+        "q-bare"
     );
     let taken = requests.recv().await.expect("owner's answer");
     assert_eq!(
@@ -453,4 +471,26 @@ async fn a_card_is_posted_with_its_keyboard_and_settled_by_editing_it_away() {
             .expect("text")
             .ends_with("\n\n민지 님이 허락했어요")
     );
+}
+
+#[test]
+fn thirty_accounts_keep_the_decline_button_on_the_keyboard() {
+    let mut card = log_in_card();
+    card.buttons = (0..30)
+        .map(|n| card::Button {
+            label: format!("user{n}로 로그인"),
+            primary: true,
+        })
+        .chain(std::iter::once(card::Button {
+            label: String::from("거절"),
+            primary: false,
+        }))
+        .collect();
+
+    let keyboard = keyboard(&card);
+    let rows = keyboard["inline_keyboard"].as_array().expect("rows");
+
+    assert_eq!(rows.len(), BUTTONS);
+    assert_eq!(rows[BUTTONS - 1][0]["text"], "거절");
+    assert_eq!(rows[BUTTONS - 1][0]["callback_data"], card.value(30));
 }

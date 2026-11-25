@@ -68,9 +68,41 @@ fn a_long_label_is_cut() {
     let mut card = card();
     card.buttons[0].label = format!("{}로 로그인", "a".repeat(100));
 
-    let labels: Vec<String> = card.labels().map(|(_, _, label)| label).collect();
+    let labels: Vec<String> = card
+        .labels(25)
+        .into_iter()
+        .map(|(_, _, label)| label)
+        .collect();
 
     assert_eq!(labels[0].chars().count(), LABEL);
     assert!(labels[0].ends_with('…'));
     assert_eq!(labels[1], "허락");
+}
+
+#[test]
+fn too_many_buttons_keep_the_last_one_that_declines() {
+    let mut card = card();
+    card.buttons = (0..30)
+        .map(|n| Button {
+            label: format!("{n}"),
+            primary: true,
+        })
+        .collect();
+
+    let kept: Vec<usize> = card.labels(25).into_iter().map(|(n, _, _)| n).collect();
+
+    assert_eq!(kept.len(), 25);
+    assert_eq!(kept[23], 23);
+    assert_eq!(kept[24], 29);
+    assert_eq!(card.labels(30).len(), 30);
+}
+
+#[test]
+fn someone_else_is_told_once_per_card() {
+    let refusals = Refusals::default();
+
+    assert!(refusals.first("20.1", "U2"));
+    assert!(!refusals.first("20.1", "U2"));
+    assert!(refusals.first("20.1", "U3"));
+    assert!(refusals.first("20.2", "U2"));
 }

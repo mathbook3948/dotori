@@ -317,6 +317,7 @@ async fn only_the_owners_press_is_passed_on_and_anyone_else_is_told_only_them() 
     let (socket_url, mut heard) = socket(vec![
         String::from(r#"{"type":"hello"}"#),
         pressed_by("U2", "e0"),
+        pressed_by("U2", "e2"),
         pressed_by("U1", "e1"),
     ])
     .await;
@@ -327,6 +328,7 @@ async fn only_the_owners_press_is_passed_on_and_anyone_else_is_told_only_them() 
             200,
             r#"{"ok":true,"user":{"name":"minji","real_name":"김민지","profile":{"display_name":""}}}"#,
         ),
+        (200, r#"{"ok":true}"#),
         (200, r#"{"ok":true}"#),
     ])
     .await;
@@ -354,7 +356,7 @@ async fn only_the_owners_press_is_passed_on_and_anyone_else_is_told_only_them() 
             },
         }
     );
-    for envelope in ["e0", "e1"] {
+    for envelope in ["e0", "e2", "e1"] {
         let ack = time::timeout(WAIT, heard.recv()).await.expect("in time");
         assert_eq!(
             ack.as_deref(),
@@ -389,6 +391,33 @@ async fn only_the_owners_press_is_passed_on_and_anyone_else_is_told_only_them() 
         presses.try_recv().is_err(),
         "the stranger's press went nowhere"
     );
+    time::sleep(Duration::from_millis(100)).await;
+    assert!(requests.try_recv().is_err(), "told once per card");
+}
+
+#[test]
+fn thirty_accounts_keep_the_decline_button_among_the_actions() {
+    let mut card = asking_card();
+    card.buttons = (0..30)
+        .map(|n| card::Button {
+            label: format!("user{n}로 로그인"),
+            primary: true,
+        })
+        .chain(std::iter::once(card::Button {
+            label: String::from("거절"),
+            primary: false,
+        }))
+        .collect();
+
+    let blocks = envelope::blocks(Some(&card), None);
+    let actions = blocks.as_array().expect("blocks").last().expect("actions")["elements"]
+        .as_array()
+        .expect("buttons")
+        .clone();
+
+    assert_eq!(actions.len(), 25);
+    assert_eq!(actions[24]["text"]["text"], "거절");
+    assert_eq!(actions[24]["value"], card.value(30));
 }
 
 #[tokio::test]

@@ -169,7 +169,6 @@ pub(crate) async fn serve(
         Arc::clone(&rooms),
         screen_lines,
     ));
-    tokio::spawn(room_cards::follow(Arc::clone(&rooms), app.published()));
     let (guarded, wrong) = settings.relays(vault::lookup(&vault), true, &secrets);
     let (mut guarded, failed) = relay(guarded).await;
     for problem in wrong.iter().chain(&failed) {
@@ -211,6 +210,14 @@ pub(crate) async fn serve(
         Arc::clone(&app),
         Arc::clone(&rooms),
     ));
+    {
+        let asking = Arc::clone(&asking);
+        tokio::spawn(room_cards::follow(
+            Arc::clone(&rooms),
+            app.published(),
+            move |id| asking.status(id),
+        ));
+    }
     let (outcomes, outcomes_heard) = mpsc::unbounded_channel();
     let decision = Arc::new(DecisionChannel::new(outcomes_heard));
     let toolbox: Arc<dyn Toolbox> = Arc::new(MainTools {

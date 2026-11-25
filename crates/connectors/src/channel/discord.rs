@@ -42,6 +42,7 @@ use crate::channel::card::Card;
 use crate::channel::card::Cards;
 use crate::channel::card::Posted;
 use crate::channel::card::Press;
+use crate::channel::card::Refusals;
 
 /// The channel id of Discord.
 pub const DISCORD: &str = "discord";
@@ -103,6 +104,7 @@ pub struct DiscordChannel {
     servers: Mutex<HashMap<String, (Instant, Audience)>>,
     owner_name: Mutex<Option<String>>,
     presses: Mutex<Option<mpsc::UnboundedSender<Press>>>,
+    refusals: Refusals,
 }
 
 impl fmt::Debug for DiscordChannel {
@@ -176,10 +178,21 @@ impl DiscordChannel {
             servers: Mutex::new(HashMap::new()),
             owner_name: Mutex::new(None),
             presses: Mutex::new(None),
+            refusals: Refusals::default(),
         })
     }
 
     async fn call(&self, method: Method, path: &str, body: Option<Value>) -> Result<Value, Failed> {
+        self.call_as(method, path, path, body).await
+    }
+
+    async fn call_as(
+        &self,
+        method: Method,
+        path: &str,
+        label: &str,
+        body: Option<Value>,
+    ) -> Result<Value, Failed> {
         let mut request = self
             .client
             .request(method, format!("{}{path}", self.base))
@@ -191,7 +204,10 @@ impl DiscordChannel {
                 .body(body.to_string());
         }
         let response = request.send().await.map_err(|error| {
-            Failed::Passing(format!("{path} unreachable: {}", error.without_url()), None)
+            Failed::Passing(
+                format!("{label} unreachable: {}", error.without_url()),
+                None,
+            )
         })?;
         let status = response.status();
         let waited = response
@@ -203,7 +219,7 @@ impl DiscordChannel {
             .map(Duration::from_secs_f64);
         let text = response.text().await.map_err(|error| {
             Failed::Passing(
-                format!("{path} answered oddly: {}", error.without_url()),
+                format!("{label} answered oddly: {}", error.without_url()),
                 None,
             )
         })?;
@@ -215,7 +231,7 @@ impl DiscordChannel {
                 Err(_) if !status.is_success() => Value::Null,
                 Err(error) => {
                     return Err(Failed::Passing(
-                        format!("{path} answered oddly: {error}"),
+                        format!("{label} answered oddly: {error}"),
                         None,
                     ));
                 }
@@ -225,7 +241,7 @@ impl DiscordChannel {
             return Ok(reply);
         }
         let detail = format!(
-            "{path} failed ({status}): {}",
+            "{label} failed ({status}): {}",
             reply
                 .get("message")
                 .and_then(Value::as_str)
@@ -464,6 +480,8 @@ impl DiscordChannel {
         let answer = if owner {
             *self.owner_name.lock().expect("unpoisoned") = Some(clicked.name.clone());
             json!({ "type": 6 })
+        } else if !self.refusals.first(&clicked.message, &clicked.user) {
+            json!({ "type": 6 })
         } else {
             let name = self
                 .owner_name
@@ -478,8 +496,14 @@ impl DiscordChannel {
             } })
         };
         let path = format!("/interactions/{}/{}/callback", clicked.id, clicked.token);
-        if let Err(Failed::Fatal(detail) | Failed::Passing(detail, _)) =
-            self.call(Method::POST, &path, Some(answer)).await
+        if let Err(Failed::Fatal(detail) | Failed::Passing(detail, _)) = self
+            .call_as(
+                Method::POST,
+                &path,
+                "the interaction callback",
+                Some(answer),
+            )
+            .await
         {
             eprintln!("dotori: Discord: {detail}");
         }
@@ -717,8 +741,8 @@ pub(crate) fn card_message(card: Option<&Card>, said: Option<&str>) -> Value {
     };
     let buttons: Vec<Value> = match card {
         Some(card) if said.is_none() => card
-            .labels()
-            .take(ROW * ROWS)
+            .labels(ROW * ROWS)
+            .into_iter()
             .map(|(n, button, label)| {
                 json!({
                     "type": 2,
@@ -893,6 +917,10 @@ impl Cards for DiscordChannel {
         let (presses, heard) = mpsc::unbounded_channel();
         *self.presses.lock().expect("unpoisoned") = Some(presses);
         heard
+    }
+
+    fn direct_place(&self) -> Option<Place> {
+        Some(Place::new(OWNER_DIRECT))
     }
 }
 

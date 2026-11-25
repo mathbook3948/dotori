@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use crate::BoxFuture;
 use crate::message::Address;
+use crate::message::Audience;
 
 /// The id the model provider gave one tool call, so its result can be paired with it.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -47,11 +48,13 @@ pub fn well_named(name: &str) -> bool {
 }
 
 /// The owner's message a tool call follows: where the agent last heard the owner before the
-/// model asked for the call, and the name the owner goes by there.
+/// model asked for the call, the name the owner goes by there, and who else can read that room.
+/// A call that follows a sub-session's result has no origin.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Origin {
     pub address: Address,
     pub owner: String,
+    pub audience: Option<Audience>,
 }
 
 tokio::task_local! {

@@ -40,11 +40,13 @@ impl ApiError {
 }
 
 /// The Slack Web API, with the app token for Socket Mode and the bot token for everything else.
+#[derive(Clone)]
 pub(crate) struct Api {
     client: Client,
     base: String,
     app_token: String,
     bot_token: String,
+    attempts: u32,
 }
 
 /// What a Slack conversation's info says about who can read it.
@@ -73,7 +75,16 @@ impl Api {
             base: base.trim_end_matches('/').to_owned(),
             app_token,
             bot_token,
+            attempts: ATTEMPTS,
         })
+    }
+
+    /// The same API, trying each call once.
+    pub(crate) fn once(&self) -> Self {
+        Self {
+            attempts: 1,
+            ..self.clone()
+        }
     }
 
     /// The assistant's own user id, so its own messages are not read as someone else's.
@@ -288,7 +299,7 @@ impl Api {
                 }
                 Err(error) => return Err(ApiError::Passing(format!("{method} failed: {error}"))),
             };
-            if attempt >= ATTEMPTS {
+            if attempt >= self.attempts {
                 return Err(ApiError::Passing(detail));
             }
             tokio::time::sleep(retry_after.unwrap_or(wait).min(MAX_WAIT)).await;

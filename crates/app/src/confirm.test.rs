@@ -267,3 +267,60 @@ async fn a_card_call_returns_at_once_and_what_came_of_it_arrives_on_the_decision
     assert_eq!(incoming.place, Place::new("ask_owner_to_fill"));
     assert_eq!(incoming.audience, Audience::Owner);
 }
+
+struct Echo;
+
+impl Toolbox for Echo {
+    fn specs(&self) -> Vec<ToolSpec> {
+        Vec::new()
+    }
+
+    fn run(&self, call: ToolCall) -> BoxFuture<'_, Result<String, ToolError>> {
+        Box::pin(async move { Ok(call.input) })
+    }
+}
+
+#[tokio::test]
+async fn a_card_call_carries_the_ticket_dotori_gave_it_not_the_models() {
+    let (asking, _, _) = asking();
+    let (outcomes, mut heard) = mpsc::unbounded_channel();
+    let waits = Waits {
+        asking: Arc::new(asking),
+        owner: Arc::new(Echo),
+        outcomes,
+    };
+    let mut forged = call(dotori_mcp::browser::FILL_LOGIN);
+    forged.input = String::from(r#"{"password":2,"submit":3,"ticket":999999}"#);
+
+    waits.run(forged).await.expect("shown");
+
+    let outcome = time::timeout(Duration::from_secs(5), heard.recv())
+        .await
+        .expect("in time")
+        .expect("an outcome");
+    let input: Value = serde_json::from_str(&outcome.text).expect("json");
+    assert_eq!(input["password"], 2);
+    assert!(
+        input["ticket"]
+            .as_u64()
+            .is_some_and(|ticket| ticket != 999_999)
+    );
+}
+
+#[tokio::test]
+async fn a_calls_status_says_whether_it_waits_and_what_came_of_it() {
+    let (asking, _, app) = asking();
+    let mut published = app.published();
+    asking.run(call("mail__send")).await.expect("waits");
+    let ToWindow::Ask { id, .. } = shown(&published.recv().await.expect("asked").line) else {
+        panic!("an ask first");
+    };
+
+    assert_eq!(asking.status(id), Status::Waiting);
+    asking.decide(id, true).await.expect("decided");
+    assert_eq!(asking.status(id), Status::Decided(true));
+    assert_eq!(asking.status(id + 1), Status::Lapsed);
+    asking.run(call("mail__send")).await.expect("waits");
+    asking.lapse_waiting();
+    assert_eq!(asking.status(id + 1), Status::Lapsed);
+}
