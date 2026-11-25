@@ -1,0 +1,30 @@
+name: sandbox-probe
+
+on:
+  pull_request:
+    paths:
+      - .github/sandbox-probe/**
+      - .github/workflows/sandbox-probe.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sandbox-probe-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    runs-on: windows-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Probe as the runner user
+        shell: pwsh
+        run: ./.github/sandbox-probe/probe.ps1 -Label runner-user
+      - name: Probe as a fresh standard user
+        if: always()
+        shell: pwsh
+        run: ./.github/sandbox-probe/run-as-standard-user.ps1
