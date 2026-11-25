@@ -1,6 +1,7 @@
 //! The sandbox the shell commands of dotori's own model run in. It hides dotori's folder, apart
-//! from its work folder, and leaves the rest of the PC and the network as they are. macOS has it
-//! built in; Linux uses bubblewrap once it runs for the owner's user; Windows has none.
+//! from its work folder, and the details of processes outside the sandbox, and leaves the
+//! rest of the PC and the network as they are. macOS has it built in; Linux uses bubblewrap once
+//! it runs for the owner's user; Windows has none.
 
 use std::path::Path;
 use std::path::PathBuf;
@@ -162,7 +163,11 @@ fn profile(above: usize) -> String {
          (deny file* (subpath (param \"HIDDEN\")))\n\
          (allow file-read-metadata (literal (param \"HIDDEN\")))\n\
          (allow file* (subpath (param \"OPEN\")))\n\
-         (deny file-write-unlink file-write-create (literal (param \"OPEN\")))\n",
+         (deny file-write-unlink file-write-create (literal (param \"OPEN\")))\n\
+         (deny process-info*)\n\
+         (allow process-info-listpids)\n\
+         (allow process-info* (target same-sandbox))\n\
+         (deny sysctl-read (sysctl-name-prefix \"kern.procargs\"))\n",
     );
     for n in 0..above {
         profile.push_str(&format!(

@@ -17,6 +17,8 @@ use crate::tool::basic::RUN_SHELL;
 use crate::tool::basic::WithBasic;
 
 const SECRET: &str = "dotori-sandbox-probe-secret";
+const OUTSIDE: &str = "dotori-sandbox-probe-outside";
+const CHILD: &str = "dotori-sandbox-probe-child";
 
 struct Nothing;
 
@@ -87,8 +89,8 @@ impl Probe {
             Ok(Some(_)) => return true,
             Err(blocked) => panic!(
                 "the sandbox refused every command before any probe line ran: {blocked}. On macOS \
-                 this means sandbox-exec rejected dotori's Seatbelt profile; run the profile from \
-                 sandbox.rs by hand with sandbox-exec -p to see which rule it names"
+                 this means sandbox-exec rejected dotori's Seatbelt profile.\n{}",
+                self.rejected().await
             ),
             Ok(None) => {}
         }
@@ -107,6 +109,31 @@ impl Probe {
              on this PC; install it or allow unprivileged user namespaces to run this test"
         );
         false
+    }
+
+    async fn rejected(&self) -> String {
+        if !cfg!(target_os = "macos") {
+            return String::new();
+        }
+        let sandbox = self.tools.basic.sandbox.as_ref().expect("a sandbox");
+        let mut command = sandbox.command(&Confinement::Seatbelt, "exit 0", &self.work);
+        let profile = command
+            .as_std()
+            .get_args()
+            .skip_while(|arg| *arg != "-p")
+            .nth(1)
+            .map(|profile| profile.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let said = match command.output().await {
+            Ok(output) => String::from_utf8_lossy(&output.stderr).into_owned(),
+            Err(error) => error.to_string(),
+        };
+        let numbered: String = profile
+            .lines()
+            .enumerate()
+            .map(|(n, rule)| format!("{:>3} {rule}\n", n + 1))
+            .collect();
+        format!("sandbox-exec said:\n{said}\nthe profile it was given:\n{numbered}")
     }
 
     async fn shell(&self, line: &str) -> String {
@@ -235,6 +262,59 @@ async fn no_command_runs_once_the_work_folder_is_a_link() {
 
     assert!(!ran.contains(SECRET), "{ran}");
     assert!(ran.contains("not a plain folder"), "{ran}");
+}
+
+#[tokio::test]
+async fn a_sandboxed_command_reads_its_own_children_but_not_processes_outside_the_sandbox() {
+    let probe = Probe::new("others");
+    if !probe.ready().await {
+        return;
+    }
+    let outside = Command::new("/bin/sh")
+        .arg("-c")
+        .arg(format!("read line; : {OUTSIDE}"))
+        .env_clear()
+        .env("DOTORI_PROBE_SECRET", OUTSIDE)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .expect("started");
+    let pid = outside.id().expect("running");
+    let unsandboxed = std::process::Command::new("ps")
+        .args(["-ww", "-o", "args=", "-p", &pid.to_string()])
+        .output()
+        .expect("ps ran");
+    let unsandboxed = String::from_utf8_lossy(&unsandboxed.stdout);
+    assert!(
+        unsandboxed.contains(OUTSIDE),
+        "ps outside the sandbox does not show the helper's arguments, so the probe below would \
+         prove nothing:\n{unsandboxed}"
+    );
+
+    let mut line = format!("ps -ww -o args= -p {pid}; ps eww -p {pid}");
+    if cfg!(target_os = "macos") {
+        line.push_str(&format!("; ps -E -ww -p {pid}"));
+    }
+    let seen = probe.shell(&line).await;
+    assert!(
+        !seen.contains(OUTSIDE),
+        "a sandboxed command read the arguments or environment of a process outside the sandbox. \
+         On macOS the Seatbelt rules on process-info* and the kern.procargs sysctls in sandbox.rs \
+         let it through.\ncommand: {line}\n{seen}"
+    );
+
+    let own = probe
+        .shell(&format!(
+            "/bin/sh -c 'sleep 5; : {CHILD}' >/dev/null 2>&1 & c=$!; sleep 1; \
+             ps -ww -o args= -p $c; kill $c"
+        ))
+        .await;
+    assert!(
+        own.starts_with("exit code: 0\n") && own.contains(CHILD),
+        "a sandboxed command cannot read its own child's arguments. On macOS the Seatbelt rule \
+         allowing process-info* for the same sandbox in sandbox.rs does not reach it.\n{own}"
+    );
 }
 
 #[cfg(target_os = "linux")]
