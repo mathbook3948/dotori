@@ -1,6 +1,7 @@
 //! The basic tools dotori's own loop has besides the shared MCP tools: reading and editing files
 //! and running a shell command. Coding agents bring their own.
 
+use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -41,6 +42,7 @@ const SHOWN: usize = 256 * 1024;
 const OUTPUT: usize = 30 * 1024;
 const LINE: usize = 4000;
 const DRAIN: Duration = Duration::from_secs(1);
+const HOPS: u8 = 40;
 
 static STAGED: AtomicU64 = AtomicU64::new(0);
 
@@ -226,25 +228,11 @@ impl BasicTools {
         let Some(private) = &self.private else {
             return Ok(path);
         };
-        let real = |path: &Path| {
-            path.ancestors()
-                .find_map(|known| {
-                    let rest = path.strip_prefix(known).ok()?;
-                    let mut real = known.canonicalize().ok()?;
-                    for part in rest.components() {
-                        match part {
-                            std::path::Component::ParentDir => {
-                                real.pop();
-                            }
-                            std::path::Component::CurDir => {}
-                            other => real.push(other),
-                        }
-                    }
-                    Some(real)
-                })
-                .unwrap_or_else(|| path.to_path_buf())
-        };
-        let (shown, open, private) = (real(&path), real(&private.open), real(&private.folder));
+        let (shown, open, private) = (
+            followed(&path, HOPS),
+            followed(&private.open, HOPS),
+            followed(&private.folder, HOPS),
+        );
         let inside = shown.starts_with(&private) || same_within(&shown, &private);
         let work = shown.starts_with(&open) || same_within(&shown, &open);
         if (inside && !work) || elsewhere_spelled(&shown) {
@@ -431,6 +419,31 @@ impl BasicTools {
             outputs(&drained(stdout).await, &drained(stderr).await)
         ))
     }
+}
+
+fn followed(path: &Path, hops: u8) -> PathBuf {
+    let mut real = PathBuf::new();
+    for part in path.components() {
+        match part {
+            Component::ParentDir => {
+                real.pop();
+            }
+            Component::CurDir => {}
+            Component::Prefix(_) | Component::RootDir => real.push(part),
+            Component::Normal(_) => {
+                real.push(part);
+                if let Ok(resolved) = real.canonicalize() {
+                    real = resolved;
+                } else if hops > 0
+                    && let Ok(target) = std::fs::read_link(&real)
+                {
+                    real.pop();
+                    real = followed(&real.join(target), hops - 1);
+                }
+            }
+        }
+    }
+    real
 }
 
 #[cfg(unix)]

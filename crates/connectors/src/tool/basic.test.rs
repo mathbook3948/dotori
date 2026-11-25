@@ -397,3 +397,51 @@ async fn a_private_file_stays_private_while_it_is_replaced() {
     assert_eq!(std::fs::read_to_string(&secret).expect("read"), "KEY=2\n");
     let _ = std::fs::remove_dir_all(folder);
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_link_in_the_work_folder_does_not_lead_into_the_rest_of_dotori_s_folder() {
+    let (tools, folder) = tools();
+    let work = folder.join("work");
+    std::fs::create_dir_all(work.join("notes")).expect("made");
+    std::fs::write(folder.join("vault.sqlite3"), "sealed").expect("written");
+    std::os::unix::fs::symlink(&folder, work.join("up")).expect("linked");
+    std::os::unix::fs::symlink(folder.join("later.txt"), work.join("dangling")).expect("linked");
+    std::os::unix::fs::symlink(work.join("notes"), work.join("side")).expect("linked");
+
+    for (name, input) in [
+        (READ_FILE, json!({ "path": "up/vault.sqlite3" })),
+        (READ_FILE, json!({ "path": "missing/../up/vault.sqlite3" })),
+        (
+            WRITE_FILE,
+            json!({ "path": "missing/../up/new.txt", "content": "x" }),
+        ),
+        (WRITE_FILE, json!({ "path": "dangling", "content": "x" })),
+        (
+            EDIT_FILE,
+            json!({ "path": "up/vault.sqlite3", "old": "sealed", "new": "open" }),
+        ),
+    ] {
+        let refused = run(&tools, name, input.clone()).await;
+        let refused = refused.expect_err(&input.to_string());
+        assert!(refused.contains("dotori's own"), "{input}: {refused}");
+    }
+    assert!(!folder.join("new.txt").exists());
+    assert!(!folder.join("later.txt").exists());
+    assert_eq!(
+        std::fs::read_to_string(folder.join("vault.sqlite3")).expect("read"),
+        "sealed"
+    );
+    run(
+        &tools,
+        WRITE_FILE,
+        json!({ "path": "side/kept.md", "content": "ok" }),
+    )
+    .await
+    .expect("a link that stays in the work folder");
+    assert_eq!(
+        std::fs::read_to_string(work.join("notes").join("kept.md")).expect("read"),
+        "ok"
+    );
+    let _ = std::fs::remove_dir_all(folder);
+}
