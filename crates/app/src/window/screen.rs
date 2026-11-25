@@ -68,6 +68,30 @@ enum Mode {
     Owner,
 }
 
+/// A card dotori's browser shows the owner, as the chat window draws it.
+pub(crate) enum CardShown {
+    Fill {
+        id: u64,
+        title: String,
+        hint: Option<String>,
+        host: String,
+        fields: Vec<(u64, String, Entity<TextInput>)>,
+        checks: Vec<(u64, String, bool)>,
+        submit: (u64, String),
+        links: Vec<(u64, String)>,
+        note: Option<String>,
+    },
+    LogIn {
+        id: u64,
+        site: String,
+        accounts: Vec<String>,
+        chosen: usize,
+        host: String,
+        path: String,
+        trust: bool,
+    },
+}
+
 pub(crate) struct ScreenView {
     picture: Option<Arc<RenderImage>>,
     painted: bool,
@@ -82,7 +106,13 @@ pub(crate) struct ScreenView {
     typed: Option<Entity<TextInput>>,
     login: Option<(Entity<TextInput>, Entity<TextInput>)>,
     asked_login: Option<Value>,
+    card: Option<Value>,
+    card_inputs: Vec<(u64, Entity<TextInput>)>,
+    card_checks: Vec<(u64, bool)>,
+    trust: bool,
+    chosen: usize,
     answered: Vec<u64>,
+    answered_cards: Vec<u64>,
     focus_login: bool,
     down: bool,
     pointer: Option<(f64, f64, Instant)>,
@@ -118,7 +148,13 @@ impl ScreenView {
             typed: None,
             login: None,
             asked_login: None,
+            card: None,
+            card_inputs: Vec::new(),
+            card_checks: Vec::new(),
+            trust: false,
+            chosen: 0,
             answered: Vec::new(),
+            answered_cards: Vec::new(),
             focus_login: false,
             down: true,
             pointer: None,
@@ -133,7 +169,11 @@ impl ScreenView {
 
     /// Whether dotori asked the owner to do something in the browser or to log in.
     pub(crate) fn asking(&self) -> bool {
-        !self.down && (self.asked.is_some() || self.asked_login.is_some() || self.wants_files())
+        !self.down
+            && (self.asked.is_some()
+                || self.asked_login.is_some()
+                || self.card.is_some()
+                || self.wants_files())
     }
 
     fn wants_files(&self) -> bool {
@@ -176,6 +216,230 @@ impl ScreenView {
             .to_owned();
         let again = asked.get("again").and_then(Value::as_bool) == Some(true);
         Some((site, again, name, secret))
+    }
+
+    /// The card dotori's browser shows now, with the fields the owner types into, unless the
+    /// owner answered it here already.
+    pub(crate) fn card(&self) -> Option<CardShown> {
+        if self.down {
+            return None;
+        }
+        let card = self.card.as_ref()?;
+        let id = card.get("id").and_then(Value::as_u64)?;
+        let text = |value: &Value, key: &str| {
+            value
+                .get(key)
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned()
+        };
+        let named = |value: &Value| {
+            Some((
+                value.get("ref").and_then(Value::as_u64)?,
+                text(value, "label"),
+            ))
+        };
+        let list = |key: &str| {
+            card.get(key)
+                .and_then(Value::as_array)
+                .map(Vec::as_slice)
+                .unwrap_or_default()
+        };
+        match card.get("kind").and_then(Value::as_str) {
+            Some("fill") => Some(CardShown::Fill {
+                id,
+                title: text(card, "title"),
+                hint: Some(text(card, "hint")).filter(|hint| !hint.is_empty()),
+                host: text(card, "host"),
+                fields: self
+                    .card_inputs
+                    .iter()
+                    .filter_map(|(at, input)| {
+                        let field = list("fields")
+                            .iter()
+                            .find(|field| field.get("ref").and_then(Value::as_u64) == Some(*at))?;
+                        Some((*at, text(field, "label"), input.clone()))
+                    })
+                    .collect(),
+                checks: list("checks")
+                    .iter()
+                    .filter_map(named)
+                    .map(|(at, label)| {
+                        let on = self
+                            .card_checks
+                            .iter()
+                            .any(|(check, on)| *check == at && *on);
+                        (at, label, on)
+                    })
+                    .collect(),
+                submit: card.get("submit").and_then(named)?,
+                links: list("links").iter().filter_map(named).collect(),
+                note: Some(text(card, "note")).filter(|note| !note.is_empty()),
+            }),
+            Some("log_in") => Some(CardShown::LogIn {
+                id,
+                site: text(card, "site"),
+                accounts: list("accounts")
+                    .iter()
+                    .map(|account| {
+                        account
+                            .as_str()
+                            .map_or_else(|| String::from("아이디 없이"), str::to_owned)
+                    })
+                    .collect(),
+                chosen: self.chosen,
+                host: text(card, "host"),
+                path: text(card, "path"),
+                trust: self.trust,
+            }),
+            _ => None,
+        }
+    }
+
+    /// Ticks or clears the checkbox `at` of the card.
+    pub(crate) fn toggle_check(&mut self, at: u64, cx: &mut Context<Self>) {
+        for (check, on) in &mut self.card_checks {
+            if *check == at {
+                *on = !*on;
+            }
+        }
+        cx.notify();
+    }
+
+    /// Turns "이 계정은 다음부터 묻지 않기" on or off.
+    pub(crate) fn toggle_trust(&mut self, cx: &mut Context<Self>) {
+        self.trust = !self.trust;
+        cx.notify();
+    }
+
+    /// Presses the element `at` of the card: its button, which sends what the owner typed, or
+    /// one of its links, which sends nothing typed.
+    pub(crate) fn press_card(&mut self, at: u64, cx: &mut Context<Self>) {
+        let Some(CardShown::Fill { id, submit, .. }) = self.card() else {
+            return;
+        };
+        let values: Vec<Value> = if at == submit.0 {
+            self.card_inputs
+                .iter()
+                .map(|(at, input)| json!({ "ref": at, "value": input.read(cx).text() }))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let checks: Vec<Value> = if at == submit.0 {
+            self.card_checks
+                .iter()
+                .map(|(at, on)| json!({ "ref": at, "on": on }))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        self.say(
+            json!({ "kind": "fill", "id": id, "press": at, "values": values, "checks": checks }),
+        );
+        self.close_card(id, cx);
+    }
+
+    /// Puts the card off, filling nothing.
+    pub(crate) fn card_later(&mut self, cx: &mut Context<Self>) {
+        let Some(id) = self.card_id() else {
+            return;
+        };
+        self.say(json!({ "kind": "fill", "id": id, "later": true }));
+        self.close_card(id, cx);
+    }
+
+    /// Picks the account `chosen` of those the card lists.
+    pub(crate) fn choose_account(&mut self, chosen: usize, cx: &mut Context<Self>) {
+        self.chosen = chosen;
+        cx.notify();
+    }
+
+    /// Lets dotori log in with the kept account, or not.
+    pub(crate) fn allow_card(&mut self, allow: bool, cx: &mut Context<Self>) {
+        let Some(id) = self.card_id() else {
+            return;
+        };
+        self.say(json!({
+            "kind": "fill",
+            "id": id,
+            "allow": allow,
+            "trust": allow && self.trust,
+            "account": self.chosen,
+        }));
+        self.close_card(id, cx);
+    }
+
+    fn card_id(&self) -> Option<u64> {
+        self.card
+            .as_ref()
+            .and_then(|card| card.get("id"))
+            .and_then(Value::as_u64)
+    }
+
+    fn close_card(&mut self, id: u64, cx: &mut Context<Self>) {
+        if self.answered_cards.len() >= ANSWERED_KEPT {
+            self.answered_cards.remove(0);
+        }
+        self.answered_cards.push(id);
+        self.card = None;
+        self.card_inputs.clear();
+        self.card_checks.clear();
+        self.trust = false;
+        cx.notify();
+    }
+
+    fn take_card(&mut self, state: &Value, cx: &mut Context<Self>) {
+        let card = state
+            .get("card")
+            .filter(|card| {
+                card.is_object()
+                    && !card
+                        .get("id")
+                        .and_then(Value::as_u64)
+                        .is_some_and(|id| self.answered_cards.contains(&id))
+            })
+            .cloned();
+        let id =
+            |card: Option<&Value>| card.and_then(|card| card.get("id")).and_then(Value::as_u64);
+        if id(card.as_ref()) != self.card_id() {
+            let fields = |key: &str| {
+                card.as_ref()
+                    .and_then(|card| card.get(key))
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default()
+            };
+            self.card_inputs = fields("fields")
+                .iter()
+                .filter_map(|field| {
+                    let at = field.get("ref").and_then(Value::as_u64)?;
+                    let label = field
+                        .get("label")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned();
+                    let input = match field.get("kind").and_then(Value::as_str) {
+                        Some("secret") => cx.new(|cx| TextInput::masked("", cx)),
+                        Some("code") => cx.new(|cx| TextInput::new(label, cx)),
+                        _ => cx.new(|cx| TextInput::new("", cx)),
+                    };
+                    Some((at, input))
+                })
+                .collect();
+            self.card_checks = fields("checks")
+                .iter()
+                .filter_map(|check| {
+                    Some((
+                        check.get("ref").and_then(Value::as_u64)?,
+                        check.get("on").and_then(Value::as_bool) == Some(true),
+                    ))
+                })
+                .collect();
+            self.trust = false;
+            self.chosen = 0;
+        }
+        self.card = card;
     }
 
     /// Asks dotori's browser for control, focusing the page in `window`.
@@ -262,6 +526,7 @@ impl ScreenView {
                     self.focus_login = login.is_some();
                 }
                 self.asked_login = login;
+                self.take_card(&state, cx);
             }
             Seen::Frame(Picture {
                 width,

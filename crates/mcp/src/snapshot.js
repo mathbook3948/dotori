@@ -1,4 +1,18 @@
-(() => {
+function (...typed) {
+  const prop = (el, name) => {
+    for (let proto = Object.getPrototypeOf(el); proto; proto = Object.getPrototypeOf(proto)) {
+      const found = Object.getOwnPropertyDescriptor(proto, name);
+      if (found && found.get) return found.get.call(el);
+    }
+    return undefined;
+  };
+  const masked = new Set(typed);
+  for (const el of typed) {
+    const form = prop(el, 'form');
+    if (!form) continue;
+    for (const other of prop(form, 'elements')) masked.add(other);
+  }
+  const valueOf = (el) => (el.type === 'password' || masked.has(el) ? '' : el.value);
   const seen = new Set();
   let next = 1;
   const refs = new Map();
@@ -12,7 +26,7 @@
     return rect.width === 0 && rect.height === 0;
   };
   const label = (el) => {
-    const text = (el.getAttribute('aria-label') || el.innerText || el.placeholder || (el.type === 'password' ? '' : el.value) || el.title || el.alt || el.name || '').trim();
+    const text = (el.getAttribute('aria-label') || el.innerText || el.placeholder || valueOf(el) || el.title || el.alt || el.name || '').trim();
     return text.replace(/\s+/g, ' ').slice(0, 120);
   };
   const kind = (el) => {
@@ -59,7 +73,7 @@
       refs.set(ref, el);
       let line = '[' + ref + '] ' + kind(el) + ': ' + label(el);
       if (tag === 'a') line += ' (' + el.href + ')';
-      if (tag === 'input' && el.type !== 'password' && el.value && el.value !== label(el)) line += ' = ' + el.value;
+      if (tag === 'input' && valueOf(el) && valueOf(el) !== label(el)) line += ' = ' + valueOf(el);
       if (el.type === 'checkbox' || el.type === 'radio') line += el.checked ? ' [checked]' : ' [ ]';
       lines.push(line);
       if (tag !== 'select') return;
@@ -82,4 +96,4 @@
     }
   }
   return 'Title: ' + document.title + '\nURL: ' + location.href + '\n\n' + merged.join('\n');
-})()
+}

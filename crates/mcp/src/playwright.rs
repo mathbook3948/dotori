@@ -295,7 +295,7 @@ impl Driver<'_> {
             ),
             None => format!("({source})({arg})"),
         };
-        Ok(from_json(&self.page.evaluate(&expression).await?))
+        Ok(from_json(&self.page.evaluate_once(&expression).await?))
     }
 
     async fn locator_call(
@@ -643,6 +643,20 @@ impl Driver<'_> {
     }
 }
 
+const LEAVES_PAGE: [&str; 10] = [
+    "goto",
+    "reload",
+    "goBack",
+    "goForward",
+    "url",
+    "title",
+    "waitForTimeout",
+    "waitForLoadState",
+    "waitForNavigation",
+    "waitForURL",
+];
+const RUNS_CODE: [&str; 4] = ["evaluate", "evaluateAll", "$eval", "$$eval"];
+
 impl Host for Driver<'_> {
     fn call<'a>(
         &'a self,
@@ -651,6 +665,40 @@ impl Host for Driver<'_> {
         args: Vec<Value>,
     ) -> BoxFuture<'a, Result<Value, String>> {
         Box::pin(async move {
+            let quiet = get_by(method, &args).is_some()
+                || match this.kind {
+                    "page" => LEAVES_PAGE.contains(&method),
+                    "locator" => matches!(method, "first" | "last" | "nth" | "filter"),
+                    _ => false,
+                };
+            if !quiet {
+                self.page.touch().await?;
+            }
+            let done = self.dispatch(this, method, args).await;
+            if RUNS_CODE.contains(&method) {
+                self.page.touch().await?;
+            }
+            done
+        })
+    }
+
+    fn property(&self, this: &Native, name: &str) -> Option<Value> {
+        match (this.kind, name) {
+            ("page", "keyboard") => Some(native("keyboard", Json::Null)),
+            ("page", "mouse") => Some(native("mouse", Json::Null)),
+            _ => None,
+        }
+    }
+}
+
+impl Driver<'_> {
+    async fn dispatch(
+        &self,
+        this: &Native,
+        method: &str,
+        args: Vec<Value>,
+    ) -> Result<Value, String> {
+        {
             match this.kind {
                 "page" => self.page_call(method, &args).await,
                 "locator" => self.locator_call(&chain_of(this), method, &args).await,
@@ -697,14 +745,6 @@ impl Host for Driver<'_> {
                 }
                 other => Err(format!("{other} has no `{method}`")),
             }
-        })
-    }
-
-    fn property(&self, this: &Native, name: &str) -> Option<Value> {
-        match (this.kind, name) {
-            ("page", "keyboard") => Some(native("keyboard", Json::Null)),
-            ("page", "mouse") => Some(native("mouse", Json::Null)),
-            _ => None,
         }
     }
 }

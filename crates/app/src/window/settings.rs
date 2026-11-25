@@ -1,5 +1,8 @@
 use std::mem;
+use std::sync::Arc;
+use std::time::Duration;
 
+use gpui::AnyElement;
 use gpui::App;
 use gpui::ClickEvent;
 use gpui::Context;
@@ -15,7 +18,10 @@ use gpui::Window;
 use gpui::div;
 use gpui::prelude::*;
 use gpui::px;
+use gpui::svg;
 
+use crate::accounts;
+use crate::accounts::Site;
 use crate::home::Home;
 use crate::icons;
 use crate::settings::ANTHROPIC_KEY;
@@ -44,6 +50,9 @@ use crate::window::identity::Particle;
 use crate::window::identity::called;
 use crate::window::input::TextInput;
 use crate::window::notes::NotesView;
+use crate::window::parts::TRASH_ICON;
+use crate::window::parts::bolt;
+use crate::window::parts::lock;
 use crate::window::parts::logo;
 use crate::window::parts::prose;
 use crate::window::pcs::PcsView;
@@ -75,6 +84,8 @@ pub(crate) struct SettingsView {
     discord_token: Entity<TextInput>,
     vault: Vault,
     kept: Vec<String>,
+    sites: Vec<Site>,
+    _watch_vault: Task<()>,
     name: Entity<TextInput>,
     picking: Option<Task<()>>,
     note: Option<Note>,
@@ -133,6 +144,41 @@ impl SettingsView {
         let slack_bot_token = secret(cx);
         let vault = Vault::new(&home.root);
         let kept = vault.names().unwrap_or_default();
+        let sites = accounts::sites(&vault).unwrap_or_default();
+        let watch_vault = {
+            let watched = Arc::new(Vault::new(&home.root));
+            cx.spawn(async move |view, cx| {
+                let mut seen = None;
+                loop {
+                    let vault = Arc::clone(&watched);
+                    let changes = cx
+                        .background_spawn(async move { vault.changes().ok() })
+                        .await;
+                    let changed = seen.is_some() && changes != seen;
+                    seen = changes;
+                    if changed {
+                        let vault = Arc::clone(&watched);
+                        let (kept, sites) = cx
+                            .background_spawn(async move {
+                                (
+                                    vault.names().unwrap_or_default(),
+                                    accounts::sites(&vault).unwrap_or_default(),
+                                )
+                            })
+                            .await;
+                        let shown = view.update(cx, |view, cx| {
+                            view.kept = kept;
+                            view.sites = sites;
+                            cx.notify();
+                        });
+                        if shown.is_err() {
+                            return;
+                        }
+                    }
+                    cx.background_executor().timer(VAULT_LOOK_EVERY).await;
+                }
+            })
+        };
         let name = field(
             ASSISTANT_NAME,
             settings
@@ -167,6 +213,8 @@ impl SettingsView {
             discord_token,
             vault,
             kept,
+            sites,
+            _watch_vault: watch_vault,
             name,
             picking: None,
             note: None,
@@ -309,6 +357,7 @@ impl SettingsView {
             Ok(())
         });
         self.kept = self.vault.names().unwrap_or_default();
+        self.sites = accounts::sites(&self.vault).unwrap_or_default();
         self.note = Some(match saved {
             Ok(()) => Note::Saved,
             Err(error) => Note::Failed(SharedString::from(error)),
@@ -450,6 +499,8 @@ impl Render for SettingsView {
                     .child(self.look_card(&theme, cx))
                     .child(div().h_4())
                     .child(self.sandbox.clone())
+                    .child(self.vault_card(&theme, cx))
+                    .child(div().h_4())
                     .child(
                         div()
                             .flex()
@@ -593,6 +644,11 @@ impl SettingsView {
                 Some((input.clone(), name?, value)).filter(|(_, _, value)| !value.is_empty())
             })
             .collect();
+        if let Some((_, name, _)) = typed.iter().find(|(_, name, _)| accounts::is_account(name)) {
+            return Err(format!(
+                "{name}은(는) 연동한 사이트의 계정 자리라서 키를 넣을 수 없어요. 설정의 이름을 바꿔 주세요"
+            ));
+        }
         for (_, name, value) in &typed {
             self.vault
                 .set(name, value, now_ms())
@@ -631,6 +687,291 @@ impl SettingsView {
             .err()
             .map(|error| Note::Failed(SharedString::from(error)));
         cx.notify();
+    }
+
+    fn kept_keys(&self) -> Vec<KeyRow> {
+        let slack = self.earlier.slack.as_ref();
+        let named = |named: Option<&String>, default: &str| {
+            named.cloned().unwrap_or_else(|| default.to_owned())
+        };
+        let mut slots: Vec<(Option<String>, &'static str, &'static str)> = vec![
+            (
+                self.api_key_name(),
+                if self.openai_compatible {
+                    "API 키"
+                } else {
+                    "Anthropic API 키"
+                },
+                "대화 모델",
+            ),
+            (
+                Some(named(
+                    slack.and_then(|slack| slack.app_token_env.as_ref()),
+                    SLACK_APP_KEY,
+                )),
+                "Slack 앱 토큰",
+                "Slack",
+            ),
+            (
+                Some(named(
+                    slack.and_then(|slack| slack.bot_token_env.as_ref()),
+                    SLACK_BOT_KEY,
+                )),
+                "Slack 봇 토큰",
+                "Slack",
+            ),
+            (
+                Some(named(
+                    self.earlier
+                        .telegram
+                        .as_ref()
+                        .and_then(|telegram| telegram.token_env.as_ref()),
+                    TELEGRAM_KEY,
+                )),
+                "Telegram 봇 토큰",
+                "Telegram",
+            ),
+            (
+                Some(named(
+                    self.earlier
+                        .discord
+                        .as_ref()
+                        .and_then(|discord| discord.token_env.as_ref()),
+                    DISCORD_KEY,
+                )),
+                "Discord 봇 토큰",
+                "Discord",
+            ),
+        ];
+        let known: Vec<String> = slots
+            .iter()
+            .filter_map(|(name, _, _)| name.clone())
+            .collect();
+        let others: Vec<String> = self
+            .kept
+            .iter()
+            .filter(|name| !accounts::is_account(name) && !known.contains(name))
+            .cloned()
+            .collect();
+        slots.extend(others.into_iter().map(|name| (Some(name), "", "다른 연동")));
+        slots
+            .into_iter()
+            .filter_map(|(name, title, what)| {
+                let name = name?;
+                let kept = self.kept.contains(&name);
+                let from_environment = environment(&name).is_some();
+                (kept || from_environment).then(|| KeyRow {
+                    title: if title.is_empty() {
+                        name.clone()
+                    } else {
+                        title.to_owned()
+                    },
+                    what,
+                    name,
+                    kept,
+                    from_environment,
+                })
+            })
+            .collect()
+    }
+
+    fn unlink(&mut self, name: &str, cx: &mut Context<Self>) {
+        let unlinked =
+            accounts::forget(&self.vault, name).map_err(|error| vault_failed("지우지", &error));
+        self.kept = self.vault.names().unwrap_or_default();
+        self.sites = accounts::sites(&self.vault).unwrap_or_default();
+        self.note = unlinked
+            .err()
+            .map(|error| Note::Failed(SharedString::from(error)));
+        cx.notify();
+    }
+
+    fn vault_card(&self, theme: &Theme, cx: &mut Context<Self>) -> gpui::Div {
+        let action = |id: SharedString, icon: &'static str| {
+            let selector = id.to_string();
+            div()
+                .id(id)
+                .debug_selector(move || selector.clone())
+                .flex()
+                .flex_none()
+                .items_center()
+                .justify_center()
+                .size(px(30.))
+                .rounded_md()
+                .cursor_pointer()
+                .hover(|action| action.bg(theme.bubble))
+                .child(svg().path(icon).size(px(16.)).text_color(theme.muted))
+        };
+        let row = |title: AnyElement, under: AnyElement| {
+            div()
+                .flex()
+                .items_center()
+                .gap_3()
+                .px_3()
+                .py_1p5()
+                .child(lock(theme, 16.))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .flex_1()
+                        .min_w_0()
+                        .child(title)
+                        .child(under),
+                )
+        };
+        let muted = |words: String| {
+            div()
+                .truncate()
+                .text_xs()
+                .text_color(theme.muted)
+                .child(words)
+                .into_any_element()
+        };
+        let group = |label: &'static str| {
+            div()
+                .px_3()
+                .pt_1()
+                .text_xs()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme.muted)
+                .child(label)
+        };
+        let empty = |words: &'static str| {
+            div()
+                .px_3()
+                .py_1p5()
+                .text_xs()
+                .text_color(theme.muted)
+                .child(words)
+        };
+        let keys = self.kept_keys();
+        let key_rows: Vec<AnyElement> = if keys.is_empty() {
+            vec![empty("아직 보관한 키가 없어요").into_any_element()]
+        } else {
+            keys.into_iter()
+                .map(|key| {
+                    let name = key.name.clone();
+                    let under = if key.from_environment {
+                        format!("{}, 환경 변수에서 읽어요", key.what)
+                    } else {
+                        key.what.to_owned()
+                    };
+                    row(
+                        div().truncate().child(key.title).into_any_element(),
+                        muted(under),
+                    )
+                    .when(key.kept && !key.from_environment, |row| {
+                        row.child(
+                            action(
+                                SharedString::from(format!("forget-kept-{name}")),
+                                TRASH_ICON,
+                            )
+                            .on_click(cx.listener(
+                                move |view, _, _, cx| {
+                                    view.forget(&name, cx);
+                                },
+                            )),
+                        )
+                    })
+                    .into_any_element()
+                })
+                .collect()
+        };
+        let site_rows: Vec<AnyElement> = if self.sites.is_empty() {
+            vec![empty("아직 연동한 사이트가 없어요").into_any_element()]
+        } else {
+            self.sites
+                .iter()
+                .map(|site| {
+                    let name = site.name.clone();
+                    let title = div()
+                        .flex()
+                        .min_w_0()
+                        .gap_1()
+                        .child(div().truncate().child(accounts::host(&site.origin)))
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_color(theme.muted)
+                                .child(format!("({})", site.site)),
+                        )
+                        .into_any_element();
+                    let under = muted(
+                        site.id
+                            .clone()
+                            .unwrap_or_else(|| String::from("아이디 없음")),
+                    );
+                    row(title, under)
+                        .when(site.trusted, |row| {
+                            row.child(
+                                div()
+                                    .flex()
+                                    .flex_none()
+                                    .items_center()
+                                    .gap_1()
+                                    .px_2p5()
+                                    .py_0p5()
+                                    .rounded_full()
+                                    .bg(theme.selection)
+                                    .text_color(theme.primary)
+                                    .text_xs()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(bolt(theme, 12.))
+                                    .child("묻지 않고 로그인"),
+                            )
+                        })
+                        .child(
+                            action(SharedString::from(format!("unlink-{name}")), TRASH_ICON)
+                                .on_click(cx.listener(move |view, _, _, cx| {
+                                    view.unlink(&name, cx);
+                                })),
+                        )
+                        .into_any_element()
+                })
+                .collect()
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .p_5()
+            .rounded_2xl()
+            .bg(theme.surface)
+            .border_t_1()
+            .border_color(theme.rim)
+            .shadow_sm()
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_base()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("금고"),
+                    )
+                    .child(div().text_xs().text_color(theme.muted).child(prose(
+                        "API 키, 토큰, 연동한 사이트의 계정은 암호화되어 보관되고 있어요. 대화하는 AI는 사이트와 아이디까지만 알고, 비밀번호는 보지 못해요.",
+                    ))),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_0p5()
+                    .child(group("API 키와 토큰"))
+                    .children(key_rows),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_0p5()
+                    .child(group("연동된 사이트"))
+                    .children(site_rows),
+            )
     }
 
     fn secret_field(
@@ -1169,6 +1510,14 @@ impl SettingsView {
     }
 }
 
+struct KeyRow {
+    title: String,
+    what: &'static str,
+    name: String,
+    kept: bool,
+    from_environment: bool,
+}
+
 fn vault_failed(what: &str, error: &str) -> String {
     eprintln!("dotori: the vault: {error}");
     if error.contains("another key") {
@@ -1178,6 +1527,7 @@ fn vault_failed(what: &str, error: &str) -> String {
     }
 }
 
+const VAULT_LOOK_EVERY: Duration = Duration::from_secs(3);
 const TOO_LARGE: &str = "the picture is larger than 20 MB";
 
 fn assistant_named(

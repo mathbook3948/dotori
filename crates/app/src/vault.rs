@@ -71,7 +71,8 @@ const CHECK_TEXT: &str = "dotori vault";
 const KEYCHAIN_SERVICE: &str = "dotori";
 const KEY_BYTES: usize = 32;
 const NONCE_BYTES: usize = 24;
-const MAX_NAME: usize = 128;
+/// The longest name a value is kept under.
+pub(crate) const MAX_NAME: usize = 128;
 const MAX_VALUE: usize = 16 * 1024;
 const MAX_SECRETS: i64 = 256;
 const BUSY: Duration = Duration::from_secs(5);
@@ -170,6 +171,21 @@ impl Vault {
         };
         let key = self.key(Make::Never)?;
         open(&key, name, &sealed).map(Some)
+    }
+
+    /// Whether one more name fits in the vault.
+    pub(crate) fn has_room(&self) -> Result<bool, String> {
+        if !self.path.exists() {
+            return Ok(true);
+        }
+        let held: i64 = self.with(|connection| {
+            connection.query_row(
+                "SELECT COUNT(*) FROM secrets WHERE sealed IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )
+        })?;
+        Ok(held < MAX_SECRETS)
     }
 
     /// The names that hold a value, never the values.
@@ -658,6 +674,10 @@ pub(crate) fn secret_names(settings: &Settings, vault: &Vault) -> Vec<String> {
 /// one is set, which wins, or else from the vault.
 pub(crate) fn lookup(vault: &Vault) -> impl Fn(&str) -> Option<String> + '_ {
     move |name| {
+        if crate::accounts::is_account(name) {
+            eprintln!("dotori: {name} is a linked account, which is never used as a key or token");
+            return None;
+        }
         environment(name).or_else(|| match vault.get(name) {
             Ok(value) => value,
             Err(error) => {

@@ -16,6 +16,9 @@ use dotori_core::tool::ToolCallId;
 use dotori_core::tool::ToolError;
 use dotori_core::tool::ToolSpec;
 use dotori_core::tool::Toolbox;
+use dotori_mcp::browser::CARD_WAIT;
+use dotori_mcp::browser::OWNER_TOOLS;
+use dotori_mcp::browser::WAITS_FOR_OWNER;
 use serde_json::Value;
 use serde_json::json;
 use tokio::sync::oneshot;
@@ -37,6 +40,7 @@ enum Where<'a> {
 /// The shared tools as the main session sees them, with browser calls sent where the browser is.
 pub(crate) struct BrowserRoute {
     local: Arc<dyn Toolbox>,
+    owner: Arc<dyn Toolbox>,
     linked: OnceLock<Linked>,
     waiting: Mutex<Waiting>,
     next: AtomicU64,
@@ -61,14 +65,43 @@ impl Drop for Abandoned<'_> {
 }
 
 impl BrowserRoute {
-    pub(crate) fn new(local: Arc<dyn Toolbox>) -> Arc<Self> {
+    /// The shared tools in `local`, and in `owner` the browser tools only the main session has.
+    pub(crate) fn new(local: Arc<dyn Toolbox>, owner: Arc<dyn Toolbox>) -> Arc<Self> {
         Arc::new(Self {
             local,
+            owner,
             linked: OnceLock::new(),
             waiting: Mutex::new(HashMap::new()),
             next: AtomicU64::new(1),
             running: Mutex::new(HashMap::new()),
         })
+    }
+
+    /// The browser tools only the main session has, sent where the browser is like the others.
+    pub(crate) fn owner_route(self: &Arc<Self>) -> Arc<dyn Toolbox> {
+        Arc::new(OwnerRoute {
+            route: Arc::clone(self),
+        })
+    }
+
+    fn here(&self, call: ToolCall) -> BoxFuture<'_, Result<String, ToolError>> {
+        if OWNER_TOOLS.contains(&call.name.as_str()) {
+            self.owner.run(call)
+        } else {
+            self.local.run(call)
+        }
+    }
+
+    async fn routed(&self, call: ToolCall) -> Result<String, ToolError> {
+        match self.browser_pc(&call.name) {
+            Where::Here => self.here(call).await,
+            Where::Elsewhere(linked, pc) => self.elsewhere(linked, &pc, call).await,
+            Where::Nowhere => Err(ToolError {
+                detail: String::from(
+                    "no PC holds the browser right now; try again in a few seconds",
+                ),
+            }),
+        }
     }
 
     /// Starts sending browser calls to other PCs once this PC is linked with them.
@@ -100,6 +133,11 @@ impl BrowserRoute {
         pc: &str,
         call: ToolCall,
     ) -> Result<String, ToolError> {
+        let wait = if WAITS_FOR_OWNER.contains(&call.name.as_str()) {
+            CARD_WAIT + ANSWER_WAIT
+        } else {
+            ANSWER_WAIT
+        };
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
         self.waiting
@@ -133,7 +171,7 @@ impl BrowserRoute {
                 .await;
         };
         let answer = tokio::select! {
-            answer = time::timeout(ANSWER_WAIT, rx) => match answer {
+            answer = time::timeout(wait, rx) => match answer {
                 Ok(Ok(result)) => {
                     abandoned.answered = true;
                     result.map_err(failed)
@@ -238,7 +276,7 @@ impl BrowserRoute {
                     .unwrap_or("{}")
                     .to_owned(),
             };
-            self.local.run(call).await.map_err(|error| error.detail)
+            self.here(call).await.map_err(|error| error.detail)
         };
         let reply = match result {
             Ok(result) => json!({ "kind": "tool_result", "id": id, "result": result }),
@@ -254,17 +292,35 @@ impl Toolbox for BrowserRoute {
     }
 
     fn run(&self, call: ToolCall) -> BoxFuture<'_, Result<String, ToolError>> {
-        Box::pin(async move {
-            match self.browser_pc(&call.name) {
-                Where::Here => self.local.run(call).await,
-                Where::Elsewhere(linked, pc) => self.elsewhere(linked, &pc, call).await,
-                Where::Nowhere => Err(ToolError {
-                    detail: String::from(
-                        "no PC holds the browser right now; try again in a few seconds",
-                    ),
-                }),
-            }
-        })
+        if OWNER_TOOLS.contains(&call.name.as_str()) {
+            return Box::pin(async move {
+                Err(ToolError {
+                    detail: format!("`{}` is not one of these tools", call.name),
+                })
+            });
+        }
+        Box::pin(self.routed(call))
+    }
+}
+
+struct OwnerRoute {
+    route: Arc<BrowserRoute>,
+}
+
+impl Toolbox for OwnerRoute {
+    fn specs(&self) -> Vec<ToolSpec> {
+        self.route.owner.specs()
+    }
+
+    fn run(&self, call: ToolCall) -> BoxFuture<'_, Result<String, ToolError>> {
+        if !OWNER_TOOLS.contains(&call.name.as_str()) {
+            return Box::pin(async move {
+                Err(ToolError {
+                    detail: format!("`{}` is not one of these tools", call.name),
+                })
+            });
+        }
+        Box::pin(self.route.routed(call))
     }
 }
 

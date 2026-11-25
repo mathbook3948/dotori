@@ -22,7 +22,7 @@ fn call(name: &str) -> ToolCall {
 
 #[tokio::test]
 async fn alone_every_tool_runs_here() {
-    let route = BrowserRoute::new(Arc::new(Echo));
+    let route = BrowserRoute::new(Arc::new(Echo), Arc::new(Echo));
 
     assert_eq!(
         route.run(call("run_in_browser")).await.expect("ran"),
@@ -36,7 +36,7 @@ async fn alone_every_tool_runs_here() {
 
 #[tokio::test]
 async fn an_answer_from_the_browsers_pc_reaches_the_call_waiting_for_it() {
-    let route = BrowserRoute::new(Arc::new(Echo));
+    let route = BrowserRoute::new(Arc::new(Echo), Arc::new(Echo));
     let (tx, rx) = oneshot::channel();
     route
         .waiting
@@ -123,7 +123,7 @@ mod linked {
         let own = hub.own().to_owned();
         let keeper = Keeper::start(Arc::clone(&hub), own.clone(), wanted);
         let linked = Linked { hub, keeper, own };
-        let route = BrowserRoute::new(local);
+        let route = BrowserRoute::new(Arc::clone(&local), local);
         route.link(linked.clone());
         {
             let linked = linked.clone();
@@ -270,7 +270,7 @@ mod linked {
 
 #[tokio::test]
 async fn a_call_the_caller_gave_up_on_is_stopped_and_only_by_that_caller() {
-    let route = BrowserRoute::new(Arc::new(Echo));
+    let route = BrowserRoute::new(Arc::new(Echo), Arc::new(Echo));
     let task = tokio::spawn(time::sleep(Duration::from_secs(60)));
     route
         .running

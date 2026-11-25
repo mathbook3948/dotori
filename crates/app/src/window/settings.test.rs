@@ -179,3 +179,69 @@ fn a_name_longer_than_allowed_is_refused() {
     assert!(assistant_named(None, &long).is_err());
     assert_eq!(assistant_named(None, ASSISTANT_NAME).expect("fine"), None);
 }
+
+#[gpui::test]
+fn each_linked_account_has_its_own_row_and_one_can_be_unlinked(cx: &mut TestAppContext) {
+    use dotori_mcp::card::Account;
+    use dotori_mcp::card::Accounts;
+
+    let root = std::env::temp_dir().join(format!("dotori-sites-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("a home");
+    std::fs::write(root.join("settings.toml"), "").expect("settings");
+    let kept = accounts::VaultAccounts {
+        vault: Arc::new(Vault::new(&root)),
+    };
+    let first = Account {
+        site: String::from("쿠팡"),
+        origin: String::from("https://www.coupang.com"),
+        id_label: Some(String::from("아이디")),
+        id: Some(String::from("minji.example@mail.com")),
+        password_label: String::from("비밀번호"),
+        password: String::from("hunter22!"),
+        trusted: false,
+        page: Some(String::from("/login")),
+        kept_ms: 0,
+    };
+    let second = Account {
+        id: Some(String::from("family@mail.com")),
+        ..first.clone()
+    };
+    kept.keep(&first).expect("kept");
+    kept.keep(&second).expect("kept");
+    let home = Home { root: root.clone() };
+    let settings = Settings::load(&home.settings()).expect("loaded");
+    let (view, cx) = cx.add_window_view(|_, cx| SettingsView::new(home, settings, cx));
+    cx.run_until_parked();
+
+    let shown = view.read_with(cx, |view, _| view.sites.clone());
+    let ids: Vec<Option<&str>> = shown.iter().map(|site| site.id.as_deref()).collect();
+    assert_eq!(
+        ids,
+        [Some("family@mail.com"), Some("minji.example@mail.com")]
+    );
+    assert!(
+        view.read_with(cx, |view, _| view.kept_keys().is_empty()),
+        "an account is not listed with the keys"
+    );
+    let name = shown[1].name.clone();
+    let selector: &'static str = Box::leak(format!("unlink-{name}").into_boxed_str());
+    assert!(
+        cx.debug_bounds(selector).is_some(),
+        "each account has its own row"
+    );
+
+    view.update(cx, |view, cx| view.unlink(&name, cx));
+
+    let left = view.read_with(cx, |view, _| view.sites.clone());
+    assert_eq!(left.len(), 1);
+    assert_eq!(left[0].id.as_deref(), Some("family@mail.com"));
+    let ids: Vec<Option<String>> = kept
+        .find("https://www.coupang.com")
+        .expect("read")
+        .into_iter()
+        .map(|account| account.id)
+        .collect();
+    assert_eq!(ids, [second.id]);
+    let _ = std::fs::remove_dir_all(&root);
+}

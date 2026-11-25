@@ -5,10 +5,12 @@ use gpui::Div;
 use gpui::Img;
 use gpui::Rgba;
 use gpui::SharedString;
+use gpui::Svg;
 use gpui::div;
 use gpui::img;
 use gpui::prelude::*;
 use gpui::px;
+use gpui::svg;
 
 use crate::window::identity;
 use crate::window::theme::Theme;
@@ -27,6 +29,24 @@ pub(crate) fn logo(theme: &Theme, size: f32) -> Img {
         .flex_none()
         .size(px(size)),
     }
+}
+
+/// The bolt that marks an account dotori logs in with without asking, in `primary`.
+pub(crate) fn bolt(theme: &Theme, size: f32) -> Svg {
+    svg()
+        .path(BOLT_ICON)
+        .flex_none()
+        .size(px(size))
+        .text_color(theme.primary)
+}
+
+/// The lock that marks what the vault keeps, drawn `size` pixels wide in `muted`.
+pub(crate) fn lock(theme: &Theme, size: f32) -> Svg {
+    svg()
+        .path(LOCK_ICON)
+        .flex_none()
+        .size(px(size))
+        .text_color(theme.muted)
 }
 
 /// The windows' own images: the logo in a light and a dark look. GPUI loads an image named this
@@ -62,6 +82,9 @@ impl AssetSource for Assets {
             SharedString::new_static(MAXIMIZE_ICON),
             SharedString::new_static(SHIELD_ICON),
             SharedString::new_static(SHIELD_ON_ICON),
+            SharedString::new_static(LOCK_ICON),
+            SharedString::new_static(BOLT_ICON),
+            SharedString::new_static(TRASH_ICON),
         ])
     }
 }
@@ -79,7 +102,21 @@ pub(crate) const MAXIMIZE_ICON: &str = "icons/maximize.svg";
 pub(crate) const SHIELD_ICON: &str = "icons/shield.svg";
 /// The shield with a check, for when the sandbox is on.
 pub(crate) const SHIELD_ON_ICON: &str = "icons/shield-on.svg";
-const ICONS: [(&str, &str); 5] = [
+/// The lock that marks what the vault keeps, in the color of its text.
+pub(crate) const LOCK_ICON: &str = "icons/lock.svg";
+/// The bolt that marks an account dotori logs in with without asking.
+pub(crate) const BOLT_ICON: &str = "icons/bolt.svg";
+/// The bin that removes a key from the vault.
+pub(crate) const TRASH_ICON: &str = "icons/trash.svg";
+const ICONS: [(&str, &str); 8] = [
+    (
+        TRASH_ICON,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M9 7V4h6v3"/><path d="M6 7l1 13h10l1-13"/><path d="M10 11v6M14 11v6"/></svg>"#,
+    ),
+    (
+        BOLT_ICON,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L4 14h7l-1 8 9-12h-7l1-8z"/></svg>"#,
+    ),
     (
         SHIELD_ICON,
         r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.5-3 8.5-7 10-4-1.5-7-5.5-7-10V6l7-3z"/></svg>"#,
@@ -99,6 +136,10 @@ const ICONS: [(&str, &str); 5] = [
     (
         MAXIMIZE_ICON,
         r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linejoin="round"><rect x="6.5" y="6.5" width="11" height="11" rx="1.5"/></svg>"#,
+    ),
+    (
+        LOCK_ICON,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>"#,
     ),
 ];
 const GEAR: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.08a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.08a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>"#;

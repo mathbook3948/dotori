@@ -38,6 +38,7 @@ use tokio::process::Command;
 use tokio::sync::Mutex;
 use tokio::time;
 
+use crate::accounts::VaultAccounts;
 use crate::door;
 use crate::door::Door;
 use crate::home::Home;
@@ -47,11 +48,15 @@ use crate::vault::Vault;
 
 const START_WAIT: Duration = Duration::from_secs(30);
 
-/// Where the MCP server listens, as its first line of output.
+/// Where the MCP server listens, as its first line of output: the tools every session and coding
+/// agent shares, and on a port and token of their own, which only the daemon reads here, the
+/// browser tools for the main session alone.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Listening {
     pub(crate) port: u16,
     pub(crate) token: String,
+    pub(crate) owner_port: u16,
+    pub(crate) owner_token: String,
 }
 
 /// `dotori mcp`: serves the shared tools until its input closes.
@@ -68,7 +73,7 @@ pub(crate) fn holds_job(jobs: &std::path::Path, job: &str) -> bool {
 pub(crate) async fn serve(home: Home) -> Result<(), String> {
     crate::daemon::keep_to_itself();
     let settings = Settings::load(&home.settings())?;
-    let vault = Vault::new(&home.root);
+    let vault = Arc::new(Vault::new(&home.root));
     let chosen = settings.browser.clone().unwrap_or_default();
     let (screen, asks) = Screen::new();
     let browser = Browser::with_screen(
@@ -81,6 +86,9 @@ pub(crate) async fn serve(home: Home) -> Result<(), String> {
                 out: home.logins_out(),
                 into: home.logins_in(),
             }),
+            accounts: Some(Arc::new(VaultAccounts {
+                vault: Arc::clone(&vault),
+            })),
         },
         Arc::clone(&screen),
         asks,
@@ -138,9 +146,19 @@ pub(crate) async fn serve(home: Home) -> Result<(), String> {
         .local_addr()
         .map_err(|error| error.to_string())?
         .port();
+    let owner_token = door::token()?;
+    let owner_listener = TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .map_err(|error| error.to_string())?;
+    let owner_port = owner_listener
+        .local_addr()
+        .map_err(|error| error.to_string())?
+        .port();
     let line = serde_json::to_string(&Listening {
         port,
         token: token.clone(),
+        owner_port,
+        owner_token: owner_token.clone(),
     })
     .map_err(|error| error.to_string())?;
     let mut out = tokio::io::stdout();
@@ -152,6 +170,7 @@ pub(crate) async fn serve(home: Home) -> Result<(), String> {
     let mut sink = Vec::new();
     tokio::select! {
         () = Server::new(token, tools).serve(listener) => {}
+        () = Server::new(owner_token, browser.owner_tools()).serve(owner_listener) => {}
         _ = input.read_to_end(&mut sink) => {}
     }
     Ok(())
@@ -161,13 +180,39 @@ pub(crate) async fn serve(home: Home) -> Result<(), String> {
 /// call, so a crash costs one restart rather than every later call.
 pub(crate) struct SharedTools {
     specs: Vec<ToolSpec>,
+    owner_specs: Vec<ToolSpec>,
     running: Mutex<Running>,
 }
 
 struct Running {
     child: Child,
     tools: Arc<McpTools>,
+    owner: Arc<McpTools>,
     address: McpAddress,
+}
+
+/// The browser tools of the `dotori mcp` child that only the main session gets, reached on the
+/// child's second port with a token no coding agent is given.
+pub(crate) struct OwnerTools {
+    shared: Arc<SharedTools>,
+}
+
+impl Toolbox for OwnerTools {
+    fn specs(&self) -> Vec<ToolSpec> {
+        self.shared.owner_specs.clone()
+    }
+
+    fn run(&self, call: ToolCall) -> BoxFuture<'_, Result<String, ToolError>> {
+        Box::pin(async move {
+            let owner = self
+                .shared
+                .current()
+                .await
+                .map_err(|detail| ToolError { detail })?
+                .2;
+            owner.run(call).await
+        })
+    }
 }
 
 impl fmt::Debug for SharedTools {
@@ -181,22 +226,34 @@ impl SharedTools {
         let running = launch().await?;
         Ok(Self {
             specs: running.tools.specs(),
+            owner_specs: running.owner.specs(),
             running: Mutex::new(running),
         })
     }
 
-    async fn current(&self) -> Result<(Arc<McpTools>, McpAddress), String> {
+    /// The tools only the main session gets.
+    pub(crate) fn owner(self: &Arc<Self>) -> Arc<dyn Toolbox> {
+        Arc::new(OwnerTools {
+            shared: Arc::clone(self),
+        })
+    }
+
+    async fn current(&self) -> Result<(Arc<McpTools>, McpAddress, Arc<McpTools>), String> {
         let mut running = self.running.lock().await;
         if !matches!(running.child.try_wait(), Ok(None)) {
             *running = launch().await.map_err(|error| {
                 format!("the tool server stopped and did not start again: {error}")
             })?;
         }
-        Ok((Arc::clone(&running.tools), running.address.clone()))
+        Ok((
+            Arc::clone(&running.tools),
+            running.address.clone(),
+            Arc::clone(&running.owner),
+        ))
     }
 
     async fn call(&self, call: ToolCall) -> Result<String, ToolError> {
-        let (tools, _) = self
+        let (tools, _, _) = self
             .current()
             .await
             .map_err(|detail| ToolError { detail })?;
@@ -206,7 +263,7 @@ impl SharedTools {
 
 impl McpServer for SharedTools {
     fn address(&self) -> BoxFuture<'_, Result<McpAddress, String>> {
-        Box::pin(async { self.current().await.map(|(_, address)| address) })
+        Box::pin(async { self.current().await.map(|(_, address, _)| address) })
     }
 }
 
@@ -249,9 +306,15 @@ async fn launch() -> Result<Running, String> {
         token: listening.token.clone(),
     };
     let tools = McpTools::connect(url, listening.token).await?;
+    let owner = McpTools::connect(
+        format!("http://127.0.0.1:{}{PATH}", listening.owner_port),
+        listening.owner_token,
+    )
+    .await?;
     Ok(Running {
         child,
         tools: Arc::new(tools),
+        owner: Arc::new(owner),
         address,
     })
 }

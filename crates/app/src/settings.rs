@@ -999,6 +999,9 @@ pub(crate) fn reserved(name: &str) -> bool {
 }
 
 pub(crate) fn environment(variable: &str) -> Option<String> {
+    if crate::accounts::is_account(variable) {
+        return None;
+    }
     env::var(variable)
         .ok()
         .filter(|value| !value.trim().is_empty())
