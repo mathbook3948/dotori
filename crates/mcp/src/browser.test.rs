@@ -170,6 +170,11 @@ async fn a_playwright_script_fills_clicks_and_reads_the_page() {
 async fn a_page_is_read_and_a_move_to_a_refused_address_is_undone() {
     let browser = browser();
     let running = browser.page().await.expect("started");
+    assert_eq!(
+        browser.config.profile.join("DevToolsActivePort").exists(),
+        cfg!(windows),
+        "only Windows opens a DevTools port another program could find"
+    );
     let cdp = Arc::clone(&running.cdp);
     let page = Page { running: &running };
     page.go(FORM).await.expect("opened");
@@ -189,6 +194,20 @@ async fn a_page_is_read_and_a_move_to_a_refused_address_is_undone() {
         "{body}"
     );
     page.guard().await.expect("a data page is fine");
+    page.evaluate("location.href = 'file:///etc/hosts'")
+        .await
+        .ok();
+    page.settle().await.expect("settled");
+    let at = page.evaluate("location.href").await.expect("read");
+    if at.as_str().is_some_and(|at| at.starts_with("file:")) {
+        let moved = page.guard().await.expect_err("a file on this PC");
+        assert!(moved.contains("refused"), "{moved}");
+    }
+    let at = page.evaluate("location.href").await.expect("read");
+    assert!(
+        !at.as_str().unwrap_or_default().starts_with("file:"),
+        "{at}"
+    );
 
     page.evaluate("location.href = 'http://127.0.0.1:9/'")
         .await
@@ -202,15 +221,17 @@ async fn a_page_is_read_and_a_move_to_a_refused_address_is_undone() {
     let read = tools[1].call(json!({})).await.expect("tool read");
     assert!(read.contains("Title: \nURL: about:blank"), "{read}");
 
-    let second = Browser::new(browser.config.clone());
+    let config = browser.config.clone();
+    browser.forget().await;
+    let second = Browser::new(config.clone());
     drop(
         second
             .page()
             .await
-            .expect("the left-over browser was closed"),
+            .expect("the browser of an owner that is gone made way"),
     );
     assert!(!cdp.open(), "the first browser is gone");
-    let _ = std::fs::remove_dir_all(&browser.config.profile);
+    let _ = std::fs::remove_dir_all(&config.profile);
 }
 
 #[tokio::test]

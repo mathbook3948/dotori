@@ -44,6 +44,7 @@ const RUN_WAIT: Duration = Duration::from_secs(100);
 const WIDTH: u32 = 1280;
 const HEIGHT: u32 = 800;
 const WORLD: &str = "dotori";
+const PIPED: &str = r#"exec "$0" "$@" 3<&0 4>&1 </dev/null >/dev/null"#;
 
 /// The tool that runs Playwright-style code in dotori's browser.
 pub const RUN: &str = "run_in_browser";
@@ -512,42 +513,44 @@ impl Browser {
         std::fs::create_dir_all(&self.config.profile).map_err(|error| error.to_string())?;
         self.close_left_over().await;
         forget_passwords(&self.config.profile)?;
-        let mut command = Command::new(&executable);
-        command
-            .arg(format!("--user-data-dir={}", self.config.profile.display()))
-            .arg("--remote-debugging-port=0")
-            .arg("--no-first-run")
-            .arg("--no-default-browser-check")
-            .arg("--disable-blink-features=AutomationControlled")
-            .arg("about:blank")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-        command
-            .arg("--headless=new")
-            .arg(format!("--window-size={WIDTH},{HEIGHT}"));
-        if root() {
-            command.arg("--no-sandbox");
-        }
-        let mut child = command
-            .spawn()
-            .map_err(|error| format!("cannot start {}: {error}", executable.display()))?;
-        let stderr = child.stderr.take().ok_or("the browser has no output")?;
-        let mut lines = BufReader::new(stderr).lines();
-        let url = time::timeout(START_WAIT, async {
-            while let Ok(Some(line)) = lines.next_line().await {
-                if let Some(url) = line.strip_prefix("DevTools listening on ") {
-                    return Some(url.trim().to_owned());
+        let trying = time::Instant::now();
+        let (child, cdp, version) = loop {
+            let mut command = devtools_command(&executable);
+            command
+                .arg(format!("--user-data-dir={}", self.config.profile.display()))
+                .arg("--no-first-run")
+                .arg("--no-default-browser-check")
+                .arg("--disable-blink-features=AutomationControlled")
+                .arg("about:blank")
+                .kill_on_drop(true);
+            command
+                .arg("--headless=new")
+                .arg(format!("--window-size={WIDTH},{HEIGHT}"));
+            if root() {
+                command.arg("--no-sandbox");
+            }
+            let mut child = command
+                .spawn()
+                .map_err(|error| format!("cannot start {}: {error}", executable.display()))?;
+            let cdp = Arc::new(devtools(&mut child).await?);
+            let started =
+                time::timeout(START_WAIT, cdp.send("Browser.getVersion", json!({}), None))
+                    .await
+                    .map_err(|_| String::from("the browser did not start in time"))?;
+            match started {
+                Ok(version) => break (child, cdp, version),
+                Err(error) => {
+                    if time::timeout(SETTLE, child.wait()).await.is_err() {
+                        return Err(error);
+                    }
+                    if trying.elapsed() > CLOSE_WAIT {
+                        return Err(String::from(
+                            "the browser ended at once; is its profile open in another window?",
+                        ));
+                    }
                 }
             }
-            None
-        })
-        .await
-        .map_err(|_| String::from("the browser did not start in time"))?
-        .ok_or("the browser ended at once; is its profile open in another window?")?;
-        tokio::spawn(async move { while let Ok(Some(_)) = lines.next_line().await {} });
-        let cdp = Arc::new(Cdp::connect(&url).await?);
+        };
         let targets = cdp.send("Target.getTargets", json!({}), None).await?;
         let existing = targets
             .get("targetInfos")
@@ -602,7 +605,6 @@ impl Browser {
             }),
         )
         .await?;
-        let version = cdp.send("Browser.getVersion", json!({}), None).await?;
         if let Some(agent) = version.get("userAgent").and_then(Value::as_str)
             && agent.contains("HeadlessChrome")
         {
@@ -1537,6 +1539,49 @@ pub(crate) fn owner_event(input: &Value) -> Option<(&'static str, Value)> {
         }
         _ => None,
     }
+}
+
+fn devtools_command(executable: &Path) -> Command {
+    if cfg!(windows) {
+        let mut command = Command::new(executable);
+        command
+            .arg("--remote-debugging-port=0")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped());
+        return command;
+    }
+    let mut command = Command::new("/bin/sh");
+    command
+        .arg("-c")
+        .arg(PIPED)
+        .arg(executable)
+        .arg("--remote-debugging-pipe")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    command
+}
+
+async fn devtools(child: &mut Child) -> Result<Cdp, String> {
+    if let (Some(to), Some(from)) = (child.stdin.take(), child.stdout.take()) {
+        return Ok(Cdp::pipe(from, to));
+    }
+    let stderr = child.stderr.take().ok_or("the browser has no output")?;
+    let mut lines = BufReader::new(stderr).lines();
+    let url = time::timeout(START_WAIT, async {
+        while let Ok(Some(line)) = lines.next_line().await {
+            if let Some(url) = line.strip_prefix("DevTools listening on ") {
+                return Some(url.trim().to_owned());
+            }
+        }
+        None
+    })
+    .await
+    .map_err(|_| String::from("the browser did not start in time"))?
+    .ok_or("the browser ended at once; is its profile open in another window?")?;
+    tokio::spawn(async move { while let Ok(Some(_)) = lines.next_line().await {} });
+    Cdp::connect(&url).await
 }
 
 fn text_at(value: &Value, key: &str) -> Result<String, String> {
