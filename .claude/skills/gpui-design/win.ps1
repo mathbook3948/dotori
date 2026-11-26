@@ -45,6 +45,8 @@ public static class Unseen {
     [DllImport("user32.dll", SetLastError = true)]
     static extern bool SetThreadDesktop(IntPtr desktop);
     [DllImport("user32.dll")]
+    static extern bool CloseDesktop(IntPtr desktop);
+    [DllImport("user32.dll")]
     static extern bool EnumDesktopWindows(IntPtr desktop, EachWindow each, IntPtr data);
     [DllImport("user32.dll")]
     static extern int GetWindowThreadProcessId(IntPtr window, out int process);
@@ -76,8 +78,10 @@ public static class Unseen {
             try {
                 IntPtr desktop = OpenDesktop(Desktop, 0, false, AllAccess);
                 if (desktop == IntPtr.Zero) throw new Exception("no unseen desktop; run start first");
-                if (!SetThreadDesktop(desktop)) throw new Exception("could not join the unseen desktop: " + Marshal.GetLastWin32Error());
-                result = work();
+                try {
+                    if (!SetThreadDesktop(desktop)) throw new Exception("could not join the unseen desktop: " + Marshal.GetLastWin32Error());
+                    result = work();
+                } finally { CloseDesktop(desktop); }
             } catch (Exception e) { failure = e; }
         });
         thread.Start();
@@ -94,8 +98,10 @@ public static class Unseen {
         start.cb = Marshal.SizeOf(start);
         start.desktop = "WinSta0\\" + Desktop;
         ProcessInfo info;
-        if (!CreateProcess(null, new StringBuilder(line), IntPtr.Zero, IntPtr.Zero, false, 0x08000000, IntPtr.Zero, null, ref start, out info))
-            throw new Exception("could not start dotori: " + Marshal.GetLastWin32Error());
+        bool started = CreateProcess(null, new StringBuilder(line), IntPtr.Zero, IntPtr.Zero, false, 0x08000000, IntPtr.Zero, null, ref start, out info);
+        int failure = Marshal.GetLastWin32Error();
+        CloseDesktop(desktop);
+        if (!started) throw new Exception("could not start dotori: " + failure);
         return info.processId;
     }
 
@@ -104,6 +110,7 @@ public static class Unseen {
             IntPtr found = IntPtr.Zero;
             int largest = 100 * 100;
             IntPtr desktop = OpenDesktop(Desktop, 0, false, AllAccess);
+            try {
             EnumDesktopWindows(desktop, (window, data) => {
                 int owner;
                 GetWindowThreadProcessId(window, out owner);
@@ -113,6 +120,7 @@ public static class Unseen {
                 if (area > largest) { largest = area; found = window; }
                 return true;
             }, IntPtr.Zero);
+            } finally { CloseDesktop(desktop); }
             return found;
         });
     }
@@ -123,7 +131,7 @@ public static class Unseen {
         return dpi == 0 ? 1.0 : dpi / 96.0;
     }
 
-    static IntPtr Point(int x, int y) { return (IntPtr)((y << 16) | (x & 0xFFFF)); }
+    static IntPtr Point(int x, int y) { return (IntPtr)(((long)(Math.Max(y, 0) & 0xFFFF) << 16) | (long)(Math.Max(x, 0) & 0xFFFF)); }
 
     public static void Post(IntPtr window, uint message, long w, int x, int y) {
         OnDesktop(() => PostMessage(window, message, (IntPtr)w, Point(x, y)));
@@ -182,11 +190,18 @@ switch ($Command) {
     'start' {
         $which = if ($Rest.Count -ge 1) { $Rest[0] } else { 'window' }
         $look = if ($Rest.Count -ge 2) { $Rest[1] } else { 'light' }
-        $env:DOTORI_LANGUAGE = if ($Rest.Count -ge 3) { $Rest[2] } else { $null }
+        $language = if ($Rest.Count -ge 3) { $Rest[2] } else { $null }
         if (Test-Path $state) { & $PSCommandPath stop $homeDir }
-        $env:DOTORI_HOME = $homeDir
-        $env:DOTORI_THEME = $look
-        $process = [Unseen]::Start("`"$dotori`" $which")
+        $kept = @{}
+        foreach ($name in 'DOTORI_HOME', 'DOTORI_THEME', 'DOTORI_LANGUAGE') { $kept[$name] = [Environment]::GetEnvironmentVariable($name) }
+        try {
+            [Environment]::SetEnvironmentVariable('DOTORI_HOME', $homeDir)
+            [Environment]::SetEnvironmentVariable('DOTORI_THEME', $look)
+            [Environment]::SetEnvironmentVariable('DOTORI_LANGUAGE', $language)
+            $process = [Unseen]::Start("`"$dotori`" $which")
+        } finally {
+            foreach ($name in $kept.Keys) { [Environment]::SetEnvironmentVariable($name, $kept[$name]) }
+        }
         $window = [IntPtr]::Zero
         for ($i = 0; $i -lt 100 -and $window -eq [IntPtr]::Zero; $i++) {
             Start-Sleep -Milliseconds 100

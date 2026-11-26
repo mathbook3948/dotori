@@ -62,6 +62,7 @@ $home_ = "<scratchpad>\unseen-home"
 - The window opens on a desktop of its own that is never shown, so it cannot take focus. Input reaches it as window messages, and `shot` asks the window to draw itself.
 - Points are in window pixels before scaling, the units the code uses. Read them off a shot divided by its scale (1.5 on a 150% display).
 - `<home>` becomes `DOTORI_HOME`, so the owner's settings and keys are never read or changed. Settings and keys typed into that window land in `<home>`.
+- `DOTORI_HOME`, `DOTORI_THEME` and `DOTORI_LANGUAGE` reach only the dotori it starts; the shell that ran `start` keeps its own.
 - The fourth argument of `start`, `ko` or `en`, picks the language. Look at every screen in both: English runs longer and breaks lines in other places.
 - `move` is how hover is checked. Look at the shot, and compare pixels when the change is faint.
 - A hover style that only changes `text_color` does not show: GPUI fixes the color of text when it lays the text out. Change the background instead.
