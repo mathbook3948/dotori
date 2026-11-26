@@ -2,7 +2,6 @@
 //! moves the window, round buttons, and edges that resize it.
 
 use gpui::AnyElement;
-use gpui::ClickEvent;
 use gpui::Decorations;
 use gpui::Div;
 use gpui::MouseButton;
@@ -21,7 +20,6 @@ use gpui::px;
 use gpui::svg;
 
 use crate::window::parts::CLOSE_ICON;
-use crate::window::parts::MAXIMIZE_ICON;
 use crate::window::parts::MINIMIZE_ICON;
 use crate::window::surface::SurfaceExt;
 use crate::window::theme::Theme;
@@ -82,8 +80,8 @@ impl Frame {
     }
 
     /// The strip at the top of a window: `left` after the system's buttons, `middle` taking the
-    /// rest, and the window buttons on the right. Dragging it moves the window, and a double
-    /// click zooms it.
+    /// rest, and the window buttons on the right. Dragging it moves the window. A double click
+    /// does nothing, since dotori's windows never fill the screen.
     pub(crate) fn strip(
         self,
         theme: &Theme,
@@ -97,37 +95,39 @@ impl Frame {
             .when(!cfg!(target_os = "macos"), |top| top.pt(px(RESIZE_MARGIN)))
             .child(
                 div()
-                    .id("top")
                     .size_full()
                     .flex()
                     .items_center()
                     .gap_2()
                     .pl(px(TOP_LEFT))
                     .pr(px(12.))
-                    .window_control_area(WindowControlArea::Drag)
-                    .when(drawn, |top| {
-                        top.on_mouse_down(
-                            MouseButton::Left,
-                            move |event: &MouseDownEvent, window, _| {
-                                let at = (event.position, window.viewport_size());
-                                if fixed || resize_edge(at.0, at.1, tiling).is_none() {
-                                    window.start_window_move();
-                                }
-                            },
-                        )
-                    })
-                    .on_click(move |event: &ClickEvent, window, _| {
-                        if fixed || event.click_count() != 2 {
-                            return;
-                        }
-                        if cfg!(target_os = "macos") {
-                            window.titlebar_double_click();
-                        } else if drawn {
-                            window.zoom_window();
-                        }
-                    })
-                    .child(left)
-                    .child(div().flex_1().min_w_0().child(middle))
+                    .child(
+                        div()
+                            .id("top")
+                            .h_full()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .window_control_area(WindowControlArea::Drag)
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                move |event: &MouseDownEvent, window, cx| {
+                                    if event.click_count > 1 {
+                                        cx.stop_propagation();
+                                        return;
+                                    }
+                                    let at = (event.position, window.viewport_size());
+                                    if drawn && (fixed || resize_edge(at.0, at.1, tiling).is_none())
+                                    {
+                                        window.start_window_move();
+                                    }
+                                },
+                            )
+                            .child(left)
+                            .child(div().flex_1().min_w_0().child(middle)),
+                    )
                     .children(window_buttons(theme, drawn, fixed)),
             )
     }
@@ -152,7 +152,6 @@ pub(crate) fn round_button(id: &'static str, theme: &Theme) -> Stateful<Div> {
 fn window_buttons(theme: &Theme, drawn: bool, fixed: bool) -> Vec<AnyElement> {
     let buttons = [
         ("minimize", MINIMIZE_ICON, WindowControlArea::Min),
-        ("maximize", MAXIMIZE_ICON, WindowControlArea::Max),
         ("close", CLOSE_ICON, WindowControlArea::Close),
     ]
     .into_iter()
@@ -172,7 +171,6 @@ fn window_buttons(theme: &Theme, drawn: bool, fixed: bool) -> Vec<AnyElement> {
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_click(move |_, window, _| match area {
                     WindowControlArea::Min => window.minimize_window(),
-                    WindowControlArea::Max => window.zoom_window(),
                     _ => window.remove_window(),
                 })
                 .into_any_element()

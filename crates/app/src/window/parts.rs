@@ -117,7 +117,6 @@ impl AssetSource for Assets {
             SharedString::new_static(SETTINGS_ICON),
             SharedString::new_static(CLOSE_ICON),
             SharedString::new_static(MINIMIZE_ICON),
-            SharedString::new_static(MAXIMIZE_ICON),
             SharedString::new_static(SHIELD_ICON),
             SharedString::new_static(SHIELD_ON_ICON),
             SharedString::new_static(LOCK_ICON),
@@ -166,8 +165,6 @@ pub(crate) const SETTINGS_ICON: &str = "icons/settings.svg";
 pub(crate) const CLOSE_ICON: &str = "icons/close.svg";
 /// The bar that minimizes such a window.
 pub(crate) const MINIMIZE_ICON: &str = "icons/minimize.svg";
-/// The square that maximizes such a window, or puts it back.
-pub(crate) const MAXIMIZE_ICON: &str = "icons/maximize.svg";
 /// A shield, for what keeps the commands dotori's model runs away from its own files.
 pub(crate) const SHIELD_ICON: &str = "icons/shield.svg";
 /// The shield with a check, for when the sandbox is on.
@@ -188,7 +185,7 @@ pub(crate) const CLOCK_ICON: &str = "icons/clock.svg";
 pub(crate) const GLOBE_ICON: &str = "icons/globe.svg";
 /// What dotori can do with the files on this PC.
 pub(crate) const FOLDER_ICON: &str = "icons/folder.svg";
-const ICONS: [(&str, &str); 13] = [
+const ICONS: [(&str, &str); 12] = [
     (
         TRASH_ICON,
         r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M9 7V4h6v3"/><path d="M6 7l1 13h10l1-13"/><path d="M10 11v6M14 11v6"/></svg>"#,
@@ -212,10 +209,6 @@ const ICONS: [(&str, &str); 13] = [
     (
         MINIMIZE_ICON,
         r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round"><path d="M6 12h12"/></svg>"#,
-    ),
-    (
-        MAXIMIZE_ICON,
-        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linejoin="round"><rect x="6.5" y="6.5" width="11" height="11" rx="1.5"/></svg>"#,
     ),
     (
         LOCK_ICON,
