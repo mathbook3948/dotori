@@ -43,7 +43,6 @@ use crate::versioned;
 const REMEMBER: &str = "add_memory";
 const READ_ROUTINES: &str = "read_routines";
 const READ_SITES: &str = "read_sites";
-const OWNER_TOOLS: [&str; 3] = [REMEMBER, routines::ADD, routines::REMOVE];
 const OWN_TOOLS: [&str; 5] = [
     REMEMBER,
     READ_ROUTINES,
@@ -311,7 +310,7 @@ fn owner_asked(conversation: &[Entry]) -> bool {
         })
         .flatten()
         .filter_map(|action| match action {
-            Action::UseTool(call) if OWNER_TOOLS.contains(&call.name.as_str()) => {
+            Action::UseTool(call) if OWN_TOOLS.contains(&call.name.as_str()) => {
                 Some(call.id.as_str())
             }
             _ => None,

@@ -1,6 +1,9 @@
 //! What a card that waits for the owner says, the same in the chat window and in a chat room.
 
+use crate::forget::CARRIERS_SHOWN;
 use crate::forget::FORGET;
+use crate::forget::NOTES_SHOWN;
+use crate::forget::RECORDS_SHOWN;
 use crate::words::words;
 
 pub(crate) const SHOWN_VALUE: usize = 600;
@@ -31,6 +34,9 @@ pub(crate) fn field_label(key: &str) -> &str {
         "old" => chat.old_field,
         "new" => chat.new_field,
         "all" => chat.all_field,
+        NOTES_SHOWN => chat.notes_shown_field,
+        RECORDS_SHOWN => chat.records_shown_field,
+        CARRIERS_SHOWN => chat.carriers_shown_field,
         other => other,
     }
 }

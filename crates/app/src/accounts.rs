@@ -195,12 +195,15 @@ impl LinkedSites {
 
     /// The sites the owner linked, by name and origin, with the id of each account.
     pub(crate) fn listed(&self) -> String {
-        self.told()
-            .unwrap_or_else(|| String::from("No sites are linked."))
+        match self.told() {
+            Ok(Some(text)) => text,
+            Ok(None) => String::from("No sites are linked."),
+            Err(error) => format!("The linked sites cannot be read: {error}"),
+        }
     }
 
-    fn told(&self) -> Option<String> {
-        let changes = self.vault.changes().ok()?;
+    fn told(&self) -> Result<Option<String>, String> {
+        let changes = self.vault.changes()?;
         let mut shown = self
             .shown
             .lock()
@@ -208,11 +211,11 @@ impl LinkedSites {
         if let Some((at, text)) = shown.as_ref()
             && *at == changes
         {
-            return text.clone();
+            return Ok(text.clone());
         }
-        let text = told(&sites(&self.vault).unwrap_or_default());
+        let text = told(&sites(&self.vault)?);
         *shown = Some((changes, text.clone()));
-        text
+        Ok(text)
     }
 }
 

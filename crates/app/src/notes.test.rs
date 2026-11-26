@@ -270,6 +270,52 @@ fn a_tool_or_sub_session_result_after_the_owner_spoke_closes_the_notes() {
     ]));
 }
 
+#[tokio::test]
+async fn the_owner_asks_and_the_model_reads_before_it_changes() {
+    let notes = notes();
+    let routines = routines();
+    let tools = MainTools {
+        routines: Arc::clone(&routines),
+        notes: Arc::clone(&notes),
+        sites: None,
+        shared: Arc::new(Nothing),
+    };
+    let wish = json!({ "name": "아침", "time": "08:00", "task": "일정 알려줘" });
+    notes.heard(&[heard(Role::Owner)]);
+    tools.run(call(routines::ADD, wish)).await.expect("set up");
+
+    let owner = heard(Role::Owner);
+    notes.heard(&[
+        owner.clone(),
+        acted(READ_ROUTINES, "a"),
+        returned("a"),
+        acted(READ_SITES, "b"),
+        returned("b"),
+    ]);
+    tools
+        .run(call(routines::REMOVE, json!({ "id": 1 })))
+        .await
+        .expect("removed after the reads");
+    assert_eq!(routines.listed(), "The owner has no routines.");
+
+    notes.heard(&[
+        owner,
+        acted(READ_ROUTINES, "a"),
+        returned("a"),
+        acted("fetch_url", "w"),
+        returned("w"),
+    ]);
+    let refused = tools
+        .run(call(routines::REMOVE, json!({ "id": 1 })))
+        .await
+        .expect_err("a page came in between");
+    assert!(
+        refused.detail.contains("only the owner"),
+        "{}",
+        refused.detail
+    );
+}
+
 #[test]
 fn a_note_is_kept_on_one_line() {
     let notes = notes();

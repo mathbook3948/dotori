@@ -19,23 +19,44 @@ use dotori_core::message::Audience;
 use dotori_core::message::Content;
 use dotori_core::message::Incoming;
 use dotori_core::message::Place;
+use dotori_core::record::RecordStore;
+
+use crate::notes::Notes;
 
 /// The channel the note comes in on, and the thread the greeting goes to.
 pub(crate) const GREETING: &str = "greeting";
 
-const NOTE: &str = "The owner just finished setting up and opened the chat window, and you have not talked yet. Greet them in this thread with two `say` calls. In the first, say hello, give your name as their personal assistant, and tell them to call on you whenever they are curious about something or short of hands, as in \"Hi, I'm Dotori, your personal assistant. Call on me any time you're curious or short of hands.\" In the second, ask what you should call them, as in \"First, what should I call you?\" When they answer, keep it with `add_memory`.";
+fn note(name: &str, language: &str) -> String {
+    format!(
+        "The owner just finished setting up and opened the chat window, and you have not talked \
+         yet. Greet them in {language}, in this thread, with two `say` calls. In the first, say \
+         hello, give your name, {name}, as their personal assistant, and tell them to call on you \
+         whenever they are curious about something or short of hands. In the second, ask what \
+         you should call them. When they answer, keep it with `add_memory`."
+    )
+}
+
+/// Whether the owner is new: nothing said or noted here, and this PC never joined another.
+pub(crate) async fn is_new(records: &dyn RecordStore, notes: &Notes, joined: bool) -> bool {
+    !joined
+        && notes.list().is_ok_and(|notes| notes.is_empty())
+        && records.load().await.is_ok_and(|records| records.is_empty())
+}
 
 /// Hands the main session the note once, and takes nothing back, since the greeting reaches the
 /// window as the channel's traffic.
 pub(crate) struct Greeting {
     id: ChannelId,
+    note: String,
     sent: AtomicBool,
 }
 
 impl Greeting {
-    pub(crate) fn new() -> Self {
+    /// A greeting from the assistant called `name`, in the language `language` names in English.
+    pub(crate) fn new(name: &str, language: &str) -> Self {
         Self {
             id: ChannelId::parse(GREETING).expect("a valid channel id"),
+            note: note(name, language),
             sent: AtomicBool::new(false),
         }
     }
@@ -49,7 +70,7 @@ impl Channel for Greeting {
     fn run(&self, inbox: Arc<dyn Inbox>) -> BoxFuture<'_, Result<(), ChannelError>> {
         Box::pin(async move {
             if !self.sent.swap(true, Ordering::SeqCst) {
-                let content = Content::parse(String::from(NOTE)).map_err(|error| ChannelError {
+                let content = Content::parse(self.note.clone()).map_err(|error| ChannelError {
                     detail: error.to_string(),
                 })?;
                 let incoming = Incoming {

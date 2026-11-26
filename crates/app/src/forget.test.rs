@@ -131,7 +131,7 @@ async fn the_card_shows_what_would_be_forgotten_and_an_unknown_number_never_reac
     assert_eq!(calls.len(), 2);
     let shown: Value = serde_json::from_str(&calls[0].input).expect("json");
     assert_eq!(shown["records"], json!([ids[0]]));
-    let forgetting = shown["지울 기록"].as_str().expect("text");
+    let forgetting = shown[RECORDS_SHOWN].as_str().expect("text");
     assert!(
         forgetting.contains("유노: 내 카드 번호는 1234야"),
         "{forgetting}"
@@ -223,7 +223,7 @@ async fn only_the_carriers_the_owner_saw_go_with_the_record() {
     };
     assert_eq!(shown["carriers"].as_array().map(Vec::len), Some(1));
     assert!(
-        shown["함께 지울 기록 (검색 결과 등)"]
+        shown[CARRIERS_SHOWN]
             .as_str()
             .is_some_and(|also| also.contains("도구 결과")),
         "{shown}"
@@ -282,7 +282,7 @@ async fn a_note_is_shown_on_the_card_and_erased_with_the_owners_ok() {
         assert_eq!(calls.len(), 1, "an unknown number never reaches the owner");
         serde_json::from_str(&calls[0].input).expect("json")
     };
-    assert_eq!(shown["지울 메모"], "[1] 커피는 아이스");
+    assert_eq!(shown[NOTES_SHOWN], "[1] 커피는 아이스");
     let forget = Forget {
         store,
         memory: MemoryConfig {

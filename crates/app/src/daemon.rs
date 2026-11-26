@@ -60,6 +60,7 @@ use crate::first_run::Step;
 use crate::forget::FORGET;
 use crate::forget::Forget;
 use crate::forget::Previewed;
+use crate::greeting;
 use crate::greeting::Greeting;
 use crate::handoff;
 use crate::handoff::HandedOff;
@@ -405,6 +406,7 @@ pub(crate) async fn serve(
         tokio::spawn(icons::share(home.icons(), home.settings(), linked.clone()));
         let (icon_folder, settings_path) = (home.icons(), home.settings());
         let vault = Arc::clone(&vault);
+        let notes = Arc::clone(&notes);
         let routines = Arc::clone(&routines);
         let handoff = Arc::clone(&handoff);
         tokio::spawn(async move {
@@ -513,8 +515,13 @@ pub(crate) async fn serve(
             .collect();
         channels.push(Arc::new(RoutineChannel::new(Arc::clone(&routines))) as Arc<dyn Channel>);
         channels.push(Arc::clone(&decision) as Arc<dyn Channel>);
-        if records.load().await.is_ok_and(|earlier| earlier.is_empty()) {
-            channels.push(Arc::new(Greeting::new()) as Arc<dyn Channel>);
+        let joined = linked
+            .as_ref()
+            .is_some_and(|linked| !linked.hub.approved().is_empty());
+        if greeting::is_new(records.as_ref(), &notes, joined).await {
+            let name = AssistantSettings::name_of(settings.assistant.as_ref());
+            let language = language::current().english_name();
+            channels.push(Arc::new(Greeting::new(&name, language)) as Arc<dyn Channel>);
         }
         let channels = channels
             .into_iter()

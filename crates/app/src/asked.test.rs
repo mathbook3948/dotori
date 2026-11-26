@@ -10,23 +10,27 @@ fn dotori_s_own_tools_are_named_as_the_owner_would_say() {
     assert_eq!(own_tool("erase_memory"), Some("기억 지우기"));
     assert_eq!(own_tool("mail__send"), None);
     assert_eq!(field_label("command"), "명령");
+    assert_eq!(field_label("records_shown"), "지울 기록");
+    assert_eq!(field_label("notes_shown"), "지울 메모");
     assert_eq!(field_label("to"), "to");
 
     let english = speak(Language::English);
     assert_eq!(own_tool("run_shell"), Some(english.chat.run_shell));
     assert_eq!(field_label("command"), "Command");
+    assert_eq!(field_label("records_shown"), "Records to erase");
+    assert_eq!(field_label("notes_shown"), "Notes to erase");
     assert_eq!(field_label("to"), "to");
 }
 
 #[test]
 fn a_forget_card_shows_what_goes_and_not_the_numbers() {
-    let input = r#"{"records":["019a"],"carriers":["019b"],"지울 기록":"2026-11-24 09:00 유노: 카드 번호"}"#;
+    let input = r#"{"records":["019a"],"carriers":["019b"],"records_shown":"2026-11-24 09:00 유노: 카드 번호"}"#;
 
     let (forget, _) = asked_fields("erase_memory", input, false);
     let (other, _) = asked_fields("mail__send", input, false);
 
     let keys: Vec<&str> = forget.iter().map(|(key, _)| key.as_str()).collect();
-    assert_eq!(keys, ["지울 기록"]);
+    assert_eq!(keys, ["records_shown"]);
     assert_eq!(other.len(), 3, "only a forget hides its numbers");
 }
 

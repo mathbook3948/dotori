@@ -27,6 +27,10 @@ use crate::notes::Notes;
 
 /// The name of the tool that erases memory.
 pub(crate) const FORGET: &str = "erase_memory";
+/// The fields a card shows, as the keys the card turns into the owner's words.
+pub(crate) const NOTES_SHOWN: &str = "notes_shown";
+pub(crate) const RECORDS_SHOWN: &str = "records_shown";
+pub(crate) const CARRIERS_SHOWN: &str = "carriers_shown";
 const MOST: usize = 50;
 const SHOWN: usize = 300;
 
@@ -163,7 +167,7 @@ impl Toolbox for Previewed {
                 .collect::<Result<_, _>>()?;
             let mut input = json!({ "records": ids, "notes": notes });
             if !noted.is_empty() {
-                input["지울 메모"] = json!(noted.join("\n"));
+                input[NOTES_SHOWN] = json!(noted.join("\n"));
             }
             if !ids.is_empty() {
                 let found = self.store.described(ids.clone()).await.map_err(|error| {
@@ -181,11 +185,11 @@ impl Toolbox for Previewed {
                 let carriers: Vec<&str> =
                     carrying.iter().map(|record| record.id.as_str()).collect();
                 input["carriers"] = json!(carriers);
-                input["지울 기록"] = json!(shown.join("\n"));
+                input[RECORDS_SHOWN] = json!(shown.join("\n"));
                 if !carrying.is_empty() {
                     let also: Vec<String> =
                         carrying.iter().map(|record| line(record, &zone)).collect();
-                    input["함께 지울 기록 (검색 결과 등)"] = json!(also.join("\n"));
+                    input[CARRIERS_SHOWN] = json!(also.join("\n"));
                 }
             }
             call.input = input.to_string();
