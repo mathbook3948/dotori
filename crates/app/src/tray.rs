@@ -178,6 +178,9 @@ pub(crate) fn start() {
 }
 
 fn launch(arguments: &[&str]) {
+    if cfg!(test) {
+        return;
+    }
     let started = env::current_exe().and_then(|exe| Command::new(exe).args(arguments).spawn());
     match started {
         Ok(mut child) => {

@@ -30,10 +30,12 @@ dotori uses [mise](https://mise.jdx.dev) to pin the Rust toolchain and the check
 ## Run the checks
 
 ```bash
-mise run check
+mise run quick
 ```
 
-This runs `rustfmt`, `clippy`, the tests, the `ast-grep` rules in `guards/`, the `xtask` checks, and `cargo deny`. CI runs the same command on Linux, macOS, and Windows. A pull request merges only when all three pass.
+This runs `rustfmt`, `clippy`, the tests, the `ast-grep` rules in `guards/`, and the `xtask` checks. It leaves out the window tests, which drive GPUI windows and take longer. Run them with `mise run window-test` when you change a window.
+
+CI runs `mise run check` on Linux, macOS, and Windows. That is `mise run quick`, the window tests, and `cargo deny`. A pull request merges only when all three pass.
 
 The checks enforce these rules, so you do not need to remember them:
 
