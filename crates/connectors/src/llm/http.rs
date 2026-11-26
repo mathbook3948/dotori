@@ -1,6 +1,7 @@
 use std::error::Error;
 use std::time::Duration;
 
+use dotori_core::llm::CheckError;
 use dotori_core::llm::ModelError;
 use reqwest::Client;
 use reqwest::RequestBuilder;
@@ -93,6 +94,30 @@ pub(crate) async fn send(
         tokio::time::sleep(failure.1.unwrap_or(wait).min(retry.max_wait)).await;
         wait = (wait * 2).min(retry.max_wait);
         attempt += 1;
+    }
+}
+
+const CHECK_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Sends `request` once to see whether the provider answers and takes the key.
+pub(crate) async fn check(provider: &str, request: RequestBuilder) -> Result<(), CheckError> {
+    match request.timeout(CHECK_TIMEOUT).send().await {
+        Ok(response) if response.status().is_success() => Ok(()),
+        Ok(response)
+            if matches!(
+                response.status(),
+                StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
+            ) =>
+        {
+            Err(CheckError::KeyRefused)
+        }
+        Ok(response) => {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            Err(CheckError::Other(status_detail(provider, status, &body)))
+        }
+        Err(error) if error.is_connect() || error.is_timeout() => Err(CheckError::NoAnswer),
+        Err(error) => Err(CheckError::Other(chain(&error))),
     }
 }
 

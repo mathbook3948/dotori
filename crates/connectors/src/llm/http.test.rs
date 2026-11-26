@@ -37,3 +37,52 @@ fn only_passing_failures_are_tried_again() {
         );
     }
 }
+
+async fn answering(status: &'static str) -> String {
+    use tokio::io::AsyncReadExt;
+    use tokio::io::AsyncWriteExt;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bound");
+    let address = listener.local_addr().expect("address");
+    tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.expect("accepted");
+        let mut request = [0; 1024];
+        let _ = stream.read(&mut request).await;
+        let reply =
+            format!("HTTP/1.1 {status}\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{{}}");
+        let _ = stream.write_all(reply.as_bytes()).await;
+    });
+    format!("http://{address}/v1/models")
+}
+
+#[tokio::test]
+async fn a_check_tells_a_refused_key_from_an_address_that_does_not_answer() {
+    let client = client().expect("client");
+
+    assert_eq!(
+        check("test", client.get(answering("200 OK").await)).await,
+        Ok(())
+    );
+    assert_eq!(
+        check("test", client.get(answering("401 Unauthorized").await)).await,
+        Err(CheckError::KeyRefused)
+    );
+    assert!(matches!(
+        check(
+            "test",
+            client.get(answering("500 Internal Server Error").await)
+        )
+        .await,
+        Err(CheckError::Other(_))
+    ));
+    let closed = std::net::TcpListener::bind("127.0.0.1:0")
+        .expect("bound")
+        .local_addr()
+        .expect("address");
+    assert_eq!(
+        check("test", client.get(format!("http://{closed}/v1/models"))).await,
+        Err(CheckError::NoAnswer)
+    );
+}

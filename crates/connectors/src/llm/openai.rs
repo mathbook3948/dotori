@@ -1,6 +1,7 @@
 use std::fmt;
 
 use dotori_core::BoxFuture;
+use dotori_core::llm::CheckError;
 use dotori_core::llm::Model;
 use dotori_core::llm::ModelError;
 use dotori_core::llm::ModelReply;
@@ -105,6 +106,16 @@ impl OpenAi {
 impl Model for OpenAi {
     fn complete(&self, request: ModelRequest) -> BoxFuture<'_, Result<ModelReply, ModelError>> {
         Box::pin(self.call(request))
+    }
+
+    fn check(&self) -> BoxFuture<'_, Result<(), CheckError>> {
+        let url = format!("{}/models", self.config.base_url.trim_end_matches('/'));
+        let request = self.client.get(url);
+        let request = match &self.config.api_key {
+            Some(key) => request.bearer_auth(key),
+            None => request,
+        };
+        Box::pin(http::check(PROVIDER, request))
     }
 }
 
