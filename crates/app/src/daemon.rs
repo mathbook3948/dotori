@@ -12,6 +12,7 @@ use dotori_connectors::channel::app::AppChannel;
 use dotori_connectors::peer::copies::Announced;
 use dotori_connectors::peer::copies::Copies;
 use dotori_connectors::peer::hub::Heard;
+use dotori_connectors::peer::hub::Hub;
 use dotori_connectors::peer::lease::Keeper;
 use dotori_connectors::record::jsonl::JsonlStore;
 use dotori_connectors::record::sqlite::SqliteStore;
@@ -122,7 +123,8 @@ pub(crate) async fn run(home: Home) -> Result<(), String> {
 /// Runs the agent until Ctrl-C, a terminate signal, or `quit` completes, with the app channel
 /// open for windows. It calls `ready` once windows can connect. Until first run is done it
 /// waits, and calls `onboard` once so a window can walk the owner through it. An install with a
-/// model key from before first run was kept counts as done.
+/// model key from before first run was kept counts as done. It links with the other PCs before
+/// it waits, so a PC that joined another can take the model and its key from there.
 pub(crate) async fn serve(
     home: Home,
     onboard: Option<impl FnOnce()>,
@@ -133,6 +135,18 @@ pub(crate) async fn serve(
     let _lock = DaemonLock::take(&home.lock())?;
     language::choose(language::saved(&home.settings()));
     let vault = Arc::new(Vault::new(&home.root));
+    let settings_copies = Arc::new(SettingsCopies::new(home.settings(), home.settings_stamp()));
+    let peers = peers::start(&home, &Settings::load(&home.settings())?)
+        .await
+        .map(|(hub, heard)| {
+            let rest = take_shared(
+                heard,
+                home.first_run(),
+                Arc::clone(&settings_copies),
+                Arc::clone(&vault),
+            );
+            (hub, rest)
+        });
     let mut stop = std::pin::pin!(stop_signal());
     let mut quit = std::pin::pin!(quit);
     let (settings, model) =
@@ -255,7 +269,7 @@ pub(crate) async fn serve(
         port: address.port(),
         token,
     };
-    let (records, linked, heard) = link(&home, &settings, records, &app).await;
+    let (records, linked, heard) = link(peers, records, &app);
     if let Some(linked) = &linked {
         browser.link(linked.clone());
         handoff.link(linked.clone(), Arc::clone(&records));
@@ -377,7 +391,6 @@ pub(crate) async fn serve(
                 }
             });
         }
-        let settings_copies = Arc::new(SettingsCopies::new(home.settings(), home.settings_stamp()));
         {
             let settings_copies = Arc::clone(&settings_copies);
             let linked = linked.clone();
@@ -405,12 +418,8 @@ pub(crate) async fn serve(
                     tokio::spawn(async move { handoff.show(spec, outcome).await });
                     continue;
                 }
-                if settings_copies.hear(&linked, &heard) {
-                    continue;
-                }
-                if vault::hear(&vault, &linked, &heard) {
-                    continue;
-                }
+                settings_copies.hear(&linked, &heard);
+                vault::hear(&vault, &linked, &heard);
                 if icons::hear(&icon_folder, &settings_path, &linked, &heard) {
                     continue;
                 }
@@ -637,13 +646,33 @@ async fn model_when_set_up(
     }
 }
 
-async fn link(
-    home: &Home,
-    settings: &Settings,
+fn take_shared(
+    mut heard: mpsc::UnboundedReceiver<Heard>,
+    first_run: PathBuf,
+    settings: Arc<SettingsCopies>,
+    vault: Arc<Vault>,
+) -> mpsc::UnboundedReceiver<Heard> {
+    let (rest, passed) = mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        while let Some(heard) = heard.recv().await {
+            let joining = first_run::read(&first_run) != FirstRun::Done;
+            if settings.take_heard(&heard, joining) || vault::take_heard(&vault, &heard) {
+                continue;
+            }
+            if rest.send(heard).is_err() {
+                return;
+            }
+        }
+    });
+    passed
+}
+
+fn link(
+    peers: Option<(Arc<Hub>, mpsc::UnboundedReceiver<Heard>)>,
     records: SqliteStore,
     app: &Arc<AppChannel>,
 ) -> (Arc<dyn RecordStore>, Option<Linked>, Option<Hearing>) {
-    let Some((hub, heard)) = peers::start(home, settings).await else {
+    let Some((hub, heard)) = peers else {
         return (Arc::new(records), None, None);
     };
     let own = hub.own().to_owned();

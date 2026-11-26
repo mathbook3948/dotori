@@ -50,6 +50,22 @@ pub(crate) struct Onboarding {
     pub(crate) slack_member: &'static str,
     pub(crate) bot_token: &'static str,
     pub(crate) user_id: &'static str,
+    pub(crate) join_existing: &'static str,
+    pub(crate) join_title: &'static str,
+    pub(crate) join_hint: &'static str,
+    pub(crate) code_label: &'static str,
+    pub(crate) address_optional: &'static str,
+    pub(crate) join: &'static str,
+    pub(crate) joining: &'static str,
+    pub(crate) code_unreadable: &'static str,
+    pub(crate) address_needed: &'static str,
+    pub(crate) join_failed: &'static str,
+    /// The line after joining the PC of the given name, while its settings are on the way.
+    pub(crate) joined: fn(&str) -> String,
+    /// The line once the settings and keys came from the PC of the given name.
+    pub(crate) received: fn(&str) -> String,
+    pub(crate) receiving: &'static str,
+    pub(crate) set_up_here: &'static str,
 }
 
 pub(crate) const KOREAN: Onboarding = Onboarding {
@@ -105,6 +121,20 @@ pub(crate) const KOREAN: Onboarding = Onboarding {
     slack_member: "내 멤버 ID",
     bot_token: "봇 토큰",
     user_id: "내 사용자 ID",
+    join_existing: "기존 PC에 연결하기",
+    join_title: "기존 PC에 연결해 주세요",
+    join_hint: "기존 PC의 설정에서 만든 코드를 넣어 주세요.",
+    code_label: "연결 코드",
+    address_optional: "코드에 있으면 비워 두세요",
+    join: "연결하기",
+    joining: "연결하고 있어요",
+    code_unreadable: "코드를 읽지 못했어요. 다시 붙여 넣어 주세요.",
+    address_needed: "코드에 주소가 없어요. 기존 PC의 주소와 포트를 적어 주세요.",
+    join_failed: "연결하지 못했어요. 기존 PC에서 dotori가 켜져 있는지 보고 새 코드로 다시 해 주세요.",
+    joined: |name| format!("{name}에 연결했어요."),
+    received: |name| format!("{name}에서 설정과 키를 받아 왔어요."),
+    receiving: "설정과 키를 받고 있어요",
+    set_up_here: "여기서 직접 설정하기",
 };
 
 pub(crate) const ENGLISH: Onboarding = Onboarding {
@@ -150,4 +180,18 @@ pub(crate) const ENGLISH: Onboarding = Onboarding {
     slack_member: "Your member ID",
     bot_token: "Bot token",
     user_id: "Your user ID",
+    join_existing: "Connect to an existing PC",
+    join_title: "Connect your other PC",
+    join_hint: "Paste the code from that PC's settings.",
+    code_label: "Link code",
+    address_optional: "Leave empty if the code has it",
+    join: "Connect",
+    joining: "Connecting",
+    code_unreadable: "I couldn't read that code. Paste it again.",
+    address_needed: "The code has no address. Enter that PC's address and port.",
+    join_failed: "I couldn't connect. Check that dotori is running on that PC, then try a new code.",
+    joined: |name| format!("Connected to {name}."),
+    received: |name| format!("Got the settings and keys from {name}."),
+    receiving: "Getting settings and keys",
+    set_up_here: "Set up here instead",
 };

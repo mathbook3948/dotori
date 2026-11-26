@@ -64,6 +64,8 @@ fn every_function(words: &Words) -> Vec<(&'static str, String)> {
         ("onboarding.hello", (onboarding.hello)()),
         ("onboarding.key_use", (onboarding.key_use)()),
         ("onboarding.elsewhere_hint", (onboarding.elsewhere_hint)()),
+        ("onboarding.joined", (onboarding.joined)("laptop")),
+        ("onboarding.received", (onboarding.received)("laptop")),
         ("pcs.about", (pcs.about)()),
         ("pcs.this_pc", (pcs.this_pc)("laptop")),
         ("pcs.reachable_at", (pcs.reachable_at)("10.0.0.2")),

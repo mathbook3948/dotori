@@ -662,3 +662,213 @@ fn a_channel_token_waits_for_its_own_step(cx: &mut TestAppContext) {
     assert_eq!(Vault::new(&root).get(DISCORD_KEY).expect("read"), None);
     let _ = std::fs::remove_dir_all(&root);
 }
+
+const MODEL_HERE: &str = "[model]\nprovider = \"openai-compatible\"\nbase_url = \"http://127.0.0.1:1/v1\"\nmodel = \"m\"\n";
+
+fn a_code() -> String {
+    dotori_connectors::peer::Code {
+        key: [1; 32],
+        secret: [2; 16],
+        address: Some(String::from("127.0.0.1:1")),
+    }
+    .write()
+}
+
+fn joined_laptop(
+    _: &Home,
+    _: &Settings,
+    _: dotori_connectors::peer::Code,
+    _: String,
+) -> oneshot::Receiver<Result<dotori_connectors::peer::Peer, String>> {
+    let (tell, told) = oneshot::channel();
+    let _ = tell.send(Ok(dotori_connectors::peer::Peer {
+        device: String::from("abcdef123456"),
+        name: String::from("laptop"),
+        key: String::from("aa"),
+        address: Some(String::from("127.0.0.1:1")),
+        since: 0,
+    }));
+    told
+}
+
+fn refused(
+    _: &Home,
+    _: &Settings,
+    _: dotori_connectors::peer::Code,
+    _: String,
+) -> oneshot::Receiver<Result<dotori_connectors::peer::Peer, String>> {
+    let (tell, told) = oneshot::channel();
+    let _ = tell.send(Err(String::from(
+        "the other PC refused the code; make a new one there",
+    )));
+    told
+}
+
+fn joining(view: &Entity<SettingsView>, cx: &mut VisualTestContext) -> Option<onboarding::Joining> {
+    view.read_with(cx, |view, _| {
+        view.join.as_ref().map(|join| join.state.clone())
+    })
+}
+
+fn code_typed(view: &Entity<SettingsView>, cx: &mut VisualTestContext, code: &str) {
+    view.update(cx, |view, cx| {
+        if let Some(join) = &view.join {
+            join.code.update(cx, |input, cx| input.set_text(code, cx));
+        }
+    });
+}
+
+#[gpui::test]
+fn the_greeting_joins_an_existing_pc_and_starts_chatting_once_its_model_is_here(
+    cx: &mut TestAppContext,
+) {
+    let (home, root) = onboarding_home("join", MODEL_HERE);
+    let settings = Settings::load(&home.settings()).expect("loaded");
+    let (view, cx) =
+        cx.add_window_view(|_, cx| SettingsView::onboarding(home.clone(), settings, cx));
+    view.update(cx, |view, _| {
+        view.joiner = joined_laptop;
+        view.open_chat = || {};
+    });
+    cx.run_until_parked();
+
+    click(cx, "join-pc");
+    assert_eq!(joining(&view, cx), Some(onboarding::Joining::Typing(None)));
+    code_typed(&view, cx, &a_code());
+    click(cx, "next");
+
+    assert_eq!(
+        joining(&view, cx),
+        Some(onboarding::Joining::Joined {
+            name: String::from("laptop"),
+            ready: true,
+        })
+    );
+    assert_ne!(first_run::read(&home.first_run()), FirstRun::Done);
+    click(cx, "next");
+    assert_eq!(first_run::read(&home.first_run()), FirstRun::Done);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[gpui::test]
+fn a_code_that_does_not_read_stays_on_the_join_screen_and_says_why(cx: &mut TestAppContext) {
+    let (home, root) = onboarding_home("join-unread", "");
+    let settings = Settings::load(&home.settings()).expect("loaded");
+    let (view, cx) = cx.add_window_view(|_, cx| SettingsView::onboarding(home, settings, cx));
+    view.update(cx, |view, _| {
+        view.joiner = |_, _, _, _| panic!("a code that does not read joins nothing");
+    });
+    cx.run_until_parked();
+    click(cx, "join-pc");
+    code_typed(&view, cx, "not a code");
+
+    click(cx, "next");
+
+    assert_eq!(
+        joining(&view, cx),
+        Some(onboarding::Joining::Typing(Some(
+            onboarding::Failure::Typed(crate::window::pcs::Unjoinable::UnreadableCode)
+        )))
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[gpui::test]
+fn a_refused_join_says_so_and_back_returns_to_the_greeting(cx: &mut TestAppContext) {
+    let (home, root) = onboarding_home("join-refused", "");
+    let settings = Settings::load(&home.settings()).expect("loaded");
+    let (view, cx) = cx.add_window_view(|_, cx| SettingsView::onboarding(home, settings, cx));
+    view.update(cx, |view, _| view.joiner = refused);
+    cx.run_until_parked();
+    click(cx, "join-pc");
+    code_typed(&view, cx, &a_code());
+
+    click(cx, "next");
+
+    assert_eq!(
+        joining(&view, cx),
+        Some(onboarding::Joining::Typing(Some(
+            onboarding::Failure::Joining(SharedString::new_static(words().onboarding.join_failed))
+        )))
+    );
+    click(cx, "back");
+    assert_eq!(joining(&view, cx), None);
+    assert_eq!(walked(&view, cx), Some(Step::Welcome));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[gpui::test]
+fn joined_before_the_model_arrives_holds_the_chat_and_can_set_up_here_instead(
+    cx: &mut TestAppContext,
+) {
+    let (home, root) = onboarding_home("join-waiting", NAMED_KEY_ABSENT);
+    let settings = Settings::load(&home.settings()).expect("loaded");
+    let (view, cx) =
+        cx.add_window_view(|_, cx| SettingsView::onboarding(home.clone(), settings, cx));
+    view.update(cx, |view, _| {
+        view.joiner = joined_laptop;
+        view.open_chat = || panic!("the chat waits for the model");
+    });
+    cx.run_until_parked();
+    click(cx, "join-pc");
+    code_typed(&view, cx, &a_code());
+    click(cx, "next");
+    assert_eq!(
+        joining(&view, cx),
+        Some(onboarding::Joining::Joined {
+            name: String::from("laptop"),
+            ready: false,
+        })
+    );
+
+    click(cx, "next");
+    assert_ne!(first_run::read(&home.first_run()), FirstRun::Done);
+
+    click(cx, "set-up-here");
+    assert_eq!(joining(&view, cx), None);
+    assert_eq!(walked(&view, cx), Some(Step::Key));
+    assert_eq!(first_run::read(&home.first_run()), FirstRun::At(Step::Key));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+fn pc_named(view: &Entity<SettingsView>, cx: &mut VisualTestContext, name: &str) {
+    view.update(cx, |view, cx| {
+        let input = view.pcs.read(cx).name.clone();
+        input.update(cx, |input, cx| input.set_text(name, cx));
+    });
+}
+
+#[gpui::test]
+fn the_pc_name_typed_in_the_pcs_card_is_saved_without_turning_on_peers(cx: &mut TestAppContext) {
+    let (home, root) = onboarding_home("pc-name", "");
+    let settings = Settings::load(&home.settings()).expect("loaded");
+    let (view, cx) = cx.add_window_view(|_, cx| SettingsView::new(home.clone(), settings, cx));
+    cx.run_until_parked();
+
+    pc_named(&view, cx, "서재");
+    click(cx, "save");
+
+    let saved = Settings::load(&home.settings()).expect("saved");
+    assert_eq!(saved.pc.and_then(|pc| pc.name).as_deref(), Some("서재"));
+    assert!(
+        saved.peers.is_none(),
+        "naming this PC does not open it to others"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[gpui::test]
+fn an_empty_pc_name_goes_back_to_the_computer_name(cx: &mut TestAppContext) {
+    let (home, root) = onboarding_home("pc-name-empty", "[pc]\nname = \"서재\"\n");
+    let settings = Settings::load(&home.settings()).expect("loaded");
+    let (view, cx) = cx.add_window_view(|_, cx| SettingsView::new(home.clone(), settings, cx));
+    cx.run_until_parked();
+
+    pc_named(&view, cx, "");
+    click(cx, "save");
+
+    let saved = Settings::load(&home.settings()).expect("saved");
+    assert!(saved.pc.is_none());
+    assert_eq!(crate::peers::name(&saved), crate::peers::unnamed(&saved));
+    let _ = std::fs::remove_dir_all(&root);
+}

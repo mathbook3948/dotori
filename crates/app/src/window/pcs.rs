@@ -8,6 +8,7 @@ use dotori_connectors::peer::Book;
 use dotori_connectors::peer::Code;
 use dotori_connectors::peer::Identity;
 use dotori_connectors::peer::Invite;
+use dotori_connectors::peer::Peer;
 use dotori_connectors::peer::hub::Seen;
 use dotori_connectors::peer::hub::join;
 use dotori_connectors::peer::now;
@@ -28,6 +29,7 @@ use tokio::sync::oneshot;
 
 use crate::home::Home;
 use crate::peers;
+use crate::settings::PcSettings;
 use crate::settings::Settings;
 use crate::window::input::TextInput;
 use crate::window::parts::MONO;
@@ -44,7 +46,7 @@ const REFRESH: Duration = Duration::from_secs(2);
 pub(crate) struct PcsView {
     home: Home,
     settings: Settings,
-    name: String,
+    pub(super) name: Entity<TextInput>,
     book: Book,
     seen: Seen,
     invite: Option<(String, u64)>,
@@ -66,8 +68,16 @@ impl PcsView {
                 }
             }
         });
+        let name = cx.new(|cx| {
+            let mut input = TextInput::new(peers::unnamed(&settings), cx);
+            if let Some(name) = settings.pc.as_ref().and_then(|pc| pc.name.clone()) {
+                input.set_text(&name, cx);
+            }
+            input
+        });
+        cx.observe(&name, |_, _, cx| cx.notify()).detach();
         let mut view = Self {
-            name: peers::name(&settings),
+            name,
             home,
             settings,
             book: Book::default(),
@@ -82,6 +92,19 @@ impl PcsView {
         };
         view.reload(cx);
         view
+    }
+
+    /// The name typed for this PC, or nothing when the field is empty.
+    pub(crate) fn typed_name(&self, cx: &App) -> String {
+        self.name.read(cx).text().trim().to_owned()
+    }
+
+    fn settings_named(&self, cx: &App) -> Settings {
+        let typed = self.typed_name(cx);
+        Settings {
+            pc: (!typed.is_empty()).then_some(PcSettings { name: Some(typed) }),
+            ..self.settings.clone()
+        }
     }
 
     fn reload(&mut self, cx: &mut Context<Self>) {
@@ -140,43 +163,22 @@ impl PcsView {
         if self.joining {
             return;
         }
-        let typed = self.code.read(cx).text().trim().to_owned();
-        let Some(code) = Code::read(&typed) else {
-            self.note = Some(Err(SharedString::new_static(words().pcs.unreadable_code)));
-            cx.notify();
-            return;
-        };
-        let typed_address = self.address.read(cx).text().trim().to_owned();
-        let Some(address) = (!typed_address.is_empty())
-            .then_some(typed_address)
-            .or_else(|| code.address.clone())
-        else {
-            self.note = Some(Err(SharedString::new_static(words().pcs.no_address)));
-            cx.notify();
-            return;
-        };
-        let prepared = Identity::load_or_make(&self.home.peer_key())
-            .and_then(|identity| Ok((identity, peers::hello(&self.home, &self.settings)?)));
-        let (identity, hello) = match prepared {
-            Ok(prepared) => prepared,
+        let typed = (
+            self.code.read(cx).text().to_owned(),
+            self.address.read(cx).text().to_owned(),
+        );
+        let (code, address) = match join_target(&typed.0, &typed.1) {
+            Ok(target) => target,
             Err(error) => {
-                self.note = Some(Err(SharedString::from(error)));
+                self.note = Some(Err(SharedString::new_static(match error {
+                    Unjoinable::UnreadableCode => words().pcs.unreadable_code,
+                    Unjoinable::NoAddress => words().pcs.no_address,
+                })));
                 cx.notify();
                 return;
             }
         };
-        let book = self.home.peers();
-        let (done, result) = oneshot::channel();
-        thread::spawn(move || {
-            let joined = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map_err(|error| error.to_string())
-                .and_then(|runtime| {
-                    runtime.block_on(join(&identity, &hello, &code, &address, &book))
-                });
-            let _ = done.send(joined);
-        });
+        let result = join_in_background(&self.home, &self.settings_named(cx), code, address);
         self.joining = true;
         self.note = None;
         cx.notify();
@@ -220,7 +222,58 @@ impl PcsView {
     }
 }
 
-fn shown_name(name: &str, device: &str) -> String {
+/// Joins another PC from a window.
+pub(crate) type Joiner =
+    fn(&Home, &Settings, Code, String) -> oneshot::Receiver<Result<Peer, String>>;
+
+/// Why typed words cannot join another PC.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Unjoinable {
+    UnreadableCode,
+    NoAddress,
+}
+
+/// The code and address typed to join another PC, or what is wrong with them. The address typed
+/// wins over the one in the code.
+pub(crate) fn join_target(code: &str, address: &str) -> Result<(Code, String), Unjoinable> {
+    let code = Code::read(code.trim()).ok_or(Unjoinable::UnreadableCode)?;
+    let address = Some(address.trim())
+        .filter(|address| !address.is_empty())
+        .map(str::to_owned)
+        .or_else(|| code.address.clone())
+        .ok_or(Unjoinable::NoAddress)?;
+    Ok((code, address))
+}
+
+/// Joins the PC that handed out `code` on a thread of its own, since a window runs no async
+/// runtime, and approves it in this PC's book.
+pub(crate) fn join_in_background(
+    home: &Home,
+    settings: &Settings,
+    code: Code,
+    address: String,
+) -> oneshot::Receiver<Result<Peer, String>> {
+    let (done, result) = oneshot::channel();
+    let prepared = Identity::load_or_make(&home.peer_key())
+        .and_then(|identity| Ok((identity, peers::hello(home, settings)?)));
+    let book = home.peers();
+    thread::spawn(move || {
+        let joined = prepared.and_then(|(identity, hello)| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| error.to_string())
+                .and_then(|runtime| {
+                    runtime.block_on(join(&identity, &hello, &code, &address, &book))
+                })
+        });
+        let _ = done.send(joined);
+    });
+    result
+}
+
+/// What the windows call a PC: its name, or the start of its device id when it has none.
+pub(crate) fn shown_name(name: &str, device: &str) -> String {
     if name.trim().is_empty() {
         format!("PC {}", device.get(..6).unwrap_or(device))
     } else {
@@ -233,40 +286,55 @@ impl Render for PcsView {
         let theme = Theme::of(window);
         let words = &words().pcs;
         let listening = self.settings.peers.is_some();
-        let this_pc = div()
+        let shown = peers::name(&self.settings_named(cx));
+        let naming = div()
             .flex()
-            .items_center()
-            .gap_3()
-            .px_3()
-            .py_2p5()
-            .rounded_xl()
-            .bg(theme.canvas)
-            .child(badge(&theme, &self.name))
+            .flex_col()
+            .gap_1p5()
+            .child(input_box(&theme, window, cx, "pc-name", &self.name))
             .child(
                 div()
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .min_w_0()
-                    .child(
-                        div()
-                            .font_weight(FontWeight::MEDIUM)
-                            .child((words.this_pc)(&self.name)),
-                    )
-                    .child(div().text_xs().text_color(theme.muted).child(if listening {
-                        match self
-                            .settings
-                            .peers
-                            .as_ref()
-                            .and_then(|peers| peers.address.clone())
-                        {
-                            Some(address) => (words.reachable_at)(&address),
-                            None => String::from(words.reachable),
-                        }
-                    } else {
-                        String::from(words.not_listening)
-                    })),
+                    .text_xs()
+                    .text_color(theme.muted)
+                    .child(prose(words.name_hint)),
             );
+        let this_pc =
+            div()
+                .flex()
+                .items_center()
+                .gap_3()
+                .px_3()
+                .py_2p5()
+                .rounded_xl()
+                .bg(theme.canvas)
+                .child(badge(&theme, &shown))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .flex_1()
+                        .min_w_0()
+                        .child(
+                            div()
+                                .font_weight(FontWeight::MEDIUM)
+                                .child((words.this_pc)(&shown)),
+                        )
+                        .child(div().text_xs().text_color(theme.muted).child(prose(
+                            &if listening {
+                                match self
+                                    .settings
+                                    .peers
+                                    .as_ref()
+                                    .and_then(|peers| peers.address.clone())
+                                {
+                                    Some(address) => (words.reachable_at)(&address),
+                                    None => String::from(words.reachable),
+                                }
+                            } else {
+                                String::from(words.not_listening)
+                            },
+                        ))),
+                );
         let invite = match &self.invite {
             None => div().flex().child(button(
                 &theme,
@@ -447,6 +515,7 @@ impl Render for PcsView {
                     ),
             )
             .child(this_pc)
+            .child(section(&theme, words.name_section, naming))
             .child(section(&theme, words.invite_section, invite))
             .child(section(&theme, words.join_section, join_form))
             .child(section(&theme, words.linked_section, list))
@@ -537,6 +606,7 @@ fn input_box(
         width,
         div()
             .id(id)
+            .debug_selector(move || id.to_owned())
             .px_3()
             .py_2()
             .rounded(px(8. - width))

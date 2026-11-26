@@ -95,6 +95,8 @@ pub(crate) struct Settings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) peers: Option<PeerSettings>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) pc: Option<PcSettings>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) window: Option<WindowSettings>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) assistant: Option<AssistantSettings>,
@@ -115,6 +117,17 @@ pub(crate) struct AssistantSettings {
 pub(crate) const ASSISTANT_NAME: &str = "Dotori";
 /// The longest name the assistant may be given, in characters.
 pub(crate) const ASSISTANT_NAME_LONGEST: usize = 20;
+
+/// The most characters this PC's name takes.
+pub(crate) const PC_NAME_LONGEST: usize = 20;
+
+/// What the windows of every PC call this one. It stays with this PC and is not shared.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PcSettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) name: Option<String>,
+}
 
 impl AssistantSettings {
     /// The name the owner gave, or `dotori`.
@@ -147,7 +160,8 @@ pub(crate) struct WindowSettings {
 
 /// How the owner's other PCs reach this one. With the section, this PC listens on `listen`, or
 /// on every address at the usual port. `address` is what the others should dial, such as its
-/// Tailscale name, and `name` is how the windows show this PC.
+/// Tailscale name. `name` is where this PC's name was kept before `[pc]`, and is read only when
+/// `[pc]` names none.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PeerSettings {

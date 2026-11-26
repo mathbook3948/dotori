@@ -127,7 +127,7 @@ pub(crate) const KOREAN: Settings = Settings {
     key_on_save: "저장하면 암호화되어 보관돼요",
     key_from_environment: "이 PC의 환경 변수에 있는 키를 써요",
     key_kept: "키가 암호화되어 보관돼 있어요",
-    key_not_needed: "키가 필요 없으면 비워 둬요",
+    key_not_needed: "키가 필요 없으면 비워 두세요",
     key_missing: "아직 넣지 않았어요",
     remove: "지우기",
     key_hint: |name| match name {
@@ -165,9 +165,9 @@ pub(crate) const KOREAN: Settings = Settings {
         )
     },
     slack_steps: [
-        "api.slack.com/apps에서 앱을 만들고 Socket Mode와 Interactivity를 켜요. connections:write 권한으로 앱 토큰(xapp-)을 만들어요.",
-        "봇 권한 app_mentions:read, chat:write, im:history, im:read, im:write, users:read, channels:read, groups:read를 주고, app_mention과 message.im 이벤트를 구독한 뒤 설치해서 봇 토큰(xoxb-)을 받아요.",
-        "두 토큰을 아래에 붙여 넣고 저장한 뒤 dotori를 다시 시작해요.",
+        "api.slack.com/apps에서 앱을 만들고 Socket Mode와 Interactivity를 켜 주세요. connections:write 권한으로 앱 토큰(xapp-)을 만들어 주세요.",
+        "봇 권한 app_mentions:read, chat:write, im:history, im:read, im:write, users:read, channels:read, groups:read를 주고, app_mention과 message.im 이벤트를 구독한 뒤 설치해서 봇 토큰(xoxb-)을 받아 주세요.",
+        "두 토큰을 아래에 붙여 넣고 저장한 뒤 dotori를 다시 시작해 주세요.",
     ],
     app_token: "앱 토큰",
     bot_token: "봇 토큰",
@@ -177,9 +177,9 @@ pub(crate) const KOREAN: Settings = Settings {
     slack_owner_shape: "Slack 멤버 ID는 U012AB3CD처럼 U나 W로 시작하는 대문자와 숫자예요",
     telegram_about: "Telegram 봇으로도 말할 수 있어요. 봇에게 바로 말하거나 그룹에서 부르면 같은 대화로 이어져요.",
     telegram_steps: [
-        "Telegram에서 @BotFather에게 /newbot을 보내 봇을 만들고 토큰을 받아요.",
-        "토큰을 아래에 붙여 넣고 저장한 뒤 dotori를 다시 시작해요.",
-        "그룹에서도 쓰려면 봇을 그룹에 넣고 @봇이름으로 불러요.",
+        "Telegram에서 @BotFather에게 /newbot을 보내 봇을 만들고 토큰을 받아 주세요.",
+        "토큰을 아래에 붙여 넣고 저장한 뒤 dotori를 다시 시작해 주세요.",
+        "그룹에서도 쓰려면 봇을 그룹에 넣고 @봇이름으로 불러 주세요.",
     ],
     telegram_owner: "내 Telegram 사용자 ID",
     telegram_owner_hint: "@userinfobot에게 아무 말이나 보내면 알려 줘요. 이 사람의 말만 들어요.",
@@ -187,9 +187,9 @@ pub(crate) const KOREAN: Settings = Settings {
     telegram_owner_shape: "Telegram 사용자 ID는 123456789처럼 숫자예요",
     discord_about: "Discord 봇으로도 말할 수 있어요. 봇에게 DM을 보내거나 서버에서 부르면 같은 대화로 이어져요.",
     discord_steps: [
-        "discord.com/developers/applications에서 앱을 만들고 Bot 메뉴에서 토큰을 받아요. 같은 화면에서 Message Content Intent를 켜요.",
-        "OAuth2 URL Generator에서 bot 범위와 View Channels, Send Messages, Read Message History 권한을 골라 내 서버에 봇을 초대해요.",
-        "토큰을 아래에 붙여 넣고 저장한 뒤 dotori를 다시 시작해요.",
+        "discord.com/developers/applications에서 앱을 만들고 Bot 메뉴에서 토큰을 받아 주세요. 같은 화면에서 Message Content Intent를 켜 주세요.",
+        "OAuth2 URL Generator에서 bot 범위와 View Channels, Send Messages, Read Message History 권한을 골라 내 서버에 봇을 초대해 주세요.",
+        "토큰을 아래에 붙여 넣고 저장한 뒤 dotori를 다시 시작해 주세요.",
     ],
     discord_owner: "내 Discord 사용자 ID",
     discord_owner_hint: "설정의 고급에서 개발자 모드를 켜고, 내 프로필을 눌러 \"사용자 ID 복사\"로 얻어요. 이 사람의 말만 들어요.",

@@ -70,8 +70,19 @@ pub(crate) async fn start(
         .ok()
 }
 
-/// What the windows call this PC: the name in the settings, or else the computer's own name.
+/// What the windows call this PC: the name the owner gave it, or else `unnamed`.
 pub(crate) fn name(settings: &Settings) -> String {
+    settings
+        .pc
+        .as_ref()
+        .and_then(|pc| pc.name.clone())
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| unnamed(settings))
+}
+
+/// What this PC is called when the owner gave it no name: the name `[peers]` kept before `[pc]`,
+/// or else the computer's own name.
+pub(crate) fn unnamed(settings: &Settings) -> String {
     settings
         .peers
         .as_ref()
@@ -98,3 +109,7 @@ fn computer_name() -> Option<String> {
                 .filter(|name| !name.is_empty())
         })
 }
+
+#[cfg(test)]
+#[path = "peers.test.rs"]
+mod tests;
