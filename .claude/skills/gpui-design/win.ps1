@@ -100,7 +100,6 @@ public static class Unseen {
         ProcessInfo info;
         bool started = CreateProcess(null, new StringBuilder(line), IntPtr.Zero, IntPtr.Zero, false, 0x08000000, IntPtr.Zero, null, ref start, out info);
         int failure = Marshal.GetLastWin32Error();
-        CloseDesktop(desktop);
         if (!started) throw new Exception("could not start dotori: " + failure);
         return info.processId;
     }
@@ -131,7 +130,7 @@ public static class Unseen {
         return dpi == 0 ? 1.0 : dpi / 96.0;
     }
 
-    static IntPtr Point(int x, int y) { return (IntPtr)(((long)(Math.Max(y, 0) & 0xFFFF) << 16) | (long)(Math.Max(x, 0) & 0xFFFF)); }
+    static IntPtr Point(int x, int y) { return (IntPtr)(((Math.Max(y, 0) & 0xFFFF) << 16) | (Math.Max(x, 0) & 0xFFFF)); }
 
     public static void Post(IntPtr window, uint message, long w, int x, int y) {
         OnDesktop(() => PostMessage(window, message, (IntPtr)w, Point(x, y)));
