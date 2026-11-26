@@ -38,6 +38,7 @@ fn heard(text: &str) -> Entry {
             },
             content: Content::parse(text).expect("non-empty"),
             audience: None,
+            at: None,
         },
     }
 }
@@ -51,6 +52,7 @@ fn request(conversation: Vec<Entry>) -> ModelRequest {
             input_schema: String::from(r#"{"type":"object"}"#),
         }],
         context: None,
+        time_zone: None,
     }
 }
 

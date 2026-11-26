@@ -1,5 +1,6 @@
 use std::error::Error;
 use std::fmt;
+use std::time::SystemTime;
 
 use crate::id::ChannelId;
 use crate::id::ExternalMessageId;
@@ -66,6 +67,9 @@ pub struct Incoming {
     pub sender_name: String,
     pub content: Content,
     pub audience: Audience,
+    /// When the owner said it, if that was earlier than it arrived. The inbox stamps arrival
+    /// when this is `None`.
+    pub at: Option<SystemTime>,
 }
 
 /// Who can read the room a message came from, as its channel saw it when the message arrived.
@@ -104,6 +108,8 @@ pub struct Message {
     pub content: Content,
     /// `None` only in records from before rooms were described.
     pub audience: Option<Audience>,
+    /// When dotori received it, or `None` where nothing kept the time.
+    pub at: Option<SystemTime>,
 }
 
 #[cfg(test)]

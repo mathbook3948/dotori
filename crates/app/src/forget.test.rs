@@ -48,6 +48,7 @@ fn said(text: &str, ms: u64) -> Record {
                 },
                 content: Content::parse(text.to_owned()).expect("text"),
                 audience: None,
+                at: None,
             },
         },
     }

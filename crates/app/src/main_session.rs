@@ -6,6 +6,9 @@ use std::collections::VecDeque;
 use std::future;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::time::Duration;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
 
 use dotori_connectors::channel::app::AppChannel;
 use dotori_connectors::peer::hub::Heard;
@@ -31,6 +34,8 @@ use tokio::sync::broadcast::error::RecvError;
 
 pub(crate) const MAIN_JOB: &str = "main";
 const WAITING: usize = 100;
+
+type Said = (String, Option<String>, Option<SystemTime>);
 
 /// The other PCs and who among them runs which job. Without them this PC runs everything.
 #[derive(Clone, Debug)]
@@ -62,7 +67,7 @@ enum Target {
 pub(crate) struct Route {
     target: Mutex<Target>,
     linked: Option<Linked>,
-    waiting: Mutex<VecDeque<(String, Option<String>)>>,
+    waiting: Mutex<VecDeque<Said>>,
 }
 
 impl Route {
@@ -85,12 +90,13 @@ impl Route {
             Target::Elsewhere => return,
         };
         let own = self.linked.as_ref().map(|linked| linked.own.clone());
-        let waiting: Vec<(String, Option<String>)> =
-            self.waiting.lock().expect("unpoisoned").drain(..).collect();
-        for (text, origin) in waiting {
+        let waiting: Vec<Said> = self.waiting.lock().expect("unpoisoned").drain(..).collect();
+        for (text, origin, at) in waiting {
             let incoming = match origin {
-                Some(origin) if Some(&origin) != own.as_ref() => app.heard_elsewhere(text, origin),
-                _ => app.incoming(text),
+                Some(origin) if Some(&origin) != own.as_ref() => {
+                    app.heard_elsewhere(text, origin, at)
+                }
+                _ => app.incoming(text, at),
             };
             if let Some(incoming) = incoming {
                 let _ = inbox.push(incoming).await;
@@ -115,11 +121,13 @@ impl Route {
             return;
         };
         let mut waiting = self.waiting.lock().expect("unpoisoned");
-        while let Some((text, origin)) = waiting.front() {
+        while let Some((text, origin, at)) = waiting.front() {
             let origin = origin.as_deref().unwrap_or(&linked.own);
+            let at = at.and_then(|at| at.duration_since(UNIX_EPOCH).ok());
+            let at = at.map(|at| u64::try_from(at.as_millis()).unwrap_or(u64::MAX));
             if !linked.hub.send(
                 &main,
-                json!({ "kind": "owner_said", "text": text, "origin": origin }),
+                json!({ "kind": "owner_said", "text": text, "origin": origin, "at": at }),
             ) {
                 return;
             }
@@ -129,17 +137,17 @@ impl Route {
 
     /// Passes on words the owner said on the PC `origin` that reached this PC when it no longer
     /// ran the main session, or did not run the agent yet.
-    pub(crate) fn forward(&self, text: String, origin: String) {
-        self.wait(text, Some(origin));
+    pub(crate) fn forward(&self, text: String, origin: String, at: Option<SystemTime>) {
+        self.wait(text, Some(origin), at);
         self.flush();
     }
 
-    fn wait(&self, text: String, origin: Option<String>) {
+    fn wait(&self, text: String, origin: Option<String>, at: Option<SystemTime>) {
         let mut waiting = self.waiting.lock().expect("unpoisoned");
         if waiting.len() == WAITING {
             waiting.pop_front();
         }
-        waiting.push_back((text, origin));
+        waiting.push_back((text, origin, at));
     }
 }
 
@@ -153,7 +161,7 @@ impl Inbox for Route {
             if let Some(inbox) = agent {
                 return inbox.push(incoming).await;
             }
-            self.wait(incoming.content.as_str().to_owned(), None);
+            self.wait(incoming.content.as_str().to_owned(), None, incoming.at);
             self.flush();
             Ok(())
         })
@@ -274,12 +282,17 @@ pub(crate) async fn hear(linked: &Linked, app: &AppChannel, route: &Route, heard
                 .and_then(Value::as_str)
                 .unwrap_or(&heard.key)
                 .to_owned();
+            let at = heard
+                .message
+                .get("at")
+                .and_then(Value::as_u64)
+                .map(|ms| UNIX_EPOCH + Duration::from_millis(ms));
             if linked.runs_main() && route.runs_agent() {
-                if let Some(incoming) = app.heard_elsewhere(text.to_owned(), origin) {
+                if let Some(incoming) = app.heard_elsewhere(text.to_owned(), origin, at) {
                     let _ = route.push(incoming).await;
                 }
             } else {
-                route.forward(text.to_owned(), origin);
+                route.forward(text.to_owned(), origin, at);
             }
             true
         }

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::mem;
+use std::time::SystemTime;
 
 use crate::agent::effect::Effect;
 use crate::agent::event::Event;
@@ -35,7 +36,11 @@ use crate::tool::ToolError;
 /// A stale or duplicate result matches no id and is ignored.
 pub(crate) fn step(state: &mut AgentState, event: Event) -> Vec<Effect> {
     match event {
-        Event::Received { channel, incoming } => on_received(state, channel, incoming),
+        Event::Received {
+            channel,
+            incoming,
+            at,
+        } => on_received(state, channel, incoming, at),
         Event::ModelDone { call, result } => on_model_done(state, call, result),
         Event::ToolDone { run, result } => on_tool_done(state, run, result),
         Event::SubSessionDone {
@@ -62,7 +67,12 @@ pub(crate) fn step(state: &mut AgentState, event: Event) -> Vec<Effect> {
     }
 }
 
-fn on_received(state: &mut AgentState, channel: ChannelId, incoming: Incoming) -> Vec<Effect> {
+fn on_received(
+    state: &mut AgentState,
+    channel: ChannelId,
+    incoming: Incoming,
+    at: SystemTime,
+) -> Vec<Effect> {
     if matches!(state.phase, Phase::Stopping { .. }) {
         return Vec::new();
     }
@@ -98,6 +108,7 @@ fn on_received(state: &mut AgentState, channel: ChannelId, incoming: Incoming) -
             },
             content: incoming.content,
             audience: Some(incoming.audience),
+            at: Some(at),
         },
     });
     effects.extend(absorb(state, Arrival::Interrupts));

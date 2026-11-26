@@ -789,6 +789,7 @@ fn work_cut_off_by_a_restart_is_reported_as_stopped() {
                     },
                     content: Content::parse("read it and research").expect("non-empty"),
                     audience: Some(Audience::Owner),
+                    at: None,
                 },
             }),
             record(Entry::Acted {

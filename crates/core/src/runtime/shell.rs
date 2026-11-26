@@ -188,6 +188,7 @@ impl Shell {
                             conversation,
                             tools: toolbox.specs(),
                             context: None,
+                            time_zone: None,
                         })
                     })
                     .await

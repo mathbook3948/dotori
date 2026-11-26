@@ -145,11 +145,15 @@ impl Line {
         self.at_ms
     }
 
+    /// The record this line keeps. A message takes the record's time as the time it was heard,
+    /// since a message is recorded as it arrives.
     pub(crate) fn into_record(self) -> Result<Record, String> {
-        Ok(Record {
-            at: UNIX_EPOCH + Duration::from_millis(self.at_ms),
-            entry: entry(self.entry)?,
-        })
+        let at = UNIX_EPOCH + Duration::from_millis(self.at_ms);
+        let mut entry = entry(self.entry)?;
+        if let Entry::Heard { message, .. } = &mut entry {
+            message.at = Some(at);
+        }
+        Ok(Record { at, entry })
     }
 }
 
@@ -278,6 +282,7 @@ fn entry(form: EntryForm) -> Result<Entry, String> {
                     AudienceForm::People { some, total } => Audience::People { some, total },
                     AudienceForm::Anyone { scope } => Audience::Anyone(scope),
                 }),
+                at: None,
             },
         },
         EntryForm::Acted {
