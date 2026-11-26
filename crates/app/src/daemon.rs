@@ -1,5 +1,4 @@
 use std::fs;
-use std::future;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -114,15 +113,16 @@ const FLUSH_EVERY: Duration = Duration::from_secs(2);
 const LOOK_FOR_PCS: Duration = Duration::from_secs(2);
 const WAIT_FOR_SETUP: Duration = Duration::from_secs(2);
 
-/// Runs the agent until Ctrl-C or a terminate signal, with the app channel open for windows.
+/// Runs the agent without a tray, for the end-to-end test, until Ctrl-C or a terminate signal.
+#[cfg(debug_assertions)]
 pub(crate) async fn run(home: Home) -> Result<(), String> {
-    serve(home, None::<fn()>, || {}, future::pending()).await
+    serve(home, None::<fn()>, || {}, std::future::pending()).await
 }
 
-/// Runs the agent like `run`. It calls `ready` once windows can connect, and also stops when
-/// `quit` completes. Until first run is done it waits, and calls `onboard` once so a window can
-/// walk the owner through it. An install with a model key from before first run was kept counts
-/// as done.
+/// Runs the agent until Ctrl-C, a terminate signal, or `quit` completes, with the app channel
+/// open for windows. It calls `ready` once windows can connect. Until first run is done it
+/// waits, and calls `onboard` once so a window can walk the owner through it. An install with a
+/// model key from before first run was kept counts as done.
 pub(crate) async fn serve(
     home: Home,
     onboard: Option<impl FnOnce()>,
@@ -495,7 +495,7 @@ pub(crate) async fn serve(
         tool_timeout: TOOL_TIMEOUT,
     };
     door.write(&home.door())?;
-    eprintln!("dotori is running. Open a window with `dotori chat`.");
+    eprintln!("dotori: running; open the chat window from the tray");
     ready();
     let stopped = loop {
         tokio::select! {

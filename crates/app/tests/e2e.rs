@@ -166,7 +166,7 @@ fn settings(home: &Path, model: std::net::SocketAddr) {
 fn daemon(home: &Path) -> Child {
     let log = std::fs::File::create(home.join("daemon.log")).expect("a log");
     Command::new(env!("CARGO_BIN_EXE_dotori"))
-        .arg("daemon")
+        .env("DOTORI_TEST_WITHOUT_TRAY", "1")
         .env("DOTORI_HOME", home)
         .env(KEY, "fake")
         .env("HTTPS_PROXY", OFFLINE)

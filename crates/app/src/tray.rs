@@ -1,4 +1,4 @@
-//! The tray icon of a daemon started on a desktop. Windows open as processes of their own, and
+//! The tray icon that dotori runs with its daemon. Windows open as processes of their own, and
 //! quitting from the tray stops the daemon.
 
 use std::cell::RefCell;
@@ -36,15 +36,10 @@ const ICON_SIZE: u32 = 32;
 const ACORN: [u8; 3] = [0x8a, 0x5a, 0x1c];
 
 /// Runs the tray on this thread and the daemon on the runtime's workers. Either one ending ends
-/// both. If GPUI cannot reach the display, the daemon runs without a tray.
+/// both. Without a display it does not start.
 pub(crate) async fn run(home: Home) -> Result<(), String> {
-    let previous = panic::take_hook();
-    panic::set_hook(Box::new(|_| {}));
-    let started = panic::catch_unwind(Application::new);
-    panic::set_hook(previous);
-    let Ok(application) = started else {
-        eprintln!("dotori: no display, so no tray icon");
-        return daemon::run(home).await;
+    let Some(application) = application() else {
+        return Err(String::from("dotori needs a desktop, and none was found"));
     };
     let (quit, quitting) = oneshot::channel::<()>();
     let ready = Arc::new(AtomicBool::new(false));
@@ -75,6 +70,18 @@ pub(crate) async fn run(home: Home) -> Result<(), String> {
             .detach();
     });
     Ok(())
+}
+
+fn application() -> Option<Application> {
+    #[cfg(target_os = "linux")]
+    if gpui::guess_compositor() == "Headless" {
+        return None;
+    }
+    let previous = panic::take_hook();
+    panic::set_hook(Box::new(|_| {}));
+    let started = panic::catch_unwind(Application::new);
+    panic::set_hook(previous);
+    started.ok()
 }
 
 struct Items {
