@@ -80,6 +80,7 @@ use crate::window::screen::CardShown;
 use crate::window::screen::ScreenView;
 use crate::window::surface::SurfaceExt;
 use crate::window::theme::Theme;
+use crate::window::tokens::PICTURE;
 use crate::window::when::Mark;
 use crate::window::when::marks;
 use crate::window::when::today;
@@ -882,7 +883,7 @@ impl ChatView {
                                     .size(px(14.))
                                     .text_color(theme.muted),
                             )
-                            .child(prose(asked::SANDBOXED)),
+                            .child(prose(asked::sandboxed())),
                     )
                 })
                 .child(footer),
@@ -1473,7 +1474,12 @@ impl ChatView {
                                     screen.update(cx, |screen, cx| screen.choose_account(n, cx));
                                 })
                         })
-                        .child(asked::log_in_account(&host, &site, &account))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .child(prose(&asked::log_in_account(&host, &site, &account))),
+                        )
                 });
                 let (allow, decline, trusting) = (
                     self.screen.clone(),
@@ -1525,8 +1531,10 @@ impl ChatView {
                             .child(lock(theme, 16.).text_color(theme.text))
                             .child(
                                 div()
+                                    .flex_1()
+                                    .min_w_0()
                                     .font_weight(FontWeight::SEMIBOLD)
-                                    .child(asked::log_in_title(&host, &site)),
+                                    .child(prose(&asked::log_in_title(&host, &site))),
                             ),
                     )
                     .child(
@@ -1544,9 +1552,9 @@ impl ChatView {
                                     .text_xs()
                                     .text_color(theme.muted)
                                     .child(if several {
-                                        "계정 고르기"
+                                        words().chat.choose_account
                                     } else {
-                                        "계정"
+                                        words().chat.account
                                     }),
                             )
                             .child(
@@ -1573,23 +1581,32 @@ impl ChatView {
                                     .debug_selector(|| String::from("card-trust"))
                                     .flex()
                                     .flex_1()
+                                    .min_w_0()
                                     .items_center()
                                     .gap_2()
                                     .cursor_pointer()
                                     .text_xs()
                                     .text_color(theme.muted)
                                     .child(tick(theme, trust))
-                                    .child("이 계정은 다음부터 묻지 않기")
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .child(prose(words().chat.stop_asking)),
+                                    )
                                     .on_click(move |_, _, cx| {
                                         trusting.update(cx, |screen, cx| screen.toggle_trust(cx));
                                     }),
                             )
-                            .child(button("card-decline", "거절", false).on_click(
-                                move |_, _, cx| {
-                                    decline.update(cx, |screen, cx| screen.allow_card(false, cx));
-                                },
-                            ))
-                            .child(button("card-allow", "로그인", true).on_click(
+                            .child(
+                                button("card-decline", words().chat.decline, false).on_click(
+                                    move |_, _, cx| {
+                                        decline
+                                            .update(cx, |screen, cx| screen.allow_card(false, cx));
+                                    },
+                                ),
+                            )
+                            .child(button("card-allow", words().chat.log_in, true).on_click(
                                 move |_, _, cx| {
                                     allow.update(cx, |screen, cx| screen.allow_card(true, cx));
                                 },
@@ -1876,9 +1893,7 @@ fn tick(theme: &Theme, on: bool) -> Div {
         .rounded_sm()
         .text_size(px(11.))
         .font_weight(FontWeight::BOLD)
-        .when(on, |tick| {
-            tick.bg(theme.primary).text_color(gpui::white()).child("✓")
-        })
+        .when(on, |tick| tick.main_button(theme).child("✓"))
         .when(!on, |tick| tick.bg(theme.bubble))
 }
 
@@ -2007,7 +2022,7 @@ fn empty(theme: &Theme) -> impl IntoElement {
         .items_center()
         .gap_3()
         .pt(px(96.))
-        .child(logo(theme, 56.))
+        .child(logo(theme, PICTURE))
         .child(
             div()
                 .text_lg()

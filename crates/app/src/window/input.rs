@@ -92,6 +92,7 @@ pub(crate) struct TextInput {
     is_selecting: bool,
     multiline: bool,
     masked: bool,
+    locked: bool,
     scroll: ScrollHandle,
     followed: Option<(SharedString, usize, Pixels)>,
     column: Option<Pixels>,
@@ -404,6 +405,7 @@ impl TextInput {
             is_selecting: false,
             multiline: false,
             masked: false,
+            locked: false,
             scroll: ScrollHandle::new(),
             followed: None,
             column: None,
@@ -453,6 +455,15 @@ impl TextInput {
     pub(crate) fn set_placeholder(&mut self, placeholder: SharedString, cx: &mut Context<Self>) {
         if self.placeholder != placeholder {
             self.placeholder = placeholder;
+            cx.notify();
+        }
+    }
+
+    /// Holds the text as it is while `locked`, so neither typing nor pasting changes it.
+    pub(crate) fn set_locked(&mut self, locked: bool, cx: &mut Context<Self>) {
+        if self.locked != locked {
+            self.locked = locked;
+            self.marked_range = None;
             cx.notify();
         }
     }
@@ -545,6 +556,9 @@ impl EntityInputHandler for TextInput {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.locked {
+            return;
+        }
         let range = range_utf16
             .as_ref()
             .map(|range_utf16| self.range_from_utf16(range_utf16))
@@ -568,6 +582,9 @@ impl EntityInputHandler for TextInput {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.locked {
+            return;
+        }
         let range = range_utf16
             .as_ref()
             .map(|range_utf16| self.range_from_utf16(range_utf16))
@@ -603,9 +620,10 @@ impl EntityInputHandler for TextInput {
         let range = self.range_from_utf16(&range_utf16);
         let start = shaped.position(self.shown(range.start));
         let end = shaped.position(self.shown(range.end));
+        let origin = bounds.origin - point(self.shift, Pixels::ZERO);
         Some(Bounds::from_corners(
-            bounds.origin + start,
-            bounds.origin + point(end.x.max(start.x), start.y + shaped.line_height),
+            origin + start,
+            origin + point(end.x.max(start.x), start.y + shaped.line_height),
         ))
     }
 
@@ -1048,3 +1066,7 @@ pub(crate) fn bindings() -> Vec<KeyBinding> {
         KeyBinding::new("shift-enter", Newline, field),
     ]
 }
+
+#[cfg(test)]
+#[path = "input.test.rs"]
+mod tests;

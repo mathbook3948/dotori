@@ -591,7 +591,7 @@ fn incoming(routine: &Routine, slot: i64) -> Option<Incoming> {
         id: ExternalMessageId::new(format!("routine-{}-{slot}", routine.id)),
         place: Place::new(one_line(&routine.name)),
         sender_id: ExternalUserId::new(ROUTINE),
-        sender_name: String::from("예약"),
+        sender_name: String::from(words().routines.sender),
         content,
         audience: Audience::Owner,
     })

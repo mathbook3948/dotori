@@ -39,6 +39,8 @@ pub(crate) struct Routines {
     pub(crate) day_other_year: fn(Date) -> String,
     /// The time a message was said, from the hour from 0 to 23 and the minute.
     pub(crate) clock: fn(i8, i8) -> String,
+    /// Who says a routine's task when it comes due, as the conversation shows the sender.
+    pub(crate) sender: &'static str,
 }
 
 fn twelve(hour: i8) -> i8 {
@@ -137,6 +139,7 @@ pub(crate) const KOREAN: Routines = Routines {
         let half = if hour < 12 { "오전" } else { "오후" };
         format!("{half} {}:{minute:02}", twelve(hour))
     },
+    sender: "예약",
 };
 
 pub(crate) const ENGLISH: Routines = Routines {
@@ -199,4 +202,5 @@ pub(crate) const ENGLISH: Routines = Routines {
         let half = if hour < 12 { "AM" } else { "PM" };
         format!("{}:{minute:02} {half}", twelve(hour))
     },
+    sender: "Schedule",
 };

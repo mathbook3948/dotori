@@ -284,7 +284,7 @@ impl ScreenView {
                     .map(|account| {
                         account
                             .as_str()
-                            .map_or_else(|| String::from("아이디 없이"), str::to_owned)
+                            .map_or_else(|| String::from(words().chat.without_id), str::to_owned)
                     })
                     .collect(),
                 chosen: self.chosen,

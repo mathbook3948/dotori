@@ -238,9 +238,10 @@ tile:
   light: "#FCE8CC"
   dark: "#30241A"
 feature:
-  time: "#F2A33A"
+  time: "#D07A22"
   web: "#4C8DF6"
-  files: "#34B27B"
+  files: "#2E9E6C"
+  icon: "#FFFFFF"
 size:
   window: 340x604
   window-min: 320x420
@@ -294,10 +295,11 @@ This file is the design the windows are moving to. Until a window has moved, `do
 - `canvas` is the window background. `surface` is anything that sits on it, such as a card or a button. A field on a card takes `canvas`. `raised` is a window's top bar and the composer area.
 - `bubble` is the owner's message. It is a neutral shade of the canvas, never `primary`.
 - The main button is the `text` color filled in, with `canvas` words: warm black in the light look and warm white in the dark. Each screen has at most one, for the action the owner most likely takes next.
-- `primary` colors small marks only: onboarding's progress, the check by a chosen item, list bullets and a focused field's line. It never fills a large area or a button, and it is never text.
+- `primary` colors small marks only: onboarding's progress, the check by a chosen item, list bullets and a focused field's line. A mark drawn on `primary` would not stand out in every theme, so a filled mark such as a ticked checkbox takes the main button's colors. It never fills a large area or a button, and it is never text.
 - `selection` is the background of selected text.
 - `ok`, `warn` and `danger` say a result worked, waits for the owner, or failed. Each has a `-soft` fill for a card that carries that meaning. They are used as words, icons and fills, never as dots.
 - Every color used for text reaches 4.5:1 against every background it sits on, placeholders included.
+- An icon or a mark that carries meaning reaches 3:1 against what it sits on, such as `feature.icon` on each `feature` tile.
 - The logo keeps its own colors, `logo.light` on a light theme and `logo.dark` on a dark one.
 
 ## Typography
@@ -314,7 +316,7 @@ This file is the design the windows are moving to. Until a window has moved, `do
 - Every window opens at `size.window`, 9:16 like a small phone, so dotori sits beside other work instead of taking the screen. The chat and settings windows can grow and shrink down to `size.window-min`. The onboarding window keeps its size.
 - The chat window is the conversation and the composer, with no header and no title bar of the OS where dotori can draw its own. A quiet strip at the top holds the settings button on the left and the close button on the right, and the owner drags the window by it. On macOS the system's window buttons stay on the left and the settings button follows them. Where the OS still draws its own title bar, the close button is left to it. Each reply carries the logo.
 - The settings window has the same strip, with the title 설정 on the left and the window buttons on the right. Its cards sit on the canvas one under another, and the save button sits at the bottom with a short note beside it, on the canvas with no line above it.
-- The onboarding window opens on the first run, when dotori has no model key. It has one size and only the close button in its strip. It greets the owner on the first screen, then walks three steps: the API key, the name and theme, and the other places to talk. The greeting is left aligned like the rest, never a centered hero, and shows what to ask rather than how setup works. The key step asks only for what dotori cannot start without: the key for Anthropic, and the address, model and key for an OpenAI-compatible model.
+- The onboarding window opens on the first run and again until the owner finishes it, at the step they left. It has one size and only the close button in its strip. It greets the owner on the first screen, then walks three steps: the API key, the name and theme, and the other places to talk. The greeting is left aligned like the rest, never a centered hero, and shows what to ask rather than how setup works. The key step asks only for what dotori cannot start without: the key for Anthropic, and the address, model and key for an OpenAI-compatible model.
 - The strip shows no status while things work. When dotori cannot be reached, one quiet line on its left says so and what to do. When the owner's PCs are linked, the PC that answers is named there only when it is not this one.
 - dotori's browser has no place in the chat window. When it needs the owner, a card asks at the end of the conversation, showing the page as it is now, and the browser opens in a window of its own only when the owner opens it. A login it asks for is answered in the card.
 - The conversation keeps `spacing.turn` between turns and `spacing.xl` around its edge.
@@ -409,14 +411,14 @@ This file is the design the windows are moving to. Until a window has moved, `do
 - **Theme list**: one 34px row per theme, its name, four 10px swatches (the light canvas and `primary`, the dark canvas and `primary`) and, on the chosen row, a `primary` check; the chosen name is semibold. The pointer lights a row with `bubble`. Under it the look switch is a `bubble` track at 11px with 시스템 따라, 밝게 and 어둡게, the chosen one raised. The settings window and the onboarding window draw the same list.
 - **Field**: a `surface` card at `rounded.field`, a label above and a `caption` line under it. Only the focused field shows a `primary` outline.
 - **Key field**: a masked field. Under it, one `caption` line, with no pill around it, says where the key comes from: kept encrypted on this PC or taken from an environment variable of that name (`text`, after an `ok` check), typed and kept on save (`muted`), not needed when the model takes no key (`muted`), or not given yet (`warn`). A kept key offers 지우기 at the end of the line. The onboarding window fills the field with the kept key instead, masked like any typed key, with no line and no 지우기.
-- **Greeting**: centered, the picture tile at `size.tile` and 24px corners filled with the `tile` color and the soft shadow of a card, holding dotori's logo; a bold 24px line and two `muted` lines; then three rows, each a 36px tile in its `feature` color with a white icon, a semibold title and the ask in `muted` quotes; the main button across the bottom. The tile settles in with `motion.greet` and the rest rises one after another with `motion.message-enter`.
+- **Greeting**: centered, the picture tile at `size.tile` and 24px corners filled with the `tile` color and the soft shadow of a card, holding dotori's logo; a bold 24px line and two `muted` lines; then three rows, each a 36px tile in its `feature` color with a `feature.icon` icon, a semibold title and the ask in `muted` quotes; the main button across the bottom. The tile settles in with `motion.greet` and the rest rises one after another with `motion.message-enter`.
 - **Step progress**: three 3px `rounded.full` bars over the step names at 11px. Bars up to the current step fill with `primary`, the rest are `bubble`, and the current name is `text` and semibold.
 - **Avatar**: the picture tile at `size.avatar` with a small round pencil in the main button's colors at its bottom right, raised a little with no ring.
 - **Step footer**: on the canvas with no line, 이전 as quiet text on the left and the main button filling the rest at 14px corners. A failure shows above them in `danger`.
 - **Login card**: a `surface` card in the middle of the conversation, at most four fifths of its width, `rounded.xl`, a `rim` and a soft shadow. A `title`, the host the browser is on and a hint in `caption` `muted`, then the fields on `canvas` with their labels above, the checkboxes, the page's button as the main button across the card, the page's links underlined in `muted`, a lock with a `caption` line saying where the typed words go, and 나중에 할게요. It is not a picture of the site.
 - **Account card**: like the permission card, a lock by the question 금고의 쿠팡 계정으로 로그인해도 될까요?, the account on `surface` as the host, the site name in parentheses and the id (with several accounts, one row each with a radio button to pick it), a `caption` note, a checkbox to stop asking, and the buttons 거절 (`surface`) and 로그인 (the main button).
 - **Card result**: one `surface` row with a lock and what was done, such as 쿠팡 로그인 정보를 넣었어요. A linked site adds a row with an `ok-soft` 연동됨 pill and a `caption` line under it. A pressed link or a card put off is one `caption` line on the right.
-- **Checkbox**: a small `rounded.sm` square, `bubble` when clear and `primary` with a check when ticked.
+- **Checkbox**: a small `rounded.sm` square, `bubble` when clear and the main button's colors with a check when ticked, so the check stands out in every theme.
 - **Vault card**: the settings card 금고, with the groups API 키와 토큰 and 연동된 사이트. Each row has a lock, a title, a `muted` line under it and, on the right, a square ghost button with a `muted` bin that removes it. A key's line says where it is used, and "환경 변수에서 읽어요" for a key from an environment variable, which has no button. An account's title is the host with the site name `muted` in parentheses, and its line is the id. A trusted account alone carries a pill of `primary` text on `selection` with a bolt and 묻지 않고 로그인. No other badges.
 - **Radio button**: a small round control, `bubble` when clear and a `primary` ring when chosen.
 - **Assistant picture**: the acorn in the logo colors, or the owner's picture cut round. It stands wherever the logo stands.

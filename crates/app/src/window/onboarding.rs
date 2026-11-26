@@ -20,7 +20,6 @@ use gpui::img;
 use gpui::prelude::*;
 use gpui::px;
 use gpui::relative;
-use gpui::rgb;
 use gpui::svg;
 
 use super::Note;
@@ -49,10 +48,11 @@ use crate::window::surface::SurfaceExt;
 use crate::window::surface::framed;
 use crate::window::surface::hairline;
 use crate::window::theme::Theme;
+use crate::window::tokens::AVATAR;
+use crate::window::tokens::FEATURE;
+use crate::window::tokens::TILE;
 use crate::words::words;
 
-const TILE: f32 = 88.;
-const AVATAR: f32 = 60.;
 const FIELD: f32 = 12.;
 const CARD: f32 = 14.;
 const KEYS_PAGE: &str = "https://console.anthropic.com/settings/keys";
@@ -131,9 +131,9 @@ impl SettingsView {
     fn greeting(&self, theme: &Theme) -> Div {
         let words = &words().onboarding;
         let features = [
-            (CLOCK_ICON, 0xF2A33A, words.schedule, words.schedule_ask),
-            (GLOBE_ICON, 0x4C8DF6, words.web, words.web_ask),
-            (FOLDER_ICON, 0x34B27B, words.pc, words.pc_ask),
+            (CLOCK_ICON, FEATURE.time, words.schedule, words.schedule_ask),
+            (GLOBE_ICON, FEATURE.web, words.web, words.web_ask),
+            (FOLDER_ICON, FEATURE.files, words.pc, words.pc_ask),
         ];
         div()
             .flex()
@@ -194,12 +194,12 @@ impl SettingsView {
                                                 .justify_center()
                                                 .size(px(36.))
                                                 .rounded(px(10.))
-                                                .bg(rgb(*color))
+                                                .bg(*color)
                                                 .child(
                                                     svg()
                                                         .path(*icon)
                                                         .size(px(18.))
-                                                        .text_color(gpui::white()),
+                                                        .text_color(FEATURE.icon),
                                                 ),
                                         )
                                         .child(
@@ -572,8 +572,9 @@ impl SettingsView {
                                 .py_3()
                                 .rounded(px(14.))
                                 .text_color(theme.muted)
-                                .cursor_pointer()
-                                .hover(|back| back.bg(theme.bubble))
+                                .when(!self.checking(), |back| {
+                                    back.cursor_pointer().hover(|back| back.bg(theme.bubble))
+                                })
                                 .child(words().onboarding.back)
                                 .on_click(cx.listener(Self::go_back)),
                         )
@@ -605,11 +606,6 @@ impl SettingsView {
 }
 
 fn picture_tile(theme: &Theme, size: f32, radius: f32) -> Div {
-    let fill = if theme.is_dark() {
-        rgb(0x30241A)
-    } else {
-        rgb(0xFCE8CC)
-    };
     let picture: AnyElement = match identity::icon() {
         Some(icon) => img(picture(&icon, size))
             .size_full()
@@ -624,7 +620,7 @@ fn picture_tile(theme: &Theme, size: f32, radius: f32) -> Div {
         .justify_center()
         .size(px(size))
         .rounded(px(radius))
-        .bg(fill)
+        .bg(theme.tile())
         .lifted(theme)
         .child(picture)
 }

@@ -3,9 +3,6 @@
 use crate::words::words;
 
 pub(crate) const SHOWN_VALUE: usize = 600;
-/// What a card says under a command that would run in the sandbox.
-pub(crate) const SANDBOXED: &str =
-    "샌드박스 안에서 실행해요. dotori의 금고와 기록은 보이지 않아요.";
 const HIDDEN_FIELDS: [&str; 2] = ["records", "carriers"];
 
 /// What the owner calls one of dotori's own tools that waits for their OK.
@@ -121,9 +118,14 @@ pub(crate) fn lapsed() -> &'static str {
     words().chat.expired
 }
 
+/// What a card says under a command that would run in the sandbox.
+pub(crate) fn sandboxed() -> &'static str {
+    words().chat.sandboxed
+}
+
 /// The title of a card that asks to log in with a kept account.
 pub(crate) fn log_in_title(host: &str, site: &str) -> String {
-    format!("금고의 {host} ({site}) 계정으로 로그인해도 될까요?")
+    (words().chat.log_in_with_kept)(host, site)
 }
 
 /// An account as a log-in card lists it.
@@ -133,9 +135,7 @@ pub(crate) fn log_in_account(host: &str, site: &str, id: &str) -> String {
 
 /// Where a log-in card's account goes, and that the model never sees its password.
 pub(crate) fn log_in_note(subject: &str, host: &str, path: &str) -> String {
-    format!(
-        "{subject} {host}{path} 로그인 칸에 직접 채워 넣어요. 대화하는 AI는 비밀번호를 보지 못해요."
-    )
+    (words().chat.log_in_note)(subject, host, path)
 }
 
 #[cfg(test)]

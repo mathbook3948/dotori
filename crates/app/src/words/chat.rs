@@ -89,6 +89,29 @@ pub(crate) struct Chat {
     pub(crate) owner_only: &'static str,
     /// A thread in the given room.
     pub(crate) thread: fn(&str) -> String,
+    pub(crate) tool_row: &'static str,
+    /// What a card in a chat room says once the given owner allowed it (`true`) or declined it.
+    pub(crate) decided_by: fn(&str, bool) -> String,
+    pub(crate) sent_by_dm: &'static str,
+    /// What a chat room hears when the window shows a card that takes typed values, given the
+    /// host and whether the card is a login.
+    pub(crate) card_on_pc: fn(&str, bool) -> String,
+    pub(crate) input_card_on_pc: &'static str,
+    pub(crate) sandboxed: &'static str,
+    /// The title of a card that asks to log in with a kept account, given the host and the site.
+    pub(crate) log_in_with_kept: fn(&str, &str) -> String,
+    /// Where a log-in card's account goes, given the assistant with its particle, the host and
+    /// the path, and that the model never sees its password.
+    pub(crate) log_in_note: fn(&str, &str, &str) -> String,
+    pub(crate) choose_account: &'static str,
+    pub(crate) account: &'static str,
+    pub(crate) stop_asking: &'static str,
+    pub(crate) log_in_and_stop_asking: &'static str,
+    /// The button that logs in with the account of the given username.
+    pub(crate) log_in_as: fn(&str) -> String,
+    pub(crate) log_in_without_id: &'static str,
+    pub(crate) without_id: &'static str,
+    pub(crate) rest_on_pc: &'static str,
 }
 
 pub(crate) const KOREAN: Chat = Chat {
@@ -173,6 +196,35 @@ pub(crate) const KOREAN: Chat = Chat {
     decision_channel: "허락한 일",
     owner_only: "주인에게만",
     thread: |room| format!("{room} 스레드"),
+    tool_row: "도구",
+    decided_by: |owner, allowed| {
+        if allowed {
+            format!("{owner} 님이 허락했어요")
+        } else {
+            format!("{owner} 님이 거절했어요")
+        }
+    },
+    sent_by_dm: "확인할 일을 DM으로 보냈어요.",
+    card_on_pc: |host, log_in| {
+        let kind = if log_in { "로그인" } else { "입력" };
+        format!("PC의 dotori 창에 {host} {kind} 카드를 띄웠어요.")
+    },
+    input_card_on_pc: "PC의 dotori 창에 입력 카드를 띄웠어요.",
+    sandboxed: "샌드박스 안에서 실행해요. dotori의 금고와 기록은 보이지 않아요.",
+    log_in_with_kept: |host, site| format!("금고의 {host} ({site}) 계정으로 로그인해도 될까요?"),
+    log_in_note: |subject, host, path| {
+        format!(
+            "{subject} {host}{path} 로그인 칸에 직접 채워 넣어요. 대화하는 AI는 비밀번호를 보지 못해요."
+        )
+    },
+    choose_account: "계정 고르기",
+    account: "계정",
+    stop_asking: "이 계정은 다음부터 묻지 않기",
+    log_in_and_stop_asking: "로그인, 다음부터 묻지 않기",
+    log_in_as: |id| format!("{id} 계정으로 로그인"),
+    log_in_without_id: "아이디 없는 계정으로 로그인",
+    without_id: "아이디 없이",
+    rest_on_pc: "나머지는 PC의 dotori 창에서 골라 주세요",
 };
 
 pub(crate) const ENGLISH: Chat = Chat {
@@ -250,4 +302,33 @@ pub(crate) const ENGLISH: Chat = Chat {
     decision_channel: "Approvals",
     owner_only: "Only you",
     thread: |room| format!("{room} thread"),
+    tool_row: "Tool",
+    decided_by: |owner, allowed| {
+        if allowed {
+            format!("{owner} allowed it")
+        } else {
+            format!("{owner} declined it")
+        }
+    },
+    sent_by_dm: "I sent you a DM to check.",
+    card_on_pc: |host, log_in| {
+        let kind = if log_in { "login" } else { "input" };
+        format!("I opened a {kind} card for {host} in the dotori window on your PC.")
+    },
+    input_card_on_pc: "I opened an input card in the dotori window on your PC.",
+    sandboxed: "It runs in a sandbox, where dotori's vault and records stay out of sight.",
+    log_in_with_kept: |host, site| {
+        format!("Can I log in with the {host} ({site}) account from your vault?")
+    },
+    log_in_note: |_, host, path| {
+        format!("I fill in the login on {host}{path} myself. The AI model never sees the password.")
+    },
+    choose_account: "Choose an account",
+    account: "Account",
+    stop_asking: "Don't ask again for this account",
+    log_in_and_stop_asking: "Log in and don't ask again",
+    log_in_as: |id| format!("Log in as {id}"),
+    log_in_without_id: "Log in with the account without a username",
+    without_id: "no username",
+    rest_on_pc: "Pick from the rest in the dotori window on your PC.",
 };

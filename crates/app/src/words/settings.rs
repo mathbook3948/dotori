@@ -79,6 +79,27 @@ pub(crate) struct Settings {
     pub(crate) notes_about: fn(usize, i64) -> String,
     pub(crate) no_notes: &'static str,
     pub(crate) notes_example: &'static str,
+    pub(crate) slack_tokens_needed: &'static str,
+    pub(crate) telegram_token_needed: &'static str,
+    pub(crate) discord_token_needed: &'static str,
+    /// The refusal of a key whose name is where a linked site's account is kept.
+    pub(crate) name_is_an_account: fn(&str) -> String,
+    pub(crate) vault_title: &'static str,
+    pub(crate) vault_about: &'static str,
+    pub(crate) keys_group: &'static str,
+    pub(crate) sites_group: &'static str,
+    pub(crate) no_keys: &'static str,
+    pub(crate) no_sites: &'static str,
+    pub(crate) anthropic_key: &'static str,
+    pub(crate) slack_app_key: &'static str,
+    pub(crate) slack_bot_key: &'static str,
+    pub(crate) telegram_key: &'static str,
+    pub(crate) discord_key: &'static str,
+    pub(crate) other_use: &'static str,
+    /// The line under a key read from an environment variable, given where the key is used.
+    pub(crate) read_from_environment: fn(&str) -> String,
+    pub(crate) no_id: &'static str,
+    pub(crate) trusted: &'static str,
 }
 
 pub(crate) const KOREAN: Settings = Settings {
@@ -187,6 +208,29 @@ pub(crate) const KOREAN: Settings = Settings {
     },
     no_notes: "아직 메모가 없어요",
     notes_example: "채팅창에서 \"앞으로 존댓말 써 줘\"처럼 부탁해도 돼요",
+    slack_tokens_needed: "Slack을 쓰려면 앱 토큰과 봇 토큰을 붙여 넣어 주세요",
+    telegram_token_needed: "Telegram을 쓰려면 봇 토큰을 붙여 넣어 주세요",
+    discord_token_needed: "Discord를 쓰려면 봇 토큰을 붙여 넣어 주세요",
+    name_is_an_account: |name| {
+        format!(
+            "`{name}` 이름은 연동한 사이트의 계정 자리라서 키를 넣을 수 없어요. 설정에서 키 이름을 바꿔 주세요"
+        )
+    },
+    vault_title: "금고",
+    vault_about: "API 키, 토큰, 연동한 사이트의 계정은 암호화되어 보관돼요. 대화하는 AI는 사이트와 아이디까지만 알고, 비밀번호는 보지 못해요.",
+    keys_group: "API 키와 토큰",
+    sites_group: "연동된 사이트",
+    no_keys: "아직 보관한 키가 없어요",
+    no_sites: "아직 연동한 사이트가 없어요",
+    anthropic_key: "Anthropic API 키",
+    slack_app_key: "Slack 앱 토큰",
+    slack_bot_key: "Slack 봇 토큰",
+    telegram_key: "Telegram 봇 토큰",
+    discord_key: "Discord 봇 토큰",
+    other_use: "다른 연동",
+    read_from_environment: |what| format!("{what}, 환경 변수에서 읽어요"),
+    no_id: "아이디 없음",
+    trusted: "묻지 않고 로그인",
 };
 
 pub(crate) const ENGLISH: Settings = Settings {
@@ -290,4 +334,27 @@ pub(crate) const ENGLISH: Settings = Settings {
     },
     no_notes: "No notes yet.",
     notes_example: "Try asking something like \"Keep your answers short.\"",
+    slack_tokens_needed: "Paste the app token and the bot token to use Slack.",
+    telegram_token_needed: "Paste the bot token to use Telegram.",
+    discord_token_needed: "Paste the bot token to use Discord.",
+    name_is_an_account: |name| {
+        format!(
+            "`{name}` is where a linked site's account is kept, so a key can't go there. Change the key name in the settings."
+        )
+    },
+    vault_title: "Vault",
+    vault_about: "API keys, tokens and linked site accounts are kept encrypted. The AI model knows only the site and the username, never the password.",
+    keys_group: "API keys and tokens",
+    sites_group: "Linked sites",
+    no_keys: "No keys kept yet.",
+    no_sites: "No linked sites yet.",
+    anthropic_key: "Anthropic API key",
+    slack_app_key: "Slack app token",
+    slack_bot_key: "Slack bot token",
+    telegram_key: "Telegram bot token",
+    discord_key: "Discord bot token",
+    other_use: "Other connection",
+    read_from_environment: |what| format!("{what}, from the environment"),
+    no_id: "No username",
+    trusted: "Logs in without asking",
 };

@@ -31,6 +31,9 @@ use tokio::sync::oneshot;
 
 use crate::accounts;
 use crate::accounts::Site;
+use crate::first_run;
+use crate::first_run::FirstRun;
+use crate::first_run::Step;
 use crate::home::Home;
 use crate::icons;
 use crate::language;
@@ -76,6 +79,7 @@ use crate::window::surface::framed;
 use crate::window::surface::hairline;
 use crate::window::theme::Look;
 use crate::window::theme::Theme;
+use crate::window::tokens::PICTURE;
 use crate::words::words;
 
 /// The settings window. It writes `settings.toml`, which the daemon reads when it starts.
@@ -117,21 +121,12 @@ pub(crate) struct SettingsView {
     forward: bool,
     checking: Option<Task<()>>,
     check: Check,
+    open_chat: fn(),
 }
 
 const ALL_PARTS: [&str; 5] = ["model", "slack", "telegram", "discord", "assistant"];
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Step {
-    Welcome,
-    Key,
-    Look,
-    Elsewhere,
-}
-
 impl Step {
-    const ALL: [Step; 4] = [Step::Welcome, Step::Key, Step::Look, Step::Elsewhere];
-
     fn parts(self) -> &'static [&'static str] {
         match self {
             Step::Welcome => &[],
@@ -139,23 +134,6 @@ impl Step {
             Step::Look => &["assistant"],
             Step::Elsewhere => &["slack", "telegram", "discord"],
         }
-    }
-
-    fn position(self) -> usize {
-        Self::ALL
-            .iter()
-            .position(|step| *step == self)
-            .expect("every step is in the table")
-    }
-
-    fn next(self) -> Option<Step> {
-        Self::ALL.get(self.position() + 1).copied()
-    }
-
-    fn previous(self) -> Option<Step> {
-        self.position()
-            .checked_sub(1)
-            .map(|position| Self::ALL[position])
     }
 
     fn label(self) -> Option<&'static str> {
@@ -189,9 +167,14 @@ impl SettingsView {
         Self::opened(home, settings, None, cx)
     }
 
-    /// The settings walked one step at a time, from the welcome.
+    /// The settings walked one step at a time, from the step the owner had not finished, or
+    /// else from the welcome.
     pub(crate) fn onboarding(home: Home, settings: Settings, cx: &mut Context<Self>) -> Self {
-        Self::opened(home, settings, Some(Step::Welcome), cx)
+        let step = match first_run::read(&home.first_run()) {
+            FirstRun::At(step) => step,
+            FirstRun::Unbegun | FirstRun::Done => Step::Welcome,
+        };
+        Self::opened(home, settings, Some(step), cx)
     }
 
     fn opened(home: Home, settings: Settings, walk: Option<Step>, cx: &mut Context<Self>) -> Self {
@@ -316,6 +299,7 @@ impl SettingsView {
             forward: true,
             checking: None,
             check: check_model,
+            open_chat: || crate::tray::open("window"),
         };
         view.show_saved_key(cx);
         view
@@ -335,7 +319,7 @@ impl SettingsView {
     }
 
     fn choose(&mut self, openai_compatible: bool, cx: &mut Context<Self>) {
-        if self.openai_compatible == openai_compatible {
+        if self.openai_compatible == openai_compatible || self.checking() {
             return;
         }
         self.slid(PROVIDER, usize::from(self.openai_compatible));
@@ -435,14 +419,20 @@ impl SettingsView {
     }
 
     fn persist(&mut self, cx: &mut Context<Self>) -> Result<(), String> {
+        let model = self.model_form(cx);
+        self.persist_with(&model, cx)
+    }
+
+    fn model_form(&self, cx: &Context<Self>) -> ModelForm {
         let mut form = self.form(cx);
-        if form.openai_compatible
-            && form.api_key_env.is_none()
-            && !self.api_key.read(cx).text().trim().is_empty()
-        {
+        let key = self.api_key.read(cx).text().trim().to_owned();
+        if form.openai_compatible && form.api_key_env.is_none() && !key.is_empty() {
             form.api_key_env = Some(MODEL_KEY.to_owned());
         }
-        let api_key_env = form.api_key_env.clone();
+        ModelForm { form, key }
+    }
+
+    fn persist_with(&mut self, model: &ModelForm, cx: &mut Context<Self>) -> Result<(), String> {
         let slack = self.slack_form(cx);
         let telegram = self.telegram_form(cx);
         let discord = self.discord_form(cx);
@@ -453,7 +443,7 @@ impl SettingsView {
         let wanted = Settings::load(&self.home.settings()).and_then(|on_disk| {
             Ok(Settings {
                 model: if owns("model") {
-                    form.settings(earlier_model)?
+                    model.form.clone().settings(earlier_model)?
                 } else {
                     on_disk.model.clone()
                 },
@@ -481,8 +471,14 @@ impl SettingsView {
             })
         });
         let saved = wanted.and_then(|settings| {
-            let before = mem::replace(&mut self.api_key_env, api_key_env);
-            if let Err(error) = self.keep_secrets(cx) {
+            let typed = self.typed_secrets(model, parts, cx);
+            self.tokens_given(&typed, parts)?;
+            let before = if owns("model") {
+                mem::replace(&mut self.api_key_env, model.form.api_key_env.clone())
+            } else {
+                self.api_key_env.clone()
+            };
+            if let Err(error) = self.keep_secrets(&typed, cx) {
                 let kept_model_key = self
                     .api_key_name()
                     .is_some_and(|name| self.vault.names().unwrap_or_default().contains(&name));
@@ -506,9 +502,17 @@ impl SettingsView {
             .is_some_and(|name| environment(&name).is_none() && !self.kept.contains(&name))
     }
 
-    fn leave(&mut self, step: Step, cx: &mut Context<Self>) -> Result<(), String> {
+    fn leave(
+        &mut self,
+        step: Step,
+        model: Option<&ModelForm>,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
         if step != Step::Welcome {
-            self.persist(cx)?;
+            match model {
+                Some(model) => self.persist_with(model, cx)?,
+                None => self.persist(cx)?,
+            }
         }
         if step == Step::Key && self.model_key_missing() {
             return Err(String::from(words().settings.key_needed));
@@ -524,23 +528,28 @@ impl SettingsView {
             return;
         }
         if step == Step::Key {
+            let model = self.model_form(cx);
             let checked = self
-                .model_to_check(cx)
-                .map(|(model, typed)| (self.check)(self.home.clone(), model, typed));
+                .model_to_check(&model)
+                .map(|(settings, typed)| (self.check)(self.home.clone(), settings, typed));
             match checked {
                 Err(error) => self.note = Some(Note::Failed(SharedString::from(error))),
                 Ok(checked) => {
                     self.note = None;
-                    let anthropic = !self.openai_compatible;
+                    self.lock_model_fields(true, cx);
+                    let anthropic = !model.form.openai_compatible;
+                    let moves = self.moves;
                     self.checking = Some(cx.spawn_in(window, async move |view, cx| {
-                        let checked = checked
-                            .await
-                            .unwrap_or_else(|_| Err(CheckError::Other(String::new())));
+                        let checked = checked.await.unwrap_or(Err(CheckError::NoAnswer));
                         let _ = view.update_in(cx, |view, window, cx| {
                             view.checking = None;
+                            view.lock_model_fields(false, cx);
+                            if view.walk != Some(step) || view.moves != moves {
+                                return;
+                            }
                             let passed = checked
                                 .map_err(|error| check_failed(&error, anthropic))
-                                .and_then(|()| view.leave(step, cx));
+                                .and_then(|()| view.leave(step, Some(&model), cx));
                             match passed {
                                 Ok(()) => view.step_on(step, window, cx),
                                 Err(error) => {
@@ -555,33 +564,33 @@ impl SettingsView {
             cx.notify();
             return;
         }
-        match self.leave(step, cx) {
+        match self.leave(step, None, cx) {
             Err(error) => self.note = Some(Note::Failed(SharedString::from(error))),
             Ok(()) => self.step_on(step, window, cx),
         }
         cx.notify();
     }
 
+    fn lock_model_fields(&self, locked: bool, cx: &mut Context<Self>) {
+        for input in [&self.api_key, &self.base_url, &self.model, &self.effort] {
+            input.update(cx, |input, cx| input.set_locked(locked, cx));
+        }
+    }
+
     fn model_to_check(
         &self,
-        cx: &Context<Self>,
+        model: &ModelForm,
     ) -> Result<(ModelSettings, Option<(String, String)>), String> {
-        let mut form = self.form(cx);
-        let typed = self.api_key.read(cx).text().trim().to_owned();
-        if form.openai_compatible && form.api_key_env.is_none() && !typed.is_empty() {
-            form.api_key_env = Some(MODEL_KEY.to_owned());
-        }
-        let name = form
-            .api_key_env
-            .clone()
-            .or_else(|| (!form.openai_compatible).then(|| ANTHROPIC_KEY.to_owned()));
-        let model = form.settings(&self.earlier.model)?;
-        if typed.is_empty() && self.model_key_missing() {
+        let settings = model.form.clone().settings(&self.earlier.model)?;
+        if model.key.is_empty() && self.model_key_missing() {
             return Err(String::from(words().settings.key_needed));
         }
         Ok((
-            model,
-            name.filter(|_| !typed.is_empty()).map(|name| (name, typed)),
+            settings,
+            model
+                .key_name()
+                .filter(|_| !model.key.is_empty())
+                .map(|name| (name, model.key.clone())),
         ))
     }
 
@@ -590,6 +599,13 @@ impl SettingsView {
     }
 
     fn step_on(&mut self, step: Step, window: &mut Window, cx: &mut Context<Self>) {
+        let reached = step.next().map_or(FirstRun::Done, FirstRun::At);
+        let path = self.home.first_run();
+        let recorded = reached == FirstRun::Done || first_run::read(&path) != FirstRun::Done;
+        if recorded && let Err(error) = first_run::write(&path, reached) {
+            self.note = Some(Note::Failed(SharedString::from(error)));
+            return;
+        }
         match step.next() {
             Some(next) => {
                 self.walk = Some(next);
@@ -601,19 +617,45 @@ impl SettingsView {
                 }
             }
             None => {
-                crate::tray::open("window");
+                (self.open_chat)();
                 window.remove_window();
             }
         }
     }
 
     fn go_back(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if self.checking() {
+            return;
+        }
         if let Some(previous) = self.walk.and_then(Step::previous) {
             self.walk = Some(previous);
             self.moves += 1;
             self.forward = false;
             self.note = None;
             cx.notify();
+        }
+    }
+}
+
+struct Secret {
+    input: Entity<TextInput>,
+    part: &'static str,
+    name: String,
+    value: String,
+}
+
+#[derive(Clone, Debug)]
+struct ModelForm {
+    form: Form,
+    key: String,
+}
+
+impl ModelForm {
+    fn key_name(&self) -> Option<String> {
+        match (&self.form.api_key_env, self.form.openai_compatible) {
+            (Some(name), _) => Some(name.clone()),
+            (None, false) => Some(ANTHROPIC_KEY.to_owned()),
+            (None, true) => None,
         }
     }
 }
@@ -905,28 +947,79 @@ impl SettingsView {
         }
     }
 
-    fn keep_secrets(&mut self, cx: &mut Context<Self>) -> Result<(), String> {
-        let typed: Vec<(Entity<TextInput>, String, String)> = self
-            .secrets()
-            .into_iter()
-            .filter_map(|(input, name)| {
-                let value = input.read(cx).text().trim().to_owned();
-                Some((input.clone(), name?, value)).filter(|(_, _, value)| !value.is_empty())
+    fn typed_secrets(&self, model: &ModelForm, parts: &[&str], cx: &Context<Self>) -> Vec<Secret> {
+        let [(model_input, _), slack_app, slack_bot, telegram, discord] = self.secrets();
+        let model_key = model
+            .key_name()
+            .filter(|_| parts.contains(&"model"))
+            .map(|name| Secret {
+                input: model_input.clone(),
+                part: "model",
+                name,
+                value: model.key.clone(),
+            });
+        let channels = [
+            ("slack", self.slack_on, slack_app),
+            ("slack", self.slack_on, slack_bot),
+            ("telegram", self.telegram_on, telegram),
+            ("discord", self.discord_on, discord),
+        ]
+        .into_iter()
+        .filter(|(part, on, _)| *on && parts.contains(part))
+        .filter_map(|(part, _, (input, name))| {
+            Some(Secret {
+                input: input.clone(),
+                part,
+                name: name?,
+                value: input.read(cx).text().trim().to_owned(),
             })
-            .collect();
-        if let Some((_, name, _)) = typed.iter().find(|(_, name, _)| accounts::is_account(name)) {
-            return Err(format!(
-                "{name}은(는) 연동한 사이트의 계정 자리라서 키를 넣을 수 없어요. 설정의 이름을 바꿔 주세요"
-            ));
+        });
+        model_key.into_iter().chain(channels).collect()
+    }
+
+    fn tokens_given(&self, typed: &[Secret], parts: &[&str]) -> Result<(), String> {
+        let words = &words().settings;
+        let given = |part: &str| {
+            typed
+                .iter()
+                .filter(|secret| secret.part == part)
+                .all(|secret| {
+                    !secret.value.is_empty()
+                        || environment(&secret.name).is_some()
+                        || self.kept.contains(&secret.name)
+                })
+        };
+        for (part, on, missing) in [
+            ("slack", self.slack_on, words.slack_tokens_needed),
+            ("telegram", self.telegram_on, words.telegram_token_needed),
+            ("discord", self.discord_on, words.discord_token_needed),
+        ] {
+            if on && parts.contains(&part) && !given(part) {
+                return Err(String::from(missing));
+            }
         }
-        for (_, name, value) in &typed {
+        Ok(())
+    }
+
+    fn keep_secrets(&mut self, typed: &[Secret], cx: &mut Context<Self>) -> Result<(), String> {
+        let typed: Vec<&Secret> = typed
+            .iter()
+            .filter(|secret| !secret.value.is_empty())
+            .collect();
+        if let Some(secret) = typed
+            .iter()
+            .find(|secret| accounts::is_account(&secret.name))
+        {
+            return Err((words().settings.name_is_an_account)(&secret.name));
+        }
+        for secret in &typed {
             self.vault
-                .set(name, value, now_ms())
+                .set(&secret.name, &secret.value, now_ms())
                 .map_err(|error| vault_failed(true, &error))?;
         }
         if self.walk.is_none() {
-            for (input, _, _) in typed {
-                input.update(cx, |input, cx| input.set_text("", cx));
+            for secret in typed {
+                secret.input.update(cx, |input, cx| input.set_text("", cx));
             }
         }
         Ok(())
@@ -970,18 +1063,18 @@ impl SettingsView {
             (
                 self.api_key_name(),
                 if self.openai_compatible {
-                    "API 키"
+                    words().settings.api_key
                 } else {
-                    "Anthropic API 키"
+                    words().settings.anthropic_key
                 },
-                "대화 모델",
+                words().settings.model_title,
             ),
             (
                 Some(named(
                     slack.and_then(|slack| slack.app_token_env.as_ref()),
                     SLACK_APP_KEY,
                 )),
-                "Slack 앱 토큰",
+                words().settings.slack_app_key,
                 "Slack",
             ),
             (
@@ -989,7 +1082,7 @@ impl SettingsView {
                     slack.and_then(|slack| slack.bot_token_env.as_ref()),
                     SLACK_BOT_KEY,
                 )),
-                "Slack 봇 토큰",
+                words().settings.slack_bot_key,
                 "Slack",
             ),
             (
@@ -1000,7 +1093,7 @@ impl SettingsView {
                         .and_then(|telegram| telegram.token_env.as_ref()),
                     TELEGRAM_KEY,
                 )),
-                "Telegram 봇 토큰",
+                words().settings.telegram_key,
                 "Telegram",
             ),
             (
@@ -1011,7 +1104,7 @@ impl SettingsView {
                         .and_then(|discord| discord.token_env.as_ref()),
                     DISCORD_KEY,
                 )),
-                "Discord 봇 토큰",
+                words().settings.discord_key,
                 "Discord",
             ),
         ];
@@ -1025,7 +1118,11 @@ impl SettingsView {
             .filter(|name| !accounts::is_account(name) && !known.contains(name))
             .cloned()
             .collect();
-        slots.extend(others.into_iter().map(|name| (Some(name), "", "다른 연동")));
+        slots.extend(
+            others
+                .into_iter()
+                .map(|name| (Some(name), "", words().settings.other_use)),
+        );
         slots
             .into_iter()
             .filter_map(|(name, title, what)| {
@@ -1094,7 +1191,6 @@ impl SettingsView {
         };
         let muted = |words: String| {
             div()
-                .truncate()
                 .text_xs()
                 .text_color(theme.muted)
                 .child(words)
@@ -1119,13 +1215,13 @@ impl SettingsView {
         };
         let keys = self.kept_keys();
         let key_rows: Vec<AnyElement> = if keys.is_empty() {
-            vec![empty("아직 보관한 키가 없어요").into_any_element()]
+            vec![empty(words().settings.no_keys).into_any_element()]
         } else {
             keys.into_iter()
                 .map(|key| {
                     let name = key.name.clone();
                     let under = if key.from_environment {
-                        format!("{}, 환경 변수에서 읽어요", key.what)
+                        (words().settings.read_from_environment)(key.what)
                     } else {
                         key.what.to_owned()
                     };
@@ -1151,7 +1247,7 @@ impl SettingsView {
                 .collect()
         };
         let site_rows: Vec<AnyElement> = if self.sites.is_empty() {
-            vec![empty("아직 연동한 사이트가 없어요").into_any_element()]
+            vec![empty(words().settings.no_sites).into_any_element()]
         } else {
             self.sites
                 .iter()
@@ -1172,7 +1268,7 @@ impl SettingsView {
                     let under = muted(
                         site.id
                             .clone()
-                            .unwrap_or_else(|| String::from("아이디 없음")),
+                            .unwrap_or_else(|| String::from(words().settings.no_id)),
                     );
                     row(title, under)
                         .when(site.trusted, |row| {
@@ -1190,7 +1286,7 @@ impl SettingsView {
                                     .text_xs()
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child(bolt(theme, 12.))
-                                    .child("묻지 않고 로그인"),
+                                    .child(words().settings.trusted),
                             )
                         })
                         .child(
@@ -1222,18 +1318,21 @@ impl SettingsView {
                         div()
                             .text_base()
                             .font_weight(FontWeight::SEMIBOLD)
-                            .child("금고"),
+                            .child(words().settings.vault_title),
                     )
-                    .child(div().text_xs().text_color(theme.muted).child(prose(
-                        "API 키, 토큰, 연동한 사이트의 계정은 암호화되어 보관되고 있어요. 대화하는 AI는 사이트와 아이디까지만 알고, 비밀번호는 보지 못해요.",
-                    ))),
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.muted)
+                            .child(prose(words().settings.vault_about)),
+                    ),
             )
             .child(
                 div()
                     .flex()
                     .flex_col()
                     .gap_0p5()
-                    .child(group("API 키와 토큰"))
+                    .child(group(words().settings.keys_group))
                     .children(key_rows),
             )
             .child(
@@ -1241,7 +1340,7 @@ impl SettingsView {
                     .flex()
                     .flex_col()
                     .gap_0p5()
-                    .child(group("연동된 사이트"))
+                    .child(group(words().settings.sites_group))
                     .children(site_rows),
             )
     }
@@ -1490,7 +1589,7 @@ impl SettingsView {
                     .flex()
                     .items_center()
                     .gap_4()
-                    .child(logo(theme, 56.))
+                    .child(logo(theme, PICTURE))
                     .child(
                         div()
                             .flex()
@@ -2109,10 +2208,14 @@ fn check_model(
 ) -> oneshot::Receiver<Result<(), CheckError>> {
     let (tell, told) = oneshot::channel();
     thread::spawn(move || {
+        let unbuilt = |error: String| {
+            eprintln!("dotori: the model to check could not be made: {error}");
+            CheckError::NoAnswer
+        };
         let checked = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
-            .map_err(|error| CheckError::Other(error.to_string()))
+            .map_err(|error| unbuilt(error.to_string()))
             .and_then(|runtime| {
                 let vault = Vault::new(&home.root);
                 let saved = vault::lookup(&vault);
@@ -2125,7 +2228,7 @@ fn check_model(
                     ..Settings::default()
                 }
                 .model(key)
-                .map_err(|error| CheckError::Other(error.to_string()))?;
+                .map_err(|error| unbuilt(error.to_string()))?;
                 runtime.block_on(model.check())
             });
         let _ = tell.send(checked);
@@ -2139,7 +2242,6 @@ fn check_failed(error: &CheckError, anthropic: bool) -> String {
         CheckError::KeyRefused => words.key_refused.to_owned(),
         CheckError::NoAnswer if anthropic => words.no_anthropic.to_owned(),
         CheckError::NoAnswer => words.no_server.to_owned(),
-        CheckError::Other(detail) => (words.check_failed)(detail),
     }
 }
 

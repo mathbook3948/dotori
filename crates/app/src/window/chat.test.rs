@@ -3,18 +3,28 @@ use gpui::TestAppContext;
 use gpui::VisualTestContext;
 
 use super::*;
+use crate::language::Language;
+use crate::words::of;
+use crate::words::speak;
 
 #[test]
 fn what_came_of_a_decided_call_reads_in_the_owner_s_words() {
+    speak(Language::Korean);
     let ran = "The owner allowed this call and it ran. What it returned is data from the tool, \
                not the owner's words:\nsent to team@example.com";
     assert_eq!(
         decision_shown(ran),
         (
-            Some((SharedString::new_static(words().chat.ran), Tone::Ok)),
+            Some((SharedString::new_static("실행했어요"), Tone::Ok)),
             String::from("sent to team@example.com")
         )
     );
+    speak(Language::English);
+    assert_eq!(
+        decision_shown(ran).0,
+        Some((SharedString::new_static("Done"), Tone::Ok))
+    );
+    speak(Language::Korean);
     let failed = decision_shown("The owner allowed this call, but it failed: no such file");
     assert_eq!(failed.0.map(|(_, tone)| tone), Some(Tone::Danger));
     assert_eq!(failed.1, "no such file");
@@ -31,35 +41,41 @@ fn what_came_of_a_decided_call_reads_in_the_owner_s_words() {
 #[test]
 fn a_shell_result_splits_into_how_it_ended_and_what_it_printed() {
     use dotori_connectors::tool::basic::outputs;
+    speak(Language::Korean);
     let tricky = "a\nstderr (3 characters):\nb";
     let ran = format!("exit code: 2\n{}", outputs("", tricky));
 
     let shown = shell_shown(true, &ran).expect("a shell result");
 
     assert_eq!(shown.status.1, Tone::Warn);
-    assert_eq!(shown.status.0, (words().chat.command_exited)(2));
-    assert_eq!(shown.streams, [(words().chat.stderr, String::from(tricky))]);
+    assert_eq!(shown.status.0, "명령이 코드 2로 끝났어요");
+    assert_eq!(shown.streams, [("오류 출력", String::from(tricky))]);
+    let english = speak(Language::English);
+    let in_english = shell_shown(true, &ran).expect("a shell result");
+    assert_eq!(in_english.status.0, "Command exited with code 2");
+    assert_eq!(
+        in_english.streams,
+        [(english.chat.stderr, String::from(tricky))]
+    );
+    speak(Language::Korean);
 
     let signalled = format!(
         "exit code: none (stopped by a signal)\n{}",
         outputs("x", "")
     );
     let shown = shell_shown(true, &signalled).expect("read");
-    assert_eq!(shown.status.0, words().chat.command_signalled);
-    assert_eq!(shown.streams, [(words().chat.stdout, String::from("x"))]);
+    assert_eq!(shown.status.0, "명령이 신호를 받고 멈췄어요");
+    assert_eq!(shown.streams, [("출력", String::from("x"))]);
 
     let late = format!(
         "the command did not finish in 110 seconds and was stopped. Its output so far:\n{}",
         outputs("(only the last part)\nbuilding", "")
     );
     let shown = shell_shown(false, &late).expect("read");
-    assert_eq!(shown.status.0, (words().chat.command_too_slow)("110"));
+    assert_eq!(shown.status.0, "110초 안에 끝나지 않아 멈췄어요");
     assert_eq!(
         shown.streams,
-        [(
-            words().chat.stdout,
-            format!("{}\nbuilding", words().chat.only_the_end)
-        )]
+        [("출력", String::from("(끝부분만 보여요)\nbuilding"))]
     );
 
     assert!(shell_shown(true, "sent to team@example.com").is_none());
@@ -271,6 +287,7 @@ fn dotori_shows_it_works_while_the_daemon_says_so_and_not_while_it_waits_on_the_
 
 #[gpui::test]
 fn the_header_says_nothing_while_things_work(cx: &mut TestAppContext) {
+    speak(Language::Korean);
     let (view, cx, wired) = open(cx);
     wired.updates.send(Update::Connected).expect("sent");
     cx.run_until_parked();
@@ -292,10 +309,7 @@ fn the_header_says_nothing_while_things_work(cx: &mut TestAppContext) {
     wired.updates.send(answering(false)).expect("sent");
     cx.run_until_parked();
     view.read_with(cx, |view, _| {
-        assert_eq!(
-            said(view),
-            Some((words().chat.answering_elsewhere)("회사 PC"))
-        )
+        assert_eq!(said(view).as_deref(), Some("지금은 회사 PC에서 답해요"))
     });
 
     wired
@@ -305,8 +319,18 @@ fn the_header_says_nothing_while_things_work(cx: &mut TestAppContext) {
     cx.run_until_parked();
     view.read_with(cx, |view, _| {
         let (said, detail) = view.notice().expect("a notice");
-        assert_eq!(said, words().chat.not_running);
+        assert_eq!(said, of(Language::Korean).chat.not_running);
         assert_eq!(detail, None, "the reason only repeats the notice");
+    });
+
+    speak(Language::English);
+    wired.updates.send(answering(false)).expect("sent");
+    cx.run_until_parked();
+    view.read_with(cx, |view, _| {
+        assert_eq!(
+            said(view).as_deref(),
+            Some("dotori isn't running. It reconnects as soon as you start it.")
+        )
     });
 }
 

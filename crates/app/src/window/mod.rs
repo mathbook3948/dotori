@@ -15,6 +15,7 @@ mod settings;
 mod surface;
 mod theme;
 mod themes;
+mod tokens;
 mod when;
 
 use std::borrow::Cow;
@@ -53,15 +54,14 @@ use crate::window::parts::Assets;
 use crate::window::parts::FONT_FILES;
 use crate::window::settings::SettingsView;
 use crate::window::theme::Look;
+use crate::window::tokens::WINDOW;
+use crate::window::tokens::WINDOW_MIN;
 use crate::words::words;
 
 actions!(dotori, [Quit]);
 
 const LOOK_EVERY: Duration = Duration::from_millis(500);
 const ICON_EVERY: u32 = 4;
-
-const WINDOW: (f32, f32) = (340., 604.);
-const SMALLEST: (f32, f32) = (320., 420.);
 
 /// Which window the process opens. Each runs in a process of its own, so closing it frees
 /// everything GPUI held.
@@ -105,7 +105,7 @@ pub(crate) fn run(home: Home, which: Which) -> Result<(), String> {
             let bounds = Bounds::centered(None, size(px(WINDOW.0), px(WINDOW.1)), cx);
             let options = WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
-                window_min_size: Some(size(px(SMALLEST.0), px(SMALLEST.1))),
+                window_min_size: Some(size(px(WINDOW_MIN.0), px(WINDOW_MIN.1))),
                 is_resizable: !matches!(which, Which::Onboarding),
                 titlebar: Some(TitlebarOptions {
                     title: Some(SharedString::new_static(title)),
