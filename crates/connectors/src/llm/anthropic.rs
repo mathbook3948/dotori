@@ -1,6 +1,7 @@
 use std::fmt;
 
 use dotori_core::BoxFuture;
+use dotori_core::llm::CheckError;
 use dotori_core::llm::Model;
 use dotori_core::llm::ModelError;
 use dotori_core::llm::ModelReply;
@@ -103,6 +104,19 @@ impl Anthropic {
 impl Model for Anthropic {
     fn complete(&self, request: ModelRequest) -> BoxFuture<'_, Result<ModelReply, ModelError>> {
         Box::pin(self.call(request))
+    }
+
+    fn check(&self) -> BoxFuture<'_, Result<(), CheckError>> {
+        let url = format!(
+            "{}/v1/models?limit=1",
+            self.config.base_url.trim_end_matches('/')
+        );
+        let request = self
+            .client
+            .get(url)
+            .header("x-api-key", &self.config.api_key)
+            .header("anthropic-version", VERSION);
+        Box::pin(http::check(request))
     }
 }
 

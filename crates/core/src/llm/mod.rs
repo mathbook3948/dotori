@@ -42,7 +42,22 @@ impl fmt::Display for ModelError {
 
 impl Error for ModelError {}
 
+/// Why a model could not be reached when it was checked.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CheckError {
+    /// The provider answered and turned the key down.
+    KeyRefused,
+    /// Nothing answered at the model's address.
+    NoAnswer,
+}
+
 pub trait Model: Send + Sync + 'static {
     /// Dropping the returned future cancels the request.
     fn complete(&self, request: ModelRequest) -> BoxFuture<'_, Result<ModelReply, ModelError>>;
+
+    /// Whether the model answers with its address and key, asked in a way that costs nothing,
+    /// such as listing the provider's models. A model with nothing to reach passes.
+    fn check(&self) -> BoxFuture<'_, Result<(), CheckError>> {
+        Box::pin(async { Ok(()) })
+    }
 }
