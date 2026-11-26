@@ -209,9 +209,19 @@ async fn the_owner_talks_to_dotori_and_decides_on_a_command() {
         home: home.clone(),
     };
     let mut window = Window::open(&home).await;
+    let (mut live, mut greeted) = (false, false);
     window
-        .until("the backlog to end", |event| {
-            matches!(event, ToWindow::Live).then_some(())
+        .until("the backlog to end and the first greeting", |event| {
+            match event {
+                ToWindow::Live => live = true,
+                ToWindow::Traffic {
+                    channel, who, text, ..
+                } if channel == "greeting" && who == "dotori" && text == model::GREETED => {
+                    greeted = true;
+                }
+                _ => {}
+            }
+            (live && greeted).then_some(())
         })
         .await;
 

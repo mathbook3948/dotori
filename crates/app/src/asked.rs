@@ -1,9 +1,13 @@
 //! What a card that waits for the owner says, the same in the chat window and in a chat room.
 
+use crate::forget::CARRIERS_SHOWN;
+use crate::forget::FORGET;
+use crate::forget::NOTES_SHOWN;
+use crate::forget::RECORDS_SHOWN;
 use crate::words::words;
 
 pub(crate) const SHOWN_VALUE: usize = 600;
-const HIDDEN_FIELDS: [&str; 2] = ["records", "carriers"];
+const HIDDEN_FIELDS: [&str; 3] = ["records", "carriers", "notes"];
 
 /// What the owner calls one of dotori's own tools that waits for their OK.
 pub(crate) fn own_tool(tool: &str) -> Option<&'static str> {
@@ -12,7 +16,7 @@ pub(crate) fn own_tool(tool: &str) -> Option<&'static str> {
         "run_shell" => Some(chat.run_shell),
         "write_file" => Some(chat.write_file),
         "edit_file" => Some(chat.edit_file),
-        "erase_records" => Some(chat.erase_records),
+        FORGET => Some(chat.erase_memory),
         _ => None,
     }
 }
@@ -30,18 +34,17 @@ pub(crate) fn field_label(key: &str) -> &str {
         "old" => chat.old_field,
         "new" => chat.new_field,
         "all" => chat.all_field,
+        NOTES_SHOWN => chat.notes_shown_field,
+        RECORDS_SHOWN => chat.records_shown_field,
+        CARRIERS_SHOWN => chat.carriers_shown_field,
         other => other,
     }
 }
 
-/// The fields of a waiting call as the card shows them, and whether any was shortened. A forget
-/// shows what the records say, not their numbers.
+/// The fields of a waiting call as the card shows them, and whether any was shortened. An erase
+/// shows what the notes and records say, not their numbers.
 pub(crate) fn asked_fields(tool: &str, input: &str, whole: bool) -> (Vec<(String, String)>, bool) {
-    let hidden: &[&str] = if tool == "erase_records" {
-        &HIDDEN_FIELDS
-    } else {
-        &[]
-    };
+    let hidden: &[&str] = if tool == FORGET { &HIDDEN_FIELDS } else { &[] };
     let fields: Vec<(String, String)> = match serde_json::from_str::<serde_json::Value>(input) {
         Ok(serde_json::Value::Object(fields)) if !fields.is_empty() => fields
             .into_iter()
@@ -106,7 +109,7 @@ pub(crate) fn title(subject: &str) -> String {
 pub(crate) fn hint(tool: &str, subject: &str) -> String {
     let chat = &words().chat;
     match tool {
-        "erase_records" => String::from(chat.erase_hint),
+        FORGET => String::from(chat.erase_hint),
         "run_shell" => (chat.run_hint)(subject),
         "write_file" | "edit_file" => (chat.write_hint)(subject),
         _ => String::from(chat.allow_hint),

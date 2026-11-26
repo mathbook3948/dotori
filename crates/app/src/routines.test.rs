@@ -154,14 +154,14 @@ fn routines_are_added_checked_and_removed() {
     assert_eq!(listed[0].days, WEEKDAYS);
     assert_eq!(listed[0].made_ms, 10);
     assert!(
-        routines.context().expect("context").contains(
+        routines.listed().contains(
             "[1] 아침 브리핑, on mon, tue, wed, thu, fri at 08:00: 오늘 일정과 날씨 알려줘"
         )
     );
 
     assert!(routines.remove(1, 12).is_ok());
     assert!(routines.remove(1, 13).is_err());
-    assert_eq!(routines.context(), None);
+    assert_eq!(routines.listed(), "The owner has no routines.");
 }
 
 #[test]
