@@ -54,6 +54,9 @@ use crate::confirm::Waits;
 use crate::device;
 use crate::door;
 use crate::door::Door;
+use crate::first_run;
+use crate::first_run::FirstRun;
+use crate::first_run::Step;
 use crate::forget::FORGET;
 use crate::forget::Forget;
 use crate::forget::Previewed;
@@ -64,6 +67,7 @@ use crate::history;
 use crate::home::Home;
 use crate::icons;
 use crate::idle::NoTools;
+use crate::language;
 use crate::lock::DaemonLock;
 use crate::logins;
 use crate::logins::LoginFiles;
@@ -108,29 +112,31 @@ const SETTLE: Duration = Duration::from_secs(1);
 const RELEASE_SENT: Duration = Duration::from_millis(300);
 const FLUSH_EVERY: Duration = Duration::from_secs(2);
 const LOOK_FOR_PCS: Duration = Duration::from_secs(2);
-const WAIT_FOR_KEY: Duration = Duration::from_secs(2);
+const WAIT_FOR_SETUP: Duration = Duration::from_secs(2);
 
 /// Runs the agent until Ctrl-C or a terminate signal, with the app channel open for windows.
 pub(crate) async fn run(home: Home) -> Result<(), String> {
-    serve(home, || {}, || {}, future::pending()).await
+    serve(home, None::<fn()>, || {}, future::pending()).await
 }
 
 /// Runs the agent like `run`. It calls `ready` once windows can connect, and also stops when
-/// `quit` completes. Without a model key it calls `needs_key` once and waits for the owner to
-/// give one.
+/// `quit` completes. Until first run is done it waits, and calls `onboard` once so a window can
+/// walk the owner through it. An install with a model key from before first run was kept counts
+/// as done.
 pub(crate) async fn serve(
     home: Home,
-    needs_key: impl FnOnce(),
+    onboard: Option<impl FnOnce()>,
     ready: impl FnOnce(),
     quit: impl Future<Output = ()>,
 ) -> Result<(), String> {
     keep_to_itself();
     let _lock = DaemonLock::take(&home.lock())?;
+    language::choose(language::saved(&home.settings()));
     let vault = Arc::new(Vault::new(&home.root));
     let mut stop = std::pin::pin!(stop_signal());
     let mut quit = std::pin::pin!(quit);
     let (settings, model) =
-        match model_when_keyed(&home, &vault, needs_key, &mut stop, &mut quit).await? {
+        match model_when_set_up(&home, &vault, onboard, &mut stop, &mut quit).await? {
             Keyed::Ready(settings, model) => (*settings, model),
             Keyed::Stopped(stopped) => return stopped,
         };
@@ -586,30 +592,45 @@ enum Keyed {
     Stopped(Result<(), String>),
 }
 
-async fn model_when_keyed(
+async fn model_when_set_up(
     home: &Home,
     vault: &Vault,
-    needs_key: impl FnOnce(),
+    onboard: Option<impl FnOnce()>,
     stop: &mut (impl Future<Output = Result<(), String>> + Unpin),
     quit: &mut (impl Future<Output = ()> + Unpin),
 ) -> Result<Keyed, String> {
-    let mut needs_key = Some(needs_key);
+    let mut onboard = onboard;
+    let mut told = false;
     loop {
         let settings = Settings::load(&home.settings())?;
-        match settings.model(vault::lookup(vault)) {
-            Ok(model) => return Ok(Keyed::Ready(Box::new(settings), model)),
-            Err(ModelError::MissingKey { name, .. }) => {
-                if let Some(needs_key) = needs_key.take() {
-                    eprintln!(
-                        "dotori: waiting for {name}; save it in the window dotori opened (`dotori onboarding`) or set it in the environment"
-                    );
-                    needs_key();
-                }
-            }
+        let model = match settings.model(vault::lookup(vault)) {
+            Ok(model) => Some(model),
+            Err(ModelError::MissingKey { .. }) => None,
             Err(error) => return Err(error.to_string()),
+        };
+        let first_run = first_run::read(&home.first_run());
+        match (model, first_run) {
+            (Some(model), FirstRun::Done) => return Ok(Keyed::Ready(Box::new(settings), model)),
+            (Some(model), FirstRun::Unbegun) => {
+                first_run::write(&home.first_run(), FirstRun::Done)?;
+                return Ok(Keyed::Ready(Box::new(settings), model));
+            }
+            (None, FirstRun::Unbegun) => {
+                first_run::write(&home.first_run(), FirstRun::At(Step::Welcome))?;
+            }
+            _ => {}
+        }
+        if !told {
+            told = true;
+            eprintln!(
+                "dotori: waiting for first run to finish in the window dotori opened (`dotori onboarding`)"
+            );
+            if let Some(onboard) = onboard.take() {
+                onboard();
+            }
         }
         tokio::select! {
-            () = time::sleep(WAIT_FOR_KEY) => {}
+            () = time::sleep(WAIT_FOR_SETUP) => {}
             stopped = &mut *stop => return Ok(Keyed::Stopped(stopped)),
             () = &mut *quit => return Ok(Keyed::Stopped(Ok(()))),
         }

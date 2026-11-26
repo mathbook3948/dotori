@@ -8,6 +8,7 @@ mod confirm;
 mod daemon;
 mod device;
 mod door;
+mod first_run;
 mod forget;
 mod handoff;
 mod history;

@@ -29,7 +29,6 @@ use tray_icon::menu::MenuItem;
 
 use crate::daemon;
 use crate::home::Home;
-use crate::language;
 use crate::words::words;
 
 const POLL: Duration = Duration::from_millis(100);
@@ -50,13 +49,12 @@ pub(crate) async fn run(home: Home) -> Result<(), String> {
     let (quit, quitting) = oneshot::channel::<()>();
     let ready = Arc::new(AtomicBool::new(false));
     let daemon_ready = Arc::clone(&ready);
-    let needs_key = Arc::new(AtomicBool::new(false));
-    let daemon_needs_key = Arc::clone(&needs_key);
+    let onboarding = Arc::new(AtomicBool::new(false));
+    let daemon_onboarding = Arc::clone(&onboarding);
     let door = home.door();
-    language::choose(language::saved(&home.settings()));
     let daemon = tokio::spawn(daemon::serve(
         home,
-        move || daemon_needs_key.store(true, Ordering::SeqCst),
+        Some(move || daemon_onboarding.store(true, Ordering::SeqCst)),
         move || daemon_ready.store(true, Ordering::SeqCst),
         async {
             let _ = quitting.await;
@@ -73,7 +71,7 @@ pub(crate) async fn run(home: Home) -> Result<(), String> {
             async {}
         })
         .detach();
-        cx.spawn(async move |cx| watch(daemon, ready, needs_key, quit, cx).await)
+        cx.spawn(async move |cx| watch(daemon, ready, onboarding, quit, cx).await)
             .detach();
     });
     Ok(())
@@ -88,7 +86,7 @@ struct Items {
 async fn watch(
     daemon: JoinHandle<Result<(), String>>,
     ready: Arc<AtomicBool>,
-    needs_key: Arc<AtomicBool>,
+    onboarding: Arc<AtomicBool>,
     quit: Rc<RefCell<Option<oneshot::Sender<()>>>>,
     cx: &mut AsyncApp,
 ) {
@@ -110,10 +108,10 @@ async fn watch(
             let _ = cx.update(|cx| cx.quit());
             return;
         }
-        let key_needed = needs_key.load(Ordering::SeqCst);
-        if !tried && (ready.load(Ordering::SeqCst) || key_needed) {
+        let walking = onboarding.load(Ordering::SeqCst);
+        if !tried && (ready.load(Ordering::SeqCst) || walking) {
             tried = true;
-            if key_needed {
+            if walking {
                 open("onboarding");
             }
             match tray() {
