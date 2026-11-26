@@ -111,7 +111,6 @@ const SUB_SESSION_LIMIT: Duration = Duration::from_secs(60 * 60);
 const SETTLE: Duration = Duration::from_secs(1);
 const RELEASE_SENT: Duration = Duration::from_millis(300);
 const FLUSH_EVERY: Duration = Duration::from_secs(2);
-const LOOK_FOR_PCS: Duration = Duration::from_secs(2);
 const WAIT_FOR_SETUP: Duration = Duration::from_secs(2);
 
 /// Runs the agent without a tray, for the end-to-end test, until Ctrl-C or a terminate signal.
@@ -454,33 +453,16 @@ pub(crate) async fn serve(
             }
         });
     }
-    if let Some(linked) = linked.clone()
-        && let Some(mut holder) = linked.keeper.watch(MAIN_JOB)
+    if let Some(mut holder) = linked
+        .as_ref()
+        .and_then(|linked| linked.keeper.watch(MAIN_JOB))
     {
         let route = Arc::clone(&route);
         let app = Arc::clone(&app);
         tokio::spawn(async move {
-            let mut shown = None;
-            let mut every = time::interval(LOOK_FOR_PCS);
-            loop {
-                tokio::select! {
-                    changed = holder.changed() => {
-                        if changed.is_err() {
-                            return;
-                        }
-                        route.flush();
-                    }
-                    _ = every.tick() => {}
-                }
-                let now = holder
-                    .borrow_and_update()
-                    .clone()
-                    .filter(|_| !linked.hub.approved().is_empty())
-                    .map(|key| (linked.hub.name_of(&key), key == linked.own));
-                if now != shown {
-                    app.answering(now.clone());
-                    shown = now;
-                }
+            while holder.changed().await.is_ok() {
+                route.flush();
+                app.answerer_changed();
             }
         });
     }

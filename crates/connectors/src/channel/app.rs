@@ -100,11 +100,6 @@ pub enum ToWindow {
         #[serde(default)]
         at: i64,
     },
-    /// Which of the owner's PCs answers now. Sent only while PCs are linked, and never kept in
-    /// the conversation.
-    Answering { pc: String, here: bool },
-    /// No other PC is linked any more, so there is no PC to name.
-    Alone,
     /// dotori wants to call a tool that acts toward other people, and waits for the owner.
     /// `sandboxed` says the command it asks to run would run in the sandbox.
     Ask {
@@ -145,7 +140,6 @@ struct Hub {
     backlog: Mutex<VecDeque<String>>,
     live: broadcast::Sender<Published>,
     next_id: AtomicU64,
-    answering: watch::Sender<Option<String>>,
     browser: watch::Sender<Option<String>>,
     working: watch::Sender<bool>,
     decisions: Mutex<Option<mpsc::UnboundedSender<(u64, bool)>>>,
@@ -173,7 +167,6 @@ impl AppChannel {
                 backlog: Mutex::new(VecDeque::new()),
                 live,
                 next_id: AtomicU64::new(0),
-                answering: watch::channel(None).0,
                 browser: watch::channel(None).0,
                 working: watch::channel(false).0,
                 decisions: Mutex::new(None),
@@ -204,20 +197,10 @@ impl AppChannel {
         self.hub.working.subscribe()
     }
 
-    /// Tells every window which PC answers now, or that no other PC is linked. When that
-    /// changes, whatever the last PC was working on is no longer shown as going on.
-    pub fn answering(&self, answering: Option<(String, bool)>) {
-        let event = match answering {
-            Some((pc, here)) => ToWindow::Answering { pc, here },
-            None => ToWindow::Alone,
-        };
-        if let Ok(line) = serde_json::to_string(&event) {
-            let line = Some(line);
-            if *self.hub.answering.borrow() != line {
-                self.hub.working.send_replace(false);
-            }
-            self.hub.answering.send_replace(line);
-        }
+    /// Says that another PC answers now, so whatever the last one was working on is no longer
+    /// shown as going on.
+    pub fn answerer_changed(&self) {
+        self.hub.working.send_replace(false);
     }
 
     /// Tells every window which PC holds the browser now.
@@ -233,11 +216,7 @@ impl AppChannel {
         if serde_json::from_str::<ToWindow>(line).is_ok_and(|shown| {
             !matches!(
                 shown,
-                ToWindow::Answering { .. }
-                    | ToWindow::Alone
-                    | ToWindow::BrowserAt { .. }
-                    | ToWindow::Live
-                    | ToWindow::Working { .. }
+                ToWindow::BrowserAt { .. } | ToWindow::Live | ToWindow::Working { .. }
             )
         }) {
             self.hub.publish_line(line.to_owned(), None);
@@ -454,15 +433,10 @@ async fn serve(stream: TcpStream, token: String, hub: Arc<Hub>, inbox: Arc<dyn I
         return;
     }
     let (backlog, mut live) = hub.join();
-    let mut answering = hub.answering.subscribe();
     let mut browser = hub.browser.subscribe();
     let mut working = hub.working.subscribe();
     let sending = async move {
         for line in backlog {
-            send(&mut write, &line).await?;
-        }
-        let now = answering.borrow_and_update().clone();
-        if let Some(line) = now {
             send(&mut write, &line).await?;
         }
         let now = browser.borrow_and_update().clone();
@@ -484,15 +458,6 @@ async fn serve(stream: TcpStream, token: String, hub: Arc<Hub>, inbox: Arc<dyn I
                         return Ok::<(), io::Error>(());
                     }
                 },
-                changed = answering.changed() => {
-                    if changed.is_err() {
-                        return Ok(());
-                    }
-                    let now = answering.borrow_and_update().clone();
-                    if let Some(line) = now {
-                        send(&mut write, &line).await?;
-                    }
-                }
                 changed = browser.changed() => {
                     if changed.is_err() {
                         return Ok(());
