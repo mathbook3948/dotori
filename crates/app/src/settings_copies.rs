@@ -29,6 +29,7 @@ use crate::settings::TelegramSettings;
 
 const LOOK_EVERY: Duration = Duration::from_secs(5);
 const FUTURE_TAKEN: i64 = 24 * 60 * 60 * 1000;
+const NEVER_STAMPED: i64 = 1;
 
 /// The settings every PC shares.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -62,6 +63,20 @@ pub(crate) struct Times {
     pub(crate) discord: i64,
     #[serde(default)]
     pub(crate) assistant: i64,
+}
+
+impl Times {
+    fn changed_here(self) -> Self {
+        let changed = |time: i64| if time > NEVER_STAMPED { time } else { 0 };
+        Self {
+            model: changed(self.model),
+            slack: changed(self.slack),
+            memory: changed(self.memory),
+            telegram: changed(self.telegram),
+            discord: changed(self.discord),
+            assistant: changed(self.assistant),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -168,9 +183,9 @@ impl SettingsCopies {
         Some(stamped)
     }
 
-    /// Takes the parts of another PC's settings that changed later than these, or every part
-    /// when this PC is `joining` the others before its first run is done. Says whether any
-    /// changed.
+    /// Takes the parts of another PC's settings that changed later than these. A PC `joining`
+    /// the others before its first run is done also takes the parts it never changed here, whatever
+    /// their times, but keeps what its owner set since. Says whether any changed.
     ///
     /// The whole copy wins, not each change, on purpose. dotori serves one person, who changes
     /// these from one PC at a time, so two PCs changing them in the same moment does not happen
@@ -182,7 +197,7 @@ impl SettingsCopies {
             return Err(String::from("the settings here cannot be read"));
         };
         let mine = if joining {
-            Times::default()
+            here.times.changed_here()
         } else {
             here.times
         };

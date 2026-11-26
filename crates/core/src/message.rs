@@ -67,6 +67,9 @@ pub struct Incoming {
     pub sender_name: String,
     pub content: Content,
     pub audience: Audience,
+    /// When the owner said it, if that was earlier than it arrived. The inbox stamps arrival
+    /// when this is `None`.
+    pub at: Option<SystemTime>,
 }
 
 /// Who can read the room a message came from, as its channel saw it when the message arrived.

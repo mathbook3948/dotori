@@ -414,12 +414,14 @@ async fn routines_follow_the_owner_like_notes_and_the_model_reads_them_with_a_to
     let noted = Noted {
         model: Arc::clone(&seen) as Arc<dyn Model>,
         notes: Arc::clone(&notes),
+        routines: Arc::clone(&routines),
     };
     noted
         .complete(ModelRequest {
             conversation: vec![heard(Role::Owner)],
             tools: Vec::new(),
             context: None,
+            time_zone: None,
         })
         .await
         .expect("answered");

@@ -9,6 +9,7 @@ use dotori_connectors::peer::Code;
 use dotori_connectors::peer::Identity;
 use dotori_connectors::peer::Invite;
 use dotori_connectors::peer::Peer;
+use dotori_connectors::peer::hub::JoinError;
 use dotori_connectors::peer::hub::Seen;
 use dotori_connectors::peer::hub::join;
 use dotori_connectors::peer::now;
@@ -185,7 +186,7 @@ impl PcsView {
         cx.spawn(async move |view, cx| {
             let joined = result
                 .await
-                .unwrap_or_else(|_| Err(String::from(words().pcs.join_stopped)));
+                .unwrap_or_else(|_| Err(JoinError::Here(String::from(words().pcs.join_stopped))));
             let _ = view.update(cx, |view, cx| {
                 view.joining = false;
                 view.note = Some(match joined {
@@ -197,7 +198,7 @@ impl PcsView {
                             &peer.device,
                         ))))
                     }
-                    Err(error) => Err(SharedString::from(error)),
+                    Err(error) => Err(SharedString::from(error.to_string())),
                 });
                 view.reload(cx);
             });
@@ -224,7 +225,7 @@ impl PcsView {
 
 /// Joins another PC from a window.
 pub(crate) type Joiner =
-    fn(&Home, &Settings, Code, String) -> oneshot::Receiver<Result<Peer, String>>;
+    fn(&Home, &Settings, Code, String) -> oneshot::Receiver<Result<Peer, JoinError>>;
 
 /// Why typed words cannot join another PC.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -252,17 +253,18 @@ pub(crate) fn join_in_background(
     settings: &Settings,
     code: Code,
     address: String,
-) -> oneshot::Receiver<Result<Peer, String>> {
+) -> oneshot::Receiver<Result<Peer, JoinError>> {
     let (done, result) = oneshot::channel();
     let prepared = Identity::load_or_make(&home.peer_key())
-        .and_then(|identity| Ok((identity, peers::hello(home, settings)?)));
+        .and_then(|identity| Ok((identity, peers::hello(home, settings)?)))
+        .map_err(JoinError::Here);
     let book = home.peers();
     thread::spawn(move || {
         let joined = prepared.and_then(|(identity, hello)| {
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
-                .map_err(|error| error.to_string())
+                .map_err(|error| JoinError::Here(error.to_string()))
                 .and_then(|runtime| {
                     runtime.block_on(join(&identity, &hello, &code, &address, &book))
                 })

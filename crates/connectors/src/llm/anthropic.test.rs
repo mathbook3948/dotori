@@ -53,6 +53,7 @@ fn request(conversation: Vec<Entry>) -> ModelRequest {
             ),
         }],
         context: None,
+        time_zone: None,
     }
 }
 

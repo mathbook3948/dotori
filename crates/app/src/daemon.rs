@@ -179,6 +179,7 @@ pub(crate) async fn serve(
     let model: Arc<dyn Model> = Arc::new(Noted {
         model,
         notes: Arc::clone(&notes),
+        routines: Arc::clone(&routines),
     });
     let owner: Arc<dyn Toolbox> = match &shared {
         Some(tools) => tools.owner(),
@@ -653,12 +654,25 @@ fn take_shared(
             if settings.take_heard(&heard, joining) || vault::take_heard(&vault, &heard) {
                 continue;
             }
+            if joining && lease_talk(&heard) {
+                continue;
+            }
             if rest.send(heard).is_err() {
                 return;
             }
         }
     });
     passed
+}
+
+fn lease_talk(heard: &Heard) -> bool {
+    matches!(
+        heard
+            .message
+            .get("kind")
+            .and_then(serde_json::Value::as_str),
+        Some("leases" | "released")
+    )
 }
 
 fn link(

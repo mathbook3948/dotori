@@ -141,7 +141,11 @@ fn body(config: &OpenAiConfig, request: &ModelRequest) -> Result<String, ModelEr
     let mut messages = vec![
         json!({ "role": "system", "content": reply::system(&config.system, request.context.as_deref()) }),
     ];
-    for turn in transcript::build(&request.conversation, PROVIDER) {
+    for turn in transcript::build(
+        &request.conversation,
+        PROVIDER,
+        &reply::zone(request.time_zone.as_deref()),
+    ) {
         messages.extend(turn_messages(turn));
     }
     let mut body = json!({

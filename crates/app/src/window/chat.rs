@@ -1711,7 +1711,9 @@ impl ChatView {
             return None;
         };
         let chat = &words().chat;
-        Some(if reason.contains("starting") {
+        Some(if reason.contains("could not start") {
+            chat.could_not_start
+        } else if reason.contains("starting") {
             chat.starting
         } else if reason.contains("closed the connection") {
             chat.closed

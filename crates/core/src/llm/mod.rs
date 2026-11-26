@@ -13,6 +13,8 @@ pub struct ModelRequest {
     /// What the app adds to the model's instructions, such as the owner's profile. Core leaves
     /// it empty.
     pub context: Option<String>,
+    /// The IANA name of the time zone message times are shown in, or `None` for the connector's own PC.
+    pub time_zone: Option<String>,
 }
 
 #[derive(Clone, Debug)]

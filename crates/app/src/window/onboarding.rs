@@ -4,8 +4,10 @@
 //! greeting the owner can instead join a PC that already runs dotori, which sends the model and
 //! its key over.
 
+use std::mem;
 use std::time::Duration;
 
+use dotori_connectors::peer::hub::JoinError;
 use gpui::AnimationElement;
 use gpui::AnimationExt;
 use gpui::AnyElement;
@@ -328,7 +330,7 @@ impl SettingsView {
             Joining::Typing(_) => {}
             Joining::Joined { ready: true, .. } => {
                 if let Err(error) = first_run::write(&self.home.first_run(), FirstRun::Done) {
-                    join.state = Joining::Typing(Some(Failure::Joining(SharedString::from(error))));
+                    self.note = Some(Note::Failed(SharedString::from(error)));
                     cx.notify();
                     return;
                 }
@@ -355,20 +357,27 @@ impl SettingsView {
             input.update(cx, |input, cx| input.set_locked(true, cx));
         }
         join.state = Joining::Waiting;
+        self.note = None;
         let home = self.home.clone();
         join._work = Some(cx.spawn(async move |view, cx| {
             let joined = joined
                 .await
-                .unwrap_or_else(|_| Err(String::from(words().pcs.join_stopped)));
+                .unwrap_or_else(|_| Err(JoinError::Here(String::from(words().pcs.join_stopped))));
             let name = match joined {
                 Ok(peer) => shown_name(&peer.name, &peer.device),
                 Err(error) => {
                     eprintln!("dotori: joining another PC failed: {error}");
+                    let failure = match error {
+                        JoinError::There(_) => {
+                            SharedString::new_static(words().onboarding.join_failed)
+                        }
+                        JoinError::Here(error) => {
+                            SharedString::from((words().onboarding.join_here_failed)(&error))
+                        }
+                    };
                     let _ = view.update(cx, |view, cx| {
                         if let Some(join) = view.join.as_mut() {
-                            join.state = Joining::Typing(Some(Failure::Joining(
-                                SharedString::new_static(words().onboarding.join_failed),
-                            )));
+                            join.state = Joining::Typing(Some(Failure::Joining(failure)));
                             for input in [&join.code, &join.address] {
                                 input.update(cx, |input, cx| input.set_locked(false, cx));
                             }
@@ -405,7 +414,22 @@ impl SettingsView {
         window: &mut Window,
         cx: &mut gpui::Context<Self>,
     ) {
-        self.join = None;
+        let settings = match Settings::load(&self.home.settings()) {
+            Ok(settings) => settings,
+            Err(error) => {
+                self.note = Some(Note::Failed(SharedString::from(error)));
+                cx.notify();
+                return;
+            }
+        };
+        let mut fresh = Self::opened(self.home.clone(), settings, self.walk, cx);
+        fresh.moves = self.moves;
+        fresh.forward = self.forward;
+        fresh.slides = mem::take(&mut self.slides);
+        fresh.check = self.check;
+        fresh.open_chat = self.open_chat;
+        fresh.joiner = self.joiner;
+        *self = fresh;
         self.step_on(Step::Welcome, window, cx);
         cx.notify();
     }
@@ -808,6 +832,7 @@ impl SettingsView {
         let joining = self.join.as_ref().map(|join| &join.state);
         let failed = match (&self.note, step, joining) {
             (Some(Note::Failed(error)), step, None) if step != Step::Key => Some(error.clone()),
+            (Some(Note::Failed(error)), _, Some(Joining::Joined { .. })) => Some(error.clone()),
             _ => None,
         };
         let backs = match joining {

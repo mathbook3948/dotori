@@ -402,12 +402,14 @@ fn one_line(text: &str) -> String {
 pub(crate) struct Noted {
     pub(crate) model: Arc<dyn Model>,
     pub(crate) notes: Arc<Notes>,
+    pub(crate) routines: Arc<Routines>,
 }
 
 impl Model for Noted {
     fn complete(&self, mut request: ModelRequest) -> BoxFuture<'_, Result<ModelReply, ModelError>> {
         self.notes.heard(&request.conversation);
         request.context = self.notes.context();
+        request.time_zone = self.routines.zone().iana_name().map(str::to_owned);
         self.model.complete(request)
     }
 }

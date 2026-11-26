@@ -410,6 +410,7 @@ fn incoming(outcome: &Outcome) -> Option<Incoming> {
         sender_name: String::from("결과"),
         content: Content::parse(outcome.text.clone()).ok()?,
         audience: Audience::Owner,
+        at: None,
     })
 }
 

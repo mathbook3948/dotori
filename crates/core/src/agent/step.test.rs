@@ -119,6 +119,7 @@ impl Harness {
             sender_name: sender.to_owned(),
             content: Content::parse(text).expect("non-empty"),
             audience: Audience::Owner,
+            at: None,
         }
     }
 

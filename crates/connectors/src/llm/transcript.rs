@@ -67,14 +67,14 @@ impl PartialEq for Said {
     }
 }
 
-pub(crate) fn build(conversation: &[Entry], provider: &str) -> Vec<Turn> {
+pub(crate) fn build(conversation: &[Entry], provider: &str, zone: &TimeZone) -> Vec<Turn> {
     let start = start(conversation);
     let mut builder = Builder::default();
     if start > 0 {
         builder.notes.push(String::from(LEFT_OUT));
     }
     for index in order(conversation, start) {
-        builder.add(index, &conversation[index], provider);
+        builder.add(index, &conversation[index], provider, zone);
     }
     builder.finish()
 }
@@ -164,7 +164,7 @@ struct Builder {
 }
 
 impl Builder {
-    fn add(&mut self, index: usize, entry: &Entry, provider: &str) {
+    fn add(&mut self, index: usize, entry: &Entry, provider: &str, zone: &TimeZone) {
         match entry {
             Entry::Acted { actions, trace, .. } => {
                 self.reply(index, actions, trace.as_ref(), provider)
@@ -191,7 +191,7 @@ impl Builder {
                         .push(tagged("late_tool_result", &[("id", id)], &text));
                 }
             }
-            other => self.notes.push(note(other)),
+            other => self.notes.push(note(other, zone)),
         }
     }
 
@@ -317,7 +317,7 @@ impl Builder {
     }
 }
 
-fn note(entry: &Entry) -> String {
+fn note(entry: &Entry, zone: &TimeZone) -> String {
     match entry {
         Entry::Heard { message, .. } if message.address.channel.as_str() == DECISION => tagged(
             "decided_call",
@@ -330,7 +330,7 @@ fn note(entry: &Entry) -> String {
                 Role::Other => "other",
             };
             let thread = thread.get().to_string();
-            let time = message.at.and_then(local_time);
+            let time = message.at.and_then(|at| local_time(at, zone));
             let mut attributes = vec![("thread", thread.as_str())];
             if let Some(time) = &time {
                 attributes.push(("time", time));
@@ -410,10 +410,10 @@ fn readers(audience: &Audience) -> String {
     }
 }
 
-fn local_time(at: SystemTime) -> Option<String> {
+fn local_time(at: SystemTime, zone: &TimeZone) -> Option<String> {
     let at = Timestamp::try_from(at).ok()?;
     Some(
-        at.to_zoned_datetime(TimeZone::system())
+        at.to_zoned_datetime(zone.clone())
             .strftime("%Y-%m-%d %a %H:%M %:z")
             .to_string(),
     )

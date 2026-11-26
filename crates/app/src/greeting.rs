@@ -80,6 +80,7 @@ impl Channel for Greeting {
                     sender_name: String::from(GREETING),
                     content,
                     audience: Audience::Owner,
+                    at: None,
                 };
                 if inbox.push(incoming).await.is_err() {
                     return Ok(());

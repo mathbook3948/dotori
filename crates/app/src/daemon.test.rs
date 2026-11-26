@@ -336,6 +336,39 @@ api_key_env = \"{key}\"
     let _ = fs::remove_dir_all(&other.root);
 }
 
+#[tokio::test]
+async fn a_pc_in_first_run_drops_what_it_hears_about_leases_and_passes_on_the_rest() {
+    let home = home_needing_a_key("lease-talk");
+    first_run::write(&home.first_run(), FirstRun::At(Step::Welcome)).expect("first run");
+    let (send, heard) = mpsc::unbounded_channel();
+    let mut rest = take_shared(
+        heard,
+        home.first_run(),
+        Arc::new(SettingsCopies::new(home.settings(), home.settings_stamp())),
+        Arc::new(Vault::without_keychain(&home.root)),
+    );
+    let from = |kind: &str| Heard {
+        key: String::from("aa"),
+        device: String::from("other"),
+        message: serde_json::json!({ "kind": kind }),
+    };
+    for kind in ["leases", "released", "linked"] {
+        send.send(from(kind)).expect("sent");
+    }
+    assert_eq!(
+        rest.recv().await.expect("passed on").message["kind"],
+        "linked"
+    );
+
+    first_run::write(&home.first_run(), FirstRun::Done).expect("done");
+    send.send(from("leases")).expect("sent");
+    assert_eq!(
+        rest.recv().await.expect("passed on").message["kind"],
+        "leases"
+    );
+    let _ = fs::remove_dir_all(&home.root);
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn the_process_is_closed_to_other_programs_of_its_user() {
