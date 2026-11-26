@@ -296,6 +296,7 @@ fn the_keys_hint_gives_way_to_what_keeps_dotori_out_of_reach(cx: &mut TestAppCon
     let korean = &of(Language::Korean).chat;
     for (reason, said) in [
         ("dotori is starting", korean.starting),
+        ("dotori could not start", korean.could_not_start),
         ("dotori closed the connection", korean.closed),
         ("dotori is not reachable: refused", korean.unreachable),
         ("something else", korean.not_connected),
