@@ -47,6 +47,8 @@ use crate::settings::DiscordForm;
 use crate::settings::Form;
 use crate::settings::MODEL_KEY;
 use crate::settings::ModelSettings;
+use crate::settings::PC_NAME_LONGEST;
+use crate::settings::PcSettings;
 use crate::settings::SLACK_APP_KEY;
 use crate::settings::SLACK_BOT_KEY;
 use crate::settings::Settings;
@@ -71,7 +73,9 @@ use crate::window::parts::lock;
 use crate::window::parts::logo;
 use crate::window::parts::prose;
 use crate::window::parts::typeface;
+use crate::window::pcs::Joiner;
 use crate::window::pcs::PcsView;
+use crate::window::pcs::join_in_background;
 use crate::window::routines::RoutinesView;
 use crate::window::sandbox::SandboxView;
 use crate::window::surface::SurfaceExt;
@@ -122,9 +126,11 @@ pub(crate) struct SettingsView {
     checking: Option<Task<()>>,
     check: Check,
     open_chat: fn(),
+    join: Option<onboarding::JoinScreen>,
+    joiner: Joiner,
 }
 
-const ALL_PARTS: [&str; 5] = ["model", "slack", "telegram", "discord", "assistant"];
+const ALL_PARTS: [&str; 6] = ["model", "slack", "telegram", "discord", "assistant", "pc"];
 
 impl Step {
     fn parts(self) -> &'static [&'static str] {
@@ -300,6 +306,8 @@ impl SettingsView {
             checking: None,
             check: check_model,
             open_chat: || crate::tray::open("window"),
+            join: None,
+            joiner: join_in_background,
         };
         view.show_saved_key(cx);
         view
@@ -437,6 +445,7 @@ impl SettingsView {
         let telegram = self.telegram_form(cx);
         let discord = self.discord_form(cx);
         let typed_name = self.name.read(cx).text().trim().to_owned();
+        let typed_pc = self.pcs.read(cx).typed_name(cx);
         let parts = self.walk.map_or(&ALL_PARTS[..], Step::parts);
         let owns = |part: &str| parts.contains(&part);
         let earlier_model = &self.earlier.model;
@@ -466,6 +475,11 @@ impl SettingsView {
                     assistant_named(on_disk.assistant.clone(), &typed_name)?
                 } else {
                     on_disk.assistant.clone()
+                },
+                pc: if owns("pc") {
+                    pc_named(&typed_pc)?
+                } else {
+                    on_disk.pc.clone()
                 },
                 ..on_disk
             })
@@ -525,6 +539,10 @@ impl SettingsView {
             return;
         };
         if self.checking.is_some() {
+            return;
+        }
+        if self.join.is_some() {
+            self.join_advance(window, cx);
             return;
         }
         if step == Step::Key {
@@ -625,6 +643,10 @@ impl SettingsView {
 
     fn go_back(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
         if self.checking() {
+            return;
+        }
+        if self.join.is_some() {
+            self.leave_join(cx);
             return;
         }
         if let Some(previous) = self.walk.and_then(Step::previous) {
@@ -2016,16 +2038,28 @@ fn vault_failed(keeping: bool, error: &str) -> String {
 const VAULT_LOOK_EVERY: Duration = Duration::from_secs(3);
 const TOO_LARGE: &str = "the picture is larger than 20 MB";
 
-fn assistant_named(
-    assistant: Option<AssistantSettings>,
-    typed: &str,
-) -> Result<Option<AssistantSettings>, String> {
-    if typed.chars().count() > ASSISTANT_NAME_LONGEST {
-        return Err((words().settings.name_too_long)(ASSISTANT_NAME_LONGEST));
+fn a_name(typed: &str, longest: usize) -> Result<(), String> {
+    if typed.chars().count() > longest {
+        return Err((words().settings.name_too_long)(longest));
     }
     if typed.chars().any(char::is_control) {
         return Err(String::from(words().settings.name_control));
     }
+    Ok(())
+}
+
+fn pc_named(typed: &str) -> Result<Option<PcSettings>, String> {
+    a_name(typed, PC_NAME_LONGEST)?;
+    Ok((!typed.is_empty()).then(|| PcSettings {
+        name: Some(typed.to_owned()),
+    }))
+}
+
+fn assistant_named(
+    assistant: Option<AssistantSettings>,
+    typed: &str,
+) -> Result<Option<AssistantSettings>, String> {
+    a_name(typed, ASSISTANT_NAME_LONGEST)?;
     let mut assistant = assistant.unwrap_or_default();
     assistant.name = (!typed.is_empty() && typed != ASSISTANT_NAME).then(|| typed.to_owned());
     Ok((assistant != AssistantSettings::default()).then_some(assistant))

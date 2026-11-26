@@ -1,9 +1,13 @@
 //! The window that greets the owner on the first run: a greeting, then the model's key, the
 //! assistant's name and theme, and the other places to talk, one screen each. It is the settings
-//! view walked a step at a time, so it saves the same way the settings window does.
+//! view walked a step at a time, so it saves the same way the settings window does. From the
+//! greeting the owner can instead join a PC that already runs dotori, which sends the model and
+//! its key over.
 
+use std::mem;
 use std::time::Duration;
 
+use dotori_connectors::peer::hub::JoinError;
 use gpui::AnimationElement;
 use gpui::AnimationExt;
 use gpui::AnyElement;
@@ -14,6 +18,7 @@ use gpui::Focusable;
 use gpui::FontWeight;
 use gpui::MouseButton;
 use gpui::SharedString;
+use gpui::Task;
 use gpui::Window;
 use gpui::div;
 use gpui::img;
@@ -26,7 +31,13 @@ use super::Note;
 use super::SettingsView;
 use super::Step;
 use super::switch;
+use crate::first_run;
+use crate::first_run::FirstRun;
+use crate::home::Home;
+use crate::settings::Settings;
 use crate::settings::environment;
+use crate::vault;
+use crate::vault::Vault;
 use crate::window::chrome::Frame;
 use crate::window::identity;
 use crate::window::input::TextInput;
@@ -44,6 +55,9 @@ use crate::window::parts::logo;
 use crate::window::parts::picture;
 use crate::window::parts::prose;
 use crate::window::parts::typeface;
+use crate::window::pcs::Unjoinable;
+use crate::window::pcs::join_target;
+use crate::window::pcs::shown_name;
 use crate::window::surface::SurfaceExt;
 use crate::window::surface::framed;
 use crate::window::surface::hairline;
@@ -56,6 +70,56 @@ use crate::words::words;
 const FIELD: f32 = 12.;
 const CARD: f32 = 14.;
 const KEYS_PAGE: &str = "https://console.anthropic.com/settings/keys";
+const LOOK_FOR_MODEL: Duration = Duration::from_secs(2);
+
+/// The screen behind the greeting's link, which joins this PC to one the owner already uses.
+pub(super) struct JoinScreen {
+    pub(super) code: Entity<TextInput>,
+    pub(super) address: Entity<TextInput>,
+    pub(super) state: Joining,
+    _work: Option<Task<()>>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum Joining {
+    /// The owner types the code, with what went wrong last time.
+    Typing(Option<Failure>),
+    Waiting,
+    /// Joined the PC of this name; `ready` once its model and key are here.
+    Joined {
+        name: String,
+        ready: bool,
+    },
+}
+
+/// What went wrong joining, shown under the field it is about.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum Failure {
+    Typed(Unjoinable),
+    /// The other PC was not reached or refused the code, or first run could not be kept.
+    Joining(SharedString),
+}
+
+impl Failure {
+    fn words(&self) -> SharedString {
+        let words = &words().onboarding;
+        match self {
+            Failure::Typed(Unjoinable::UnreadableCode) => {
+                SharedString::new_static(words.code_unreadable)
+            }
+            Failure::Typed(Unjoinable::NoAddress) => SharedString::new_static(words.address_needed),
+            Failure::Joining(words) => words.clone(),
+        }
+    }
+}
+
+fn model_ready(home: &Home) -> bool {
+    Settings::load(&home.settings()).is_ok_and(|settings| {
+        settings
+            .model(vault::lookup(&Vault::new(&home.root)))
+            .is_ok()
+    })
+}
 
 impl SettingsView {
     pub(super) fn walk_view(
@@ -68,6 +132,7 @@ impl SettingsView {
         self.name_the_fields(cx);
         let frame = Frame::of(window).fixed();
         let body = match step {
+            Step::Welcome if self.join.is_some() => self.join_step(theme, window, cx),
             Step::Welcome => self.greeting(theme),
             Step::Key => self.key_step(theme, window, cx),
             Step::Look => self.look_step(theme, window, cx),
@@ -225,6 +290,230 @@ impl SettingsView {
                             }),
                     ),
             )
+    }
+
+    pub(super) fn open_join(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) {
+        let words = &words().onboarding;
+        let code = cx.new(|cx| TextInput::new("", cx));
+        let address = cx.new(|cx| TextInput::new(words.address_optional, cx));
+        window.focus(&code.focus_handle(cx));
+        self.join = Some(JoinScreen {
+            code,
+            address,
+            state: Joining::Typing(None),
+            _work: None,
+        });
+        self.moves += 1;
+        self.forward = true;
+        self.note = None;
+        cx.notify();
+    }
+
+    pub(super) fn leave_join(&mut self, cx: &mut gpui::Context<Self>) {
+        if !matches!(
+            self.join.as_ref().map(|join| &join.state),
+            Some(Joining::Typing(_))
+        ) {
+            return;
+        }
+        self.join = None;
+        self.moves += 1;
+        self.forward = false;
+        cx.notify();
+    }
+
+    pub(super) fn join_advance(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) {
+        let Some(join) = self.join.as_mut() else {
+            return;
+        };
+        match &join.state {
+            Joining::Typing(_) => {}
+            Joining::Joined { ready: true, .. } => {
+                if let Err(error) = first_run::write(&self.home.first_run(), FirstRun::Done) {
+                    self.note = Some(Note::Failed(SharedString::from(error)));
+                    cx.notify();
+                    return;
+                }
+                (self.open_chat)();
+                window.remove_window();
+                return;
+            }
+            Joining::Waiting | Joining::Joined { .. } => return,
+        }
+        let typed = (
+            join.code.read(cx).text().to_owned(),
+            join.address.read(cx).text().to_owned(),
+        );
+        let (code, address) = match join_target(&typed.0, &typed.1) {
+            Ok(target) => target,
+            Err(error) => {
+                join.state = Joining::Typing(Some(Failure::Typed(error)));
+                cx.notify();
+                return;
+            }
+        };
+        let joined = (self.joiner)(&self.home, &self.earlier, code, address);
+        for input in [&join.code, &join.address] {
+            input.update(cx, |input, cx| input.set_locked(true, cx));
+        }
+        join.state = Joining::Waiting;
+        self.note = None;
+        let home = self.home.clone();
+        join._work = Some(cx.spawn(async move |view, cx| {
+            let joined = joined
+                .await
+                .unwrap_or_else(|_| Err(JoinError::Here(String::from(words().pcs.join_stopped))));
+            let name = match joined {
+                Ok(peer) => shown_name(&peer.name, &peer.device),
+                Err(error) => {
+                    eprintln!("dotori: joining another PC failed: {error}");
+                    let failure = match error {
+                        JoinError::There(_) => {
+                            SharedString::new_static(words().onboarding.join_failed)
+                        }
+                        JoinError::Here(error) => {
+                            SharedString::from((words().onboarding.join_here_failed)(&error))
+                        }
+                    };
+                    let _ = view.update(cx, |view, cx| {
+                        if let Some(join) = view.join.as_mut() {
+                            join.state = Joining::Typing(Some(Failure::Joining(failure)));
+                            for input in [&join.code, &join.address] {
+                                input.update(cx, |input, cx| input.set_locked(false, cx));
+                            }
+                        }
+                        cx.notify();
+                    });
+                    return;
+                }
+            };
+            loop {
+                let home = home.clone();
+                let ready = cx.background_spawn(async move { model_ready(&home) }).await;
+                let shown = view.update(cx, |view, cx| {
+                    if let Some(join) = view.join.as_mut() {
+                        join.state = Joining::Joined {
+                            name: name.clone(),
+                            ready,
+                        };
+                    }
+                    cx.notify();
+                });
+                if ready || shown.is_err() {
+                    return;
+                }
+                cx.background_executor().timer(LOOK_FOR_MODEL).await;
+            }
+        }));
+        cx.notify();
+    }
+
+    fn set_up_here(
+        &mut self,
+        _: &gpui::ClickEvent,
+        window: &mut Window,
+        cx: &mut gpui::Context<Self>,
+    ) {
+        let settings = match Settings::load(&self.home.settings()) {
+            Ok(settings) => settings,
+            Err(error) => {
+                self.note = Some(Note::Failed(SharedString::from(error)));
+                cx.notify();
+                return;
+            }
+        };
+        let mut fresh = Self::opened(self.home.clone(), settings, self.walk, cx);
+        fresh.moves = self.moves;
+        fresh.forward = self.forward;
+        fresh.slides = mem::take(&mut self.slides);
+        fresh.check = self.check;
+        fresh.open_chat = self.open_chat;
+        fresh.joiner = self.joiner;
+        *self = fresh;
+        self.step_on(Step::Welcome, window, cx);
+        cx.notify();
+    }
+
+    fn join_step(&self, theme: &Theme, window: &Window, cx: &mut gpui::Context<Self>) -> Div {
+        let words = &words().onboarding;
+        let Some(join) = &self.join else {
+            return div();
+        };
+        let joined = match &join.state {
+            Joining::Joined { name, ready } => Some((name, *ready)),
+            _ => None,
+        };
+        let failed = match &join.state {
+            Joining::Typing(Some(failure)) => Some(failure),
+            _ => None,
+        };
+        let under = |about: bool| {
+            failed.filter(|_| about).map(|failure| {
+                div()
+                    .mt_2()
+                    .text_size(px(13.))
+                    .text_color(theme.danger)
+                    .child(prose(&failure.words()))
+            })
+        };
+        let code_wrong = failed == Some(&Failure::Typed(Unjoinable::UnreadableCode));
+        let address_wrong = failed == Some(&Failure::Typed(Unjoinable::NoAddress));
+        div()
+            .flex()
+            .flex_col()
+            .child(heading(words.join_title))
+            .child(
+                div()
+                    .mb_4()
+                    .text_size(px(13.))
+                    .line_height(px(20.))
+                    .text_color(theme.muted)
+                    .child(prose(words.join_hint)),
+            )
+            .child(label(theme, words.code_label))
+            .child(field(
+                theme,
+                window,
+                cx,
+                "join-code",
+                &join.code,
+                code_wrong,
+            ))
+            .children(under(code_wrong))
+            .child(div().h_3p5())
+            .child(label(theme, words.address_label))
+            .child(field(
+                theme,
+                window,
+                cx,
+                "join-address",
+                &join.address,
+                address_wrong,
+            ))
+            .children(under(!code_wrong))
+            .children(joined.map(|(name, ready)| {
+                arriving(
+                    ("joined", usize::from(ready)),
+                    0,
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_1p5()
+                        .mt_3()
+                        .child(
+                            svg()
+                                .path(CHECK_ICON)
+                                .flex_none()
+                                .size(px(14.))
+                                .text_color(theme.ok),
+                        )
+                        .child(div().flex_1().text_size(px(13.)).child(if ready {
+                            (words.received)(name)
+                        } else {
+                            (words.joined)(name)
+                        })),
+                )
+            }))
     }
 
     fn key_step(&self, theme: &Theme, window: &Window, cx: &mut gpui::Context<Self>) -> Div {
@@ -539,8 +828,30 @@ impl SettingsView {
     }
 
     fn walk_footer(&self, step: Step, theme: &Theme, cx: &mut gpui::Context<Self>) -> Div {
-        let failed = match (&self.note, step) {
-            (Some(Note::Failed(error)), step) if step != Step::Key => Some(error.clone()),
+        let words = &words().onboarding;
+        let joining = self.join.as_ref().map(|join| &join.state);
+        let failed = match (&self.note, step, joining) {
+            (Some(Note::Failed(error)), step, None) if step != Step::Key => Some(error.clone()),
+            (Some(Note::Failed(error)), _, Some(Joining::Joined { .. })) => Some(error.clone()),
+            _ => None,
+        };
+        let backs = match joining {
+            Some(state) => matches!(state, Joining::Typing(_)),
+            None => step.previous().is_some(),
+        };
+        let (action, moves_on) = match joining {
+            None if self.checking() => (words.checking, false),
+            None => (step.action(), true),
+            Some(Joining::Typing(_)) => (words.join, true),
+            Some(Joining::Waiting) => (words.joining, false),
+            Some(Joining::Joined { ready: false, .. }) => (words.receiving, false),
+            Some(Joining::Joined { ready: true, .. }) => (words.begin_chat, true),
+        };
+        let under: Option<(&'static str, &'static str, bool)> = match joining {
+            None if step == Step::Welcome => Some(("join-pc", words.join_existing, true)),
+            Some(Joining::Joined { ready: false, .. }) => {
+                Some(("set-up-here", words.set_up_here, false))
+            }
             _ => None,
         };
         div()
@@ -551,6 +862,7 @@ impl SettingsView {
             .px_6()
             .pt_4()
             .pb_6()
+            .when(under.is_some(), |footer| footer.gap_1().pb_4())
             .children(failed.map(|error| {
                 div()
                     .text_size(px(13.))
@@ -563,7 +875,7 @@ impl SettingsView {
                     .flex()
                     .items_center()
                     .gap_3()
-                    .when(step.previous().is_some(), |footer| {
+                    .when(backs, |footer| {
                         footer.child(
                             div()
                                 .id("back")
@@ -575,7 +887,7 @@ impl SettingsView {
                                 .when(!self.checking(), |back| {
                                     back.cursor_pointer().hover(|back| back.bg(theme.bubble))
                                 })
-                                .child(words().onboarding.back)
+                                .child(words.back)
                                 .on_click(cx.listener(Self::go_back)),
                         )
                     })
@@ -587,21 +899,42 @@ impl SettingsView {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .h(px(if step == Step::Welcome { 50. } else { 48. }))
+                            .h(px(if step == Step::Welcome && joining.is_none() {
+                                50.
+                            } else {
+                                48.
+                            }))
                             .rounded(px(CARD))
                             .main_button(theme)
-                            .cursor_pointer()
-                            .hover(|next| next.opacity(0.9))
+                            .when(moves_on, |next| {
+                                next.cursor_pointer().hover(|next| next.opacity(0.9))
+                            })
                             .text_size(px(15.))
                             .font_weight(FontWeight::SEMIBOLD)
-                            .child(if self.checking() {
-                                words().onboarding.checking
-                            } else {
-                                step.action()
-                            })
+                            .child(action)
                             .on_click(cx.listener(Self::advance)),
                     ),
             )
+            .children(under.map(|(id, words, opens)| {
+                div()
+                    .id(id)
+                    .debug_selector(move || id.to_owned())
+                    .flex()
+                    .justify_center()
+                    .py_1()
+                    .text_size(px(13.))
+                    .line_height(px(18.))
+                    .text_color(theme.muted)
+                    .cursor_pointer()
+                    .child(words)
+                    .on_click(cx.listener(move |view, event, window, cx| {
+                        if opens {
+                            view.open_join(window, cx);
+                        } else {
+                            view.set_up_here(event, window, cx);
+                        }
+                    }))
+            }))
     }
 }
 

@@ -43,10 +43,14 @@ fn a_new_pc_takes_a_configured_pcs_settings_and_one_part_changed_leaves_the_othe
 
     assert!(
         !configured
-            .take(empty.times, empty.shared.clone())
+            .take(empty.times, empty.shared.clone(), false)
             .expect("checked")
     );
-    assert!(fresh.take(set.times, set.shared.clone()).expect("taken"));
+    assert!(
+        fresh
+            .take(set.times, set.shared.clone(), false)
+            .expect("taken")
+    );
     assert_eq!(
         Settings::load(&fresh.settings).expect("loaded").slack,
         Some(slack("U1"))
@@ -67,7 +71,11 @@ fn a_new_pc_takes_a_configured_pcs_settings_and_one_part_changed_leaves_the_othe
         "taking is not a change here"
     );
 
-    assert!(configured.take(edited.times, edited.shared).expect("taken"));
+    assert!(
+        configured
+            .take(edited.times, edited.shared, false)
+            .expect("taken")
+    );
     let now = Settings::load(&configured.settings).expect("loaded");
     assert_eq!(now.model, changed.model);
     assert_eq!(now.slack, Some(slack("U1")));
@@ -83,4 +91,108 @@ fn a_change_here_always_comes_after_the_time_it_replaces() {
     assert_eq!(next(100, true, 50), 101);
     assert_eq!(next(100, true, 500), 500);
     assert_eq!(next(100, false, 500), 100);
+}
+
+#[test]
+fn a_pc_joining_in_first_run_takes_settings_as_old_as_its_own_and_a_set_up_pc_does_not() {
+    let model = |url: &str| ModelSettings::OpenaiCompatible {
+        base_url: url.to_owned(),
+        model: String::from("m"),
+        api_key_env: None,
+        max_tokens: None,
+    };
+    let running = pc("running");
+    let joining = pc("joining");
+    let set_up = pc("set-up");
+    save(
+        &running,
+        &Settings {
+            model: model("http://running"),
+            ..Settings::default()
+        },
+    );
+    for copies in [&joining, &set_up] {
+        save(
+            copies,
+            &Settings {
+                model: model("http://here"),
+                ..Settings::default()
+            },
+        );
+    }
+    let theirs = running.current().expect("read");
+    assert_eq!(
+        (
+            theirs.times.model,
+            joining.current().expect("read").times.model
+        ),
+        (1, 1),
+        "both were set before either kept a time"
+    );
+
+    assert!(
+        !set_up
+            .take(theirs.times, theirs.shared.clone(), false)
+            .expect("checked")
+    );
+    assert!(
+        joining
+            .take(theirs.times, theirs.shared, true)
+            .expect("taken")
+    );
+
+    assert_eq!(
+        Settings::load(&joining.settings).expect("loaded").model,
+        model("http://running")
+    );
+    assert_eq!(
+        Settings::load(&set_up.settings).expect("loaded").model,
+        model("http://here")
+    );
+}
+
+#[test]
+fn a_pc_joining_keeps_what_its_owner_set_here_since_even_against_an_older_time() {
+    let model = |url: &str| ModelSettings::OpenaiCompatible {
+        base_url: url.to_owned(),
+        model: String::from("m"),
+        api_key_env: None,
+        max_tokens: None,
+    };
+    let running = pc("running-older");
+    let joining = pc("joining-edited");
+    save(
+        &running,
+        &Settings {
+            model: model("http://running"),
+            ..Settings::default()
+        },
+    );
+    save(
+        &joining,
+        &Settings {
+            model: model("http://here"),
+            ..Settings::default()
+        },
+    );
+    let theirs = running.current().expect("read");
+    joining.current().expect("stamped before the owner edits");
+    save(
+        &joining,
+        &Settings {
+            model: model("http://edited"),
+            ..Settings::default()
+        },
+    );
+
+    assert!(
+        !joining
+            .take(theirs.times, theirs.shared, true)
+            .expect("checked")
+    );
+
+    assert_eq!(
+        Settings::load(&joining.settings).expect("loaded").model,
+        model("http://edited")
+    );
 }
