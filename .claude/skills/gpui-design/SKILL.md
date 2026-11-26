@@ -1,6 +1,6 @@
 ---
 name: gpui-design
-description: "Use for any change to how dotori's GPUI windows look or move (crates/app/src/window): colors, themes, layout, components, motion. Plans against DESIGN.md, builds with theme tokens only, then runs the real window under Xvfb and checks screenshots in every theme that exists before calling it done."
+description: "Use for any change to how dotori's GPUI windows look or move (crates/app/src/window): colors, themes, layout, components, motion. Plans against DESIGN.md, builds with theme tokens only, then runs the real window under Xvfb, or unseen on Windows, and checks screenshots in every theme that exists before calling it done."
 ---
 
 # GPUI design
@@ -46,7 +46,26 @@ bash .claude/skills/gpui-design/demo.sh stop "$home"
 
 `talk` takes your own messages too. `shot ... light 5` saves five frames a few milliseconds apart, for checking that motion shows steps between its start and its end.
 
-`ask "$home" "<what dotori asks>"` stands in for dotori's browser and asks the owner for it, so the browser card shows; run it before `shot`. Given a JSON object instead, such as `'{"card": {...}}'`, it sends that as the browser's state, so a login card or an account card shows. What the windows send back, such as `{"kind":"take"}`, lands in `$home/screen.log`, and the browser window opens as `dotori 브라우저`.
+`ask "$home" "<what dotori asks>"` stands in for dotori's browser and asks the owner for it, so the browser card shows; run it before `shot`. Given a JSON object instead, such as `'{"card": {...}}'`, it sends that as the browser's state, so a login card or an account card shows. What the windows send back, such as `{"kind":"take"}`, lands in `$home/screen.log`, and the browser window opens as `dotori 브라우저`, or `dotori browser` in English.
+
+On Windows, `win.ps1` next to this file does the same without touching the owner's screen, mouse or keyboard. Never drive dotori with the real cursor or bring its window forward: the owner is using the PC.
+
+```powershell
+$home_ = "<scratchpad>\unseen-home"
+& .claude\skills\gpui-design\win.ps1 start $home_ settings light
+& .claude\skills\gpui-design\win.ps1 click $home_ 170 535
+& .claude\skills\gpui-design\win.ps1 move $home_ 242 207
+& .claude\skills\gpui-design\win.ps1 shot $home_ "$home_\hover.png"
+& .claude\skills\gpui-design\win.ps1 stop $home_
+```
+
+- The window opens on a desktop of its own that is never shown, so it cannot take focus. Input reaches it as window messages, and `shot` asks the window to draw itself.
+- Points are in window pixels before scaling, the units the code uses. Read them off a shot divided by its scale (1.5 on a 150% display).
+- `<home>` becomes `DOTORI_HOME`, so the owner's settings and keys are never read or changed. Settings and keys typed into that window land in `<home>`.
+- `DOTORI_HOME`, `DOTORI_THEME` and `DOTORI_LANGUAGE` reach only the dotori it starts; the shell that ran `start` keeps its own.
+- The fourth argument of `start`, `ko` or `en`, picks the language. Look at every screen in both: English runs longer and breaks lines in other places.
+- `move` is how hover is checked. Look at the shot, and compare pixels when the change is faint.
+- A hover style that only changes `text_color` does not show: GPUI fixes the color of text when it lays the text out. Change the background instead.
 
 Take every theme that exists in both looks. Read each screenshot yourself.
 
