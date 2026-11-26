@@ -286,52 +286,34 @@ fn dotori_shows_it_works_while_the_daemon_says_so_and_not_while_it_waits_on_the_
 }
 
 #[gpui::test]
-fn the_header_says_nothing_while_things_work(cx: &mut TestAppContext) {
+fn the_keys_hint_gives_way_to_what_keeps_dotori_out_of_reach(cx: &mut TestAppContext) {
     speak(Language::Korean);
     let (view, cx, wired) = open(cx);
     wired.updates.send(Update::Connected).expect("sent");
     cx.run_until_parked();
-    let said = |view: &ChatView| view.notice().map(|(said, _)| said);
-    view.read_with(cx, |view, _| assert_eq!(said(view), None));
+    view.read_with(cx, |view, _| assert_eq!(view.status(), None));
 
-    let answering = |here| {
-        Update::Event(ToWindow::Answering {
-            pc: String::from("회사 PC"),
-            here,
-        })
-    };
-    wired.updates.send(answering(true)).expect("sent");
-    cx.run_until_parked();
-    view.read_with(cx, |view, _| {
-        assert_eq!(said(view), None, "this PC answers")
-    });
+    let korean = &of(Language::Korean).chat;
+    for (reason, said) in [
+        ("dotori is starting", korean.starting),
+        ("dotori could not start", korean.could_not_start),
+        ("dotori closed the connection", korean.closed),
+        ("dotori is not reachable: refused", korean.unreachable),
+        ("something else", korean.not_connected),
+    ] {
+        wired
+            .updates
+            .send(Update::Down(String::from(reason)))
+            .expect("sent");
+        cx.run_until_parked();
+        view.read_with(cx, |view, _| {
+            assert_eq!(view.status(), Some(said), "{reason}")
+        });
+    }
 
-    wired.updates.send(answering(false)).expect("sent");
+    wired.updates.send(Update::Connected).expect("sent");
     cx.run_until_parked();
-    view.read_with(cx, |view, _| {
-        assert_eq!(said(view).as_deref(), Some("지금은 회사 PC에서 답해요"))
-    });
-
-    wired
-        .updates
-        .send(Update::Down(String::from("dotori is not running")))
-        .expect("sent");
-    cx.run_until_parked();
-    view.read_with(cx, |view, _| {
-        let (said, detail) = view.notice().expect("a notice");
-        assert_eq!(said, of(Language::Korean).chat.not_running);
-        assert_eq!(detail, None, "the reason only repeats the notice");
-    });
-
-    speak(Language::English);
-    wired.updates.send(answering(false)).expect("sent");
-    cx.run_until_parked();
-    view.read_with(cx, |view, _| {
-        assert_eq!(
-            said(view).as_deref(),
-            Some("dotori isn't running. It reconnects as soon as you start it.")
-        )
-    });
+    view.read_with(cx, |view, _| assert_eq!(view.status(), None));
 }
 
 #[gpui::test]

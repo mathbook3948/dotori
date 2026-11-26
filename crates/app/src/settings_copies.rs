@@ -29,6 +29,7 @@ use crate::settings::TelegramSettings;
 
 const LOOK_EVERY: Duration = Duration::from_secs(5);
 const FUTURE_TAKEN: i64 = 24 * 60 * 60 * 1000;
+const NEVER_STAMPED: i64 = 1;
 
 /// The settings every PC shares.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -62,6 +63,20 @@ pub(crate) struct Times {
     pub(crate) discord: i64,
     #[serde(default)]
     pub(crate) assistant: i64,
+}
+
+impl Times {
+    fn changed_here(self) -> Self {
+        let changed = |time: i64| if time > NEVER_STAMPED { time } else { 0 };
+        Self {
+            model: changed(self.model),
+            slack: changed(self.slack),
+            memory: changed(self.memory),
+            telegram: changed(self.telegram),
+            discord: changed(self.discord),
+            assistant: changed(self.assistant),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -168,40 +183,46 @@ impl SettingsCopies {
         Some(stamped)
     }
 
-    /// Takes the parts of another PC's settings that changed later than these. Says whether any
-    /// did.
+    /// Takes the parts of another PC's settings that changed later than these. A PC `joining`
+    /// the others before its first run is done also takes the parts it never changed here, whatever
+    /// their times, but keeps what its owner set since. Says whether any changed.
     ///
     /// The whole copy wins, not each change, on purpose. dotori serves one person, who changes
     /// these from one PC at a time, so two PCs changing them in the same moment does not happen
     /// in practice. Merging change by change would add a log and conflict rules for a case that
     /// does not occur.
-    pub(crate) fn take(&self, times: Times, shared: Shared) -> Result<bool, String> {
+    pub(crate) fn take(&self, times: Times, shared: Shared, joining: bool) -> Result<bool, String> {
         let mut known = self.known.lock().expect("unpoisoned");
         let Some(here) = self.current_held(&mut known) else {
             return Err(String::from("the settings here cannot be read"));
         };
+        let mine = if joining {
+            here.times.changed_here()
+        } else {
+            here.times
+        };
         let mut taken = here.clone();
-        if times.model > here.times.model && shared.model != here.shared.model {
+        if times.model > mine.model && shared.model != here.shared.model {
             taken.times.model = times.model;
             taken.shared.model = shared.model;
         }
-        if times.slack > here.times.slack && shared.slack != here.shared.slack {
+        if times.slack > mine.slack && shared.slack != here.shared.slack {
             taken.times.slack = times.slack;
             taken.shared.slack = shared.slack;
         }
-        if times.memory > here.times.memory && shared.memory != here.shared.memory {
+        if times.memory > mine.memory && shared.memory != here.shared.memory {
             taken.times.memory = times.memory;
             taken.shared.memory = shared.memory;
         }
-        if times.telegram > here.times.telegram && shared.telegram != here.shared.telegram {
+        if times.telegram > mine.telegram && shared.telegram != here.shared.telegram {
             taken.times.telegram = times.telegram;
             taken.shared.telegram = shared.telegram;
         }
-        if times.discord > here.times.discord && shared.discord != here.shared.discord {
+        if times.discord > mine.discord && shared.discord != here.shared.discord {
             taken.times.discord = times.discord;
             taken.shared.discord = shared.discord;
         }
-        if times.assistant > here.times.assistant && shared.assistant != here.shared.assistant {
+        if times.assistant > mine.assistant && shared.assistant != here.shared.assistant {
             taken.times.assistant = times.assistant;
             taken.shared.assistant = shared.assistant;
         }
@@ -234,64 +255,66 @@ impl SettingsCopies {
         }))
     }
 
-    /// Takes a message about settings from another PC. Says whether it was one.
-    pub(crate) fn hear(&self, linked: &Linked, heard: &Heard) -> bool {
-        match heard.message.get("kind").and_then(Value::as_str) {
-            Some("linked") => {
-                if let Some(message) = self.message() {
-                    linked.hub.send(&heard.key, message);
-                }
-                false
-            }
-            Some("settings") => {
-                let times = heard
-                    .message
-                    .get("times")
-                    .and_then(|times| serde_json::from_value::<Times>(times.clone()).ok());
-                let shared = heard
-                    .message
-                    .get("shared")
-                    .and_then(|shared| serde_json::from_value::<Shared>(shared.clone()).ok());
-                let (Some(times), Some(shared)) = (times, shared) else {
-                    eprintln!(
-                        "dotori: settings from {} do not read here; is it a newer dotori?",
-                        heard.device
-                    );
-                    return true;
-                };
-                let latest = now_ms().saturating_add(FUTURE_TAKEN);
-                if [
-                    times.model,
-                    times.slack,
-                    times.memory,
-                    times.telegram,
-                    times.discord,
-                    times.assistant,
-                ]
-                .iter()
-                .any(|time| *time > latest)
-                {
-                    eprintln!(
-                        "dotori: settings from {} are dated too far ahead",
-                        heard.device
-                    );
-                    return true;
-                }
-                match self.take(times, shared) {
-                    Ok(true) => eprintln!(
-                        "dotori: took newer settings from {}; they take effect when dotori starts again",
-                        heard.device
-                    ),
-                    Ok(false) => {}
-                    Err(error) => eprintln!(
-                        "dotori: settings from {} were not taken: {error}",
-                        heard.device
-                    ),
-                }
-                true
-            }
-            _ => false,
+    /// Sends this PC's settings to a PC that just linked.
+    pub(crate) fn hear(&self, linked: &Linked, heard: &Heard) {
+        if heard.message.get("kind").and_then(Value::as_str) == Some("linked")
+            && let Some(message) = self.message()
+        {
+            linked.hub.send(&heard.key, message);
         }
+    }
+
+    /// Takes the settings another PC sent, if `heard` is them, as `take` does. Says whether it
+    /// was.
+    pub(crate) fn take_heard(&self, heard: &Heard, joining: bool) -> bool {
+        if heard.message.get("kind").and_then(Value::as_str) != Some("settings") {
+            return false;
+        }
+        let times = heard
+            .message
+            .get("times")
+            .and_then(|times| serde_json::from_value::<Times>(times.clone()).ok());
+        let shared = heard
+            .message
+            .get("shared")
+            .and_then(|shared| serde_json::from_value::<Shared>(shared.clone()).ok());
+        let (Some(times), Some(shared)) = (times, shared) else {
+            eprintln!(
+                "dotori: settings from {} do not read here; is it a newer dotori?",
+                heard.device
+            );
+            return true;
+        };
+        let latest = now_ms().saturating_add(FUTURE_TAKEN);
+        if [
+            times.model,
+            times.slack,
+            times.memory,
+            times.telegram,
+            times.discord,
+            times.assistant,
+        ]
+        .iter()
+        .any(|time| *time > latest)
+        {
+            eprintln!(
+                "dotori: settings from {} are dated too far ahead",
+                heard.device
+            );
+            return true;
+        }
+        match self.take(times, shared, joining) {
+            Ok(true) => eprintln!(
+                "dotori: took newer settings from {}; they take effect when dotori starts again",
+                heard.device
+            ),
+            Ok(false) => {}
+            Err(error) => eprintln!(
+                "dotori: settings from {} were not taken: {error}",
+                heard.device
+            ),
+        }
+        true
     }
 
     /// Looks at the settings every few seconds and sends them out when they changed here.

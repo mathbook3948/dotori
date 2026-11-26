@@ -688,46 +688,51 @@ pub(crate) fn lookup(vault: &Vault) -> impl Fn(&str) -> Option<String> + '_ {
     }
 }
 
-/// Takes a message about the vault from another PC. Says whether it was one. The work that may
-/// wait on the keychain runs off the message loop.
-pub(crate) fn hear(vault: &Arc<Vault>, linked: &Linked, heard: &Heard) -> bool {
-    match heard.message.get("kind").and_then(Value::as_str) {
-        Some("linked") => {
-            let vault = Arc::clone(vault);
-            let hub = linked.hub.clone();
-            let to = heard.key.clone();
-            tokio::task::spawn_blocking(move || match vault.copy() {
-                Ok(copies) if !copies.is_empty() => {
-                    hub.send(&to, message(&copies));
-                }
-                Ok(_) => {}
-                Err(error) => eprintln!("dotori: the vault was not shared: {error}"),
-            });
-            false
-        }
-        Some("vault") => {
-            let Some(copies) = heard.message.get("secrets").and_then(|secrets| {
-                serde_json::from_value::<Vec<SecretCopy>>(secrets.clone()).ok()
-            }) else {
-                eprintln!(
-                    "dotori: the vault from {} does not read here; is it a newer dotori?",
-                    heard.device
-                );
-                return true;
-            };
-            let vault = Arc::clone(vault);
-            let device = heard.device.clone();
-            tokio::task::spawn_blocking(move || match vault.take(&copies, now_ms()) {
-                Ok(true) => eprintln!(
-                    "dotori: took newer keys from {device}; they take effect when dotori starts again"
-                ),
-                Ok(false) => {}
-                Err(error) => eprintln!("dotori: the keys from {device} were not taken: {error}"),
-            });
-            true
-        }
-        _ => false,
+/// Sends this PC's vault to a PC that just linked. The work that may wait on the keychain runs
+/// off the message loop.
+pub(crate) fn hear(vault: &Arc<Vault>, linked: &Linked, heard: &Heard) {
+    if heard.message.get("kind").and_then(Value::as_str) != Some("linked") {
+        return;
     }
+    let vault = Arc::clone(vault);
+    let hub = linked.hub.clone();
+    let to = heard.key.clone();
+    tokio::task::spawn_blocking(move || match vault.copy() {
+        Ok(copies) if !copies.is_empty() => {
+            hub.send(&to, message(&copies));
+        }
+        Ok(_) => {}
+        Err(error) => eprintln!("dotori: the vault was not shared: {error}"),
+    });
+}
+
+/// Takes the vault another PC sent, if `heard` is one, and says whether it was. The work that
+/// may wait on the keychain runs off the message loop.
+pub(crate) fn take_heard(vault: &Arc<Vault>, heard: &Heard) -> bool {
+    if heard.message.get("kind").and_then(Value::as_str) != Some("vault") {
+        return false;
+    }
+    let Some(copies) = heard
+        .message
+        .get("secrets")
+        .and_then(|secrets| serde_json::from_value::<Vec<SecretCopy>>(secrets.clone()).ok())
+    else {
+        eprintln!(
+            "dotori: the vault from {} does not read here; is it a newer dotori?",
+            heard.device
+        );
+        return true;
+    };
+    let vault = Arc::clone(vault);
+    let device = heard.device.clone();
+    tokio::task::spawn_blocking(move || match vault.take(&copies, now_ms()) {
+        Ok(true) => eprintln!(
+            "dotori: took newer keys from {device}; they take effect when dotori starts again"
+        ),
+        Ok(false) => {}
+        Err(error) => eprintln!("dotori: the keys from {device} were not taken: {error}"),
+    });
+    true
 }
 
 fn message(copies: &[SecretCopy]) -> Value {

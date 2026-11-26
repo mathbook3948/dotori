@@ -169,15 +169,24 @@ fn tray() -> Result<(TrayIcon, Items), String> {
 
 /// Starts another dotori process that shows `command`, such as the settings window.
 pub(crate) fn open(command: &str) {
+    launch(&[command]);
+}
+
+/// Starts dotori with its tray, as a window does when it finds dotori not running.
+pub(crate) fn start() {
+    launch(&[]);
+}
+
+fn launch(arguments: &[&str]) {
     if cfg!(test) {
         return;
     }
-    let started = env::current_exe().and_then(|exe| Command::new(exe).arg(command).spawn());
+    let started = env::current_exe().and_then(|exe| Command::new(exe).args(arguments).spawn());
     match started {
         Ok(mut child) => {
             thread::spawn(move || child.wait());
         }
-        Err(error) => eprintln!("dotori: cannot open {command}: {error}"),
+        Err(error) => eprintln!("dotori: cannot start {arguments:?}: {error}"),
     }
 }
 

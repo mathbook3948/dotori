@@ -98,7 +98,6 @@ pub(crate) struct ChatView {
     lines: Vec<ToWindow>,
     screen: Entity<ScreenView>,
     link: LinkState,
-    answering: Option<(String, bool)>,
     browser_at: Option<(String, bool)>,
     input: Entity<TextInput>,
     say: mpsc::UnboundedSender<FromWindow>,
@@ -158,6 +157,10 @@ impl ChatView {
         let working = cx.new(|_| WorkingView);
         let pump = cx.spawn(async move |view, cx| {
             while let Some(update) = updates.recv().await {
+                if update == Update::Gone {
+                    let _ = cx.update(|cx| cx.quit());
+                    return;
+                }
                 let applied = view.update(cx, |view, cx| {
                     view.apply(update);
                     cx.notify();
@@ -171,7 +174,6 @@ impl ChatView {
             lines: Vec::new(),
             screen,
             link: LinkState::Connecting,
-            answering: None,
             browser_at: None,
             input: cx.new(|cx| TextInput::multiline(say_to(), cx)),
             say,
@@ -210,7 +212,6 @@ impl ChatView {
                 self.decided.clear();
                 self.clicked.clear();
                 self.whole.clear();
-                self.answering = None;
                 self.browser_at = None;
                 self.live = false;
                 self.entered.clear();
@@ -224,11 +225,10 @@ impl ChatView {
                 self.busy = false;
                 return;
             }
+            Update::Gone => return,
             Update::Event(event) => event,
         };
         match event {
-            ToWindow::Answering { pc, here } => self.answering = Some((pc, here)),
-            ToWindow::Alone => self.answering = None,
             ToWindow::Decided { id, ok } => {
                 self.decided.insert(id, Some(ok));
             }
@@ -468,9 +468,7 @@ impl ChatView {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let row = match event {
-            ToWindow::Answering { .. }
-            | ToWindow::Alone
-            | ToWindow::BrowserAt { .. }
+            ToWindow::BrowserAt { .. }
             | ToWindow::Live
             | ToWindow::Working { .. }
             | ToWindow::Decided { .. }
@@ -1705,27 +1703,22 @@ impl ChatView {
         shown.pb(px(TURN_SPACE))
     }
 
-    fn notice(&self) -> Option<(String, Option<String>)> {
-        match &self.link {
-            LinkState::Connecting => None,
-            LinkState::Down(reason) => {
-                let chat = &words().chat;
-                let (said, detail) = if reason.contains("not running") {
-                    (chat.not_running, None)
-                } else if reason.contains("closed the connection") {
-                    (chat.closed, None)
-                } else if reason.contains("not reachable") {
-                    (chat.unreachable, Some(reason.clone()))
-                } else {
-                    (chat.not_connected, Some(reason.clone()))
-                };
-                Some((String::from(said), detail))
-            }
-            LinkState::Connected => match &self.answering {
-                Some((pc, false)) => Some(((words().chat.answering_elsewhere)(pc), None)),
-                _ => None,
-            },
-        }
+    fn status(&self) -> Option<&'static str> {
+        let LinkState::Down(reason) = &self.link else {
+            return None;
+        };
+        let chat = &words().chat;
+        Some(if reason.contains("could not start") {
+            chat.could_not_start
+        } else if reason.contains("starting") {
+            chat.starting
+        } else if reason.contains("closed the connection") {
+            chat.closed
+        } else if reason.contains("not reachable") {
+            chat.unreachable
+        } else {
+            chat.not_connected
+        })
     }
 
     fn composer(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1789,8 +1782,12 @@ impl ChatView {
                     .px_2()
                     .text_size(px(11.))
                     .line_height(px(14.))
-                    .text_color(theme.muted)
-                    .child(words().chat.keys_hint),
+                    .text_color(if self.status().is_some() {
+                        theme.text
+                    } else {
+                        theme.muted
+                    })
+                    .child(self.status().unwrap_or(words().chat.keys_hint)),
             )
     }
 }
@@ -1812,23 +1809,6 @@ impl Render for ChatView {
         if following || !self.entered.is_empty() {
             window.request_animation_frame();
         }
-        let notice = self.notice().map(|(words, detail)| {
-            div()
-                .flex()
-                .flex_col()
-                .min_w_0()
-                .text_xs()
-                .text_color(theme.text)
-                .child(div().truncate().child(words))
-                .children(detail.map(|detail| {
-                    div()
-                        .text_size(px(11.))
-                        .line_height(px(14.))
-                        .text_color(theme.muted)
-                        .truncate()
-                        .child(detail)
-                }))
-        });
         let frame = Frame::of(window);
         let working_at = if self.shows_working() {
             if self.scroll.bounds_for_item(0).is_none() {
@@ -1849,7 +1829,7 @@ impl Render for ChatView {
             .text_sm()
             .line_height(px(21.))
             .on_action(cx.listener(Self::submit))
-            .child(frame.strip(&theme, settings_button(&theme), div().children(notice)))
+            .child(frame.strip(&theme, settings_button(&theme), div()))
             .child(
                 div()
                     .flex_1()

@@ -29,9 +29,7 @@ pub(crate) fn marks(lines: &[ToWindow], zone: &TimeZone, today: Date) -> Vec<Mar
                 | ToWindow::Reply { at, .. }
                 | ToWindow::Traffic { at, .. }
                 | ToWindow::Ask { at, .. } => *at,
-                ToWindow::Answering { .. }
-                | ToWindow::Alone
-                | ToWindow::BrowserAt { .. }
+                ToWindow::BrowserAt { .. }
                 | ToWindow::Live
                 | ToWindow::Working { .. }
                 | ToWindow::Decided { .. }

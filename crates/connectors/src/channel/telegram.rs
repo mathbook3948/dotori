@@ -293,6 +293,7 @@ impl TelegramChannel {
                     sender_name: arrived.name,
                     content,
                     audience,
+                    at: None,
                 };
                 if inbox.push(incoming).await.is_err() {
                     return Ok(());

@@ -203,6 +203,7 @@ impl SlackChannel {
                         sender_id: ExternalUserId::new(arrived.user),
                         content,
                         audience,
+                        at: None,
                     };
                     if inbox.push(incoming).await.is_err() {
                         return Ok(Ended::InboxClosed);

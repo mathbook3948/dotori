@@ -108,10 +108,7 @@ fn lines_without_a_time_show_none() {
         elsewhere(at(2026, 11, 23, 9, 0, 0)),
         elsewhere(at(2026, 11, 23, 9, 0, 5)),
         owner(0),
-        ToWindow::Answering {
-            pc: String::from("B"),
-            here: false,
-        },
+        ToWindow::Live,
     ];
 
     let nine = clock(9, 0);

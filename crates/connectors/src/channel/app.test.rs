@@ -245,57 +245,6 @@ fn the_token_never_shows_in_debug_output() {
 }
 
 #[tokio::test]
-async fn windows_learn_which_pc_answers_but_it_stays_out_of_the_conversation() {
-    let (channel, address, _inbox) = start().await;
-    channel.answering(Some((String::from("맥북"), false)));
-    let mut early = Window::open(address, "secret").await;
-    assert_eq!(
-        early.next().await,
-        Some(ToWindow::Answering {
-            pc: String::from("맥북"),
-            here: false
-        })
-    );
-
-    channel.answering(Some((String::from("데스크톱"), true)));
-    assert_eq!(
-        early.next().await,
-        Some(ToWindow::Answering {
-            pc: String::from("데스크톱"),
-            here: true
-        })
-    );
-    let mut published = channel.published();
-    channel.show_line(r#"{"kind":"answering","pc":"x","here":false}"#);
-    channel
-        .deliver(Place::new(MAIN), String::from("hi"))
-        .await
-        .expect("delivered");
-    let line = published.recv().await.expect("published").line;
-    assert_eq!(
-        serde_json::from_str::<ToWindow>(&line)
-            .map(untimed)
-            .expect("line"),
-        ToWindow::Reply {
-            text: String::from("hi"),
-            at: 0,
-        }
-    );
-    let mut late = Window::open(address, "secret").await;
-    assert_eq!(
-        late.next_untimed().await,
-        Some(ToWindow::Reply {
-            text: String::from("hi"),
-            at: 0,
-        })
-    );
-    assert!(matches!(
-        late.next().await,
-        Some(ToWindow::Answering { here: true, .. })
-    ));
-}
-
-#[tokio::test]
 async fn a_line_keeps_the_time_it_was_first_shown_and_an_old_line_has_none() {
     let (channel, address, _inbox) = start().await;
     let before = now_ms();

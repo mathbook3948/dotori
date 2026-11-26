@@ -17,6 +17,10 @@ use crate::lock::DaemonLock;
 
 const RETRY: Duration = Duration::from_secs(2);
 const SETTLE: Duration = Duration::from_millis(500);
+const NOT_RUNNING: &str = "dotori is not running";
+const STARTING: &str = "dotori is starting";
+const COULD_NOT_START: &str = "dotori could not start";
+const START_RETRIES: u32 = 7;
 
 /// What a window learns from its link to the daemon, in order.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -26,11 +30,49 @@ pub(crate) enum Update {
     Connected,
     Down(String),
     Event(ToWindow),
+    /// dotori stopped after this window saw it running, as when the owner quits from the tray, so
+    /// the window closes too. dotori never restarts itself, so there is nothing to wait for.
+    Gone,
 }
 
-/// A window's link to the daemon. It reconnects by itself, so a daemon restart or a hang-up for
-/// falling behind only shows as `Down` followed by `Connected`. A window does not send on
-/// `say` after `Down` until the next `Connected`, since that would go out late and unseen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Daemon {
+    /// The lock has never been held in this window's sight.
+    Unseen,
+    /// This window started dotori and has found the lock free `free` times since.
+    Started { free: u32 },
+    /// The lock was held, so dotori was running or starting.
+    Seen,
+    /// The window connected.
+    Reached,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Step {
+    Gone,
+    Start,
+    Starting,
+    CouldNotStart,
+    /// The lock is held, so the failure is the link's own and it shows as it is.
+    Show,
+}
+
+fn step(daemon: Daemon, free: bool) -> (Step, Daemon) {
+    match (free, daemon) {
+        (false, _) => (Step::Show, daemon),
+        (true, Daemon::Seen | Daemon::Reached) => (Step::Gone, daemon),
+        (true, Daemon::Unseen) => (Step::Start, Daemon::Started { free: 0 }),
+        (true, Daemon::Started { free }) if free + 1 >= START_RETRIES => {
+            (Step::CouldNotStart, Daemon::Started { free: free + 1 })
+        }
+        (true, Daemon::Started { free }) => (Step::Starting, Daemon::Started { free: free + 1 }),
+    }
+}
+
+/// A window's link to the daemon. It reconnects after a hang-up while dotori keeps running, as
+/// when the window fell behind, so that only shows as `Down` followed by `Connected`. When dotori
+/// itself stops the window closes instead. A window does not send on `say` after `Down` until
+/// the next `Connected`, since that would go out late and unseen.
 #[derive(Debug)]
 pub(crate) struct Link {
     pub(crate) updates: mpsc::UnboundedReceiver<Update>,
@@ -60,12 +102,33 @@ async fn keep(
     updates: mpsc::UnboundedSender<Update>,
     mut said: mpsc::UnboundedReceiver<FromWindow>,
 ) {
+    let mut daemon = Daemon::Unseen;
+    let mut logged = String::new();
     loop {
-        let reason = match session(&home, &updates, &mut said).await {
+        let reason = match session(&home, &updates, &mut said, &mut daemon).await {
             Ok(Ended::WindowClosed) => return,
             Ok(Ended::HungUp) => String::from("dotori closed the connection"),
             Err(error) => error,
         };
+        let (next, after) = step(daemon, reason == NOT_RUNNING);
+        daemon = after;
+        let reason = match next {
+            Step::Gone => {
+                let _ = updates.send(Update::Gone);
+                return;
+            }
+            Step::Start => {
+                crate::tray::start();
+                String::from(STARTING)
+            }
+            Step::Starting => String::from(STARTING),
+            Step::CouldNotStart => String::from(COULD_NOT_START),
+            Step::Show => reason,
+        };
+        if reason != logged {
+            eprintln!("dotori: link: {reason}");
+            logged.clone_from(&reason);
+        }
         if updates.send(Update::Down(reason)).is_err() {
             return;
         }
@@ -82,11 +145,21 @@ async fn session(
     home: &Home,
     updates: &mpsc::UnboundedSender<Update>,
     said: &mut mpsc::UnboundedReceiver<FromWindow>,
+    daemon: &mut Daemon,
 ) -> Result<Ended, String> {
     if !DaemonLock::held(&home.lock())? {
-        return Err(String::from("dotori is not running"));
+        return Err(String::from(NOT_RUNNING));
     }
-    let door = Door::read(&home.door())?;
+    if *daemon != Daemon::Reached {
+        *daemon = Daemon::Seen;
+    }
+    let door = Door::read(&home.door()).map_err(|error| {
+        if home.door().exists() {
+            error
+        } else {
+            String::from(STARTING)
+        }
+    })?;
     let stream = TcpStream::connect(("127.0.0.1", door.port))
         .await
         .map_err(|error| format!("dotori is not reachable: {error}"))?;
@@ -101,6 +174,7 @@ async fn session(
         Ok(Ok(None)) => return Ok(Ended::HungUp),
         Ok(Err(error)) => return Err(format!("dotori is not reachable: {error}")),
     };
+    *daemon = Daemon::Reached;
     if updates.send(Update::Connected).is_err() {
         return Ok(Ended::WindowClosed);
     }
@@ -146,3 +220,7 @@ async fn line(write: &mut tokio::net::tcp::OwnedWriteHalf, text: &str) -> Result
     sent.await
         .map_err(|error| format!("dotori is not reachable: {error}"))
 }
+
+#[cfg(test)]
+#[path = "link.test.rs"]
+mod tests;

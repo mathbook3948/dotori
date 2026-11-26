@@ -421,6 +421,7 @@ impl Model for Noted {
         .flatten()
         .collect();
         request.context = (!parts.is_empty()).then(|| parts.join("\n\n"));
+        request.time_zone = self.routines.zone().iana_name().map(str::to_owned);
         self.model.complete(request)
     }
 }

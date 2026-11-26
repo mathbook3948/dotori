@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::time::SystemTime;
 
 use dotori_core::conversation::Action;
 use dotori_core::conversation::Entry;
@@ -6,6 +7,8 @@ use dotori_core::llm::ModelTrace;
 use dotori_core::message::Audience;
 use dotori_core::message::Role;
 use dotori_core::sub_session::SubSessionOutcome;
+use jiff::Timestamp;
+use jiff::tz::TimeZone;
 use serde_json::value::RawValue;
 
 use crate::channel::DECISION;
@@ -64,14 +67,14 @@ impl PartialEq for Said {
     }
 }
 
-pub(crate) fn build(conversation: &[Entry], provider: &str) -> Vec<Turn> {
+pub(crate) fn build(conversation: &[Entry], provider: &str, zone: &TimeZone) -> Vec<Turn> {
     let start = start(conversation);
     let mut builder = Builder::default();
     if start > 0 {
         builder.notes.push(String::from(LEFT_OUT));
     }
     for index in order(conversation, start) {
-        builder.add(index, &conversation[index], provider);
+        builder.add(index, &conversation[index], provider, zone);
     }
     builder.finish()
 }
@@ -161,7 +164,7 @@ struct Builder {
 }
 
 impl Builder {
-    fn add(&mut self, index: usize, entry: &Entry, provider: &str) {
+    fn add(&mut self, index: usize, entry: &Entry, provider: &str, zone: &TimeZone) {
         match entry {
             Entry::Acted { actions, trace, .. } => {
                 self.reply(index, actions, trace.as_ref(), provider)
@@ -188,7 +191,7 @@ impl Builder {
                         .push(tagged("late_tool_result", &[("id", id)], &text));
                 }
             }
-            other => self.notes.push(note(other)),
+            other => self.notes.push(note(other, zone)),
         }
     }
 
@@ -314,7 +317,7 @@ impl Builder {
     }
 }
 
-fn note(entry: &Entry) -> String {
+fn note(entry: &Entry, zone: &TimeZone) -> String {
     match entry {
         Entry::Heard { message, .. } if message.address.channel.as_str() == DECISION => tagged(
             "decided_call",
@@ -327,13 +330,17 @@ fn note(entry: &Entry) -> String {
                 Role::Other => "other",
             };
             let thread = thread.get().to_string();
-            let mut attributes = vec![
-                ("thread", thread.as_str()),
+            let time = message.at.and_then(|at| local_time(at, zone));
+            let mut attributes = vec![("thread", thread.as_str())];
+            if let Some(time) = &time {
+                attributes.push(("time", time));
+            }
+            attributes.extend([
                 ("channel", message.address.channel.as_str()),
                 ("place", message.address.place.as_str()),
                 ("from", message.sender.name.as_str()),
                 ("role", role),
-            ];
+            ]);
             let readers = message.audience.as_ref().map(readers);
             if let Some(readers) = &readers {
                 attributes.push(("readers", readers));
@@ -401,6 +408,15 @@ fn readers(audience: &Audience) -> String {
         }
         Audience::Anyone(scope) => format!("anyone in {scope}"),
     }
+}
+
+fn local_time(at: SystemTime, zone: &TimeZone) -> Option<String> {
+    let at = Timestamp::try_from(at).ok()?;
+    Some(
+        at.to_zoned_datetime(zone.clone())
+            .strftime("%Y-%m-%d %a %H:%M %:z")
+            .to_string(),
+    )
 }
 
 fn tagged(tag: &str, attributes: &[(&str, &str)], body: &str) -> String {
