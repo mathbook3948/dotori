@@ -105,6 +105,7 @@ async fn a_record_keeps_its_number_its_pc_and_columns_for_search() {
             },
             content: Content::parse("내일 회의는 3시").expect("non-empty"),
             audience: None,
+            at: None,
         },
     };
     store.append(vec![record(heard)]).await.expect("appended");

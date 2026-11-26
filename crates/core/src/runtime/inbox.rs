@@ -1,3 +1,5 @@
+use std::time::SystemTime;
+
 use tokio::sync::mpsc;
 
 use crate::BoxFuture;
@@ -26,6 +28,7 @@ impl Inbox for ChannelInbox {
                 .send(Event::Received {
                     channel: self.channel.clone(),
                     incoming,
+                    at: SystemTime::now(),
                 })
                 .await
                 .map_err(|_| InboxClosedError)

@@ -37,6 +37,7 @@ fn heard(text: &str) -> Entry {
             },
             content: Content::parse(text).expect("non-empty"),
             audience: None,
+            at: None,
         },
     }
 }

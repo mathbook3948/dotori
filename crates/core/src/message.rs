@@ -1,5 +1,6 @@
 use std::error::Error;
 use std::fmt;
+use std::time::SystemTime;
 
 use crate::id::ChannelId;
 use crate::id::ExternalMessageId;
@@ -104,6 +105,8 @@ pub struct Message {
     pub content: Content,
     /// `None` only in records from before rooms were described.
     pub audience: Option<Audience>,
+    /// When dotori received it, or `None` where nothing kept the time.
+    pub at: Option<SystemTime>,
 }
 
 #[cfg(test)]

@@ -35,6 +35,7 @@ fn heard(seconds: u64, thread: u32, channel: &str, place: &str, who: &str, text:
                 },
                 content: Content::parse(text.to_owned()).expect("text"),
                 audience: Some(Audience::Owner),
+                at: None,
             },
         },
     }

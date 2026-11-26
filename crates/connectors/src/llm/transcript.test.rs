@@ -36,6 +36,7 @@ fn heard(thread: u32, text: &str) -> Entry {
             },
             content: Content::parse(text).expect("non-empty"),
             audience: None,
+            at: None,
         },
     }
 }
@@ -460,4 +461,28 @@ fn what_came_of_a_call_the_owner_decided_is_not_the_owners_message() {
         notes(&turns[0]),
         ["<decided_call tool=\"mail__send\">\nsent to team@example.com\n</decided_call>"]
     );
+}
+
+#[test]
+fn a_message_names_when_it_was_heard_on_this_pcs_clock() {
+    let at = std::time::UNIX_EPOCH + std::time::Duration::from_millis(1_700_000_000_123);
+    let mut timed = heard(0, "now");
+    if let Entry::Heard { message, .. } = &mut timed {
+        message.at = Some(at);
+    }
+
+    let turns = build(&[timed, heard(0, "untimed")], "anthropic");
+
+    let shown = jiff::Timestamp::try_from(at)
+        .expect("in range")
+        .to_zoned_datetime(jiff::tz::TimeZone::system())
+        .strftime("%Y-%m-%d %a %H:%M %:z")
+        .to_string();
+    let notes = notes(&turns[0]);
+    assert!(
+        notes[0].contains(&format!("thread=\"0\" time=\"{shown}\"")),
+        "{}",
+        notes[0]
+    );
+    assert!(!notes[1].contains("time="), "{}", notes[1]);
 }

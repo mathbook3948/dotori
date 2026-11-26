@@ -22,11 +22,12 @@ use dotori_core::tool::ToolCall;
 use dotori_core::tool::ToolCallId;
 use dotori_core::tool::ToolError;
 
-pub(crate) fn record(entry: Entry) -> Record {
-    Record {
-        at: UNIX_EPOCH + Duration::from_millis(1_700_000_000_123),
-        entry,
+pub(crate) fn record(mut entry: Entry) -> Record {
+    let at = UNIX_EPOCH + Duration::from_millis(1_700_000_000_123);
+    if let Entry::Heard { message, .. } = &mut entry {
+        message.at = Some(at);
     }
+    Record { at, entry }
 }
 
 fn spec() -> SubSessionSpec {
@@ -57,6 +58,7 @@ pub(crate) fn every_entry() -> Vec<Entry> {
                     some: vec![String::from("민아")],
                     total: 3,
                 }),
+                at: None,
             },
         },
         Entry::Acted {

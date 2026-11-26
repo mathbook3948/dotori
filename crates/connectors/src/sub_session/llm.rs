@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 use std::time::Duration;
+use std::time::SystemTime;
 
 use dotori_core::BoxFuture;
 use dotori_core::conversation::Action;
@@ -92,6 +93,7 @@ impl LlmRunner {
                 },
                 content,
                 audience: Some(Audience::Owner),
+                at: Some(SystemTime::now()),
             },
         }];
         for _ in 0..self.max_turns {

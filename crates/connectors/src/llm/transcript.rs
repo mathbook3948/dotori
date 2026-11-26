@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::time::SystemTime;
 
 use dotori_core::conversation::Action;
 use dotori_core::conversation::Entry;
@@ -6,6 +7,8 @@ use dotori_core::llm::ModelTrace;
 use dotori_core::message::Audience;
 use dotori_core::message::Role;
 use dotori_core::sub_session::SubSessionOutcome;
+use jiff::Timestamp;
+use jiff::tz::TimeZone;
 use serde_json::value::RawValue;
 
 use crate::channel::DECISION;
@@ -327,13 +330,17 @@ fn note(entry: &Entry) -> String {
                 Role::Other => "other",
             };
             let thread = thread.get().to_string();
-            let mut attributes = vec![
-                ("thread", thread.as_str()),
+            let time = message.at.and_then(local_time);
+            let mut attributes = vec![("thread", thread.as_str())];
+            if let Some(time) = &time {
+                attributes.push(("time", time));
+            }
+            attributes.extend([
                 ("channel", message.address.channel.as_str()),
                 ("place", message.address.place.as_str()),
                 ("from", message.sender.name.as_str()),
                 ("role", role),
-            ];
+            ]);
             let readers = message.audience.as_ref().map(readers);
             if let Some(readers) = &readers {
                 attributes.push(("readers", readers));
@@ -401,6 +408,15 @@ fn readers(audience: &Audience) -> String {
         }
         Audience::Anyone(scope) => format!("anyone in {scope}"),
     }
+}
+
+fn local_time(at: SystemTime) -> Option<String> {
+    let at = Timestamp::try_from(at).ok()?;
+    Some(
+        at.to_zoned_datetime(TimeZone::system())
+            .strftime("%Y-%m-%d %a %H:%M %:z")
+            .to_string(),
+    )
 }
 
 fn tagged(tag: &str, attributes: &[(&str, &str)], body: &str) -> String {

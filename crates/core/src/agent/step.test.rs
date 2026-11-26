@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
+use std::time::SystemTime;
 
 use super::*;
 use crate::id::ExternalMessageId;
@@ -41,6 +42,7 @@ impl Harness {
         self.feed(Event::Received {
             channel: app(),
             incoming,
+            at: SystemTime::UNIX_EPOCH,
         });
     }
 
@@ -53,6 +55,7 @@ impl Harness {
         self.feed(Event::Received {
             channel: slack(),
             incoming,
+            at: SystemTime::UNIX_EPOCH,
         });
     }
 
@@ -331,10 +334,12 @@ fn redelivered_message_is_heard_once() {
     h.feed(Event::Received {
         channel: slack(),
         incoming: incoming.clone(),
+        at: SystemTime::UNIX_EPOCH,
     });
     h.feed(Event::Received {
         channel: slack(),
         incoming,
+        at: SystemTime::UNIX_EPOCH,
     });
 
     assert!(h.effects.is_empty());
@@ -679,4 +684,17 @@ fn a_tool_call_after_a_sub_session_returned_has_no_room() {
             .iter()
             .any(|effect| matches!(effect, Effect::RunTool { origin: None, .. }))
     );
+}
+
+#[test]
+fn a_heard_message_keeps_the_time_it_came_in() {
+    let mut h = Harness::new();
+
+    h.owner_says("hi");
+
+    let at = h.state.conversation.iter().find_map(|entry| match entry {
+        Entry::Heard { message, .. } => message.at,
+        _ => None,
+    });
+    assert_eq!(at, Some(SystemTime::UNIX_EPOCH));
 }

@@ -1,3 +1,5 @@
+use std::time::SystemTime;
+
 use crate::agent::ids::CallId;
 use crate::agent::ids::SubSessionId;
 use crate::agent::ids::ToolRunId;
@@ -19,6 +21,7 @@ pub(crate) enum Event {
     Received {
         channel: ChannelId,
         incoming: Incoming,
+        at: SystemTime,
     },
     ModelDone {
         call: CallId,
