@@ -32,6 +32,8 @@ pub const RAN: &str = "실행했어요.";
 pub const SKIPPED: &str = "알겠어요, 실행하지 않을게요.";
 /// The reply to anything else.
 pub const OTHER: &str = "알겠어요. 바로 확인해 볼게요.";
+/// The greeting the first conversation starts with.
+pub const GREETED: &str = "안녕하세요. 개인 비서 Dotori예요.";
 
 /// Serves the script on a free local port until the runtime ends.
 pub async fn start(script: Script) -> SocketAddr {
@@ -148,6 +150,9 @@ pub fn answer(asked: &Value, script: &Script) -> Value {
             let Some(said) = heard(&text).pop() else {
                 return done();
             };
+            if said.channel == "greeting" {
+                return call("say", json!({ "thread": said.thread, "text": GREETED }));
+            }
             if said.text.contains("치과") {
                 return call(
                     "add_routine",

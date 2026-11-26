@@ -129,9 +129,9 @@ pub(crate) fn zone(name: Option<&str>) -> TimeZone {
         .unwrap_or_else(TimeZone::system)
 }
 
-/// The tools the model sees: core's built-in `say` and `delegate`, then the toolbox's.
-/// A toolbox tool that reuses a built-in name is left out.
-pub(crate) fn tools(toolbox: &[ToolSpec]) -> Vec<ToolSpec> {
+/// The tools the model sees: core's built-in `say` and, when it `delegates`, `delegate`, then
+/// the toolbox's. A toolbox tool that reuses a built-in name is left out.
+pub(crate) fn tools(toolbox: &[ToolSpec], delegates: bool) -> Vec<ToolSpec> {
     let mut tools = vec![
         ToolSpec {
             name: String::from(SAY),
@@ -155,6 +155,9 @@ pub(crate) fn tools(toolbox: &[ToolSpec]) -> Vec<ToolSpec> {
             ),
         },
     ];
+    if !delegates {
+        tools.retain(|spec| spec.name != DELEGATE);
+    }
     tools.extend(
         toolbox
             .iter()

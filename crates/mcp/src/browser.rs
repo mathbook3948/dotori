@@ -547,7 +547,7 @@ impl Browser {
         let origin = origin.as_str().unwrap_or_default();
         if self.locked.lock().expect("unpoisoned").contains(origin) {
             return Err(format!(
-                "a result on {origin} held a password or code, so dotori's browser takes no code \
+                "a result on {origin} held a password or code, so your browser takes no code \
                  and shows nothing there until it starts again"
             ));
         }
@@ -2396,53 +2396,44 @@ impl Tool for BrowserTool {
     fn description(&self) -> &str {
         match self.action {
             Action::Run => {
-                "Runs Playwright-style JavaScript in dotori's browser, which keeps the owner's logins. \
-                 `page` is ready to use: page.goto(url); locators from page.getByRole(role, { name }), \
-                 getByText, getByLabel, getByPlaceholder, getByTestId, or page.locator(css), where \
-                 `ref=N` picks element [N] of the last page read; locator.click(), fill(text), \
-                 press(key), check(), selectOption(value), textContent(), innerText(), inputValue(), \
-                 count(), all(), first(), nth(i), filter({ hasText }), waitFor(); page.keyboard.press(key); \
-                 page.waitForURL(url); page.evaluate(fn, arg) runs fn inside the page. Each action waits \
-                 for its element, and a locator that matches several elements is refused. Use await as in \
-                 Playwright. What console.log prints and what the code returns come first in the result, \
-                 then the page as read_page shows it."
+                "Runs Playwright JavaScript in your browser, which keeps the owner's logins. `page` \
+                 is ready to use, and `ref=N` in a locator picks element [N] of the last page read. \
+                 A locator that matches several elements is refused. What console.log prints and \
+                 what the code returns come first in the result, then the page as read_page shows it."
             }
             Action::Read => {
-                "Returns the page now open in the browser, with interactive elements as [n]. With \
-                 `url`, opens that address first, the way to load a page that ask_owner_to_fill \
-                 or fill_login will use, since a page opened by run_in_browser counts as one your \
-                 code ran on."
+                "Returns the page now open in your browser, with interactive elements as [n]. With \
+                 `url`, opens that address first. Use it for a page that needs a login or clicks; \
+                 for a public page, fetch_url is quicker. Open a page this way before \
+                 ask_owner_to_fill or fill_login, since a page opened by run_in_browser counts as one \
+                 your code ran on."
             }
             Action::Ask => {
                 "Asks the owner, through a card in the chat window, to take the browser over and do \
-                 something themselves, such as passing a check dotori cannot. To log in, use fill_login \
+                 something themselves, such as passing a check you cannot. To log in, use fill_login \
                  with an account the vault keeps, or ask_owner_to_fill to show the owner the page's \
                  login fields. Returns at once; the owner hands the browser back when done."
             }
             Action::Fill => {
-                "Shows the owner a card in the dotori chat window to fill fields of the page open in \
-                 the browser, such as a login, a one-time code or a password reset, and to press its \
+                "Shows the owner a card in the chat window to fill fields of the page open in your \
+                 browser, such as a login, a one-time code or a password reset, and to press its \
                  button or one of its links. Only on an https page that no code of yours ran on since \
-                 it loaded: open it with read_page and its `url`, then call this. Name its elements by \
-                 their [n]. A secret field must be a password field. \
-                 dotori draws the card with the page's real host; you cannot put values in it, and \
-                 what the owner types goes to the page, never to you. With `keep` and `site`, dotori \
-                 seals the account (one secret field for the password, at most one text field for the \
-                 id) in its vault for fill_login later. The owner answers in the dotori window on their \
-                 PC, never on Telegram, Slack or Discord; when they talk to you there, ask them to do \
-                 it on their PC, and dotori tells that room the card is showing. \
-                 You learn which button or link they pressed, which fields were filled, and the page \
-                 after."
+                 it loaded: open it with read_page and its `url` first. Name its elements by their \
+                 [n]; a secret field must be a password field. You cannot put values in the card, \
+                 and what the owner types goes to the page, never to you. With `keep` and `site`, \
+                 the account (one password field and at most one id field) is sealed in the vault \
+                 for fill_login. The owner answers in the chat window on their PC, not on Telegram, \
+                 Slack or Discord; when they talk to you there, ask them to do it on their PC. You \
+                 learn which button or link they pressed, which fields were filled, and the page after."
             }
             Action::LogIn => {
-                "Logs in to the page open in the browser with the account the vault keeps for its \
-                 origin: dotori fills the id and password fields you name by their [n] and presses \
-                 `submit`. Unless the owner said not to ask again for an account of this site, \
-                 dotori first asks them in the chat window, and in the chat room they asked you in, \
-                 where they also pick the account when the site has several. It fills only a page on \
-                 the origin the account was kept for, \
-                 and you never see the id or the password. Same page rules as ask_owner_to_fill. \
-                 Fails when the vault keeps no account for the page."
+                "Logs in to the page open in your browser with the account the vault keeps for its \
+                 origin: the id and password fields you name by their [n] are filled and `submit` is \
+                 pressed. Unless the owner said not to ask again for this site, the owner is asked \
+                 first, in the chat window and in the room they asked you from, and picks the \
+                 account when the site has several. Only on the origin the account was kept for, and \
+                 you never see the id or the password. Same page rules as ask_owner_to_fill. Fails \
+                 when the vault keeps no account for the page."
             }
         }
     }
@@ -2492,7 +2483,7 @@ impl Tool for BrowserTool {
                                 "properties": {
                                     "ref": { "type": "integer" },
                                     "label": { "type": "string" },
-                                    "kind": { "type": "string", "enum": ["text", "secret", "code"], "description": "secret for a password, code for a one-time code dotori never keeps." }
+                                    "kind": { "type": "string", "enum": ["text", "secret", "code"], "description": "secret for a password, code for a one-time code that is never kept." }
                                 },
                                 "required": ["ref", "label", "kind"]
                             }

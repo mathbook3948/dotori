@@ -38,6 +38,9 @@ pub struct AnthropicConfig {
     /// How hard the model thinks, such as `low` or `high`. `None` leaves the API default.
     pub effort: Option<String>,
     pub system: String,
+    /// Whether the model may hand work to a sub-session with `delegate`. A sub-session's own
+    /// model may not.
+    pub delegates: bool,
 }
 
 impl AnthropicConfig {
@@ -49,6 +52,7 @@ impl AnthropicConfig {
             max_tokens: 16000,
             effort: None,
             system: String::from(DEFAULT_SYSTEM),
+            delegates: true,
         }
     }
 }
@@ -122,7 +126,7 @@ impl Model for Anthropic {
 
 fn body(config: &AnthropicConfig, request: &ModelRequest) -> Result<String, ModelError> {
     let mut tools = Vec::new();
-    for spec in reply::tools(&request.tools) {
+    for spec in reply::tools(&request.tools, config.delegates) {
         let schema = RawValue::from_string(spec.input_schema).map_err(|error| ModelError {
             detail: format!("tool `{}` has an invalid input schema: {error}", spec.name),
         })?;

@@ -193,10 +193,17 @@ impl LinkedSites {
         }
     }
 
-    /// The sites the owner linked, by name and origin, with how many accounts each has, or `None`
-    /// when there are none.
-    pub(crate) fn context(&self) -> Option<String> {
-        let changes = self.vault.changes().ok()?;
+    /// The sites the owner linked, by name and origin, with the id of each account.
+    pub(crate) fn listed(&self) -> String {
+        match self.told() {
+            Ok(Some(text)) => text,
+            Ok(None) => String::from("No sites are linked."),
+            Err(error) => format!("The linked sites cannot be read: {error}"),
+        }
+    }
+
+    fn told(&self) -> Result<Option<String>, String> {
+        let changes = self.vault.changes()?;
         let mut shown = self
             .shown
             .lock()
@@ -204,11 +211,11 @@ impl LinkedSites {
         if let Some((at, text)) = shown.as_ref()
             && *at == changes
         {
-            return text.clone();
+            return Ok(text.clone());
         }
-        let text = told(&sites(&self.vault).unwrap_or_default());
+        let text = told(&sites(&self.vault)?);
         *shown = Some((changes, text.clone()));
-        text
+        Ok(text)
     }
 }
 
@@ -232,11 +239,9 @@ fn told(sites: &[Site]) -> Option<String> {
         .map(|((site, origin), ids)| format!("- {site} ({origin}): {}", ids.join(", ")))
         .collect();
     Some(format!(
-        "Sites the owner linked, with the id of each account. dotori's vault keeps their \
-         passwords, which you never see. On a page of one of these origins, log in with \
-         `fill_login`, naming an `account` when the owner said which; otherwise the owner picks \
-         one. To link another account, open the site's login page and show the owner a card with \
-         `ask_owner_to_fill` and `keep`; the owner unlinks accounts in the settings window.\n{}",
+        "Sites the owner linked, with the id of each account. On a page of one of these origins, \
+         log in with `fill_login`, naming an `account` when the owner said which; otherwise the \
+         owner picks one.\n{}",
         lines.join("\n")
     ))
 }

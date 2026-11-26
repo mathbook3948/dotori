@@ -74,10 +74,12 @@ fn built_in_tools_come_first_and_win_a_name_clash() {
         },
     ];
 
-    let names: Vec<String> = tools(&toolbox).into_iter().map(|t| t.name).collect();
+    let names: Vec<String> = tools(&toolbox, true).into_iter().map(|t| t.name).collect();
+    let undelegating: Vec<String> = tools(&toolbox, false).into_iter().map(|t| t.name).collect();
 
     assert_eq!(names, vec!["say", "delegate", "read_file"]);
-    for spec in tools(&[]) {
+    assert_eq!(undelegating, vec!["say", "read_file"]);
+    for spec in tools(&[], true) {
         serde_json::from_str::<serde_json::Value>(&spec.input_schema).expect("valid schema");
     }
 }

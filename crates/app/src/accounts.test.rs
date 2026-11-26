@@ -133,9 +133,7 @@ fn the_model_sees_each_site_and_its_ids_and_never_a_password() {
         .expect("kept");
 
     let listed = sites(&accounts.vault).expect("listed");
-    let told = LinkedSites::new(Arc::clone(&accounts.vault))
-        .context()
-        .expect("told");
+    let told = LinkedSites::new(Arc::clone(&accounts.vault)).listed();
 
     let shown: Vec<(&str, Option<&str>)> = listed
         .iter()
@@ -180,10 +178,7 @@ fn unlinking_one_of_two_accounts_leaves_the_other_on_every_linked_pc() {
         2
     );
     let told = LinkedSites::new(Arc::clone(&there.vault));
-    assert!(
-        told.context()
-            .is_some_and(|told| told.contains("minji.example@mail.com"))
-    );
+    assert!(told.listed().contains("minji.example@mail.com"));
 
     std::thread::sleep(std::time::Duration::from_millis(5));
     let first = sites(&here.vault)
@@ -201,9 +196,10 @@ fn unlinking_one_of_two_accounts_leaves_the_other_on_every_linked_pc() {
         plain(there.find("https://www.coupang.com").expect("read")),
         vec![second()]
     );
+    let now = told.listed();
     assert!(
-        told.context()
-            .is_some_and(|told| !told.contains("minji.example") && told.contains("family"))
+        !now.contains("minji.example") && now.contains("family"),
+        "{now}"
     );
 }
 

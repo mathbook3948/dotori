@@ -9,6 +9,7 @@ mod device;
 mod door;
 mod first_run;
 mod forget;
+mod greeting;
 mod handoff;
 mod history;
 mod home;

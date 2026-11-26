@@ -103,6 +103,7 @@ async fn the_card_shows_what_would_be_forgotten_and_an_unknown_number_never_reac
     let previewed = Previewed {
         inner: Arc::clone(&kept) as Arc<dyn Toolbox>,
         store,
+        notes: Notes::new(folder.join("notes.sqlite3")),
     };
 
     previewed
@@ -130,7 +131,7 @@ async fn the_card_shows_what_would_be_forgotten_and_an_unknown_number_never_reac
     assert_eq!(calls.len(), 2);
     let shown: Value = serde_json::from_str(&calls[0].input).expect("json");
     assert_eq!(shown["records"], json!([ids[0]]));
-    let forgetting = shown["지울 기록"].as_str().expect("text");
+    let forgetting = shown[RECORDS_SHOWN].as_str().expect("text");
     assert!(
         forgetting.contains("유노: 내 카드 번호는 1234야"),
         "{forgetting}"
@@ -162,6 +163,7 @@ async fn forgetting_removes_the_record_and_its_place_in_search() {
         store: store.clone(),
         memory,
         copies: Arc::default(),
+        notes: Notes::new(folder.join("notes.sqlite3")),
     };
 
     let said = forget
@@ -169,7 +171,7 @@ async fn forgetting_removes_the_record_and_its_place_in_search() {
         .await
         .expect("forgot");
 
-    assert!(said.starts_with("Forgot 1 record"), "{said}");
+    assert!(said.starts_with("Erased 1 record"), "{said}");
     let left = store.load().await.expect("loaded");
     assert_eq!(left.len(), 1);
     let index = rusqlite::Connection::open(folder.join("search.sqlite3")).expect("opened");
@@ -206,6 +208,7 @@ async fn only_the_carriers_the_owner_saw_go_with_the_record() {
     let previewed = Previewed {
         inner: Arc::clone(&kept) as Arc<dyn Toolbox>,
         store: store.clone(),
+        notes: Notes::new(folder.join("notes.sqlite3")),
     };
     previewed
         .run(call(
@@ -220,7 +223,7 @@ async fn only_the_carriers_the_owner_saw_go_with_the_record() {
     };
     assert_eq!(shown["carriers"].as_array().map(Vec::len), Some(1));
     assert!(
-        shown["함께 지울 기록 (검색 결과 등)"]
+        shown[CARRIERS_SHOWN]
             .as_str()
             .is_some_and(|also| also.contains("도구 결과")),
         "{shown}"
@@ -239,12 +242,69 @@ async fn only_the_carriers_the_owner_saw_go_with_the_record() {
             jobs: None,
         },
         copies: Arc::default(),
+        notes: Notes::new(folder.join("notes.sqlite3")),
     };
 
     let said = forget.call(shown).await.expect("forgot");
 
-    assert!(said.starts_with("Forgot 2 record"), "{said}");
+    assert!(said.starts_with("Erased 2 record"), "{said}");
     let left = store.load().await.expect("loaded");
     assert_eq!(left.len(), 2, "the other message and the later result stay");
+    let _ = std::fs::remove_dir_all(folder);
+}
+
+#[tokio::test]
+async fn a_note_is_shown_on_the_card_and_erased_with_the_owners_ok() {
+    let folder = folder();
+    let (store, _) = store(&folder).await;
+    let notes = Notes::new(folder.join("notes.sqlite3"));
+    notes.keep("커피는 아이스").expect("kept");
+    notes.keep("주말엔 늦잠").expect("kept");
+    let kept = Arc::new(Kept::default());
+    let previewed = Previewed {
+        inner: Arc::clone(&kept) as Arc<dyn Toolbox>,
+        store: store.clone(),
+        notes: Arc::clone(&notes),
+    };
+
+    let unknown = previewed
+        .run(call(FORGET, json!({ "notes": [9] })))
+        .await
+        .expect_err("unknown");
+    previewed
+        .run(call(FORGET, json!({ "notes": [1] })))
+        .await
+        .expect("asked");
+
+    assert!(unknown.detail.contains("no note [9]"), "{}", unknown.detail);
+    let shown: Value = {
+        let calls = kept.0.lock().expect("unpoisoned");
+        assert_eq!(calls.len(), 1, "an unknown number never reaches the owner");
+        serde_json::from_str(&calls[0].input).expect("json")
+    };
+    assert_eq!(shown[NOTES_SHOWN], "[1] 커피는 아이스");
+    let forget = Forget {
+        store,
+        memory: MemoryConfig {
+            record: folder.join("record"),
+            index: folder.join("search.sqlite3"),
+            dictionaries: folder.join("dictionaries"),
+            embedding: None,
+            jobs: None,
+        },
+        copies: Arc::default(),
+        notes: Arc::clone(&notes),
+    };
+
+    let said = forget.call(shown).await.expect("erased");
+
+    assert!(said.starts_with("Erased 1 note"), "{said}");
+    let left: Vec<String> = notes
+        .list()
+        .expect("listed")
+        .into_iter()
+        .map(|(_, text)| text)
+        .collect();
+    assert_eq!(left, ["주말엔 늦잠"]);
     let _ = std::fs::remove_dir_all(folder);
 }

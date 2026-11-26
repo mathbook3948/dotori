@@ -232,10 +232,13 @@ impl Routines {
     }
 
     /// What the model is told about the routines, or `None` when there are none.
-    pub(crate) fn context(&self) -> Option<String> {
-        let routines = self.list().ok()?;
+    pub(crate) fn listed(&self) -> String {
+        let routines = match self.list() {
+            Ok(routines) => routines,
+            Err(error) => return format!("The routines cannot be read: {error}"),
+        };
         if routines.is_empty() {
-            return None;
+            return String::from("The owner has no routines.");
         }
         let lines: Vec<String> = routines
             .iter()
@@ -251,13 +254,10 @@ impl Routines {
             .collect();
         let zone = self.zone();
         let zone = zone.iana_name().unwrap_or("this PC's time zone");
-        Some(format!(
-            "Routines the owner set up, at times in {zone}. When one is due, its task arrives as a message on the \
-             `routine` channel, in a thread named after the routine: do the task then and say \
-             the result in that thread, which the owner reads in the chat window. Use \
-             `remove_routine` with a routine's number when the owner asks to drop it.\n{}",
+        format!(
+            "Routines the owner set up, at times in {zone}:\n{}",
             lines.join("\n")
-        ))
+        )
     }
 
     pub(crate) fn add(&self, input: &Value, now_ms: i64) -> Result<String, String> {

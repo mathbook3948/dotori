@@ -109,8 +109,9 @@ impl Tool for WebFetch {
     }
 
     fn description(&self) -> &str {
-        "Fetches a public web page and returns it as Markdown (or as raw text with `raw`). \
-         Long pages come in parts: call again with the `start_index` the reply names."
+        "Fetches a public web page that needs no login and returns it as Markdown (or as raw \
+         text with `raw`). It is quicker than the browser. Long pages come in parts: call again \
+         with the `start_index` the reply names."
     }
 
     fn input_schema(&self) -> Value {

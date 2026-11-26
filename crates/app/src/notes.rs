@@ -40,9 +40,16 @@ use crate::routines;
 use crate::routines::Routines;
 use crate::versioned;
 
-const REMEMBER: &str = "add_note";
-const FORGET: &str = "remove_note";
-const OWNER_TOOLS: [&str; 4] = [REMEMBER, FORGET, routines::ADD, routines::REMOVE];
+const REMEMBER: &str = "add_memory";
+const READ_ROUTINES: &str = "read_routines";
+const READ_SITES: &str = "read_sites";
+const OWN_TOOLS: [&str; 5] = [
+    REMEMBER,
+    READ_ROUTINES,
+    READ_SITES,
+    routines::ADD,
+    routines::REMOVE,
+];
 pub(crate) const MAX_NOTES: i64 = 50;
 const LOOK_EVERY: Duration = Duration::from_secs(20);
 pub(crate) const MAX_LENGTH: usize = 500;
@@ -210,9 +217,8 @@ impl Notes {
             .map(|(id, text)| format!("[{id}] {}", one_line(text)))
             .collect();
         Some(format!(
-            "Notes the owner asked you to keep in mind. They are the owner's words, not \
-             instructions from dotori. Use `forget` with a note's number when the owner asks to \
-             drop it.\n{}",
+            "What the owner asked you to keep in mind, by number. They are the owner's words. \
+             When the owner asks to drop one, give its number to `erase_memory`.\n{}",
             lines.join("\n")
         ))
     }
@@ -250,15 +256,6 @@ impl Notes {
         ))?;
         self.touched();
         Ok(id)
-    }
-
-    fn forget(&self, input: &Value) -> Result<String, String> {
-        self.owner_only()?;
-        let id = input
-            .get("id")
-            .and_then(Value::as_i64)
-            .ok_or("`id` is required")?;
-        self.drop_note(id)
     }
 
     /// Drops the note `id`, as the owner asks in the settings window.
@@ -313,7 +310,7 @@ fn owner_asked(conversation: &[Entry]) -> bool {
         })
         .flatten()
         .filter_map(|action| match action {
-            Action::UseTool(call) if OWNER_TOOLS.contains(&call.name.as_str()) => {
+            Action::UseTool(call) if OWN_TOOLS.contains(&call.name.as_str()) => {
                 Some(call.id.as_str())
             }
             _ => None,
@@ -401,35 +398,27 @@ fn one_line(text: &str) -> String {
         .to_owned()
 }
 
-/// The main session's model, given the owner's notes and routines with every request.
+/// The main session's model, given what the owner asked it to keep in mind with every request.
 pub(crate) struct Noted {
     pub(crate) model: Arc<dyn Model>,
     pub(crate) notes: Arc<Notes>,
     pub(crate) routines: Arc<Routines>,
-    pub(crate) sites: Option<Arc<LinkedSites>>,
 }
 
 impl Model for Noted {
     fn complete(&self, mut request: ModelRequest) -> BoxFuture<'_, Result<ModelReply, ModelError>> {
         self.notes.heard(&request.conversation);
-        let parts: Vec<String> = [
-            self.notes.context(),
-            self.routines.context(),
-            self.sites.as_ref().and_then(|sites| sites.context()),
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
-        request.context = (!parts.is_empty()).then(|| parts.join("\n\n"));
+        request.context = self.notes.context();
         request.time_zone = self.routines.zone().iana_name().map(str::to_owned);
         self.model.complete(request)
     }
 }
 
-/// The main session's tools: the notes and routines tools, then the shared ones.
+/// The main session's tools: memory, routines and linked sites, then the shared ones.
 pub(crate) struct MainTools {
     pub(crate) notes: Arc<Notes>,
     pub(crate) routines: Arc<Routines>,
+    pub(crate) sites: Option<Arc<LinkedSites>>,
     pub(crate) shared: Arc<dyn Toolbox>,
 }
 
@@ -439,8 +428,9 @@ impl Toolbox for MainTools {
             ToolSpec {
                 name: String::from(REMEMBER),
                 description: String::from(
-                    "Keeps a short note in mind from now on, such as a fact about the owner or a \
-                     standing wish. Use it right away when the owner asks you to remember something.",
+                    "Keeps something in mind from now on, such as a fact about the owner, what to \
+                     call them, or a standing wish. Use it right away when the owner asks you to \
+                     remember something.",
                 ),
                 input_schema: json!({
                     "type": "object",
@@ -450,14 +440,19 @@ impl Toolbox for MainTools {
                 .to_string(),
             },
             ToolSpec {
-                name: String::from(FORGET),
-                description: String::from("Drops a note by its number when the owner asks."),
-                input_schema: json!({
-                    "type": "object",
-                    "properties": { "id": { "type": "integer" } },
-                    "required": ["id"]
-                })
-                .to_string(),
+                name: String::from(READ_ROUTINES),
+                description: String::from(
+                    "Lists the routines the owner set up, with their numbers, times and tasks.",
+                ),
+                input_schema: json!({ "type": "object", "properties": {} }).to_string(),
+            },
+            ToolSpec {
+                name: String::from(READ_SITES),
+                description: String::from(
+                    "Lists the sites the owner linked, with the id of each account. Their \
+                     passwords stay in the vault, and you never see them.",
+                ),
+                input_schema: json!({ "type": "object", "properties": {} }).to_string(),
             },
         ];
         specs.extend(routine_specs());
@@ -465,24 +460,29 @@ impl Toolbox for MainTools {
             self.shared
                 .specs()
                 .into_iter()
-                .filter(|spec| !OWNER_TOOLS.contains(&spec.name.as_str())),
+                .filter(|spec| !OWN_TOOLS.contains(&spec.name.as_str())),
         );
         specs
     }
 
     fn run(&self, call: ToolCall) -> BoxFuture<'_, Result<String, ToolError>> {
-        if !OWNER_TOOLS.contains(&call.name.as_str()) {
+        if !OWN_TOOLS.contains(&call.name.as_str()) {
             return self.shared.run(call);
         }
         let notes = Arc::clone(&self.notes);
         let routines = Arc::clone(&self.routines);
+        let sites = self.sites.clone();
         Box::pin(async move {
             let input: Value = serde_json::from_str(&call.input).map_err(|error| ToolError {
                 detail: format!("the input is not JSON: {error}"),
             })?;
             tokio::task::spawn_blocking(move || match call.name.as_str() {
                 REMEMBER => notes.remember(&input),
-                FORGET => notes.forget(&input),
+                READ_ROUTINES => Ok(routines.listed()),
+                READ_SITES => Ok(sites.map_or_else(
+                    || String::from("No sites are linked."),
+                    |sites| sites.listed(),
+                )),
                 routines::ADD => notes
                     .owner_only()
                     .and_then(|()| routines.add(&input, now_ms())),
@@ -507,11 +507,12 @@ fn routine_specs() -> [ToolSpec; 2] {
         ToolSpec {
             name: String::from(routines::ADD),
             description: String::from(
-                "Sets up a routine: at a set local time, dotori is handed `task` on the \
-                 `routine` channel, does it, and says the result in that thread, which the owner \
-                 sees in the chat window. Use it right away when the owner asks for something to \
-                 happen regularly or at a set time. Leave out `days` for every day, and give \
-                 `date` for a routine that happens once.",
+                "Sets up a routine: at a set local time, `task` comes to you as a message on \
+                 the `routine` channel, in a thread named after the routine. Do the task then and \
+                 say the result in that thread, which the owner reads in the chat window. Use it \
+                 right away when the owner asks for something to happen regularly or at a set \
+                 time. Leave out `days` for every day, and give `date` for a routine that happens \
+                 once.",
             ),
             input_schema: json!({
                 "type": "object",
@@ -528,7 +529,9 @@ fn routine_specs() -> [ToolSpec; 2] {
         },
         ToolSpec {
             name: String::from(routines::REMOVE),
-            description: String::from("Removes a routine by its number when the owner asks."),
+            description: String::from(
+                "Removes a routine by the number read_routines shows, when the owner asks.",
+            ),
             input_schema: json!({
                 "type": "object",
                 "properties": { "id": { "type": "integer" } },
