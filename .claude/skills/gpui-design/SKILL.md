@@ -45,7 +45,7 @@ bash .claude/skills/gpui-design/demo.sh stop "$home"
 
 `settings "$home" <out.png> [look]` opens the settings window instead. It is taller than a screen, and scrolling does not reach GPUI under Xvfb, so to see all of it run a second, tall Xvfb (for example `Xvfb :98 -screen 0 900x3800x24` with `openbox`), open `dotori settings` there with `DOTORI_HOME` and `DOTORI_THEME` set, make the window tall with `xdotool windowsize`, and capture it with `import`.
 
-`talk` takes your own messages too. `shot ... light 5` saves five frames a few milliseconds apart, for checking that motion shows steps between its start and its end.
+`talk` opens the chat window and types into it with `xdotool`, the way the owner talks to dotori, so it needs no other client. It takes your own messages too. `shot ... light 5` saves five frames a few milliseconds apart, for checking that motion shows steps between its start and its end.
 
 `ask "$home" "<what dotori asks>"` stands in for dotori's browser and asks the owner for it, so the browser card shows; run it before `shot`. Given a JSON object instead, such as `'{"card": {...}}'`, it sends that as the browser's state, so a login card or an account card shows. What the windows send back, such as `{"kind":"take"}`, lands in `$home/screen.log`, and the browser window opens as `dotori 브라우저`, or `dotori browser` in English.
 

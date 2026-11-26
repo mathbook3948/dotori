@@ -495,7 +495,7 @@ pub(crate) async fn serve(
         tool_timeout: TOOL_TIMEOUT,
     };
     door.write(&home.door())?;
-    eprintln!("dotori is running. Open a window with `dotori chat`.");
+    eprintln!("dotori: running; open the chat window from the tray");
     ready();
     let stopped = loop {
         tokio::select! {

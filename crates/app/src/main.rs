@@ -3,7 +3,6 @@
 mod accounts;
 mod asked;
 mod browser_route;
-mod chat;
 mod confirm;
 mod daemon;
 mod device;
@@ -44,7 +43,7 @@ use std::process::ExitCode;
 use crate::home::Home;
 
 const USAGE: &str =
-    "usage: dotori [chat | window | settings | onboarding | search-eval <file> | sandbox install]";
+    "usage: dotori [window | settings | onboarding | search-eval <file> | sandbox install]";
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -60,7 +59,6 @@ async fn main() -> ExitCode {
         #[cfg(debug_assertions)]
         None if env::var_os("DOTORI_TEST_WITHOUT_TRAY").is_some() => daemon::run(home).await,
         None => tray::run(home).await,
-        Some("chat") => chat::run(home).await,
         Some("mcp") => tools::serve(home).await,
         Some("window") => {
             daemon::keep_to_itself();

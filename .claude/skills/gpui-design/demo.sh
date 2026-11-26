@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Drives the real dotori windows on a virtual screen with the end-to-end test's fake model.
 #   demo.sh start <home>                    build, then start Xvfb, a window manager, the fake model and dotori with its tray
-#   demo.sh talk <home> [message ...]       send messages through `dotori chat` (the demo conversation by default)
+#   demo.sh talk <home> [message ...]       type messages into the chat window (the demo conversation by default)
 #   demo.sh shot <home> <out.png> [look] [frames]   open the chat window and save it; frames > 1 saves out-1.png, out-2.png, ...
 #   demo.sh settings <home> <out.png> [look]       open the settings window and save it
 #   [look] is light, dark, a theme such as forest, or both as forest-dark
@@ -27,6 +27,21 @@ background() {
   local log="$1"; shift
   setsid "$@" >"$log" 2>&1 </dev/null &
   echo $! >>"$pids"
+}
+
+open_window() {
+  local which="$1" title="$2" look="$3"
+  pkill -f "$dotori $which" 2>/dev/null || true
+  background "$home/$which.log" \
+    env DISPLAY=":$display" DOTORI_HOME="$home" DOTORI_THEME="$look" LANG=C.UTF-8 "$dotori" "$which"
+  window=""
+  for _ in $(seq 100); do
+    window="$(DISPLAY=":$display" xdotool search --name "$title" 2>/dev/null | head -1 || true)"
+    [ -n "$window" ] && break
+    sleep 0.1
+  done
+  [ -n "$window" ] || { echo "no $which window; see $home/$which.log" >&2; exit 1; }
+  sleep 2
 }
 
 case "$command" in
@@ -67,28 +82,23 @@ talk)
   if [ $# -eq 0 ]; then
     set -- "내일 오전 10시 30분에 치과 예약 있어. 아침 8시에 알려 줘" "이번 주 일정 정리해 줘" "다운로드 폴더의 영수증 PDF를 문서/영수증으로 옮겨 줘"
   fi
-  {
-    for message in "$@"; do
-      printf '%s\n' "$message"
-      sleep 6
-    done
-  } | env -u DISPLAY DOTORI_HOME="$home" "$dotori" chat
+  open_window window '^dotori$' light
+  DISPLAY=":$display" xdotool windowactivate --sync "$window"
+  for message in "$@"; do
+    LC_ALL=C.UTF-8 DISPLAY=":$display" xdotool type --delay 60 "$message"
+    DISPLAY=":$display" xdotool key Return
+    echo "said: $message"
+    sleep 6
+  done
   ;;
 shot|settings)
   [ $# -ge 3 ] || usage
   out="$3"; look="${4:-light}"; frames="${5:-1}"
-  if [ "$command" = shot ]; then which=window; title='^dotori$'; else which=settings; title='^dotori .'; fi
-  pkill -f "$dotori $which" 2>/dev/null || true
-  background "$home/$which.log" \
-    env DISPLAY=":$display" DOTORI_HOME="$home" DOTORI_THEME="$look" LANG=C.UTF-8 "$dotori" "$which"
-  window=""
-  for _ in $(seq 100); do
-    window="$(DISPLAY=":$display" xdotool search --name "$title" 2>/dev/null | head -1 || true)"
-    [ -n "$window" ] && break
-    sleep 0.1
-  done
-  [ -n "$window" ] || { echo "no $which window; see $home/$which.log" >&2; exit 1; }
-  sleep 2
+  if [ "$command" = shot ]; then
+    open_window window '^dotori$' "$look"
+  else
+    open_window settings '^dotori .' "$look"
+  fi
   if [ "$frames" -le 1 ]; then
     DISPLAY=":$display" import -window "$window" -frame "$out"
   else
