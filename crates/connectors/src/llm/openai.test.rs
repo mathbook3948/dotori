@@ -52,6 +52,7 @@ fn request(conversation: Vec<Entry>) -> ModelRequest {
             input_schema: String::from(r#"{"type":"object"}"#),
         }],
         context: None,
+        time_zone: None,
     }
 }
 

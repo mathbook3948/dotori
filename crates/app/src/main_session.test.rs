@@ -28,6 +28,7 @@ fn said(text: &str) -> Incoming {
         sender_name: String::from("owner"),
         content: Content::parse(text.to_owned()).expect("content"),
         audience: Audience::Owner,
+        at: None,
     }
 }
 
@@ -48,9 +49,28 @@ async fn words_reach_the_agent_while_it_runs_here_and_wait_otherwise() {
         .lock()
         .expect("unpoisoned")
         .iter()
-        .map(|(text, _)| text.clone())
+        .map(|(text, _, _)| text.clone())
         .collect();
     assert_eq!(waiting, ["먼저", "나중"]);
+}
+
+#[tokio::test]
+async fn words_that_wait_keep_the_time_they_were_said() {
+    let route = Route::new(None);
+    let at = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+    let mut early = said("먼저");
+    early.at = Some(at);
+
+    route.push(early).await.expect("kept");
+
+    let kept: Vec<Option<SystemTime>> = route
+        .waiting
+        .lock()
+        .expect("unpoisoned")
+        .iter()
+        .map(|(_, _, at)| *at)
+        .collect();
+    assert_eq!(kept, [Some(at)]);
 }
 
 #[tokio::test]

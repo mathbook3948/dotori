@@ -4,6 +4,7 @@ use dotori_core::sub_session::SubSessionSpec;
 use dotori_core::tool::ToolCall;
 use dotori_core::tool::ToolCallId;
 use dotori_core::tool::ToolSpec;
+use jiff::tz::TimeZone;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::value::RawValue;
@@ -120,6 +121,12 @@ pub(crate) fn system(base: &str, context: Option<&str>) -> String {
         Some(context) => format!("{base}\n\n{context}"),
         None => base.to_owned(),
     }
+}
+
+/// The zone message times are shown in: the one the request names, or else this PC's.
+pub(crate) fn zone(name: Option<&str>) -> TimeZone {
+    name.and_then(|name| TimeZone::get(name).ok())
+        .unwrap_or_else(TimeZone::system)
 }
 
 /// The tools the model sees: core's built-in `say` and `delegate`, then the toolbox's.

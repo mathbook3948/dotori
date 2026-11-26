@@ -350,6 +350,7 @@ async fn routines_follow_the_owner_like_notes_and_the_model_sees_both() {
             conversation: vec![heard(Role::Owner)],
             tools: Vec::new(),
             context: None,
+            time_zone: None,
         })
         .await
         .expect("answered");

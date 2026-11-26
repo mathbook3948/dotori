@@ -280,20 +280,26 @@ impl AppChannel {
         }
     }
 
-    /// Words the owner already saw in a window here, ready to hand to the agent.
-    pub fn incoming(&self, text: String) -> Option<Incoming> {
-        Some(self.hub.incoming(Content::parse(text).ok()?))
+    /// Words the owner already saw in a window here, ready to hand to the agent. `at` is when
+    /// the owner said them.
+    pub fn incoming(&self, text: String, at: Option<SystemTime>) -> Option<Incoming> {
+        Some(self.hub.incoming(Content::parse(text).ok()?, at))
     }
 
     /// What the owner said in a window on the PC `origin`, shown here as if said in a window
     /// here, and ready to hand to the agent.
-    pub fn heard_elsewhere(&self, text: String, origin: String) -> Option<Incoming> {
+    pub fn heard_elsewhere(
+        &self,
+        text: String,
+        origin: String,
+        at: Option<SystemTime>,
+    ) -> Option<Incoming> {
         let content = Content::parse(text.clone()).ok()?;
         let Ok(line) = serde_json::to_string(&ToWindow::Owner { text, at: now_ms() }) else {
             return None;
         };
         self.hub.publish_line(line, Some(origin));
-        Some(self.hub.incoming(content))
+        Some(self.hub.incoming(content, at))
     }
 }
 
@@ -316,7 +322,7 @@ impl Hub {
         self.publish_line(line, None);
     }
 
-    fn incoming(&self, content: Content) -> Incoming {
+    fn incoming(&self, content: Content, at: Option<SystemTime>) -> Incoming {
         Incoming {
             id: self.message_id(),
             place: Place::new(MAIN),
@@ -324,6 +330,7 @@ impl Hub {
             sender_name: String::from(OWNER),
             content,
             audience: Audience::Owner,
+            at,
         }
     }
 
@@ -493,7 +500,11 @@ async fn serve(stream: TcpStream, token: String, hub: Arc<Hub>, inbox: Arc<dyn I
                 continue;
             };
             hub.publish(&ToWindow::Owner { text, at: now_ms() });
-            if inbox.push(hub.incoming(content)).await.is_err() {
+            if inbox
+                .push(hub.incoming(content, Some(SystemTime::now())))
+                .await
+                .is_err()
+            {
                 return;
             }
         }

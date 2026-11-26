@@ -24,11 +24,12 @@ impl ChannelInbox {
 impl Inbox for ChannelInbox {
     fn push(&self, incoming: Incoming) -> BoxFuture<'_, Result<(), InboxClosedError>> {
         Box::pin(async move {
+            let at = incoming.at.unwrap_or_else(SystemTime::now);
             self.tx
                 .send(Event::Received {
                     channel: self.channel.clone(),
                     incoming,
-                    at: SystemTime::now(),
+                    at,
                 })
                 .await
                 .map_err(|_| InboxClosedError)

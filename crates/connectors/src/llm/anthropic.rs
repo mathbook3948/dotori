@@ -132,10 +132,14 @@ fn body(config: &AnthropicConfig, request: &ModelRequest) -> Result<String, Mode
             "input_schema": schema,
         }));
     }
-    let mut messages: Vec<Value> = transcript::build(&request.conversation, PROVIDER)
-        .into_iter()
-        .map(message)
-        .collect();
+    let mut messages: Vec<Value> = transcript::build(
+        &request.conversation,
+        PROVIDER,
+        &reply::zone(request.time_zone.as_deref()),
+    )
+    .into_iter()
+    .map(message)
+    .collect();
     mark_for_cache(&mut messages);
     let mut body = json!({
         "model": config.model,

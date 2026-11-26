@@ -101,6 +101,7 @@ impl LlmRunner {
                 conversation: conversation.clone(),
                 tools: toolbox.specs(),
                 context: None,
+                time_zone: None,
             };
             let reply = match self.model.complete(request).await {
                 Ok(reply) => reply,
