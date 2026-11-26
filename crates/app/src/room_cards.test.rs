@@ -17,6 +17,7 @@ use dotori_core::tool::asked_from;
 
 use super::*;
 use crate::language::Language;
+use crate::window::identity;
 use crate::words::speak;
 
 const WAIT: Duration = Duration::from_secs(5);
@@ -103,7 +104,7 @@ impl Desk {
         speak(Language::Korean);
         let (app, _) = AppChannel::bind("token").expect("bound");
         let app = Arc::new(app);
-        let (cards, screen) = RoomCards::new(String::from("dotori가"), Arc::clone(&app));
+        let (cards, screen) = RoomCards::new(Arc::clone(&app));
         let (posts, posts_seen) = mpsc::unbounded_channel();
         let (settles, settles_seen) = mpsc::unbounded_channel();
         let room = Arc::new(Room {
@@ -206,7 +207,7 @@ async fn a_call_asked_in_a_chat_room_goes_there_as_the_window_shows_it() {
 
     let (place, card) = desk.posted().await;
     assert_eq!(place, Place::new("C1/10.5"));
-    assert_eq!(card.title, "dotori가 이 일을 해도 될지 물어요");
+    assert_eq!(card.title, "Dotori가 이 일을 해도 될지 물어요");
     assert_eq!(
         card.rows,
         [
@@ -219,11 +220,38 @@ async fn a_call_asked_in_a_chat_room_goes_there_as_the_window_shows_it() {
         card.notes,
         [
             String::from("샌드박스 안에서 실행해요. Dotori의 금고와 기록은 보이지 않아요."),
-            String::from("허락하면 dotori가 이 명령을 바로 실행해요"),
+            String::from("허락하면 Dotori가 이 명령을 바로 실행해요"),
         ]
     );
     assert_eq!(labels(&card), ["거절", "허락"]);
     assert!(card.buttons[1].primary);
+}
+
+#[tokio::test]
+async fn a_card_names_the_assistant_as_the_settings_call_it_now() {
+    let mut desk = Desk::new();
+    identity::choose(identity::Identity {
+        name: Some(String::from("별")),
+        icon: None,
+    });
+
+    desk.cards.ask(
+        from("slack"),
+        7,
+        "run_shell",
+        &json!({ "command": "ls -la" }).to_string(),
+        true,
+    );
+
+    let (_, card) = desk.posted().await;
+    assert_eq!(card.title, "별이 이 일을 해도 될지 물어요");
+    assert_eq!(
+        card.notes,
+        [
+            String::from("샌드박스 안에서 실행해요. 별의 금고와 기록은 보이지 않아요."),
+            String::from("허락하면 별이 이 명령을 바로 실행해요"),
+        ]
+    );
 }
 
 #[tokio::test]
@@ -525,7 +553,7 @@ async fn a_log_in_card_offers_to_stop_asking_and_answers_the_browser_as_the_wind
     assert_eq!(
         card.notes,
         [String::from(
-            "dotori가 login.coupang.com/login 로그인 칸에 직접 채워 넣어요. 대화하는 AI는 비밀번호를 보지 못해요."
+            "Dotori가 login.coupang.com/login 로그인 칸에 직접 채워 넣어요. 대화하는 AI는 비밀번호를 보지 못해요."
         )]
     );
     assert_eq!(

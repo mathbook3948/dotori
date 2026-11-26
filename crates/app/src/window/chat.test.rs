@@ -157,6 +157,13 @@ fn nothing_is_sent_before_the_window_reaches_dotori(cx: &mut TestAppContext) {
     type_and_send(&view, cx, "안녕");
 
     assert!(wired.said.try_recv().is_err());
+    view.read_with(cx, |view, cx| {
+        assert_eq!(
+            view.input.read(cx).text(),
+            "안녕",
+            "what the splash hid took nothing, and what was not sent stays"
+        )
+    });
 }
 
 #[gpui::test]
@@ -322,7 +329,14 @@ fn the_keys_hint_gives_way_to_what_keeps_dotori_out_of_reach(cx: &mut TestAppCon
 fn a_splash_stands_in_for_the_chat_until_dotori_answers(cx: &mut TestAppContext) {
     let (view, cx, wired) = open(cx);
     cx.run_until_parked();
-    view.read_with(cx, |view, _| assert_eq!(view.link, LinkState::Starting));
+    view.read_with(cx, |view, _| {
+        assert_eq!(view.link, LinkState::Opening);
+        assert!(view.link.splash(), "no composer before the link speaks");
+    });
+    assert!(
+        cx.debug_bounds("splash").is_none(),
+        "no splash flashes before a running dotori connects"
+    );
 
     for (reason, state) in [
         ("dotori is starting", LinkState::Starting),
@@ -338,6 +352,7 @@ fn a_splash_stands_in_for_the_chat_until_dotori_answers(cx: &mut TestAppContext)
             assert_eq!(view.link, state, "{reason}");
             assert_eq!(view.status(), None, "the splash says it, not the composer");
         });
+        assert!(cx.debug_bounds("splash").is_some(), "{reason}");
     }
 
     wired.updates.send(Update::Connected).expect("sent");

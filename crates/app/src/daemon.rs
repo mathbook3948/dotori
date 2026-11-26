@@ -43,7 +43,6 @@ use dotori_mcp::memory::MemoryConfig;
 use dotori_mcp::relay::relay;
 
 use crate::accounts::LinkedSites;
-use crate::asked;
 use crate::browser_route::BROWSER_JOB;
 use crate::browser_route::BrowserRoute;
 use crate::confirm;
@@ -103,8 +102,10 @@ use crate::vault::Vault;
 use crate::vector_copies;
 use crate::vector_copies::VECTORS_JOB;
 use crate::vector_copies::VectorCopies;
+use crate::window::Stamp;
 use crate::window::identity;
 use crate::window::identity::Identity;
+use crate::window::stamp;
 
 const QUEUE: NonZeroUsize = NonZeroUsize::new(256).expect("non-zero");
 const SEEN: NonZeroUsize = NonZeroUsize::new(4096).expect("non-zero");
@@ -116,6 +117,7 @@ const SETTLE: Duration = Duration::from_secs(1);
 const RELEASE_SENT: Duration = Duration::from_millis(300);
 const FLUSH_EVERY: Duration = Duration::from_secs(2);
 const WAIT_FOR_SETUP: Duration = Duration::from_secs(2);
+const FOLLOW_EVERY: Duration = Duration::from_millis(500);
 
 /// Runs the agent without a tray, for the end-to-end test, until Ctrl-C or a terminate signal.
 #[cfg(debug_assertions)]
@@ -136,8 +138,9 @@ pub(crate) async fn serve(
 ) -> Result<(), String> {
     keep_to_itself();
     let _lock = DaemonLock::take(&home.lock())?;
-    language::choose(language::saved(&home.settings()));
-    identity::choose(Identity::read(&home.settings(), &home.icons()));
+    let seen = stamp(&home.settings());
+    take_settings(&home);
+    let _following = Following(tokio::spawn(follow_settings(home.clone(), seen)));
     let vault = Arc::new(Vault::new(&home.root));
     let settings_copies = Arc::new(SettingsCopies::new(home.settings(), home.settings_stamp()));
     let peers = peers::start(&home, &Settings::load(&home.settings())?)
@@ -192,10 +195,7 @@ pub(crate) async fn serve(
     let token = door::token()?;
     let (app, address) = AppChannel::bind(token.clone()).map_err(|error| error.to_string())?;
     let app = Arc::new(app);
-    let (rooms, screen_lines) = RoomCards::new(
-        asked::subject(&AssistantSettings::name_of(settings.assistant.as_ref())),
-        Arc::clone(&app),
-    );
+    let (rooms, screen_lines) = RoomCards::new(Arc::clone(&app));
     tokio::spawn(room_cards::tap(
         home.clone(),
         Arc::clone(&rooms),
@@ -592,6 +592,30 @@ pub(crate) async fn serve(
         time::sleep(RELEASE_SENT).await;
     }
     stopped
+}
+
+async fn follow_settings(home: Home, mut seen: Stamp) {
+    loop {
+        time::sleep(FOLLOW_EVERY).await;
+        let now = stamp(&home.settings());
+        if now != seen {
+            seen = now;
+            take_settings(&home);
+        }
+    }
+}
+
+fn take_settings(home: &Home) {
+    language::choose(language::saved(&home.settings()));
+    identity::choose(Identity::read(&home.settings(), &home.icons()));
+}
+
+struct Following(tokio::task::JoinHandle<()>);
+
+impl Drop for Following {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 enum Keyed {

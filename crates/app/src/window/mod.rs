@@ -35,6 +35,7 @@ use gpui::Focusable;
 use gpui::KeyBinding;
 use gpui::SharedString;
 use gpui::TitlebarOptions;
+use gpui::Window;
 use gpui::WindowBackgroundAppearance;
 use gpui::WindowBounds;
 use gpui::WindowDecorations;
@@ -182,9 +183,37 @@ fn apply_look(settings: &Path) {
     }
 }
 
-type Stamp = Option<(SystemTime, u64)>;
+/// A window's title, which names the assistant in the language in use. The window sets it
+/// again when either changes, since the title bar, the taskbar and Alt+Tab show it.
+pub(crate) struct Title {
+    says: fn() -> String,
+    shown: String,
+}
 
-fn stamp(path: &Path) -> Stamp {
+impl Title {
+    /// A title that reads `says`, as the window opened with it.
+    pub(crate) fn new(says: fn() -> String) -> Self {
+        Self {
+            shown: says(),
+            says,
+        }
+    }
+
+    /// Sets the title of `window` again if what it says changed.
+    pub(crate) fn keep(&mut self, window: &mut Window) {
+        let now = (self.says)();
+        if now != self.shown {
+            window.set_window_title(&now);
+            self.shown = now;
+        }
+    }
+}
+
+/// When a file was last written and how long it is, to tell that it changed.
+pub(crate) type Stamp = Option<(SystemTime, u64)>;
+
+/// The stamp of the file at `path`, or none when it cannot be read.
+pub(crate) fn stamp(path: &Path) -> Stamp {
     let found = fs::metadata(path).ok()?;
     Some((found.modified().ok()?, found.len()))
 }

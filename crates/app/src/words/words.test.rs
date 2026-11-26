@@ -158,23 +158,23 @@ fn every_function(words: &Words) -> Vec<(&'static str, String)> {
 #[test]
 fn the_english_strings_carry_no_korean() {
     let english = of(Language::English);
-    let before = crate::window::identity::name();
+    let name = crate::window::identity::name();
 
-    let said = every_function(english);
-
-    let names = [before, crate::window::identity::name()];
-    for (field, text) in &said {
-        let unnamed = names
-            .iter()
-            .fold(text.clone(), |text, name| text.replace(name.as_str(), ""));
-        assert!(!hangul(&unnamed), "{field}: {text}");
+    for (field, text) in every_function(english) {
+        assert!(!hangul(&text.replace(&name, "")), "{field}: {text}");
     }
 }
 
 #[test]
 fn no_string_calls_the_assistant_dotori_in_lowercase() {
     for language in [Language::Korean, Language::English] {
-        for (field, text) in every_function(of(language)) {
+        let words = of(language);
+        let fixed = format!("{words:?}");
+        assert!(
+            !fixed.contains("dotori"),
+            "a fixed string says dotori: {fixed}"
+        );
+        for (field, text) in every_function(words) {
             assert!(!text.contains("dotori"), "{field}: {text}");
         }
     }

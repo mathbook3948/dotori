@@ -49,9 +49,11 @@ use crate::asked;
 use crate::asked::asked_fields;
 use crate::asked::field_label;
 use crate::asked::own_tool;
+use crate::link;
 use crate::link::Link;
 use crate::link::Update;
 use crate::screen_link::ScreenLink;
+use crate::window::Title;
 use crate::window::browser;
 use crate::window::browser::BrowserWindow;
 use crate::window::chrome::Frame;
@@ -123,11 +125,15 @@ pub(crate) struct ChatView {
     preview: Option<Arc<RenderImage>>,
     focus_card: bool,
     _uncopy: Option<Task<()>>,
+    title: Title,
     _pump: Task<()>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
 enum LinkState {
+    /// The link has not said anything yet. It answers within moments, so the window shows only
+    /// its strip rather than a splash that would flash before a running dotori connects.
+    Opening,
     Starting,
     CouldNotStart,
     Connected,
@@ -136,17 +142,15 @@ enum LinkState {
 
 impl LinkState {
     fn after_down(reason: String) -> Self {
-        if reason.contains("could not start") {
-            Self::CouldNotStart
-        } else if reason.contains("starting") {
-            Self::Starting
-        } else {
-            Self::Down(reason)
+        match reason.as_str() {
+            link::COULD_NOT_START => Self::CouldNotStart,
+            link::STARTING => Self::Starting,
+            _ => Self::Down(reason),
         }
     }
 
     fn splash(&self) -> bool {
-        matches!(self, Self::Starting | Self::CouldNotStart)
+        matches!(self, Self::Opening | Self::Starting | Self::CouldNotStart)
     }
 }
 
@@ -191,7 +195,7 @@ impl ChatView {
         Self {
             lines: Vec::new(),
             screen,
-            link: LinkState::Starting,
+            link: LinkState::Opening,
             browser_at: None,
             input: cx.new(|cx| TextInput::multiline(say_to(), cx)),
             say,
@@ -217,6 +221,7 @@ impl ChatView {
             preview: None,
             focus_card: false,
             _uncopy: None,
+            title: Title::new(identity::name),
             _pump: pump,
         }
     }
@@ -1738,7 +1743,10 @@ impl ChatView {
         })
     }
 
-    fn splash(&self, theme: &Theme) -> impl IntoElement {
+    fn splash(&self, theme: &Theme) -> AnyElement {
+        if self.link == LinkState::Opening {
+            return div().flex_1().into_any_element();
+        }
         let failed = self.link == LinkState::CouldNotStart;
         let picture = logo(theme, PICTURE);
         div()
@@ -1783,6 +1791,7 @@ impl ChatView {
                         .child(words().chat.open_again),
                 )
             })
+            .into_any_element()
     }
 
     fn composer(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1865,6 +1874,7 @@ impl Focusable for ChatView {
 
 impl Render for ChatView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.title.keep(window);
         let theme = Theme::of(window);
         self.input
             .update(cx, |input, cx| input.set_placeholder(say_to(), cx));

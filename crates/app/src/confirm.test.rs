@@ -31,7 +31,7 @@ fn asking() -> (Asking, Arc<Counting>, Arc<AppChannel>) {
         None,
         Arc::clone(&counting) as Arc<dyn Toolbox>,
         Arc::clone(&app),
-        RoomCards::new(String::from("dotori가"), Arc::clone(&app)).0,
+        RoomCards::new(Arc::clone(&app)).0,
     );
     (asking, counting, app)
 }
@@ -211,7 +211,7 @@ async fn a_shell_command_s_card_says_whether_it_runs_in_the_sandbox() {
         Some(sandbox),
         Arc::new(Counting(AtomicUsize::new(0))),
         Arc::clone(&app),
-        RoomCards::new(String::from("dotori가"), Arc::clone(&app)).0,
+        RoomCards::new(Arc::clone(&app)).0,
     );
     let mut published = app.published();
 
