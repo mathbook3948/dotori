@@ -31,10 +31,7 @@ fn every_function(words: &Words) -> Vec<(&'static str, String)> {
         ("chat.in_browser_hint", (chat.in_browser_hint)()),
         ("chat.log_in_to", (chat.log_in_to)("example.com")),
         ("chat.answering_elsewhere", (chat.answering_elsewhere)("pc")),
-        (
-            "chat.say_to",
-            (chat.say_to)().replace(&crate::window::identity::name(), ""),
-        ),
+        ("chat.say_to", (chat.say_to)()),
         ("chat.command_exited", (chat.command_exited)(3)),
         ("chat.command_too_slow", (chat.command_too_slow)("110")),
         ("chat.cut_note", (chat.cut_note)(700)),
@@ -141,11 +138,16 @@ fn every_function(words: &Words) -> Vec<(&'static str, String)> {
 #[test]
 fn the_english_strings_carry_no_korean() {
     let english = of(Language::English);
+    let before = crate::window::identity::name();
 
     let said = every_function(english);
 
+    let names = [before, crate::window::identity::name()];
     for (field, text) in &said {
-        assert!(!hangul(text), "{field}: {text}");
+        let unnamed = names
+            .iter()
+            .fold(text.clone(), |text, name| text.replace(name.as_str(), ""));
+        assert!(!hangul(&unnamed), "{field}: {text}");
     }
 }
 
