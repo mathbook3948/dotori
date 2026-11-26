@@ -115,7 +115,7 @@ impl Model for OpenAi {
             Some(key) => request.bearer_auth(key),
             None => request,
         };
-        Box::pin(http::check(PROVIDER, request))
+        Box::pin(http::check(request))
     }
 }
 

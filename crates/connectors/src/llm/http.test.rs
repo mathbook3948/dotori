@@ -58,31 +58,31 @@ async fn answering(status: &'static str) -> String {
 }
 
 #[tokio::test]
-async fn a_check_tells_a_refused_key_from_an_address_that_does_not_answer() {
+async fn a_check_fails_only_on_a_refused_key_or_an_address_that_does_not_answer() {
     let client = client().expect("client");
 
+    assert_eq!(check(client.get(answering("200 OK").await)).await, Ok(()));
     assert_eq!(
-        check("test", client.get(answering("200 OK").await)).await,
-        Ok(())
-    );
-    assert_eq!(
-        check("test", client.get(answering("401 Unauthorized").await)).await,
+        check(client.get(answering("401 Unauthorized").await)).await,
         Err(CheckError::KeyRefused)
     );
-    assert!(matches!(
-        check(
-            "test",
-            client.get(answering("500 Internal Server Error").await)
-        )
-        .await,
-        Err(CheckError::Other(_))
-    ));
+    assert_eq!(
+        check(client.get(answering("403 Forbidden").await)).await,
+        Err(CheckError::KeyRefused)
+    );
+    for passing in ["404 Not Found", "429 Too Many Requests", "529 Overloaded"] {
+        assert_eq!(
+            check(client.get(answering(passing).await)).await,
+            Ok(()),
+            "{passing}"
+        );
+    }
     let closed = std::net::TcpListener::bind("127.0.0.1:0")
         .expect("bound")
         .local_addr()
         .expect("address");
     assert_eq!(
-        check("test", client.get(format!("http://{closed}/v1/models"))).await,
+        check(client.get(format!("http://{closed}/v1/models"))).await,
         Err(CheckError::NoAnswer)
     );
 }
