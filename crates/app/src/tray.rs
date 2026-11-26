@@ -169,6 +169,9 @@ fn tray() -> Result<(TrayIcon, Items), String> {
 
 /// Starts another dotori process that shows `command`, such as the settings window.
 pub(crate) fn open(command: &str) {
+    if cfg!(test) {
+        return;
+    }
     let started = env::current_exe().and_then(|exe| Command::new(exe).arg(command).spawn());
     match started {
         Ok(mut child) => {

@@ -6,12 +6,12 @@ cargo-deny = "0.22.0"
 [hooks]
 postinstall = "git config core.hooksPath .githooks"
 
-[tasks.check]
-description = "Format, lint, test, and guard checks"
+[tasks.quick]
+description = "The local check: format, lint, test, and guard checks, without the window tests and licenses"
 run = [
   "cargo fmt --all --check",
   "cargo clippy --workspace --all-targets -- -D warnings",
-  "cargo test --workspace",
+  "cargo test --workspace -- --skip window::",
   "ast-grep scan --no-ignore hidden",
   "cargo run --quiet --package xtask -- forbidden-chars",
   "cargo run --quiet --package xtask -- core-deps",
@@ -20,6 +20,17 @@ run = [
   "cargo run --quiet --package xtask -- hooks",
   "cargo run --quiet --package xtask -- sql-schema",
   "cargo run --quiet --package xtask -- design-tokens",
+]
+
+[tasks.window-test]
+description = "The window tests, which drive GPUI windows"
+run = "cargo test --package dotori --bin dotori -- window::"
+
+[tasks.check]
+description = "Everything CI checks: quick, the window tests, and licenses"
+run = [
+  "mise run quick",
+  "mise run window-test",
   "cargo deny check licenses",
 ]
 

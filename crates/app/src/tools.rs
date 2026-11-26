@@ -278,6 +278,9 @@ impl Toolbox for SharedTools {
 }
 
 async fn launch() -> Result<Running, String> {
+    if cfg!(test) {
+        return Err(String::from("tests never start the MCP server"));
+    }
     let exe = env::current_exe().map_err(|error| error.to_string())?;
     let mut child = Command::new(exe)
         .arg("mcp")

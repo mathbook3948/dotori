@@ -94,4 +94,4 @@ Fix what fails and look again. Then report with the screenshots, light and dark 
 
 - Update `docs/architecture/windows.md` in the same pull request, so it says how the window is after the change.
 - When the owner changes the look, change `DESIGN.md` in the same pull request as the code.
-- Run `mise run check` before each commit.
+- Run `mise run quick` and `mise run window-test` before each commit.
