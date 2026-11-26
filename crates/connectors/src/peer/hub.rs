@@ -603,6 +603,22 @@ fn random_or_zero() -> u64 {
     getrandom::u64().unwrap_or(0)
 }
 
+/// Why joining another PC failed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum JoinError {
+    /// The other PC was not reached or refused the code.
+    There(String),
+    /// This PC could not prepare or keep the join.
+    Here(String),
+}
+
+impl std::fmt::Display for JoinError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (Self::There(error) | Self::Here(error)) = self;
+        formatter.write_str(error)
+    }
+}
+
 /// Joins the PC that handed out `code`, reached at `address`, and approves it in `book`. The
 /// inviting PC approves this one in turn.
 pub async fn join(
@@ -611,19 +627,19 @@ pub async fn join(
     code: &Code,
     address: &str,
     book: &std::path::Path,
-) -> Result<Peer, String> {
+) -> Result<Peer, JoinError> {
     let stream = time::timeout(DIAL_WAIT, TcpStream::connect(address))
         .await
-        .map_err(|_| format!("{address} did not answer in time"))?
-        .map_err(|error| format!("cannot reach {address}: {error}"))?;
+        .map_err(|_| JoinError::There(format!("{address} did not answer in time")))?
+        .map_err(|error| JoinError::There(format!("cannot reach {address}: {error}")))?;
     let line = wire::dial(stream, identity, &code.key, Start::Join(code.secret), hello)
         .await
         .map_err(|error| {
-            if error.contains("broke") {
+            JoinError::There(if error.contains("broke") {
                 String::from("the other PC refused the code; make a new one there")
             } else {
                 error
-            }
+            })
         })?;
     let peer = Peer {
         device: line.hello.device.clone(),
@@ -632,9 +648,9 @@ pub async fn join(
         address: Some(address.to_owned()),
         since: now(),
     };
-    let mut kept = Book::load(book)?;
+    let mut kept = Book::load(book).map_err(JoinError::Here)?;
     kept.approve(peer.clone());
-    kept.save(book)?;
+    kept.save(book).map_err(JoinError::Here)?;
     Ok(peer)
 }
 
