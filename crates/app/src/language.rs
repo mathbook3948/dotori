@@ -1,7 +1,8 @@
 //! The language dotori speaks to its owner in: the one the settings name, or else the system's.
-//! Every window and the tray read the same choice.
+//! Every window and the tray read the same choice, worked out once when it is made.
 
 use std::path::Path;
+use std::sync::OnceLock;
 use std::sync::RwLock;
 
 use crate::settings::Settings;
@@ -21,8 +22,9 @@ pub(crate) enum Choice {
 }
 
 const VARIABLE: &str = "DOTORI_LANGUAGE";
+const SYSTEM: &str = "system";
 
-static CHOSEN: RwLock<Choice> = RwLock::new(Choice::System);
+static CHOSEN: RwLock<Option<(Choice, Language)>> = RwLock::new(None);
 
 impl Language {
     /// The value the settings file keeps for this language.
@@ -41,14 +43,22 @@ impl Language {
         }
     }
 
-    /// The language a locale tag such as `ko-KR` or `en_US.UTF-8` names. Anything but Korean is
-    /// English.
-    pub(crate) fn of_locale(tag: &str) -> Self {
-        if tag.to_ascii_lowercase().starts_with("ko") {
-            Self::Korean
+    /// The language a tag such as `ko`, `KO`, `ko-KR`, `ko_KR.UTF-8` or `en-US` names, read by
+    /// its primary subtag in any case. A tag of any other language names none.
+    pub(crate) fn of_tag(tag: &str) -> Option<Self> {
+        let primary = tag.split(['-', '_', '.', '@']).next().unwrap_or_default();
+        if primary.eq_ignore_ascii_case("ko") {
+            Some(Self::Korean)
+        } else if primary.eq_ignore_ascii_case("en") {
+            Some(Self::English)
         } else {
-            Self::English
+            None
         }
+    }
+
+    /// The language the system's locale tag names. Anything but Korean is English.
+    pub(crate) fn of_locale(tag: &str) -> Self {
+        Self::of_tag(tag).unwrap_or(Self::English)
     }
 }
 
@@ -60,19 +70,28 @@ impl Choice {
         Self::Only(Language::English),
     ];
 
-    /// The choice the settings value names. A missing or unknown value follows the system.
+    /// The choice the settings value names. A missing value follows the system, and so does an
+    /// unknown one, with a warning.
     pub(crate) fn named(value: Option<&str>) -> Self {
-        match value {
-            Some("ko") => Self::Only(Language::Korean),
-            Some("en") => Self::Only(Language::English),
-            _ => Self::System,
+        let Some(value) = value.map(str::trim) else {
+            return Self::System;
+        };
+        if value.eq_ignore_ascii_case(SYSTEM) {
+            return Self::System;
+        }
+        match Language::of_tag(value) {
+            Some(language) => Self::Only(language),
+            None => {
+                eprintln!("dotori: no language `{value}`, so it follows the system's");
+                Self::System
+            }
         }
     }
 
     /// The value the settings file keeps for this choice.
     pub(crate) fn code(self) -> &'static str {
         match self {
-            Self::System => "system",
+            Self::System => SYSTEM,
             Self::Only(language) => language.code(),
         }
     }
@@ -97,27 +116,42 @@ pub(crate) fn saved(path: &Path) -> Choice {
     )
 }
 
-/// Makes `choice` the one this process speaks from now on.
+fn overridden() -> Option<Choice> {
+    static OVERRIDDEN: OnceLock<Option<Choice>> = OnceLock::new();
+    *OVERRIDDEN.get_or_init(|| {
+        std::env::var(VARIABLE)
+            .ok()
+            .map(|value| Choice::named(Some(&value)))
+    })
+}
+
+/// Makes `choice` the one this process speaks from now on, and works out its language once.
+/// `DOTORI_LANGUAGE`, set to `ko` or `en`, overrides the settings.
 pub(crate) fn choose(choice: Choice) {
+    let language = overridden().unwrap_or(choice).language();
     *CHOSEN
         .write()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = choice;
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some((choice, language));
+}
+
+fn stored() -> (Choice, Language) {
+    let chosen = *CHOSEN
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    chosen.unwrap_or_else(|| {
+        choose(Choice::System);
+        stored()
+    })
 }
 
 /// What the owner chose in the settings, which the settings window shows.
 pub(crate) fn chosen() -> Choice {
-    *CHOSEN
-        .read()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+    stored().0
 }
 
-/// The language in use. `DOTORI_LANGUAGE`, set to `ko` or `en`, overrides the settings.
+/// The language in use, as the last choice worked it out.
 pub(crate) fn current() -> Language {
-    let overridden = std::env::var(VARIABLE).ok();
-    match Choice::named(overridden.as_deref()) {
-        Choice::Only(language) => language,
-        Choice::System => chosen().language(),
-    }
+    stored().1
 }
 
 #[cfg(test)]

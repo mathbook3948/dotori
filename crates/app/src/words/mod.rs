@@ -53,9 +53,25 @@ pub(crate) fn of(language: Language) -> &'static Words {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    static SPOKEN: std::cell::Cell<Option<Language>> = const { std::cell::Cell::new(None) };
+}
+
 /// The strings in the language in use.
 pub(crate) fn words() -> &'static Words {
+    #[cfg(test)]
+    if let Some(language) = SPOKEN.with(std::cell::Cell::get) {
+        return of(language);
+    }
     of(language::current())
+}
+
+/// Makes this test thread speak `language`, whatever the locale, and gives its strings.
+#[cfg(test)]
+pub(crate) fn speak(language: Language) -> &'static Words {
+    SPOKEN.with(|spoken| spoken.set(Some(language)));
+    of(language)
 }
 
 #[cfg(test)]
