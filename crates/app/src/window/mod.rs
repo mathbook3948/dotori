@@ -35,6 +35,7 @@ use gpui::Focusable;
 use gpui::KeyBinding;
 use gpui::SharedString;
 use gpui::TitlebarOptions;
+use gpui::Window;
 use gpui::WindowBackgroundAppearance;
 use gpui::WindowBounds;
 use gpui::WindowDecorations;
@@ -98,9 +99,9 @@ pub(crate) fn run(home: Home, which: Which) -> Result<(), String> {
             cx.bind_keys(input::bindings());
             cx.bind_keys([KeyBinding::new("secondary-q", Quit, None)]);
             let title = match which {
-                Which::Chat => "dotori",
-                Which::Settings => words().common.settings_title,
-                Which::Onboarding => words().common.onboarding_title,
+                Which::Chat => identity::name(),
+                Which::Settings => (words().common.settings_title)(),
+                Which::Onboarding => (words().common.onboarding_title)(),
             };
             let bounds = Bounds::centered(None, size(px(WINDOW.0), px(WINDOW.1)), cx);
             let options = WindowOptions {
@@ -108,7 +109,7 @@ pub(crate) fn run(home: Home, which: Which) -> Result<(), String> {
                 window_min_size: Some(size(px(WINDOW_MIN.0), px(WINDOW_MIN.1))),
                 is_resizable: !matches!(which, Which::Onboarding),
                 titlebar: Some(TitlebarOptions {
-                    title: Some(SharedString::new_static(title)),
+                    title: Some(SharedString::from(title)),
                     appears_transparent: true,
                     traffic_light_position: Some(point(px(16.), px(12.))),
                 }),
@@ -182,9 +183,37 @@ fn apply_look(settings: &Path) {
     }
 }
 
-type Stamp = Option<(SystemTime, u64)>;
+/// A window's title, which names the assistant in the language in use. The window sets it
+/// again when either changes, since the title bar, the taskbar and Alt+Tab show it.
+pub(crate) struct Title {
+    says: fn() -> String,
+    shown: String,
+}
 
-fn stamp(path: &Path) -> Stamp {
+impl Title {
+    /// A title that reads `says`, as the window opened with it.
+    pub(crate) fn new(says: fn() -> String) -> Self {
+        Self {
+            shown: says(),
+            says,
+        }
+    }
+
+    /// Sets the title of `window` again if what it says changed.
+    pub(crate) fn keep(&mut self, window: &mut Window) {
+        let now = (self.says)();
+        if now != self.shown {
+            window.set_window_title(&now);
+            self.shown = now;
+        }
+    }
+}
+
+/// When a file was last written and how long it is, to tell that it changed.
+pub(crate) type Stamp = Option<(SystemTime, u64)>;
+
+/// The stamp of the file at `path`, or none when it cannot be read.
+pub(crate) fn stamp(path: &Path) -> Stamp {
     let found = fs::metadata(path).ok()?;
     Some((found.modified().ok()?, found.len()))
 }

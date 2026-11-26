@@ -38,7 +38,8 @@ async fn the_note_goes_in_once_however_often_the_channel_runs() {
     assert_eq!(taken[0].place.as_str(), GREETING);
     let note = taken[0].content.as_str();
     assert!(note.contains("add_memory"));
-    assert!(note.contains("Greet them in Korean"), "{note}");
+    assert!(note.contains("greet them in Korean"), "{note}");
+    assert!(note.contains("in English only for you"), "{note}");
     assert!(note.contains("your name, 별이,"), "{note}");
     assert!(!note.contains("  "), "{note}");
 }

@@ -88,19 +88,8 @@ fn shown_value(value: &str, whole: bool) -> (String, bool) {
     (format!("{cut}\n{}", (words().chat.cut_note)(total)), true)
 }
 
-/// The assistant's `name` followed by the subject particle that fits its last sound, such as
-/// "dotori가" or "별이".
-pub(crate) fn subject(name: &str) -> String {
-    let particle = if crate::window::identity::ends_closed(name) {
-        "이"
-    } else {
-        "가"
-    };
-    format!("{name}{particle}")
-}
-
 /// The title of a card for a call that waits, where `subject` names the assistant with its
-/// particle, such as "dotori가".
+/// particle, such as "Dotori가".
 pub(crate) fn title(subject: &str) -> String {
     (words().chat.asking)(subject)
 }
@@ -122,8 +111,8 @@ pub(crate) fn lapsed() -> &'static str {
 }
 
 /// What a card says under a command that would run in the sandbox.
-pub(crate) fn sandboxed() -> &'static str {
-    words().chat.sandboxed
+pub(crate) fn sandboxed() -> String {
+    (words().chat.sandboxed)()
 }
 
 /// The title of a card that asks to log in with a kept account.

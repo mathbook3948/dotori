@@ -149,10 +149,20 @@ fn nothing_is_sent_before_the_window_reaches_dotori(cx: &mut TestAppContext) {
     let (view, cx, mut wired) = open(cx);
 
     type_and_send(&view, cx, "안녕");
+    wired
+        .updates
+        .send(Update::Down(String::from("dotori closed the connection")))
+        .expect("sent");
+    cx.run_until_parked();
+    type_and_send(&view, cx, "안녕");
 
     assert!(wired.said.try_recv().is_err());
     view.read_with(cx, |view, cx| {
-        assert_eq!(view.input.read(cx).text(), "안녕")
+        assert_eq!(
+            view.input.read(cx).text(),
+            "안녕",
+            "what the splash hid took nothing, and what was not sent stays"
+        )
     });
 }
 
@@ -295,11 +305,9 @@ fn the_keys_hint_gives_way_to_what_keeps_dotori_out_of_reach(cx: &mut TestAppCon
 
     let korean = &of(Language::Korean).chat;
     for (reason, said) in [
-        ("dotori is starting", korean.starting),
-        ("dotori could not start", korean.could_not_start),
-        ("dotori closed the connection", korean.closed),
-        ("dotori is not reachable: refused", korean.unreachable),
-        ("something else", korean.not_connected),
+        ("dotori closed the connection", (korean.closed)()),
+        ("dotori is not reachable: refused", (korean.unreachable)()),
+        ("something else", (korean.not_connected)()),
     ] {
         wired
             .updates
@@ -307,13 +315,60 @@ fn the_keys_hint_gives_way_to_what_keeps_dotori_out_of_reach(cx: &mut TestAppCon
             .expect("sent");
         cx.run_until_parked();
         view.read_with(cx, |view, _| {
-            assert_eq!(view.status(), Some(said), "{reason}")
+            assert_eq!(view.status().as_deref(), Some(said.as_str()), "{reason}");
+            assert!(!view.link.splash(), "{reason}");
         });
     }
 
     wired.updates.send(Update::Connected).expect("sent");
     cx.run_until_parked();
     view.read_with(cx, |view, _| assert_eq!(view.status(), None));
+}
+
+#[gpui::test]
+fn a_splash_stands_in_for_the_chat_until_dotori_answers(cx: &mut TestAppContext) {
+    let (view, cx, wired) = open(cx);
+    cx.run_until_parked();
+    view.read_with(cx, |view, _| {
+        assert_eq!(view.link, LinkState::Opening);
+        assert!(view.link.splash(), "no composer before the link speaks");
+    });
+    assert!(
+        cx.debug_bounds("splash").is_none(),
+        "no splash flashes before a running dotori connects"
+    );
+
+    for (reason, state) in [
+        ("dotori is starting", LinkState::Starting),
+        ("dotori could not start", LinkState::CouldNotStart),
+        ("dotori is starting", LinkState::Starting),
+    ] {
+        wired
+            .updates
+            .send(Update::Down(String::from(reason)))
+            .expect("sent");
+        cx.run_until_parked();
+        view.read_with(cx, |view, _| {
+            assert_eq!(view.link, state, "{reason}");
+            assert_eq!(view.status(), None, "the splash says it, not the composer");
+        });
+        assert!(cx.debug_bounds("splash").is_some(), "{reason}");
+    }
+
+    wired.updates.send(Update::Connected).expect("sent");
+    cx.run_until_parked();
+    view.read_with(cx, |view, _| assert!(!view.link.splash()));
+    wired
+        .updates
+        .send(Update::Down(String::from("dotori is starting")))
+        .expect("sent");
+    cx.run_until_parked();
+    view.read_with(cx, |view, _| {
+        assert!(
+            view.link.splash(),
+            "a dotori starting again shows the splash again"
+        )
+    });
 }
 
 #[gpui::test]

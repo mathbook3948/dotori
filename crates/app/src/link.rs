@@ -18,8 +18,10 @@ use crate::lock::DaemonLock;
 const RETRY: Duration = Duration::from_secs(2);
 const SETTLE: Duration = Duration::from_millis(500);
 const NOT_RUNNING: &str = "dotori is not running";
-const STARTING: &str = "dotori is starting";
-const COULD_NOT_START: &str = "dotori could not start";
+/// Why the link is down while the daemon it started is not up yet.
+pub(crate) const STARTING: &str = "dotori is starting";
+/// Why the link is down when the daemon it started never came up.
+pub(crate) const COULD_NOT_START: &str = "dotori could not start";
 const START_RETRIES: u32 = 7;
 
 /// What a window learns from its link to the daemon, in order.

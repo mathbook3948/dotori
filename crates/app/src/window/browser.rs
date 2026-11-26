@@ -14,6 +14,7 @@ use gpui::prelude::*;
 use gpui::px;
 use gpui::size;
 
+use crate::window::Title;
 use crate::window::parts::typeface;
 use crate::window::screen::ScreenView;
 use crate::window::theme::Theme;
@@ -23,10 +24,12 @@ use crate::words::words;
 /// a card in the chat and closes when the owner is done.
 pub(crate) struct BrowserWindow {
     screen: Entity<ScreenView>,
+    title: Title,
 }
 
 impl Render for BrowserWindow {
     fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        self.title.keep(window);
         let theme = Theme::of(window);
         div()
             .size_full()
@@ -63,7 +66,7 @@ pub(crate) fn show(
         window_bounds: Some(WindowBounds::Windowed(bounds)),
         window_min_size: Some(size(px(480.), px(360.))),
         titlebar: Some(TitlebarOptions {
-            title: Some(SharedString::new_static(words().common.browser_title)),
+            title: Some(SharedString::from(browser_title())),
             ..TitlebarOptions::default()
         }),
         app_id: Some(String::from("dotori")),
@@ -87,8 +90,15 @@ pub(crate) fn show(
         cx.new(|cx| {
             cx.observe_window_appearance(window, |_, _, cx| cx.notify())
                 .detach();
-            BrowserWindow { screen }
+            BrowserWindow {
+                screen,
+                title: Title::new(browser_title),
+            }
         })
     })
     .ok()
+}
+
+fn browser_title() -> String {
+    (words().common.browser_title)()
 }

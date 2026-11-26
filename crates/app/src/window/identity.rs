@@ -1,9 +1,10 @@
 //! What the windows call the assistant and the picture they show it as, from the settings. Every
-//! window of this process reads the same choice, and the windows follow the settings file when it
-//! changes.
+//! window of this process reads the same choice, and the windows, the tray and the daemon follow
+//! the settings file when it changes.
 
 use std::path::Path;
 use std::path::PathBuf;
+#[cfg(not(test))]
 use std::sync::RwLock;
 
 use crate::icons;
@@ -21,13 +22,20 @@ pub(crate) struct Identity {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Particle {
     Subject,
+    Object,
     With,
     To,
     Of,
     Is,
 }
 
+#[cfg(not(test))]
 static CHOSEN: RwLock<Option<Identity>> = RwLock::new(None);
+
+#[cfg(test)]
+thread_local! {
+    static CHOSEN: std::cell::RefCell<Option<Identity>> = const { std::cell::RefCell::new(None) };
+}
 
 impl Identity {
     /// The assistant as the settings at `settings` name it, with its picture from `icons`.
@@ -44,36 +52,47 @@ impl Identity {
     }
 }
 
+#[cfg(not(test))]
+fn chosen<T>(read: impl FnOnce(Option<&Identity>) -> T) -> T {
+    read(CHOSEN.read().expect("unpoisoned").as_ref())
+}
+
+#[cfg(test)]
+fn chosen<T>(read: impl FnOnce(Option<&Identity>) -> T) -> T {
+    CHOSEN.with(|chosen| read(chosen.borrow().as_ref()))
+}
+
+#[cfg(not(test))]
+fn keep(identity: Identity) {
+    *CHOSEN.write().expect("unpoisoned") = Some(identity);
+}
+
+#[cfg(test)]
+fn keep(identity: Identity) {
+    CHOSEN.with(|chosen| *chosen.borrow_mut() = Some(identity));
+}
+
 /// Makes `identity` the one every window shows. Says whether it changed.
 pub(crate) fn choose(identity: Identity) -> bool {
-    let mut chosen = CHOSEN.write().expect("unpoisoned");
-    if chosen.as_ref() == Some(&identity) {
+    if chosen(|chosen| chosen == Some(&identity)) {
         return false;
     }
-    *chosen = Some(identity);
+    keep(identity);
     true
 }
 
 /// What the windows call the assistant.
 pub(crate) fn name() -> String {
-    CHOSEN
-        .read()
-        .expect("unpoisoned")
-        .as_ref()
-        .and_then(|chosen| chosen.name.clone())
+    chosen(|chosen| chosen.and_then(|chosen| chosen.name.clone()))
         .unwrap_or_else(|| AssistantSettings::name_of(None))
 }
 
 /// The picture the owner gave the assistant, if any.
 pub(crate) fn icon() -> Option<PathBuf> {
-    CHOSEN
-        .read()
-        .expect("unpoisoned")
-        .as_ref()
-        .and_then(|chosen| chosen.icon.clone())
+    chosen(|chosen| chosen.and_then(|chosen| chosen.icon.clone()))
 }
 
-/// The assistant's name followed by `particle`, such as "dotori가", "별이" or "dotori예요".
+/// The assistant's name followed by `particle`, such as "Dotori가", "별을" or "Dotori예요".
 pub(crate) fn called(particle: Particle) -> String {
     followed(&name(), particle)
 }
@@ -83,6 +102,8 @@ fn followed(name: &str, particle: Particle) -> String {
     let after = match (particle, closed) {
         (Particle::Subject, true) => "이",
         (Particle::Subject, false) => "가",
+        (Particle::Object, true) => "을",
+        (Particle::Object, false) => "를",
         (Particle::With, true) => "과",
         (Particle::With, false) => "와",
         (Particle::To, _) => "에게",

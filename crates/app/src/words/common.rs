@@ -1,9 +1,14 @@
+use crate::window::identity;
+
 /// Strings more than one window or the tray shows.
 #[derive(Debug)]
 pub(crate) struct Common {
-    pub(crate) settings_title: &'static str,
-    pub(crate) onboarding_title: &'static str,
-    pub(crate) browser_title: &'static str,
+    /// The settings window's title, naming the assistant.
+    pub(crate) settings_title: fn() -> String,
+    /// The onboarding window's title, naming the assistant.
+    pub(crate) onboarding_title: fn() -> String,
+    /// The browser window's title, naming the assistant.
+    pub(crate) browser_title: fn() -> String,
     pub(crate) open_chat: &'static str,
     pub(crate) settings: &'static str,
     pub(crate) quit: &'static str,
@@ -16,9 +21,9 @@ pub(crate) struct Common {
 }
 
 pub(crate) const KOREAN: Common = Common {
-    settings_title: "dotori 설정",
-    onboarding_title: "dotori 시작하기",
-    browser_title: "dotori 브라우저",
+    settings_title: || format!("{} 설정", identity::name()),
+    onboarding_title: || format!("{} 시작하기", identity::name()),
+    browser_title: || format!("{} 브라우저", identity::name()),
     open_chat: "대화창 열기",
     settings: "설정",
     quit: "끝내기",
@@ -37,9 +42,9 @@ pub(crate) const KOREAN: Common = Common {
 };
 
 pub(crate) const ENGLISH: Common = Common {
-    settings_title: "dotori settings",
-    onboarding_title: "Welcome to dotori",
-    browser_title: "dotori browser",
+    settings_title: || format!("{} settings", identity::name()),
+    onboarding_title: || format!("Welcome to {}", identity::name()),
+    browser_title: || format!("{} browser", identity::name()),
     open_chat: "Open chat",
     settings: "Settings",
     quit: "Quit",

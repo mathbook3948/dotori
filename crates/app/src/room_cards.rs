@@ -41,6 +41,8 @@ use crate::asked;
 use crate::confirm::Status;
 use crate::door::Door;
 use crate::home::Home;
+use crate::window::identity::Particle;
+use crate::window::identity::called;
 use crate::words::words;
 
 const RETRY: Duration = Duration::from_secs(1);
@@ -52,7 +54,6 @@ pub(crate) const MOST_ACCOUNTS: usize = 8;
 
 /// The cards posted in chats that still wait, and the chats they can go to.
 pub(crate) struct RoomCards {
-    subject: String,
     app: Arc<AppChannel>,
     rooms: Mutex<HashMap<String, Arc<dyn Cards>>>,
     desk: Mutex<Desk>,
@@ -106,15 +107,11 @@ enum Answer {
 type Face = (String, Vec<(String, String)>, bool, Vec<String>);
 
 impl RoomCards {
-    /// The cards for an assistant that `subject` names with its particle, such as "dotori가",
-    /// and where the lines for the browser's screen come out.
-    pub(crate) fn new(
-        subject: String,
-        app: Arc<AppChannel>,
-    ) -> (Arc<Self>, mpsc::UnboundedReceiver<Value>) {
+    /// The cards, which name the assistant as the settings call it now, and where the lines for
+    /// the browser's screen come out.
+    pub(crate) fn new(app: Arc<AppChannel>) -> (Arc<Self>, mpsc::UnboundedReceiver<Value>) {
         let (screen, lines) = mpsc::unbounded_channel();
         let cards = Arc::new(Self {
-            subject,
             app,
             rooms: Mutex::new(HashMap::new()),
             desk: Mutex::new(Desk::default()),
@@ -179,15 +176,18 @@ impl RoomCards {
             )
             .collect();
         let notes = sandboxed
-            .then(|| String::from(asked::sandboxed()))
+            .then(asked::sandboxed)
             .into_iter()
-            .chain(std::iter::once(asked::hint(tool, &self.subject)))
+            .chain(std::iter::once(asked::hint(
+                tool,
+                &called(Particle::Subject),
+            )))
             .collect();
         let choices = [(words().chat.decline, false), (words().chat.allow, true)]
             .into_iter()
             .map(|(label, ok)| (button(label, ok), Answer::Call { id, ok }))
             .collect();
-        let face = (asked::title(&self.subject), rows, cut, notes);
+        let face = (asked::title(&called(Particle::Subject)), rows, cut, notes);
         let key = Key::Call(id);
         if origin.audience == Some(Audience::Owner) {
             self.open(key, room, origin.address.place, origin.owner, face, choices);
@@ -315,7 +315,7 @@ impl RoomCards {
                     .map(|id| id.as_str().map(str::to_owned))
                     .collect();
                 let (site, path) = (text("site"), text("path"));
-                let face = log_in(&self.subject, &host, &site, &path, &ids);
+                let face = log_in(&called(Particle::Subject), &host, &site, &path, &ids);
                 let choices = log_in_choices(id, &ids);
                 self.open(
                     Key::LogIn(ticket),
@@ -330,7 +330,7 @@ impl RoomCards {
                 let note = if origin.audience == Some(Audience::Owner) {
                     (words().chat.card_on_pc)(&host, logs_in(shown))
                 } else {
-                    String::from(words().chat.input_card_on_pc)
+                    (words().chat.input_card_on_pc)()
                 };
                 note_in(room, origin.address.place, note);
             }
@@ -583,7 +583,7 @@ fn log_in(subject: &str, host: &str, site: &str, path: &str, ids: &[Option<Strin
     };
     let mut notes = vec![asked::log_in_note(subject, host, path)];
     if ids.len() > MOST_ACCOUNTS {
-        notes.push(String::from(words().chat.rest_on_pc));
+        notes.push((words().chat.rest_on_pc)());
     }
     (
         asked::log_in_title(host, site),

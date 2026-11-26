@@ -59,7 +59,8 @@ pub(crate) struct Onboarding {
     pub(crate) joining: &'static str,
     pub(crate) code_unreadable: &'static str,
     pub(crate) address_needed: &'static str,
-    pub(crate) join_failed: &'static str,
+    /// Why joining failed, naming the assistant the other PC runs.
+    pub(crate) join_failed: fn() -> String,
     /// What went wrong on this PC after the other one took the code, given the error.
     pub(crate) join_here_failed: fn(&str) -> String,
     /// The line after joining the PC of the given name, while its settings are on the way.
@@ -132,7 +133,12 @@ pub(crate) const KOREAN: Onboarding = Onboarding {
     joining: "연결하고 있어요",
     code_unreadable: "코드를 읽지 못했어요. 다시 붙여 넣어 주세요.",
     address_needed: "코드에 주소가 없어요. 기존 PC의 주소와 포트를 적어 주세요.",
-    join_failed: "연결하지 못했어요. 기존 PC에서 dotori가 켜져 있는지 보고 새 코드로 다시 해 주세요.",
+    join_failed: || {
+        format!(
+            "연결하지 못했어요. 기존 PC에서 {} 켜져 있는지 보고 새 코드로 다시 해 주세요.",
+            called(Particle::Subject)
+        )
+    },
     join_here_failed: |error| format!("이 PC에서 연결을 마치지 못했어요. {error}"),
     joined: |name| format!("{name}에 연결했어요."),
     received: |name| format!("{name}에서 설정과 키를 받아 왔어요."),
@@ -192,7 +198,12 @@ pub(crate) const ENGLISH: Onboarding = Onboarding {
     joining: "Connecting",
     code_unreadable: "I couldn't read that code. Paste it again.",
     address_needed: "The code has no address. Enter that PC's address and port.",
-    join_failed: "I couldn't connect. Check that dotori is running on that PC, then try a new code.",
+    join_failed: || {
+        format!(
+            "I couldn't connect. Check that {} is running on that PC, then try a new code.",
+            identity::name()
+        )
+    },
     join_here_failed: |error| format!("This PC couldn't finish connecting. {error}"),
     joined: |name| format!("Connected to {name}."),
     received: |name| format!("Got the settings and keys from {name}."),

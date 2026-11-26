@@ -60,6 +60,7 @@ use crate::settings::environment;
 use crate::vault;
 use crate::vault::Vault;
 use crate::vault::now_ms;
+use crate::window::Title;
 use crate::window::chrome::Frame;
 use crate::window::identity;
 use crate::window::identity::Identity;
@@ -89,6 +90,7 @@ use crate::words::words;
 /// The settings window. It writes `settings.toml`, which the daemon reads when it starts.
 pub(crate) struct SettingsView {
     home: Home,
+    title: Title,
     earlier: Settings,
     openai_compatible: bool,
     model: Entity<TextInput>,
@@ -267,7 +269,13 @@ impl SettingsView {
                 .and_then(|assistant| assistant.name.clone()),
             cx,
         );
+        let says: fn() -> String = if walk.is_some() {
+            || (words().common.onboarding_title)()
+        } else {
+            || (words().common.settings_title)()
+        };
         let mut view = Self {
+            title: Title::new(says),
             pcs,
             routines,
             notes,
@@ -690,6 +698,7 @@ impl Focusable for SettingsView {
 
 impl Render for SettingsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.title.keep(window);
         let theme = Theme::of(window);
         if let Some(step) = self.walk {
             return self
@@ -703,7 +712,7 @@ impl Render for SettingsView {
                 Note::Saved => (
                     theme.ok,
                     theme.ok_soft,
-                    SharedString::new_static(words().settings.saved),
+                    SharedString::from((words().settings.saved)()),
                 ),
                 Note::Failed(error) => (theme.danger, theme.danger_soft, error),
             };
@@ -793,7 +802,7 @@ impl SettingsView {
             div()
                 .text_xs()
                 .text_color(theme.muted)
-                .child(prose(words().settings.applies_on_restart))
+                .child(prose(&(words().settings.applies_on_restart)()))
                 .into_any_element()
         });
         footer().child(div().flex_1().min_w_0().child(note)).child(

@@ -24,11 +24,13 @@ use tray_icon::TrayIcon;
 use tray_icon::TrayIconBuilder;
 use tray_icon::menu::Menu;
 use tray_icon::menu::MenuEvent;
-use tray_icon::menu::MenuId;
 use tray_icon::menu::MenuItem;
 
 use crate::daemon;
 use crate::home::Home;
+use crate::language;
+use crate::language::Language;
+use crate::window::identity;
 use crate::words::words;
 
 const POLL: Duration = Duration::from_millis(100);
@@ -85,9 +87,27 @@ fn application() -> Option<Application> {
 }
 
 struct Items {
-    chat: MenuId,
-    settings: MenuId,
+    chat: MenuItem,
+    settings: MenuItem,
     quit: MenuItem,
+    shown: (String, Language),
+}
+
+impl Items {
+    fn follow(&mut self, tray: &TrayIcon) {
+        let now = (identity::name(), language::current());
+        if now == self.shown {
+            return;
+        }
+        let words = &words().common;
+        if let Err(error) = tray.set_tooltip(Some(&now.0)) {
+            eprintln!("dotori: the tray keeps its old name: {error}");
+        }
+        self.chat.set_text(words.open_chat);
+        self.settings.set_text(words.settings);
+        self.quit.set_text(words.quit);
+        self.shown = now;
+    }
 }
 
 async fn watch(
@@ -126,13 +146,14 @@ async fn watch(
                 Err(error) => eprintln!("dotori: no tray icon: {error}"),
             }
         }
-        let Some((_, items)) = &shown else {
+        let Some((tray, items)) = &mut shown else {
             continue;
         };
+        items.follow(tray);
         while let Ok(event) = MenuEvent::receiver().try_recv() {
-            if event.id == items.chat {
+            if event.id == *items.chat.id() {
                 open("window");
-            } else if event.id == items.settings {
+            } else if event.id == *items.settings.id() {
                 open("settings");
             } else if event.id == *items.quit.id()
                 && let Some(quit) = quit.borrow_mut().take()
@@ -153,16 +174,18 @@ fn tray() -> Result<(TrayIcon, Items), String> {
     menu.append_items(&[&chat, &settings, &quit])
         .map_err(|error| error.to_string())?;
     let icon = Icon::from_rgba(acorn(), ICON_SIZE, ICON_SIZE).map_err(|error| error.to_string())?;
+    let name = identity::name();
     let tray = TrayIconBuilder::new()
         .with_menu(Box::new(menu))
-        .with_tooltip("dotori")
+        .with_tooltip(&name)
         .with_icon(icon)
         .build()
         .map_err(|error| error.to_string())?;
     let items = Items {
-        chat: chat.id().clone(),
-        settings: settings.id().clone(),
+        chat,
+        settings,
         quit,
+        shown: (name, language::current()),
     };
     Ok((tray, items))
 }

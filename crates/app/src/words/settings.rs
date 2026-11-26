@@ -7,8 +7,10 @@ pub(crate) struct Settings {
     pub(crate) default_value: &'static str,
     pub(crate) paste: &'static str,
     pub(crate) key_needed: &'static str,
-    pub(crate) saved: &'static str,
-    pub(crate) applies_on_restart: &'static str,
+    /// The note after saving, naming the assistant that applies it on restart.
+    pub(crate) saved: fn() -> String,
+    /// The note by the save button, naming the assistant that applies changes on restart.
+    pub(crate) applies_on_restart: fn() -> String,
     pub(crate) save: &'static str,
     pub(crate) model_title: &'static str,
     /// The caption under the model card's title, which calls the assistant by its name.
@@ -106,8 +108,18 @@ pub(crate) const KOREAN: Settings = Settings {
     default_value: "기본값",
     paste: "붙여 넣기",
     key_needed: "키를 붙여 넣어야 다음으로 넘어갈 수 있어요.",
-    saved: "저장했어요. dotori를 다시 시작하면 적용돼요.",
-    applies_on_restart: "바뀐 설정은 dotori를 다시 시작하면 적용돼요",
+    saved: || {
+        format!(
+            "저장했어요. {} 다시 시작하면 적용돼요.",
+            identity::called(Particle::Object)
+        )
+    },
+    applies_on_restart: || {
+        format!(
+            "바뀐 설정은 {} 다시 시작하면 적용돼요",
+            identity::called(Particle::Object)
+        )
+    },
     save: "저장",
     model_title: "대화 모델",
     model_about: || {
@@ -152,7 +164,7 @@ pub(crate) const KOREAN: Settings = Settings {
     picture_unreadable: "그림으로 읽지 못했어요. PNG, JPEG, GIF, WebP 그림을 골라 주세요",
     picture_not_saved: "그림을 저장하지 못했어요. 잠시 뒤에 다시 해 보세요",
     name: "이름",
-    name_hint: "비워 두면 Dotori예요. 창에는 저장하면 바로, 대답에는 dotori를 다시 시작하면 적용돼요.",
+    name_hint: "비워 두면 Dotori예요. 창에는 저장하면 바로, 대답에는 다시 시작한 뒤부터 적용돼요.",
     name_too_long: |longest| format!("이름은 {longest}자까지 쓸 수 있어요"),
     name_control: "이름에는 글자만 써 주세요",
     theme: "테마",
@@ -167,7 +179,7 @@ pub(crate) const KOREAN: Settings = Settings {
     slack_steps: [
         "api.slack.com/apps에서 앱을 만들고 Socket Mode와 Interactivity를 켜 주세요. connections:write 권한으로 앱 토큰(xapp-)을 만들어 주세요.",
         "봇 권한 app_mentions:read, chat:write, im:history, im:read, im:write, users:read, channels:read, groups:read를 주고, app_mention과 message.im 이벤트를 구독한 뒤 설치해서 봇 토큰(xoxb-)을 받아 주세요.",
-        "두 토큰을 아래에 붙여 넣고 저장한 뒤 dotori를 다시 시작해 주세요.",
+        "두 토큰을 아래에 붙여 넣고 저장해 주세요.",
     ],
     app_token: "앱 토큰",
     bot_token: "봇 토큰",
@@ -178,7 +190,7 @@ pub(crate) const KOREAN: Settings = Settings {
     telegram_about: "Telegram 봇으로도 말할 수 있어요. 봇에게 바로 말하거나 그룹에서 부르면 같은 대화로 이어져요.",
     telegram_steps: [
         "Telegram에서 @BotFather에게 /newbot을 보내 봇을 만들고 토큰을 받아 주세요.",
-        "토큰을 아래에 붙여 넣고 저장한 뒤 dotori를 다시 시작해 주세요.",
+        "토큰을 아래에 붙여 넣고 저장해 주세요.",
         "그룹에서도 쓰려면 봇을 그룹에 넣고 @봇이름으로 불러 주세요.",
     ],
     telegram_owner: "내 Telegram 사용자 ID",
@@ -189,7 +201,7 @@ pub(crate) const KOREAN: Settings = Settings {
     discord_steps: [
         "discord.com/developers/applications에서 앱을 만들고 Bot 메뉴에서 토큰을 받아 주세요. 같은 화면에서 Message Content Intent를 켜 주세요.",
         "OAuth2 URL Generator에서 bot 범위와 View Channels, Send Messages, Read Message History 권한을 골라 내 서버에 봇을 초대해 주세요.",
-        "토큰을 아래에 붙여 넣고 저장한 뒤 dotori를 다시 시작해 주세요.",
+        "토큰을 아래에 붙여 넣고 저장해 주세요.",
     ],
     discord_owner: "내 Discord 사용자 ID",
     discord_owner_hint: "설정의 고급에서 개발자 모드를 켜고, 내 프로필을 눌러 \"사용자 ID 복사\"로 얻어요. 이 사람의 말만 들어요.",
@@ -237,8 +249,8 @@ pub(crate) const ENGLISH: Settings = Settings {
     default_value: "Default",
     paste: "Paste here",
     key_needed: "Paste a key to continue.",
-    saved: "Saved. Changes apply when dotori restarts.",
-    applies_on_restart: "Changes apply when dotori restarts.",
+    saved: || format!("Saved. Changes apply when {} restarts.", identity::name()),
+    applies_on_restart: || format!("Changes apply when {} restarts.", identity::name()),
     save: "Save",
     model_title: "Chat model",
     model_about: || format!("The model {} thinks and replies with.", identity::name()),
@@ -278,7 +290,7 @@ pub(crate) const ENGLISH: Settings = Settings {
     picture_unreadable: "I couldn't read that as a picture. Pick a PNG, JPEG, GIF or WebP file.",
     picture_not_saved: "I couldn't save the picture. Try again in a moment.",
     name: "Name",
-    name_hint: "Leave it blank for Dotori. Windows change when you save, replies after dotori restarts.",
+    name_hint: "Leave it blank for Dotori. Windows change when you save, replies after a restart.",
     name_too_long: |longest| format!("A name can be up to {longest} characters."),
     name_control: "Remove line breaks and tabs from the name.",
     theme: "Theme",
@@ -293,7 +305,7 @@ pub(crate) const ENGLISH: Settings = Settings {
     slack_steps: [
         "Create an app at api.slack.com/apps and turn on Socket Mode and Interactivity. Make an app token (xapp-) with the connections:write scope.",
         "Give the bot the app_mentions:read, chat:write, im:history, im:read, im:write, users:read, channels:read and groups:read scopes, subscribe to the app_mention and message.im events, then install it to get a bot token (xoxb-).",
-        "Paste both tokens below, save, and restart dotori.",
+        "Paste both tokens below and save.",
     ],
     app_token: "App token",
     bot_token: "Bot token",
@@ -304,7 +316,7 @@ pub(crate) const ENGLISH: Settings = Settings {
     telegram_about: "You can talk through a Telegram bot too. Message the bot or mention it in a group to pick up the same conversation.",
     telegram_steps: [
         "Send /newbot to @BotFather in Telegram to make a bot and get its token.",
-        "Paste the token below, save, and restart dotori.",
+        "Paste the token below and save.",
         "To use it in a group, add the bot to the group and mention it by its @name.",
     ],
     telegram_owner: "Your Telegram user ID",
@@ -315,7 +327,7 @@ pub(crate) const ENGLISH: Settings = Settings {
     discord_steps: [
         "Create an app at discord.com/developers/applications and get a token from the Bot menu. Turn on Message Content Intent on the same page.",
         "In OAuth2 URL Generator, pick the bot scope and the View Channels, Send Messages and Read Message History permissions, then invite the bot to your server.",
-        "Paste the token below, save, and restart dotori.",
+        "Paste the token below and save.",
     ],
     discord_owner: "Your Discord user ID",
     discord_owner_hint: "Turn on Developer Mode under Advanced in Discord's settings, then click your profile and choose \"Copy User ID\". I only listen to this person.",

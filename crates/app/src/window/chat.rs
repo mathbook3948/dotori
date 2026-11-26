@@ -49,9 +49,11 @@ use crate::asked;
 use crate::asked::asked_fields;
 use crate::asked::field_label;
 use crate::asked::own_tool;
+use crate::link;
 use crate::link::Link;
 use crate::link::Update;
 use crate::screen_link::ScreenLink;
+use crate::window::Title;
 use crate::window::browser;
 use crate::window::browser::BrowserWindow;
 use crate::window::chrome::Frame;
@@ -123,13 +125,33 @@ pub(crate) struct ChatView {
     preview: Option<Arc<RenderImage>>,
     focus_card: bool,
     _uncopy: Option<Task<()>>,
+    title: Title,
     _pump: Task<()>,
 }
 
+#[derive(Debug, PartialEq, Eq)]
 enum LinkState {
-    Connecting,
+    /// The link has not said anything yet. It answers within moments, so the window shows only
+    /// its strip rather than a splash that would flash before a running dotori connects.
+    Opening,
+    Starting,
+    CouldNotStart,
     Connected,
     Down(String),
+}
+
+impl LinkState {
+    fn after_down(reason: String) -> Self {
+        match reason.as_str() {
+            link::COULD_NOT_START => Self::CouldNotStart,
+            link::STARTING => Self::Starting,
+            _ => Self::Down(reason),
+        }
+    }
+
+    fn splash(&self) -> bool {
+        matches!(self, Self::Opening | Self::Starting | Self::CouldNotStart)
+    }
 }
 
 impl ChatView {
@@ -173,7 +195,7 @@ impl ChatView {
         Self {
             lines: Vec::new(),
             screen,
-            link: LinkState::Connecting,
+            link: LinkState::Opening,
             browser_at: None,
             input: cx.new(|cx| TextInput::multiline(say_to(), cx)),
             say,
@@ -199,6 +221,7 @@ impl ChatView {
             preview: None,
             focus_card: false,
             _uncopy: None,
+            title: Title::new(identity::name),
             _pump: pump,
         }
     }
@@ -221,7 +244,7 @@ impl ChatView {
                 return;
             }
             Update::Down(reason) => {
-                self.link = LinkState::Down(reason);
+                self.link = LinkState::after_down(reason);
                 self.busy = false;
                 return;
             }
@@ -371,7 +394,7 @@ impl ChatView {
     }
 
     fn conversation(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        if self.lines.is_empty() && matches!(self.link, LinkState::Connected) {
+        if self.lines.is_empty() && self.link == LinkState::Connected && !self.busy {
             return empty(theme).into_any_element();
         }
         let marks = marks(&self.lines, &self.zone, today(&self.zone));
@@ -884,7 +907,7 @@ impl ChatView {
                                     .size(px(14.))
                                     .text_color(theme.muted),
                             )
-                            .child(prose(asked::sandboxed())),
+                            .child(prose(&asked::sandboxed())),
                     )
                 })
                 .child(footer),
@@ -1706,27 +1729,75 @@ impl ChatView {
         shown.pb(px(TURN_SPACE))
     }
 
-    fn status(&self) -> Option<&'static str> {
+    fn status(&self) -> Option<String> {
         let LinkState::Down(reason) = &self.link else {
             return None;
         };
         let chat = &words().chat;
-        Some(if reason.contains("could not start") {
-            chat.could_not_start
-        } else if reason.contains("starting") {
-            chat.starting
-        } else if reason.contains("closed the connection") {
-            chat.closed
+        Some(if reason.contains("closed the connection") {
+            (chat.closed)()
         } else if reason.contains("not reachable") {
-            chat.unreachable
+            (chat.unreachable)()
         } else {
-            chat.not_connected
+            (chat.not_connected)()
         })
+    }
+
+    fn splash(&self, theme: &Theme) -> AnyElement {
+        if self.link == LinkState::Opening {
+            return div().flex_1().into_any_element();
+        }
+        let failed = self.link == LinkState::CouldNotStart;
+        let picture = logo(theme, PICTURE);
+        div()
+            .id("splash")
+            .debug_selector(|| String::from("splash"))
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .gap_3()
+            .px(px(EDGE))
+            .pb(px(PICTURE))
+            .map(|splash| {
+                if failed {
+                    splash.child(picture)
+                } else {
+                    splash.child(picture.with_animation(
+                        "splash-logo",
+                        WORKING.animation().repeat().with_easing(|t| t),
+                        |logo, progress| logo.opacity(breath(progress)),
+                    ))
+                }
+            })
+            .child(
+                div()
+                    .text_size(px(16.))
+                    .line_height(px(24.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(identity::name()),
+            )
+            .when(failed, |splash| {
+                splash.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .text_size(px(13.))
+                        .line_height(px(18.))
+                        .child(words().chat.could_not_start)
+                        .child(words().chat.open_again),
+                )
+            })
+            .into_any_element()
     }
 
     fn composer(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let ready = matches!(self.link, LinkState::Connected)
             && !self.input.read(cx).text().trim().is_empty();
+        let status = self.status();
         let focus = self.input.focus_handle(cx);
         div()
             .flex_none()
@@ -1785,12 +1856,12 @@ impl ChatView {
                     .px_2()
                     .text_size(px(11.))
                     .line_height(px(14.))
-                    .text_color(if self.status().is_some() {
+                    .text_color(if status.is_some() {
                         theme.text
                     } else {
                         theme.muted
                     })
-                    .child(self.status().unwrap_or(words().chat.keys_hint)),
+                    .child(status.unwrap_or_else(|| String::from(words().chat.keys_hint))),
             )
     }
 }
@@ -1803,6 +1874,7 @@ impl Focusable for ChatView {
 
 impl Render for ChatView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.title.keep(window);
         let theme = Theme::of(window);
         self.input
             .update(cx, |input, cx| input.set_placeholder(say_to(), cx));
@@ -1813,6 +1885,19 @@ impl Render for ChatView {
             window.request_animation_frame();
         }
         let frame = Frame::of(window);
+        if self.link.splash() {
+            return frame
+                .resizable(div())
+                .flex()
+                .flex_col()
+                .size_full()
+                .font(typeface())
+                .bg(theme.canvas)
+                .text_color(theme.text)
+                .child(frame.strip(&theme, settings_button(&theme), div()))
+                .child(self.splash(&theme))
+                .into_any_element();
+        }
         let working_at = if self.shows_working() {
             if self.scroll.bounds_for_item(0).is_none() {
                 window.request_animation_frame();
@@ -1851,6 +1936,7 @@ impl Render for ChatView {
                     })),
             )
             .child(self.composer(&theme, cx))
+            .into_any_element()
     }
 }
 
