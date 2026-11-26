@@ -150,3 +150,49 @@ fn a_pc_joining_in_first_run_takes_settings_as_old_as_its_own_and_a_set_up_pc_do
         model("http://here")
     );
 }
+
+#[test]
+fn a_pc_joining_keeps_what_its_owner_set_here_since_even_against_an_older_time() {
+    let model = |url: &str| ModelSettings::OpenaiCompatible {
+        base_url: url.to_owned(),
+        model: String::from("m"),
+        api_key_env: None,
+        max_tokens: None,
+    };
+    let running = pc("running-older");
+    let joining = pc("joining-edited");
+    save(
+        &running,
+        &Settings {
+            model: model("http://running"),
+            ..Settings::default()
+        },
+    );
+    save(
+        &joining,
+        &Settings {
+            model: model("http://here"),
+            ..Settings::default()
+        },
+    );
+    let theirs = running.current().expect("read");
+    joining.current().expect("stamped before the owner edits");
+    save(
+        &joining,
+        &Settings {
+            model: model("http://edited"),
+            ..Settings::default()
+        },
+    );
+
+    assert!(
+        !joining
+            .take(theirs.times, theirs.shared, true)
+            .expect("checked")
+    );
+
+    assert_eq!(
+        Settings::load(&joining.settings).expect("loaded").model,
+        model("http://edited")
+    );
+}

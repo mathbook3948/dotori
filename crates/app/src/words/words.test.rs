@@ -66,6 +66,10 @@ fn every_function(words: &Words) -> Vec<(&'static str, String)> {
         ("onboarding.elsewhere_hint", (onboarding.elsewhere_hint)()),
         ("onboarding.joined", (onboarding.joined)("laptop")),
         ("onboarding.received", (onboarding.received)("laptop")),
+        (
+            "onboarding.join_here_failed",
+            (onboarding.join_here_failed)("locked"),
+        ),
         ("pcs.about", (pcs.about)()),
         ("pcs.this_pc", (pcs.this_pc)("laptop")),
         ("pcs.reachable_at", (pcs.reachable_at)("10.0.0.2")),

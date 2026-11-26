@@ -1,3 +1,4 @@
+use dotori_connectors::peer::hub::JoinError;
 use gpui::Modifiers;
 use gpui::TestAppContext;
 use gpui::VisualTestContext;
@@ -679,7 +680,7 @@ fn joined_laptop(
     _: &Settings,
     _: dotori_connectors::peer::Code,
     _: String,
-) -> oneshot::Receiver<Result<dotori_connectors::peer::Peer, String>> {
+) -> oneshot::Receiver<Result<dotori_connectors::peer::Peer, JoinError>> {
     let (tell, told) = oneshot::channel();
     let _ = tell.send(Ok(dotori_connectors::peer::Peer {
         device: String::from("abcdef123456"),
@@ -696,11 +697,22 @@ fn refused(
     _: &Settings,
     _: dotori_connectors::peer::Code,
     _: String,
-) -> oneshot::Receiver<Result<dotori_connectors::peer::Peer, String>> {
+) -> oneshot::Receiver<Result<dotori_connectors::peer::Peer, JoinError>> {
     let (tell, told) = oneshot::channel();
-    let _ = tell.send(Err(String::from(
+    let _ = tell.send(Err(JoinError::There(String::from(
         "the other PC refused the code; make a new one there",
-    )));
+    ))));
+    told
+}
+
+fn kept_nowhere(
+    _: &Home,
+    _: &Settings,
+    _: dotori_connectors::peer::Code,
+    _: String,
+) -> oneshot::Receiver<Result<dotori_connectors::peer::Peer, JoinError>> {
+    let (tell, told) = oneshot::channel();
+    let _ = tell.send(Err(JoinError::Here(String::from("the book is locked"))));
     told
 }
 
@@ -794,6 +806,54 @@ fn a_refused_join_says_so_and_back_returns_to_the_greeting(cx: &mut TestAppConte
     click(cx, "back");
     assert_eq!(joining(&view, cx), None);
     assert_eq!(walked(&view, cx), Some(Step::Welcome));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[gpui::test]
+fn a_join_that_failed_on_this_pc_says_so_instead_of_blaming_the_other(cx: &mut TestAppContext) {
+    let (home, root) = onboarding_home("join-here", "");
+    let settings = Settings::load(&home.settings()).expect("loaded");
+    let (view, cx) = cx.add_window_view(|_, cx| SettingsView::onboarding(home, settings, cx));
+    view.update(cx, |view, _| view.joiner = kept_nowhere);
+    cx.run_until_parked();
+    click(cx, "join-pc");
+    code_typed(&view, cx, &a_code());
+
+    click(cx, "next");
+
+    assert_eq!(
+        joining(&view, cx),
+        Some(onboarding::Joining::Typing(Some(
+            onboarding::Failure::Joining(SharedString::from(
+                (words().onboarding.join_here_failed)("the book is locked")
+            ))
+        )))
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[gpui::test]
+fn setting_up_here_after_a_join_shows_the_settings_that_arrived(cx: &mut TestAppContext) {
+    let (home, root) = onboarding_home("join-reload", NAMED_KEY_ABSENT);
+    let settings = Settings::load(&home.settings()).expect("loaded");
+    let (view, cx) =
+        cx.add_window_view(|_, cx| SettingsView::onboarding(home.clone(), settings, cx));
+    view.update(cx, |view, _| view.joiner = joined_laptop);
+    cx.run_until_parked();
+    click(cx, "join-pc");
+    code_typed(&view, cx, &a_code());
+    click(cx, "next");
+    std::fs::write(
+        home.settings(),
+        NAMED_KEY_ABSENT.replace("model = \"m\"", "model = \"arrived\""),
+    )
+    .expect("the other PC's model arrives");
+
+    click(cx, "set-up-here");
+
+    let shown = view.read_with(cx, |view, cx| view.model.read(cx).text().to_owned());
+    assert_eq!(shown, "arrived");
+    assert_eq!(walked(&view, cx), Some(Step::Key));
     let _ = std::fs::remove_dir_all(&root);
 }
 

@@ -659,12 +659,25 @@ fn take_shared(
             if settings.take_heard(&heard, joining) || vault::take_heard(&vault, &heard) {
                 continue;
             }
+            if joining && lease_talk(&heard) {
+                continue;
+            }
             if rest.send(heard).is_err() {
                 return;
             }
         }
     });
     passed
+}
+
+fn lease_talk(heard: &Heard) -> bool {
+    matches!(
+        heard
+            .message
+            .get("kind")
+            .and_then(serde_json::Value::as_str),
+        Some("leases" | "released")
+    )
 }
 
 fn link(
