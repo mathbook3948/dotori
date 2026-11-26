@@ -67,6 +67,12 @@ impl Motion {
 pub(crate) const HOVER: Motion = Motion::new(120, Curve::EaseOut);
 /// A reply, a tool line or a card arriving.
 pub(crate) const MESSAGE_ENTER: Motion = Motion::new(180, Curve::EaseOut);
+/// The assistant's picture settling in as the onboarding window greets the owner.
+pub(crate) const GREET: Motion = Motion::new(260, Curve::EaseOut);
+/// One onboarding step giving way to the next as the whole screen slides in.
+pub(crate) const STEP: Motion = Motion::new(240, Curve::EaseOut);
+/// The raised segment of a switch sliding to the one the owner picked.
+pub(crate) const SWITCH: Motion = Motion::new(180, Curve::EaseOut);
 /// The conversation following new text.
 pub(crate) const FOLLOW: Motion = Motion::new(180, Curve::EaseOut);
 /// One breath of the logo while dotori works. The only motion that repeats.
@@ -74,6 +80,23 @@ pub(crate) const WORKING: Motion = Motion::new(1600, Curve::EaseInOut);
 
 /// How far what arrives rises as it fades in, `spacing.rise` of DESIGN.md.
 pub(crate) const RISE: f32 = 6.;
+
+/// How far an onboarding step slides in from the side it comes from, `spacing.slide` of
+/// DESIGN.md.
+pub(crate) const SLIDE: f32 = 28.;
+
+impl Motion {
+    /// The movement as an animation that waits `delay` before it starts, so a few things can
+    /// arrive one after another.
+    pub(crate) fn after(self, delay: Duration) -> Animation {
+        let total = delay + self.duration;
+        let (wait, length, curve) = (delay.as_secs_f32(), self.duration.as_secs_f32(), self.curve);
+        Animation::new(total).with_easing(move |t| {
+            let elapsed = t * (wait + length);
+            curve.ease(((elapsed - wait) / length).max(0.0))
+        })
+    }
+}
 
 /// How bright the logo is `progress` of the way through one breath: full at both ends and
 /// dimmest in the middle, so a breath runs into the next without a jump.

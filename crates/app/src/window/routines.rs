@@ -18,12 +18,14 @@ use gpui::px;
 use crate::home::Home;
 use crate::routines::Routine;
 use crate::routines::Routines;
-use crate::window::identity::Particle;
-use crate::window::identity::called;
 use crate::window::input::Submit;
 use crate::window::input::TextInput;
 use crate::window::parts::prose;
+use crate::window::surface::SurfaceExt;
+use crate::window::surface::framed;
+use crate::window::surface::hairline;
 use crate::window::theme::Theme;
+use crate::words::words;
 
 const REFRESH: Duration = Duration::from_secs(5);
 
@@ -52,7 +54,7 @@ impl RoutinesView {
         let routines = Routines::new(home.routines());
         let stored = routines.zone_name().ok().flatten();
         let zone = cx.new(|cx| {
-            let mut input = TextInput::new("이 PC의 시간대", cx);
+            let mut input = TextInput::new(words().routines.zone_placeholder, cx);
             if let Some(stored) = &stored {
                 input.set_text(stored, cx);
             }
@@ -119,20 +121,23 @@ impl RoutinesView {
 
     fn zone_row(&self, theme: &Theme, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let focus = self.zone.focus_handle(cx);
-        let focused = focus.is_focused(window);
+        let ring =
+            (focus.is_focused(window) && window.is_window_active()).then(|| theme.primary.into());
+        let width = hairline(window);
         let changed = self.zone_changed(cx);
+        let strings = &words().routines;
         let here = jiff::tz::TimeZone::system()
             .iana_name()
-            .map_or_else(|| "이 PC의 시간대".to_owned(), str::to_owned);
+            .map(strings.zone_here);
+        let with_here = |hint: &str| match &here {
+            Some(here) => format!("{hint} {here}"),
+            None => hint.to_owned(),
+        };
         let hint = match (&self.stored, self.zone_saved && !changed) {
-            (Some(_), true) => "바꿨어요. 다음 루틴부터 모든 PC가 이 시간대로 읽어요.".to_owned(),
-            (None, true) => "바꿨어요. 다음 루틴부터 각 PC가 자기 시간대로 읽어요.".to_owned(),
-            (Some(_), false) => format!(
-                "모든 PC가 이 시간대로 루틴을 읽어요. 비우면 각 PC의 시간대를 써요. 이 PC의 시간대: {here}"
-            ),
-            (None, false) => format!(
-                "지금은 각 PC의 시간대로 읽어요. Asia/Seoul처럼 적으면 모든 PC가 같은 시간대를 써요. 이 PC의 시간대: {here}"
-            ),
+            (Some(_), true) => strings.zone_saved_shared.to_owned(),
+            (None, true) => strings.zone_saved_each.to_owned(),
+            (Some(_), false) => with_here(strings.zone_shared),
+            (None, false) => with_here(strings.zone_each),
         };
         let save = div()
             .id("zone-save")
@@ -144,9 +149,8 @@ impl RoutinesView {
             .font_weight(FontWeight::SEMIBOLD);
         let save = if changed {
             save.cursor_pointer()
-                .bg(theme.primary)
-                .hover(|save| save.bg(theme.primary_hover))
-                .text_color(theme.on_primary)
+                .main_button(theme)
+                .hover(|save| save.opacity(0.9))
                 .on_click(cx.listener(|view, _, _, cx| view.save_zone(cx)))
         } else {
             save.bg(theme.bubble).text_color(theme.muted)
@@ -155,40 +159,44 @@ impl RoutinesView {
             .flex()
             .flex_col()
             .gap_1p5()
-            .child(div().font_weight(FontWeight::MEDIUM).child("시간대"))
+            .child(
+                div()
+                    .font_weight(FontWeight::MEDIUM)
+                    .child(strings.zone_label),
+            )
             .child(
                 div()
                     .flex()
                     .items_center()
                     .gap_2()
                     .child(
-                        div()
-                            .id("zone")
-                            .debug_selector(|| "zone".to_owned())
-                            .flex_1()
-                            .min_w_0()
-                            .px_3()
-                            .py_2()
-                            .rounded_lg()
-                            .bg(theme.canvas)
-                            .border_1()
-                            .border_color(if focused {
-                                theme.primary.into()
-                            } else {
-                                gpui::transparent_black()
-                            })
-                            .cursor_text()
-                            .on_mouse_down(MouseButton::Left, move |_, window, _| {
-                                window.focus(&focus);
-                            })
-                            .on_action(cx.listener(|view, _: &Submit, _, cx| {
-                                if view.zone_changed(cx) {
-                                    view.save_zone(cx);
-                                }
-                            }))
-                            .child(self.zone.clone()),
+                        framed(
+                            ring,
+                            8. - width,
+                            width,
+                            div()
+                                .id("zone")
+                                .debug_selector(|| "zone".to_owned())
+                                .px_3()
+                                .py_2()
+                                .rounded(px(8. - width))
+                                .bg(theme.canvas)
+                                .cursor_text()
+                                .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                                    window.focus(&focus);
+                                    cx.stop_propagation();
+                                })
+                                .on_action(cx.listener(|view, _: &Submit, _, cx| {
+                                    if view.zone_changed(cx) {
+                                        view.save_zone(cx);
+                                    }
+                                }))
+                                .child(self.zone.clone()),
+                        )
+                        .flex_1()
+                        .min_w_0(),
                     )
-                    .child(save.child("바꾸기")),
+                    .child(save.child(strings.zone_save)),
             )
             .child(div().text_xs().text_color(theme.muted).child(prose(&hint)))
     }
@@ -204,6 +212,7 @@ fn now_ms() -> i64 {
 impl Render for RoutinesView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(window);
+        let strings = &words().routines;
         let mut list = div().flex().flex_col().gap_1();
         if self.shown.is_empty() {
             list = list.child(
@@ -215,8 +224,8 @@ impl Render for RoutinesView {
                     .py_4()
                     .text_xs()
                     .text_color(theme.muted)
-                    .child("아직 루틴이 없어요")
-                    .child("채팅창에서 \"평일 아침 8시에 오늘 일정 알려줘\"처럼 부탁해 보세요"),
+                    .child(strings.empty)
+                    .child(strings.empty_ask),
             );
         }
         for routine in &self.shown {
@@ -290,7 +299,7 @@ impl Render for RoutinesView {
                             .text_color(theme.muted)
                             .cursor_pointer()
                             .hover(|remove| remove.bg(theme.danger_soft).text_color(theme.danger))
-                            .child("지우기")
+                            .child(strings.remove)
                             .on_click(cx.listener(move |view, _, _, cx| view.remove(id, cx))),
                     ),
             );
@@ -311,10 +320,7 @@ impl Render for RoutinesView {
             .gap_4()
             .p_5()
             .rounded_2xl()
-            .bg(theme.surface)
-            .border_t_1()
-            .border_color(theme.rim)
-            .shadow_sm()
+            .card(&theme)
             .child(
                 div()
                     .flex()
@@ -324,12 +330,14 @@ impl Render for RoutinesView {
                         div()
                             .text_base()
                             .font_weight(FontWeight::SEMIBOLD)
-                            .child("루틴"),
+                            .child(strings.title),
                     )
-                    .child(div().text_xs().text_color(theme.muted).child(format!(
-                        "정해 둔 시간에 {} 알아서 하는 일이에요. 결과는 채팅창에 보여요.",
-                        called(Particle::Subject)
-                    ))),
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.muted)
+                            .child((strings.caption)()),
+                    ),
             )
             .child(self.zone_row(&theme, window, cx))
             .child(list)

@@ -41,6 +41,7 @@ use crate::asked;
 use crate::confirm::Status;
 use crate::door::Door;
 use crate::home::Home;
+use crate::words::words;
 
 const RETRY: Duration = Duration::from_secs(1);
 const CONNECT_WAIT: Duration = Duration::from_secs(5);
@@ -48,10 +49,6 @@ const LINE: u64 = 256 * 1024;
 const CLOSED_KEPT: usize = 256;
 /// The most accounts a chat card offers as buttons; the window offers the rest.
 pub(crate) const MOST_ACCOUNTS: usize = 8;
-/// What a room that others can read hears in place of a card sent to the owner's direct place.
-pub(crate) const POINTER: &str = "확인할 일을 DM으로 보냈어요.";
-const REST_ON_PC: &str = "나머지는 PC의 dotori 창에서 골라 주세요";
-const NO_ID: &str = "아이디 없이";
 
 /// The cards posted in chats that still wait, and the chats they can go to.
 pub(crate) struct RoomCards {
@@ -174,7 +171,7 @@ impl RoomCards {
             Some(own) => own.to_owned(),
             None => tool.replacen("__", " ", 1),
         };
-        let rows = std::iter::once((String::from("도구"), named))
+        let rows = std::iter::once((String::from(words().chat.tool_row), named))
             .chain(
                 fields
                     .into_iter()
@@ -182,11 +179,11 @@ impl RoomCards {
             )
             .collect();
         let notes = sandboxed
-            .then(|| String::from(asked::SANDBOXED))
+            .then(|| String::from(asked::sandboxed()))
             .into_iter()
             .chain(std::iter::once(asked::hint(tool, &self.subject)))
             .collect();
-        let choices = [("거절", false), ("허락", true)]
+        let choices = [(words().chat.decline, false), (words().chat.allow, true)]
             .into_iter()
             .map(|(label, ok)| (button(label, ok), Answer::Call { id, ok }))
             .collect();
@@ -207,7 +204,12 @@ impl RoomCards {
             face,
             choices,
         );
-        let pointer = (String::from(POINTER), Vec::new(), false, Vec::new());
+        let pointer = (
+            String::from(words().chat.sent_by_dm),
+            Vec::new(),
+            false,
+            Vec::new(),
+        );
         self.open(
             key,
             room,
@@ -326,12 +328,9 @@ impl RoomCards {
             }
             Some("fill") => {
                 let note = if origin.audience == Some(Audience::Owner) {
-                    format!(
-                        "PC의 dotori 창에 {host} {} 카드를 띄웠어요.",
-                        fill_kind(shown)
-                    )
+                    (words().chat.card_on_pc)(&host, logs_in(shown))
                 } else {
-                    String::from("PC의 dotori 창에 입력 카드를 띄웠어요.")
+                    String::from(words().chat.input_card_on_pc)
                 };
                 note_in(room, origin.address.place, note);
             }
@@ -507,7 +506,7 @@ impl RoomCards {
             None => {
                 let room = self.rooms.lock().expect("unpoisoned").get(channel).cloned();
                 if let Some(room) = room {
-                    edit(room, press.posted, None, String::from(asked::LAPSED)).await;
+                    edit(room, press.posted, None, String::from(asked::lapsed())).await;
                 }
             }
         }
@@ -552,13 +551,12 @@ fn button(label: &str, primary: bool) -> Button {
 
 fn said(owner: &str, ok: Option<bool>) -> String {
     match ok {
-        Some(true) => format!("{owner} 님이 허락했어요"),
-        Some(false) => format!("{owner} 님이 거절했어요"),
-        None => String::from(asked::LAPSED),
+        Some(allowed) => (words().chat.decided_by)(owner, allowed),
+        None => String::from(asked::lapsed()),
     }
 }
 
-fn fill_kind(shown: &Value) -> &'static str {
+fn logs_in(shown: &Value) -> bool {
     let secret = shown
         .get("fields")
         .and_then(Value::as_array)
@@ -567,27 +565,25 @@ fn fill_kind(shown: &Value) -> &'static str {
                 .iter()
                 .any(|field| field.get("kind").and_then(Value::as_str) == Some("secret"))
         });
-    if secret && shown.get("keep").and_then(Value::as_bool) == Some(true) {
-        "로그인"
-    } else {
-        "입력"
-    }
+    secret && shown.get("keep").and_then(Value::as_bool) == Some(true)
 }
 
 fn log_in(subject: &str, host: &str, site: &str, path: &str, ids: &[Option<String>]) -> Face {
     let accounts: Vec<String> = ids
         .iter()
         .take(MOST_ACCOUNTS)
-        .map(|id| asked::log_in_account(host, site, id.as_deref().unwrap_or(NO_ID)))
+        .map(|id| {
+            asked::log_in_account(host, site, id.as_deref().unwrap_or(words().chat.without_id))
+        })
         .collect();
     let label = if ids.len() > 1 {
-        "계정 고르기"
+        words().chat.choose_account
     } else {
-        "계정"
+        words().chat.account
     };
     let mut notes = vec![asked::log_in_note(subject, host, path)];
     if ids.len() > MOST_ACCOUNTS {
-        notes.push(String::from(REST_ON_PC));
+        notes.push(String::from(words().chat.rest_on_pc));
     }
     (
         asked::log_in_title(host, site),
@@ -604,13 +600,14 @@ fn log_in_choices(card: u64, ids: &[Option<String>]) -> Vec<(Button, Answer)> {
         account,
         trust,
     };
-    let decline = (button("거절", false), answer(false, 0, false));
+    let chat = &words().chat;
+    let decline = (button(chat.decline, false), answer(false, 0, false));
     if ids.len() <= 1 {
         return vec![
             decline,
-            (button("로그인", true), answer(true, 0, false)),
+            (button(chat.log_in, true), answer(true, 0, false)),
             (
-                button("로그인, 다음부터 묻지 않기", false),
+                button(chat.log_in_and_stop_asking, false),
                 answer(true, 0, true),
             ),
         ];
@@ -620,8 +617,8 @@ fn log_in_choices(card: u64, ids: &[Option<String>]) -> Vec<(Button, Answer)> {
         .enumerate()
         .map(|(n, id)| {
             let label = match id {
-                Some(id) => format!("{id}로 로그인"),
-                None => String::from("아이디 없는 계정으로 로그인"),
+                Some(id) => (chat.log_in_as)(id),
+                None => String::from(chat.log_in_without_id),
             };
             (button(&label, true), answer(true, n, false))
         })

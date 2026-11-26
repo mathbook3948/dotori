@@ -54,6 +54,9 @@ use crate::confirm::Waits;
 use crate::device;
 use crate::door;
 use crate::door::Door;
+use crate::first_run;
+use crate::first_run::FirstRun;
+use crate::first_run::Step;
 use crate::forget::FORGET;
 use crate::forget::Forget;
 use crate::forget::Previewed;
@@ -64,6 +67,7 @@ use crate::history;
 use crate::home::Home;
 use crate::icons;
 use crate::idle::NoTools;
+use crate::language;
 use crate::lock::DaemonLock;
 use crate::logins;
 use crate::logins::LoginFiles;
@@ -87,6 +91,7 @@ use crate::routines;
 use crate::routines::RoutineChannel;
 use crate::routines::Routines;
 use crate::settings::AssistantSettings;
+use crate::settings::ModelError;
 use crate::settings::RunnerChoice;
 use crate::settings::Settings;
 use crate::settings_copies::SettingsCopies;
@@ -107,24 +112,34 @@ const SETTLE: Duration = Duration::from_secs(1);
 const RELEASE_SENT: Duration = Duration::from_millis(300);
 const FLUSH_EVERY: Duration = Duration::from_secs(2);
 const LOOK_FOR_PCS: Duration = Duration::from_secs(2);
+const WAIT_FOR_SETUP: Duration = Duration::from_secs(2);
 
 /// Runs the agent until Ctrl-C or a terminate signal, with the app channel open for windows.
 pub(crate) async fn run(home: Home) -> Result<(), String> {
-    serve(home, || {}, future::pending()).await
+    serve(home, None::<fn()>, || {}, future::pending()).await
 }
 
 /// Runs the agent like `run`. It calls `ready` once windows can connect, and also stops when
-/// `quit` completes.
+/// `quit` completes. Until first run is done it waits, and calls `onboard` once so a window can
+/// walk the owner through it. An install with a model key from before first run was kept counts
+/// as done.
 pub(crate) async fn serve(
     home: Home,
+    onboard: Option<impl FnOnce()>,
     ready: impl FnOnce(),
     quit: impl Future<Output = ()>,
 ) -> Result<(), String> {
     keep_to_itself();
     let _lock = DaemonLock::take(&home.lock())?;
-    let settings = Settings::load(&home.settings())?;
+    language::choose(language::saved(&home.settings()));
     let vault = Arc::new(Vault::new(&home.root));
-    let model = settings.model(vault::lookup(&vault))?;
+    let mut stop = std::pin::pin!(stop_signal());
+    let mut quit = std::pin::pin!(quit);
+    let (settings, model) =
+        match model_when_set_up(&home, &vault, onboard, &mut stop, &mut quit).await? {
+            Keyed::Ready(settings, model) => (*settings, model),
+            Keyed::Stopped(stopped) => return stopped,
+        };
     let secrets = vault::secret_names(&settings, &vault);
     let basic = basic(&home, &secrets);
     let shared = match tools::SharedTools::start().await {
@@ -482,8 +497,6 @@ pub(crate) async fn serve(
     door.write(&home.door())?;
     eprintln!("dotori is running. Open a window with `dotori chat`.");
     ready();
-    let mut stop = std::pin::pin!(stop_signal());
-    let mut quit = std::pin::pin!(quit);
     let stopped = loop {
         tokio::select! {
             () = gained(linked.as_ref()) => {}
@@ -572,6 +585,56 @@ pub(crate) async fn serve(
         time::sleep(RELEASE_SENT).await;
     }
     stopped
+}
+
+enum Keyed {
+    Ready(Box<Settings>, Arc<dyn Model>),
+    Stopped(Result<(), String>),
+}
+
+async fn model_when_set_up(
+    home: &Home,
+    vault: &Vault,
+    onboard: Option<impl FnOnce()>,
+    stop: &mut (impl Future<Output = Result<(), String>> + Unpin),
+    quit: &mut (impl Future<Output = ()> + Unpin),
+) -> Result<Keyed, String> {
+    let mut onboard = onboard;
+    let mut told = false;
+    loop {
+        let settings = Settings::load(&home.settings())?;
+        let model = match settings.model(vault::lookup(vault)) {
+            Ok(model) => Some(model),
+            Err(ModelError::MissingKey { .. }) => None,
+            Err(error) => return Err(error.to_string()),
+        };
+        let first_run = first_run::read(&home.first_run());
+        match (model, first_run) {
+            (Some(model), FirstRun::Done) => return Ok(Keyed::Ready(Box::new(settings), model)),
+            (Some(model), FirstRun::Unbegun) => {
+                first_run::write(&home.first_run(), FirstRun::Done)?;
+                return Ok(Keyed::Ready(Box::new(settings), model));
+            }
+            (None, FirstRun::Unbegun) => {
+                first_run::write(&home.first_run(), FirstRun::At(Step::Welcome))?;
+            }
+            _ => {}
+        }
+        if !told {
+            told = true;
+            eprintln!(
+                "dotori: waiting for first run to finish in the window dotori opened (`dotori onboarding`)"
+            );
+            if let Some(onboard) = onboard.take() {
+                onboard();
+            }
+        }
+        tokio::select! {
+            () = time::sleep(WAIT_FOR_SETUP) => {}
+            stopped = &mut *stop => return Ok(Keyed::Stopped(stopped)),
+            () = &mut *quit => return Ok(Keyed::Stopped(Ok(()))),
+        }
+    }
 }
 
 async fn link(
@@ -700,7 +763,9 @@ fn sub_session_runner(
     let agent = match chosen.runner.unwrap_or_default() {
         RunnerChoice::Llm => {
             return Ok(Arc::new(LlmRunner {
-                model: settings.sub_session_model(vault::lookup(vault))?,
+                model: settings
+                    .sub_session_model(vault::lookup(vault))
+                    .map_err(|error| error.to_string())?,
                 basic: basic.clone(),
                 rest: Arc::clone(toolbox),
                 max_turns: SUB_SESSION_TURNS,

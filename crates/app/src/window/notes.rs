@@ -12,10 +12,10 @@ use gpui::prelude::*;
 use crate::home::Home;
 use crate::notes::MAX_NOTES;
 use crate::notes::Notes;
-use crate::window::identity::Particle;
-use crate::window::identity::called;
 use crate::window::parts::prose;
+use crate::window::surface::SurfaceExt;
 use crate::window::theme::Theme;
+use crate::words::words;
 
 const REFRESH: Duration = Duration::from_secs(5);
 
@@ -77,8 +77,8 @@ impl Render for NotesView {
                     .py_3()
                     .text_xs()
                     .text_color(theme.muted)
-                    .child("아직 메모가 없어요")
-                    .child("채팅창에서 \"앞으로 존댓말 써 줘\"처럼 부탁해도 돼요"),
+                    .child(words().settings.no_notes)
+                    .child(words().settings.notes_example),
             );
         }
         for (id, text) in &self.shown {
@@ -106,7 +106,7 @@ impl Render for NotesView {
                             .text_color(theme.muted)
                             .cursor_pointer()
                             .hover(|remove| remove.bg(theme.danger_soft).text_color(theme.danger))
-                            .child("지우기")
+                            .child(words().settings.remove)
                             .on_click(cx.listener(move |view, _, _, cx| view.remove(id, cx))),
                     ),
             );
@@ -127,10 +127,7 @@ impl Render for NotesView {
             .gap_4()
             .p_5()
             .rounded_2xl()
-            .bg(theme.surface)
-            .border_t_1()
-            .border_color(theme.rim)
-            .shadow_sm()
+            .card(&theme)
             .child(
                 div()
                     .flex()
@@ -140,13 +137,16 @@ impl Render for NotesView {
                         div()
                             .text_base()
                             .font_weight(FontWeight::SEMIBOLD)
-                            .child("메모"),
+                            .child(words().settings.notes_title),
                     )
-                    .child(div().text_xs().text_color(theme.muted).child(format!(
-                        "{} 답할 때마다 기억하는 말이에요. 채팅창에서 부탁하면 더해지고, 여기서는 지울 수 있어요. ({}/{MAX_NOTES})",
-                        called(Particle::Subject),
-                        self.shown.len()
-                    ))),
+                    .child(
+                        div().text_xs().text_color(theme.muted).child((words()
+                            .settings
+                            .notes_about)(
+                            self.shown.len(),
+                            MAX_NOTES,
+                        )),
+                    ),
             )
             .child(list)
             .children(failed)

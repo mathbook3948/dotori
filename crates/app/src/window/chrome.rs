@@ -1,5 +1,5 @@
 //! The frame dotori draws for its own windows where the OS lets it: a quiet strip at the top that
-//! moves the window, round glass buttons, and edges that resize it.
+//! moves the window, round buttons, and edges that resize it.
 
 use gpui::AnyElement;
 use gpui::ClickEvent;
@@ -23,6 +23,7 @@ use gpui::svg;
 use crate::window::parts::CLOSE_ICON;
 use crate::window::parts::MAXIMIZE_ICON;
 use crate::window::parts::MINIMIZE_ICON;
+use crate::window::surface::SurfaceExt;
 use crate::window::theme::Theme;
 
 const RESIZE_MARGIN: f32 = 6.;
@@ -35,6 +36,7 @@ const TOP_HEIGHT: f32 = if cfg!(target_os = "macos") { 40. } else { 52. };
 pub(crate) struct Frame {
     drawn: bool,
     tiling: Tiling,
+    fixed: bool,
 }
 
 impl Frame {
@@ -44,18 +46,28 @@ impl Frame {
             Decorations::Client { tiling } => Self {
                 drawn: true,
                 tiling,
+                fixed: false,
             },
             Decorations::Server => Self {
                 drawn: false,
                 tiling: Tiling::default(),
+                fixed: false,
             },
+        }
+    }
+
+    /// The same frame for a window of one size: no resizing edges, and only the close button.
+    pub(crate) fn fixed(self) -> Self {
+        Self {
+            fixed: true,
+            ..self
         }
     }
 
     /// Lets the window be resized from its edges when dotori draws the frame.
     pub(crate) fn resizable(self, root: Div) -> Div {
         let tiling = self.tiling;
-        root.when(self.drawn, |root| {
+        root.when(self.drawn && !self.fixed, |root| {
             root.on_mouse_down(
                 MouseButton::Left,
                 move |event: &MouseDownEvent, window, cx| {
@@ -78,7 +90,7 @@ impl Frame {
         left: impl IntoElement,
         middle: impl IntoElement,
     ) -> Div {
-        let (drawn, tiling) = (self.drawn, self.tiling);
+        let (drawn, tiling, fixed) = (self.drawn, self.tiling, self.fixed);
         div()
             .flex_none()
             .h(px(TOP_HEIGHT))
@@ -98,14 +110,14 @@ impl Frame {
                             MouseButton::Left,
                             move |event: &MouseDownEvent, window, _| {
                                 let at = (event.position, window.viewport_size());
-                                if resize_edge(at.0, at.1, tiling).is_none() {
+                                if fixed || resize_edge(at.0, at.1, tiling).is_none() {
                                     window.start_window_move();
                                 }
                             },
                         )
                     })
                     .on_click(move |event: &ClickEvent, window, _| {
-                        if event.click_count() != 2 {
+                        if fixed || event.click_count() != 2 {
                             return;
                         }
                         if cfg!(target_os = "macos") {
@@ -116,12 +128,12 @@ impl Frame {
                     })
                     .child(left)
                     .child(div().flex_1().min_w_0().child(middle))
-                    .children(window_buttons(theme, drawn)),
+                    .children(window_buttons(theme, drawn, fixed)),
             )
     }
 }
 
-/// A round glass button of the top strip, with a `rim` along its top edge.
+/// A round button of the top strip, raised a little off the canvas.
 pub(crate) fn round_button(id: &'static str, theme: &Theme) -> Stateful<Div> {
     div()
         .id(id)
@@ -132,26 +144,24 @@ pub(crate) fn round_button(id: &'static str, theme: &Theme) -> Stateful<Div> {
         .justify_center()
         .size(px(36.))
         .rounded_full()
-        .bg(theme.surface)
-        .border_t_1()
-        .border_color(theme.rim)
-        .shadow_sm()
+        .card(theme)
         .cursor_pointer()
         .hover(|button| button.bg(theme.bubble))
 }
 
-fn window_buttons(theme: &Theme, drawn: bool) -> Vec<AnyElement> {
+fn window_buttons(theme: &Theme, drawn: bool, fixed: bool) -> Vec<AnyElement> {
     let buttons = [
         ("minimize", MINIMIZE_ICON, WindowControlArea::Min),
         ("maximize", MAXIMIZE_ICON, WindowControlArea::Max),
         ("close", CLOSE_ICON, WindowControlArea::Close),
-    ];
+    ]
+    .into_iter()
+    .filter(|(id, _, _)| !fixed || *id == "close");
     let native = cfg!(target_os = "windows");
     if !native && !drawn {
         return Vec::new();
     }
     buttons
-        .into_iter()
         .map(|(id, icon, area)| {
             let button = round_button(id, theme)
                 .child(svg().path(icon).size(px(16.)).text_color(theme.muted));

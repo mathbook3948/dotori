@@ -14,8 +14,10 @@ use gpui::prelude::*;
 use gpui::px;
 use gpui::size;
 
+use crate::window::parts::typeface;
 use crate::window::screen::ScreenView;
 use crate::window::theme::Theme;
+use crate::words::words;
 
 /// The window dotori's browser shows in when the owner has something to do there. It opens from
 /// a card in the chat and closes when the owner is done.
@@ -28,6 +30,7 @@ impl Render for BrowserWindow {
         let theme = Theme::of(window);
         div()
             .size_full()
+            .font(typeface())
             .bg(theme.canvas)
             .text_color(theme.text)
             .text_sm()
@@ -60,7 +63,7 @@ pub(crate) fn show(
         window_bounds: Some(WindowBounds::Windowed(bounds)),
         window_min_size: Some(size(px(480.), px(360.))),
         titlebar: Some(TitlebarOptions {
-            title: Some(SharedString::new_static("dotori 브라우저")),
+            title: Some(SharedString::new_static(words().common.browser_title)),
             ..TitlebarOptions::default()
         }),
         app_id: Some(String::from("dotori")),

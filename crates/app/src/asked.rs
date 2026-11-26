@@ -1,20 +1,18 @@
 //! What a card that waits for the owner says, the same in the chat window and in a chat room.
 
+use crate::words::words;
+
 pub(crate) const SHOWN_VALUE: usize = 600;
-/// What a card says under a command that would run in the sandbox.
-pub(crate) const SANDBOXED: &str =
-    "샌드박스 안에서 실행해요. dotori의 금고와 기록은 보이지 않아요.";
-/// What a card says once its call no longer waits.
-pub(crate) const LAPSED: &str = "이제 할 수 없어요. 다시 부탁해 주세요";
 const HIDDEN_FIELDS: [&str; 2] = ["records", "carriers"];
 
 /// What the owner calls one of dotori's own tools that waits for their OK.
 pub(crate) fn own_tool(tool: &str) -> Option<&'static str> {
+    let chat = &words().chat;
     match tool {
-        "run_shell" => Some("명령 실행"),
-        "write_file" => Some("파일 쓰기"),
-        "edit_file" => Some("파일 고치기"),
-        "erase_records" => Some("기록 지우기"),
+        "run_shell" => Some(chat.run_shell),
+        "write_file" => Some(chat.write_file),
+        "edit_file" => Some(chat.edit_file),
+        "erase_records" => Some(chat.erase_records),
         _ => None,
     }
 }
@@ -22,15 +20,16 @@ pub(crate) fn own_tool(tool: &str) -> Option<&'static str> {
 /// The label a field of a waiting call shows under, in the owner's words where dotori knows the
 /// field.
 pub(crate) fn field_label(key: &str) -> &str {
+    let chat = &words().chat;
     match key {
-        "command" => "명령",
-        "folder" => "폴더",
-        "seconds" => "시간 제한(초)",
-        "path" => "파일",
-        "content" => "내용",
-        "old" => "바꿀 글",
-        "new" => "새 글",
-        "all" => "모두 바꾸기",
+        "command" => chat.command_field,
+        "folder" => chat.folder_field,
+        "seconds" => chat.seconds_field,
+        "path" => chat.path_field,
+        "content" => chat.content_field,
+        "old" => chat.old_field,
+        "new" => chat.new_field,
+        "all" => chat.all_field,
         other => other,
     }
 }
@@ -83,7 +82,7 @@ fn shown_value(value: &str, whole: bool) -> (String, bool) {
         return (joined, false);
     }
     let cut: String = joined.chars().take(SHOWN_VALUE).collect();
-    (format!("{cut}\n(전체 {total}자 중 앞부분)"), true)
+    (format!("{cut}\n{}", (words().chat.cut_note)(total)), true)
 }
 
 /// The assistant's `name` followed by the subject particle that fits its last sound, such as
@@ -100,22 +99,33 @@ pub(crate) fn subject(name: &str) -> String {
 /// The title of a card for a call that waits, where `subject` names the assistant with its
 /// particle, such as "dotori가".
 pub(crate) fn title(subject: &str) -> String {
-    format!("{subject} 이 일을 해도 될지 물어요")
+    (words().chat.asking)(subject)
 }
 
 /// What allowing the call `tool` does, said beside the buttons.
 pub(crate) fn hint(tool: &str, subject: &str) -> String {
+    let chat = &words().chat;
     match tool {
-        "erase_records" => String::from("허락하면 모든 PC에서 지워요. 되돌릴 수 없어요"),
-        "run_shell" => format!("허락하면 {subject} 이 명령을 바로 실행해요"),
-        "write_file" | "edit_file" => format!("허락하면 {subject} 파일을 바로 바꿔요"),
-        _ => String::from("허락하면 바로 실행해요"),
+        "erase_records" => String::from(chat.erase_hint),
+        "run_shell" => (chat.run_hint)(subject),
+        "write_file" | "edit_file" => (chat.write_hint)(subject),
+        _ => String::from(chat.allow_hint),
     }
+}
+
+/// What a card says once its call no longer waits.
+pub(crate) fn lapsed() -> &'static str {
+    words().chat.expired
+}
+
+/// What a card says under a command that would run in the sandbox.
+pub(crate) fn sandboxed() -> &'static str {
+    words().chat.sandboxed
 }
 
 /// The title of a card that asks to log in with a kept account.
 pub(crate) fn log_in_title(host: &str, site: &str) -> String {
-    format!("금고의 {host} ({site}) 계정으로 로그인해도 될까요?")
+    (words().chat.log_in_with_kept)(host, site)
 }
 
 /// An account as a log-in card lists it.
@@ -125,9 +135,7 @@ pub(crate) fn log_in_account(host: &str, site: &str, id: &str) -> String {
 
 /// Where a log-in card's account goes, and that the model never sees its password.
 pub(crate) fn log_in_note(subject: &str, host: &str, path: &str) -> String {
-    format!(
-        "{subject} {host}{path} 로그인 칸에 직접 채워 넣어요. 대화하는 AI는 비밀번호를 보지 못해요."
-    )
+    (words().chat.log_in_note)(subject, host, path)
 }
 
 #[cfg(test)]

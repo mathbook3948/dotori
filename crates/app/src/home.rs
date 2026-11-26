@@ -144,6 +144,11 @@ impl Home {
     pub(crate) fn door(&self) -> PathBuf {
         self.root.join("door.json")
     }
+
+    /// How far the owner got through first run.
+    pub(crate) fn first_run(&self) -> PathBuf {
+        self.root.join("first-run")
+    }
 }
 
 /// Whether a screen is there to show windows on. A Linux machine with no display has none.

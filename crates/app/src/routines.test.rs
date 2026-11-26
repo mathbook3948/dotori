@@ -5,6 +5,9 @@ use jiff::civil::date;
 use jiff::tz::offset;
 
 use super::*;
+use crate::language::Language;
+use crate::words::of;
+use crate::words::speak;
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
@@ -93,6 +96,7 @@ fn a_one_time_routine_is_due_only_on_its_day() {
 
 #[test]
 fn the_schedule_reads_the_way_the_owner_would_say_it() {
+    speak(Language::Korean);
     assert_eq!(routine("08:00", 0, None).when(), "매일");
     assert_eq!(routine("08:00", WEEKDAYS, None).when(), "평일");
     assert_eq!(routine("08:00", WEEKEND, None).when(), "주말");
@@ -100,6 +104,21 @@ fn the_schedule_reads_the_way_the_owner_would_say_it() {
     assert_eq!(
         routine("14:00", 0, Some("2026-12-24")).when(),
         "2026년 12월 24일 한 번"
+    );
+
+    let english = speak(Language::English);
+    assert_eq!(routine("08:00", 0, None).when(), english.routines.every_day);
+    assert_eq!(
+        routine("08:00", 0b000_0101, None).when(),
+        format!(
+            "{}, {}",
+            (english.routines.weekday_short)(Weekday::Monday),
+            (english.routines.weekday_short)(Weekday::Wednesday)
+        )
+    );
+    assert_eq!(
+        routine("14:00", 0, Some("2026-12-24")).when(),
+        (of(Language::English).routines.once)(date(2026, 12, 24))
     );
 }
 

@@ -8,12 +8,14 @@ mod confirm;
 mod daemon;
 mod device;
 mod door;
+mod first_run;
 mod forget;
 mod handoff;
 mod history;
 mod home;
 mod icons;
 mod idle;
+mod language;
 mod link;
 mod lock;
 mod logins;
@@ -34,14 +36,14 @@ mod vault;
 mod vector_copies;
 mod versioned;
 mod window;
+mod words;
 
 use std::env;
 use std::process::ExitCode;
 
 use crate::home::Home;
 
-const USAGE: &str =
-    "usage: dotori [daemon | chat | window | settings | search-eval <file> | sandbox install]";
+const USAGE: &str = "usage: dotori [daemon | chat | window | settings | onboarding | search-eval <file> | sandbox install]";
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -65,6 +67,10 @@ async fn main() -> ExitCode {
         Some("settings") => {
             daemon::keep_to_itself();
             window::run(home, window::Which::Settings)
+        }
+        Some("onboarding") => {
+            daemon::keep_to_itself();
+            window::run(home, window::Which::Onboarding)
         }
         Some("search-eval") => search_eval::run(home, env::args().nth(2)).await,
         Some(_) => return fail(USAGE),

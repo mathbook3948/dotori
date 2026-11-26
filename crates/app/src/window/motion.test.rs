@@ -33,6 +33,9 @@ fn the_motion_tokens_match_design_md() {
         ("message-enter", MESSAGE_ENTER),
         ("follow", FOLLOW),
         ("working", WORKING),
+        ("greet", GREET),
+        ("step", STEP),
+        ("switch", SWITCH),
     ] {
         assert_eq!(
             token(name),
@@ -44,6 +47,7 @@ fn the_motion_tokens_match_design_md() {
         );
     }
     assert!(DESIGN.contains(&format!("  rise: {}px\n", RISE as u32)));
+    assert!(DESIGN.contains(&format!("  slide: {}px\n", SLIDE as u32)));
 }
 
 #[test]

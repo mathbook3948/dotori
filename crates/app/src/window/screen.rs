@@ -50,12 +50,12 @@ use tokio::sync::mpsc;
 use crate::screen_link::Picture;
 use crate::screen_link::ScreenLink;
 use crate::screen_link::Seen;
-use crate::window::identity::Particle;
-use crate::window::identity::called;
 use crate::window::input::Submit;
 use crate::window::input::TextInput;
 use crate::window::parts::prose;
+use crate::window::surface::SurfaceExt;
 use crate::window::theme::Theme;
+use crate::words::words;
 
 const ANSWERED_KEPT: usize = 16;
 const POINTER_SHOWN: Duration = Duration::from_millis(900);
@@ -192,7 +192,7 @@ impl ScreenView {
         }
         self.asked.clone().or_else(|| {
             self.wants_files()
-                .then(|| SharedString::new_static("페이지가 파일을 골라 달라고 해요"))
+                .then(|| SharedString::new_static(words().screen.files_asked))
         })
     }
 
@@ -284,7 +284,7 @@ impl ScreenView {
                     .map(|account| {
                         account
                             .as_str()
-                            .map_or_else(|| String::from("아이디 없이"), str::to_owned)
+                            .map_or_else(|| String::from(words().chat.without_id), str::to_owned)
                     })
                     .collect(),
                 chosen: self.chosen,
@@ -599,7 +599,7 @@ impl ScreenView {
                     files: true,
                     directories: false,
                     multiple,
-                    prompt: Some(SharedString::new_static("브라우저에 올릴 파일")),
+                    prompt: Some(SharedString::new_static(words().screen.upload_prompt)),
                 });
                 cx.spawn(async move |view, cx| {
                     let files: Vec<String> = match chosen.await {
@@ -634,9 +634,9 @@ impl ScreenView {
         let picker = self.picker.as_ref()?;
         let kind = picker.get("kind").and_then(Value::as_str)?;
         let title = match kind {
-            "select" => "고르기",
-            "value" => "값 넣기",
-            _ => "파일 고르는 중",
+            "select" => words().screen.select_title,
+            "value" => words().screen.value_title,
+            _ => words().screen.files_title,
         };
         let body = match kind {
             "select" => {
@@ -716,10 +716,9 @@ impl ScreenView {
                         .py_1p5()
                         .rounded_lg()
                         .cursor_pointer()
-                        .bg(theme.primary)
-                        .text_color(theme.on_primary)
+                        .main_button(theme)
                         .font_weight(FontWeight::SEMIBOLD)
-                        .child("넣기")
+                        .child(words().screen.put)
                         .on_click(cx.listener(|view, _, _, cx| {
                             let text = view
                                 .typed
@@ -733,9 +732,9 @@ impl ScreenView {
             _ => div()
                 .text_color(theme.muted)
                 .child(if self.mode == Mode::Owner {
-                    "파일 대화상자에서 고르면 브라우저에 올라가요."
+                    words().screen.files_owner
                 } else {
-                    "페이지가 파일을 달라고 해요. 넘겨받으면 파일을 고를 수 있어요."
+                    words().screen.files_agent
                 })
                 .into_any_element(),
         };
@@ -776,7 +775,7 @@ impl ScreenView {
                                 .text_xs()
                                 .text_color(theme.muted)
                                 .hover(|cancel| cancel.bg(theme.canvas))
-                                .child("닫기")
+                                .child(words().screen.close)
                                 .on_click(cx.listener(|view, _, _, cx| {
                                     view.say(json!({ "kind": "pick", "cancel": true }));
                                     view.picker = None;
@@ -919,7 +918,7 @@ impl ScreenView {
                                         div()
                                             .text_base()
                                             .font_weight(FontWeight::SEMIBOLD)
-                                            .child("로그인이 필요해요"),
+                                            .child(words().screen.login_title),
                                     )
                                     .child(
                                         div()
@@ -943,16 +942,21 @@ impl ScreenView {
                             .flex()
                             .flex_col()
                             .gap_3()
-                            .child(field("login-name", "아이디", name).on_action(
-                                move |_: &Submit, window, cx| {
-                                    if let Some(next) = &next {
-                                        window.focus(&next.focus_handle(cx));
-                                    }
-                                },
-                            ))
-                            .child(field("login-secret", "비밀번호", secret).on_action(
-                                cx.listener(|view, _: &Submit, window, cx| view.log_in(window, cx)),
-                            )),
+                            .child(
+                                field("login-name", words().screen.login_name, name).on_action(
+                                    move |_: &Submit, window, cx| {
+                                        if let Some(next) = &next {
+                                            window.focus(&next.focus_handle(cx));
+                                        }
+                                    },
+                                ),
+                            )
+                            .child(
+                                field("login-secret", words().screen.login_secret, secret)
+                                    .on_action(cx.listener(|view, _: &Submit, window, cx| {
+                                        view.log_in(window, cx)
+                                    })),
+                            ),
                     )
                     .when(again, |card| {
                         card.child(
@@ -963,14 +967,14 @@ impl ScreenView {
                                 .bg(theme.danger_soft)
                                 .text_color(theme.danger)
                                 .text_xs()
-                                .child("아이디나 비밀번호가 맞지 않았어요. 다시 넣어 주세요."),
+                                .child(words().screen.login_failed),
                         )
                     })
                     .child(
                         div()
                             .text_xs()
                             .text_color(theme.muted)
-                            .child("이 페이지에만 넘기고 대화 기록에는 남기지 않아요."),
+                            .child(words().screen.login_kept),
                     )
                     .child(
                         div()
@@ -986,7 +990,7 @@ impl ScreenView {
                                     .cursor_pointer()
                                     .text_color(theme.muted)
                                     .hover(|cancel| cancel.bg(theme.canvas))
-                                    .child("취소")
+                                    .child(words().screen.cancel)
                                     .on_click(cx.listener(|view, _, window, cx| {
                                         view.answer_login(None, window, cx);
                                     })),
@@ -998,11 +1002,10 @@ impl ScreenView {
                                     .py_1p5()
                                     .rounded_lg()
                                     .cursor_pointer()
-                                    .bg(theme.primary)
-                                    .hover(|go| go.bg(theme.primary_hover))
-                                    .text_color(theme.on_primary)
+                                    .main_button(theme)
+                                    .hover(|go| go.opacity(0.9))
                                     .font_weight(FontWeight::SEMIBOLD)
-                                    .child("로그인")
+                                    .child(words().screen.log_in)
                                     .on_click(
                                         cx.listener(|view, _, window, cx| view.log_in(window, cx)),
                                     ),
@@ -1151,21 +1154,12 @@ impl ScreenView {
     }
 
     fn bar(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
-        let (color, words) = match (self.down, self.mode) {
-            (true, _) => (theme.muted, String::from("연결하는 중이에요")),
-            (false, Mode::Agent) => (
-                theme.muted,
-                format!("{} 쓰고 있어요", called(Particle::Subject)),
-            ),
-            (false, Mode::Waiting) => (theme.warn, String::from("넘겨받는 중이에요")),
-            (false, Mode::Owner) => (
-                theme.muted,
-                format!("다 하면 {} 이어서 해요", called(Particle::Subject)),
-            ),
-            (false, Mode::Idle) => (
-                theme.muted,
-                format!("{} 쉬고 있어요", called(Particle::Subject)),
-            ),
+        let (color, status) = match (self.down, self.mode) {
+            (true, _) => (theme.muted, String::from(words().screen.connecting)),
+            (false, Mode::Agent) => (theme.muted, (words().screen.agent)()),
+            (false, Mode::Waiting) => (theme.warn, String::from(words().screen.waiting)),
+            (false, Mode::Owner) => (theme.muted, (words().screen.owner)()),
+            (false, Mode::Idle) => (theme.muted, (words().screen.idle)()),
         };
         let button = |id: &'static str, label: &'static str, primary: bool| {
             div()
@@ -1179,9 +1173,8 @@ impl ScreenView {
                 .font_weight(FontWeight::SEMIBOLD)
                 .when(primary, |button| {
                     button
-                        .bg(theme.primary)
-                        .text_color(theme.on_primary)
-                        .hover(|button| button.bg(theme.primary_hover))
+                        .main_button(theme)
+                        .hover(|button| button.opacity(0.9))
                 })
                 .when(!primary, |button| {
                     button
@@ -1192,12 +1185,12 @@ impl ScreenView {
                 .child(label)
         };
         let action = match self.mode {
-            Mode::Owner => button("done", "다 했어요", true)
+            Mode::Owner => button("done", words().screen.done, true)
                 .on_click(cx.listener(Self::done))
                 .into_any_element(),
             Mode::Waiting => div().into_any_element(),
             _ if self.down => div().into_any_element(),
-            _ => button("take", "넘겨받기", false)
+            _ => button("take", words().screen.take, false)
                 .on_click(cx.listener(Self::take))
                 .into_any_element(),
         };
@@ -1239,7 +1232,7 @@ impl ScreenView {
                         .text_color(theme.warn)
                         .text_xs()
                         .font_weight(FontWeight::SEMIBOLD)
-                        .child("새 창"),
+                        .child(words().screen.popup),
                 )
             })
             .child(
@@ -1247,7 +1240,7 @@ impl ScreenView {
                     .flex_none()
                     .text_size(px(13.))
                     .text_color(color)
-                    .child(words),
+                    .child(status),
             )
             .child(action)
     }
@@ -1424,12 +1417,9 @@ impl Render for ScreenView {
                 .justify_center()
                 .text_color(theme.muted)
                 .child(prose(&if self.down {
-                    format!("{} 브라우저에 연결하는 중이에요.", called(Particle::Of))
+                    (words().screen.page_connecting)()
                 } else {
-                    format!(
-                        "{} 브라우저를 쓰면 여기에 보여요.",
-                        called(Particle::Subject)
-                    )
+                    (words().screen.page_empty)()
                 }))
                 .into_any_element(),
         };
@@ -1472,10 +1462,7 @@ impl Render for ScreenView {
                     .py_2()
                     .bg(theme.ok_soft)
                     .text_sm()
-                    .child(div().flex_1().child(prose(&format!(
-                        "{} 부탁해요: {asked}",
-                        called(Particle::Subject)
-                    ))))
+                    .child(div().flex_1().child(prose(&(words().screen.asks)(&asked))))
             }))
             .children(self.error.clone().map(|error| {
                 div()

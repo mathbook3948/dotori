@@ -27,7 +27,8 @@ A value that is not a token is a new token: add it to `DESIGN.md` first, in ever
 - Colors come only from `Theme`, whose fields follow the color tokens. Fields that still carry older names, such as `accent` for `primary`, are renamed by the change that moves a window. Sizes, radii and gaps use the token values, never a size that is not in `DESIGN.md`.
 - Motion uses GPUI's `with_animation` with the duration of the `motion` token. `ease-out` is `ease_out_quint()` (a constructor you call) and `ease-in-out` is `ease_in_out`. Nothing bounces.
 - A state that waits on a disk or the network is drawn at once as waiting, and the work runs off the drawing thread.
-- No status dots, no borders around cards or buttons (a `rim` on the top edge of a glass surface is the exception), no gradients, glows, sparkles or emoji icons, no colored side stripes. Glass is the windows' material as DESIGN.md's Elevation & Depth says: the canvas lets the blur through, fills stay solid. The top strip, window buttons and resize edges come from `chrome.rs`, so both windows share them.
+- No status dots, no borders around cards or buttons (a `rim` along a card's top edge in the dark look is the exception), no gradients, no glows, sparkles or emoji icons, no colored side stripes. Windows are solid: cards and fields are `surface` with the soft shadow from `surface.rs`, and the main button is the text color filled in. The top strip, window buttons and resize edges come from `chrome.rs`, so both windows share them.
+- A line around a field, such as the focus or error ring, is `framed` with `hairline` from `surface.rs`, never `border_1`. A one point border falls on half pixels at 150% and GPUI draws one side thicker.
 
 ## 4. Look at the real window
 
@@ -81,8 +82,9 @@ Take every theme that exists in both looks. Read each screenshot yourself.
 For each screenshot, check and write down:
 
 - the Do's and Don'ts of `DESIGN.md`, one by one;
+- every string in both languages against Voice & Content Strategy of `DESIGN.md`, rule by rule, with the whole screen in view, so a fact said twice shows;
 - text contrast against its background, 4.5:1 at least;
-- `primary` fills only the action the owner most likely takes next, and colors no text on the canvas;
+- one main button per screen, for the action the owner most likely takes next, and `primary` only on small marks, never on text;
 - alignment and spacing on the token scale;
 - Korean lines break between words.
 

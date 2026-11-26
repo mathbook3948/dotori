@@ -1,11 +1,17 @@
+use std::collections::HashMap;
 use std::mem;
 use std::sync::Arc;
 use std::time::Duration;
 
+use std::thread;
+
+use dotori_core::llm::CheckError;
+use gpui::AnimationExt;
 use gpui::AnyElement;
 use gpui::App;
 use gpui::ClickEvent;
 use gpui::Context;
+use gpui::Div;
 use gpui::Entity;
 use gpui::FocusHandle;
 use gpui::Focusable;
@@ -18,12 +24,20 @@ use gpui::Window;
 use gpui::div;
 use gpui::prelude::*;
 use gpui::px;
+use gpui::relative;
 use gpui::svg;
+
+use tokio::sync::oneshot;
 
 use crate::accounts;
 use crate::accounts::Site;
+use crate::first_run;
+use crate::first_run::FirstRun;
+use crate::first_run::Step;
 use crate::home::Home;
 use crate::icons;
+use crate::language;
+use crate::language::Choice;
 use crate::settings::ANTHROPIC_KEY;
 use crate::settings::ASSISTANT_NAME;
 use crate::settings::ASSISTANT_NAME_LONGEST;
@@ -41,25 +55,32 @@ use crate::settings::TELEGRAM_KEY;
 use crate::settings::TelegramForm;
 use crate::settings::WindowSettings;
 use crate::settings::environment;
+use crate::vault;
 use crate::vault::Vault;
 use crate::vault::now_ms;
 use crate::window::chrome::Frame;
 use crate::window::identity;
 use crate::window::identity::Identity;
-use crate::window::identity::Particle;
-use crate::window::identity::called;
 use crate::window::input::TextInput;
+use crate::window::motion::SWITCH;
 use crate::window::notes::NotesView;
+use crate::window::parts::CHECK_ICON;
 use crate::window::parts::TRASH_ICON;
 use crate::window::parts::bolt;
 use crate::window::parts::lock;
 use crate::window::parts::logo;
 use crate::window::parts::prose;
+use crate::window::parts::typeface;
 use crate::window::pcs::PcsView;
 use crate::window::routines::RoutinesView;
 use crate::window::sandbox::SandboxView;
+use crate::window::surface::SurfaceExt;
+use crate::window::surface::framed;
+use crate::window::surface::hairline;
 use crate::window::theme::Look;
 use crate::window::theme::Theme;
+use crate::window::tokens::PICTURE;
+use crate::words::words;
 
 /// The settings window. It writes `settings.toml`, which the daemon reads when it starts.
 pub(crate) struct SettingsView {
@@ -94,6 +115,45 @@ pub(crate) struct SettingsView {
     routines: Entity<RoutinesView>,
     notes: Entity<NotesView>,
     sandbox: Entity<SandboxView>,
+    walk: Option<Step>,
+    moves: usize,
+    slides: HashMap<&'static str, (usize, usize)>,
+    forward: bool,
+    checking: Option<Task<()>>,
+    check: Check,
+    open_chat: fn(),
+}
+
+const ALL_PARTS: [&str; 5] = ["model", "slack", "telegram", "discord", "assistant"];
+
+impl Step {
+    fn parts(self) -> &'static [&'static str] {
+        match self {
+            Step::Welcome => &[],
+            Step::Key => &["model"],
+            Step::Look => &["assistant"],
+            Step::Elsewhere => &["slack", "telegram", "discord"],
+        }
+    }
+
+    fn label(self) -> Option<&'static str> {
+        let words = &words().onboarding;
+        match self {
+            Step::Welcome => None,
+            Step::Key => Some(words.key_step),
+            Step::Look => Some(words.look_step),
+            Step::Elsewhere => Some(words.elsewhere_step),
+        }
+    }
+
+    fn action(self) -> &'static str {
+        let words = &words().onboarding;
+        match self {
+            Step::Welcome => words.start,
+            Step::Elsewhere => words.begin_chat,
+            _ => words.next,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -104,6 +164,20 @@ enum Note {
 
 impl SettingsView {
     pub(crate) fn new(home: Home, settings: Settings, cx: &mut Context<Self>) -> Self {
+        Self::opened(home, settings, None, cx)
+    }
+
+    /// The settings walked one step at a time, from the step the owner had not finished, or
+    /// else from the welcome.
+    pub(crate) fn onboarding(home: Home, settings: Settings, cx: &mut Context<Self>) -> Self {
+        let step = match first_run::read(&home.first_run()) {
+            FirstRun::At(step) => step,
+            FirstRun::Unbegun | FirstRun::Done => Step::Welcome,
+        };
+        Self::opened(home, settings, Some(step), cx)
+    }
+
+    fn opened(home: Home, settings: Settings, walk: Option<Step>, cx: &mut Context<Self>) -> Self {
         let form = Form::of(&settings.model);
         let field = |placeholder: &'static str, text: Option<String>, cx: &mut Context<Self>| {
             cx.new(|cx| {
@@ -115,7 +189,7 @@ impl SettingsView {
             })
         };
         let secret = |cx: &mut Context<Self>| {
-            let input = cx.new(|cx| TextInput::masked("붙여 넣기", cx));
+            let input = cx.new(|cx| TextInput::masked(words().settings.paste, cx));
             cx.observe(&input, |_, _, cx| cx.notify()).detach();
             input
         };
@@ -187,7 +261,7 @@ impl SettingsView {
                 .and_then(|assistant| assistant.name.clone()),
             cx,
         );
-        Self {
+        let mut view = Self {
             pcs,
             routines,
             notes,
@@ -195,11 +269,11 @@ impl SettingsView {
             home,
             earlier: settings,
             openai_compatible: form.openai_compatible,
-            model: field("기본값", form.model, cx),
-            base_url: field("기본값", form.base_url, cx),
+            model: field(words().settings.default_value, form.model, cx),
+            base_url: field(words().settings.default_value, form.base_url, cx),
             api_key_env: form.api_key_env,
             api_key,
-            effort: field("기본값", form.effort, cx),
+            effort: field(words().settings.default_value, form.effort, cx),
             other,
             slack_on: slack.on,
             slack_owner: field("U012AB3CD", slack.owner, cx),
@@ -219,13 +293,36 @@ impl SettingsView {
             picking: None,
             note: None,
             look_saving: None,
+            walk,
+            moves: 0,
+            slides: HashMap::new(),
+            forward: true,
+            checking: None,
+            check: check_model,
+            open_chat: || crate::tray::open("window"),
+        };
+        view.show_saved_key(cx);
+        view
+    }
+
+    fn show_saved_key(&mut self, cx: &mut Context<Self>) {
+        if self.walk.is_none() || !self.api_key.read(cx).text().is_empty() {
+            return;
+        }
+        let saved = self
+            .api_key_name()
+            .and_then(|name| self.vault.get(&name).ok().flatten());
+        if let Some(saved) = saved {
+            self.api_key
+                .update(cx, |input, cx| input.set_text(&saved, cx));
         }
     }
 
     fn choose(&mut self, openai_compatible: bool, cx: &mut Context<Self>) {
-        if self.openai_compatible == openai_compatible {
+        if self.openai_compatible == openai_compatible || self.checking() {
             return;
         }
+        self.slid(PROVIDER, usize::from(self.openai_compatible));
         let shown = self.form(cx);
         let next = mem::replace(&mut self.other, shown);
         let fill = |field: &Entity<TextInput>, text: Option<String>, cx: &mut Context<Self>| {
@@ -239,6 +336,7 @@ impl SettingsView {
         self.api_key.update(cx, |input, cx| input.set_text("", cx));
         fill(&self.effort, next.effort, cx);
         self.openai_compatible = openai_compatible;
+        self.show_saved_key(cx);
         self.note = None;
         cx.notify();
     }
@@ -313,33 +411,74 @@ impl SettingsView {
     }
 
     fn save(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
+        self.note = Some(match self.persist(cx) {
+            Ok(()) => Note::Saved,
+            Err(error) => Note::Failed(SharedString::from(error)),
+        });
+        cx.notify();
+    }
+
+    fn persist(&mut self, cx: &mut Context<Self>) -> Result<(), String> {
+        let model = self.model_form(cx);
+        self.persist_with(&model, cx)
+    }
+
+    fn model_form(&self, cx: &Context<Self>) -> ModelForm {
         let mut form = self.form(cx);
-        if form.openai_compatible
-            && form.api_key_env.is_none()
-            && !self.api_key.read(cx).text().trim().is_empty()
-        {
+        let key = self.api_key.read(cx).text().trim().to_owned();
+        if form.openai_compatible && form.api_key_env.is_none() && !key.is_empty() {
             form.api_key_env = Some(MODEL_KEY.to_owned());
         }
-        let api_key_env = form.api_key_env.clone();
+        ModelForm { form, key }
+    }
+
+    fn persist_with(&mut self, model: &ModelForm, cx: &mut Context<Self>) -> Result<(), String> {
         let slack = self.slack_form(cx);
         let telegram = self.telegram_form(cx);
         let discord = self.discord_form(cx);
         let typed_name = self.name.read(cx).text().trim().to_owned();
-        let wanted = form.settings(&self.earlier.model).and_then(|model| {
-            let on_disk = Settings::load(&self.home.settings())?;
-            let assistant = assistant_named(on_disk.assistant.clone(), &typed_name)?;
+        let parts = self.walk.map_or(&ALL_PARTS[..], Step::parts);
+        let owns = |part: &str| parts.contains(&part);
+        let earlier_model = &self.earlier.model;
+        let wanted = Settings::load(&self.home.settings()).and_then(|on_disk| {
             Ok(Settings {
-                model,
-                slack: slack.settings()?,
-                telegram: telegram.settings()?,
-                discord: discord.settings()?,
-                assistant,
+                model: if owns("model") {
+                    model.form.clone().settings(earlier_model)?
+                } else {
+                    on_disk.model.clone()
+                },
+                slack: if owns("slack") {
+                    slack.settings()?
+                } else {
+                    on_disk.slack.clone()
+                },
+                telegram: if owns("telegram") {
+                    telegram.settings()?
+                } else {
+                    on_disk.telegram.clone()
+                },
+                discord: if owns("discord") {
+                    discord.settings()?
+                } else {
+                    on_disk.discord.clone()
+                },
+                assistant: if owns("assistant") {
+                    assistant_named(on_disk.assistant.clone(), &typed_name)?
+                } else {
+                    on_disk.assistant.clone()
+                },
                 ..on_disk
             })
         });
         let saved = wanted.and_then(|settings| {
-            let before = mem::replace(&mut self.api_key_env, api_key_env);
-            if let Err(error) = self.keep_secrets(cx) {
+            let typed = self.typed_secrets(model, parts, cx);
+            self.tokens_given(&typed, parts)?;
+            let before = if owns("model") {
+                mem::replace(&mut self.api_key_env, model.form.api_key_env.clone())
+            } else {
+                self.api_key_env.clone()
+            };
+            if let Err(error) = self.keep_secrets(&typed, cx) {
                 let kept_model_key = self
                     .api_key_name()
                     .is_some_and(|name| self.vault.names().unwrap_or_default().contains(&name));
@@ -348,21 +487,176 @@ impl SettingsView {
                 }
                 return Err(error);
             }
-            settings.save_parts(
-                &self.home.settings(),
-                &["model", "slack", "telegram", "discord", "assistant"],
-            )?;
+            settings.save_parts(&self.home.settings(), parts)?;
             self.earlier = settings;
             identity::choose(Identity::read(&self.home.settings(), &self.home.icons()));
             Ok(())
         });
         self.kept = self.vault.names().unwrap_or_default();
         self.sites = accounts::sites(&self.vault).unwrap_or_default();
-        self.note = Some(match saved {
-            Ok(()) => Note::Saved,
-            Err(error) => Note::Failed(SharedString::from(error)),
-        });
+        saved
+    }
+
+    fn model_key_missing(&self) -> bool {
+        self.api_key_name()
+            .is_some_and(|name| environment(&name).is_none() && !self.kept.contains(&name))
+    }
+
+    fn leave(
+        &mut self,
+        step: Step,
+        model: Option<&ModelForm>,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        if step != Step::Welcome {
+            match model {
+                Some(model) => self.persist_with(model, cx)?,
+                None => self.persist(cx)?,
+            }
+        }
+        if step == Step::Key && self.model_key_missing() {
+            return Err(String::from(words().settings.key_needed));
+        }
+        Ok(())
+    }
+
+    fn advance(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(step) = self.walk else {
+            return;
+        };
+        if self.checking.is_some() {
+            return;
+        }
+        if step == Step::Key {
+            let model = self.model_form(cx);
+            let checked = self
+                .model_to_check(&model)
+                .map(|(settings, typed)| (self.check)(self.home.clone(), settings, typed));
+            match checked {
+                Err(error) => self.note = Some(Note::Failed(SharedString::from(error))),
+                Ok(checked) => {
+                    self.note = None;
+                    self.lock_model_fields(true, cx);
+                    let anthropic = !model.form.openai_compatible;
+                    let moves = self.moves;
+                    self.checking = Some(cx.spawn_in(window, async move |view, cx| {
+                        let checked = checked.await.unwrap_or(Err(CheckError::NoAnswer));
+                        let _ = view.update_in(cx, |view, window, cx| {
+                            view.checking = None;
+                            view.lock_model_fields(false, cx);
+                            if view.walk != Some(step) || view.moves != moves {
+                                return;
+                            }
+                            let passed = checked
+                                .map_err(|error| check_failed(&error, anthropic))
+                                .and_then(|()| view.leave(step, Some(&model), cx));
+                            match passed {
+                                Ok(()) => view.step_on(step, window, cx),
+                                Err(error) => {
+                                    view.note = Some(Note::Failed(SharedString::from(error)));
+                                }
+                            }
+                            cx.notify();
+                        });
+                    }));
+                }
+            }
+            cx.notify();
+            return;
+        }
+        match self.leave(step, None, cx) {
+            Err(error) => self.note = Some(Note::Failed(SharedString::from(error))),
+            Ok(()) => self.step_on(step, window, cx),
+        }
         cx.notify();
+    }
+
+    fn lock_model_fields(&self, locked: bool, cx: &mut Context<Self>) {
+        for input in [&self.api_key, &self.base_url, &self.model, &self.effort] {
+            input.update(cx, |input, cx| input.set_locked(locked, cx));
+        }
+    }
+
+    fn model_to_check(
+        &self,
+        model: &ModelForm,
+    ) -> Result<(ModelSettings, Option<(String, String)>), String> {
+        let settings = model.form.clone().settings(&self.earlier.model)?;
+        if model.key.is_empty() && self.model_key_missing() {
+            return Err(String::from(words().settings.key_needed));
+        }
+        Ok((
+            settings,
+            model
+                .key_name()
+                .filter(|_| !model.key.is_empty())
+                .map(|name| (name, model.key.clone())),
+        ))
+    }
+
+    fn checking(&self) -> bool {
+        self.checking.is_some()
+    }
+
+    fn step_on(&mut self, step: Step, window: &mut Window, cx: &mut Context<Self>) {
+        let reached = step.next().map_or(FirstRun::Done, FirstRun::At);
+        let path = self.home.first_run();
+        let recorded = reached == FirstRun::Done || first_run::read(&path) != FirstRun::Done;
+        if recorded && let Err(error) = first_run::write(&path, reached) {
+            self.note = Some(Note::Failed(SharedString::from(error)));
+            return;
+        }
+        match step.next() {
+            Some(next) => {
+                self.walk = Some(next);
+                self.moves += 1;
+                self.forward = true;
+                self.note = None;
+                if next == Step::Key {
+                    window.focus(&self.api_key.focus_handle(cx));
+                }
+            }
+            None => {
+                (self.open_chat)();
+                window.remove_window();
+            }
+        }
+    }
+
+    fn go_back(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if self.checking() {
+            return;
+        }
+        if let Some(previous) = self.walk.and_then(Step::previous) {
+            self.walk = Some(previous);
+            self.moves += 1;
+            self.forward = false;
+            self.note = None;
+            cx.notify();
+        }
+    }
+}
+
+struct Secret {
+    input: Entity<TextInput>,
+    part: &'static str,
+    name: String,
+    value: String,
+}
+
+#[derive(Clone, Debug)]
+struct ModelForm {
+    form: Form,
+    key: String,
+}
+
+impl ModelForm {
+    fn key_name(&self) -> Option<String> {
+        match (&self.form.api_key_env, self.form.openai_compatible) {
+            (Some(name), _) => Some(name.clone()),
+            (None, false) => Some(ANTHROPIC_KEY.to_owned()),
+            (None, true) => None,
+        }
     }
 }
 
@@ -375,78 +669,19 @@ impl Focusable for SettingsView {
 impl Render for SettingsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(window);
-        let frame = Frame::of(window);
-        let segment = |id: &'static str,
-                       label: &'static str,
-                       openai_compatible: bool,
-                       cx: &mut Context<Self>| {
-            let chosen = self.openai_compatible == openai_compatible;
-            div()
-                .id(id)
-                .flex_1()
-                .py_1p5()
-                .rounded_lg()
-                .text_center()
-                .cursor_pointer()
-                .when(chosen, |segment| {
-                    segment
-                        .bg(theme.surface)
-                        .shadow_sm()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(theme.text)
-                })
-                .when(!chosen, |segment| {
-                    segment
-                        .text_color(theme.muted)
-                        .hover(|segment| segment.text_color(theme.text))
-                })
-                .child(label)
-                .on_click(cx.listener(move |view, _, _, cx| view.choose(openai_compatible, cx)))
-        };
-        let mut fields = div()
-            .flex()
-            .flex_col()
-            .gap_4()
-            .child(field(
-                &theme,
-                window,
-                cx,
-                "모델",
-                "비워 두면 기본 모델을 써요.",
-                &self.model,
-            ))
-            .child(field(
-                &theme,
-                window,
-                cx,
-                "API 주소",
-                "비워 두면 공식 주소를 써요.",
-                &self.base_url,
-            ))
-            .child(self.secret_field(
-                &theme,
-                window,
-                cx,
-                "API 키",
-                &self.api_key,
-                self.api_key_name(),
-            ));
-        if !self.openai_compatible {
-            fields = fields.child(field(
-                &theme,
-                window,
-                cx,
-                "생각하는 정도",
-                "low, medium, high 중 하나예요.",
-                &self.effort,
-            ));
+        if let Some(step) = self.walk {
+            return self
+                .walk_view(step, &theme, window, cx)
+                .on_mouse_down(MouseButton::Left, |_, window, _| window.blur())
+                .into_any_element();
         }
+        let frame = Frame::of(window);
         let note = self.note.clone().map(|note| {
             let (color, soft, words) = match note {
                 Note::Saved => (
                     theme.ok,
                     theme.ok_soft,
-                    SharedString::new_static("저장했어요. dotori를 다시 시작하면 적용돼요."),
+                    SharedString::new_static(words().settings.saved),
                 ),
                 Note::Failed(error) => (theme.danger, theme.danger_soft, error),
             };
@@ -461,19 +696,21 @@ impl Render for SettingsView {
                 .child(prose(&words))
                 .into_any_element()
         });
-        let note = note.unwrap_or_else(|| {
-            div()
-                .text_xs()
-                .text_color(theme.muted)
-                .child("바뀐 설정은 dotori를 다시 시작하면 적용돼요")
-                .into_any_element()
-        });
+        let spaced = self
+            .settings_cards(&theme, window, cx)
+            .into_iter()
+            .enumerate()
+            .flat_map(|(n, card)| [(n > 0).then(|| div().h_4().into_any_element()), Some(card)])
+            .flatten();
+        let footer = self.settings_footer(&theme, note, cx);
         frame
             .resizable(div())
+            .on_mouse_down(MouseButton::Left, |_, window, _| window.blur())
             .flex()
             .flex_col()
             .size_full()
-            .bg(theme.glass().canvas)
+            .font(typeface())
+            .bg(theme.canvas)
             .text_color(theme.text)
             .text_sm()
             .line_height(px(21.))
@@ -483,7 +720,7 @@ impl Render for SettingsView {
                     div()
                         .text_base()
                         .font_weight(FontWeight::SEMIBOLD)
-                        .child("설정"),
+                        .child(words().common.settings),
                     div(),
                 ),
             )
@@ -494,92 +731,167 @@ impl Render for SettingsView {
                     .overflow_y_scroll()
                     .px_5()
                     .pb_5()
-                    .child(self.identity_card(&theme, window, cx))
-                    .child(div().h_4())
-                    .child(self.look_card(&theme, cx))
-                    .child(div().h_4())
-                    .child(self.sandbox.clone())
-                    .child(self.vault_card(&theme, cx))
-                    .child(div().h_4())
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap_4()
-                            .p_5()
-                            .rounded_2xl()
-                            .bg(theme.surface)
-                            .border_t_1()
-                            .border_color(theme.rim)
-                            .shadow_sm()
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .gap_1()
-                                    .child(
-                                        div()
-                                            .text_base()
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .child("대화 모델"),
-                                    )
-                                    .child(div().text_xs().text_color(theme.muted).child(format!(
-                                        "{} 생각하고 답할 때 쓰는 모델이에요.",
-                                        called(Particle::Subject)
-                                    ))),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .p_1()
-                                    .gap_1()
-                                    .rounded_xl()
-                                    .bg(theme.canvas)
-                                    .child(segment("anthropic", "Anthropic", false, cx))
-                                    .child(segment("openai", "OpenAI 호환", true, cx)),
-                            )
-                            .child(fields),
-                    )
-                    .child(div().h_4())
-                    .child(self.slack_card(&theme, window, cx))
-                    .child(div().h_4())
-                    .child(self.telegram_card(&theme, window, cx))
-                    .child(div().h_4())
-                    .child(self.discord_card(&theme, window, cx))
-                    .child(div().h_4())
-                    .child(self.notes.clone())
-                    .child(div().h_4())
-                    .child(self.routines.clone())
-                    .child(div().h_4())
-                    .child(self.pcs.clone()),
+                    .children(spaced),
             )
+            .child(footer)
+            .into_any_element()
+    }
+}
+
+impl SettingsView {
+    fn settings_cards(
+        &self,
+        theme: &Theme,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        vec![
+            self.identity_card(theme, window, cx).into_any_element(),
+            self.look_card(theme, cx).into_any_element(),
+            self.language_card(theme, cx).into_any_element(),
+            self.sandbox.clone().into_any_element(),
+            self.vault_card(theme, cx).into_any_element(),
+            self.model_card(theme, window, cx).into_any_element(),
+            self.slack_card(theme, window, cx).into_any_element(),
+            self.telegram_card(theme, window, cx).into_any_element(),
+            self.discord_card(theme, window, cx).into_any_element(),
+            self.notes.clone().into_any_element(),
+            self.routines.clone().into_any_element(),
+            self.pcs.clone().into_any_element(),
+        ]
+    }
+
+    fn settings_footer(
+        &self,
+        theme: &Theme,
+        note: Option<AnyElement>,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let note = note.unwrap_or_else(|| {
+            div()
+                .text_xs()
+                .text_color(theme.muted)
+                .child(prose(words().settings.applies_on_restart))
+                .into_any_element()
+        });
+        footer().child(div().flex_1().min_w_0().child(note)).child(
+            primary_button(theme, "save", words().settings.save)
+                .flex_none()
+                .on_click(cx.listener(Self::save)),
+        )
+    }
+
+    fn model_card(&self, theme: &Theme, window: &Window, cx: &mut Context<Self>) -> Div {
+        let provider =
+            |id: &'static str, label: &'static str, openai: bool, cx: &mut Context<Self>| {
+                segment(
+                    theme,
+                    id.to_owned(),
+                    label,
+                    self.openai_compatible == openai,
+                )
+                .on_click(cx.listener(move |view, _, _, cx| view.choose(openai, cx)))
+            };
+        let words = &words().settings;
+        let mut fields = div()
+            .flex()
+            .flex_col()
+            .gap_4()
+            .child(field(
+                theme,
+                window,
+                cx,
+                words.model,
+                words.model_hint,
+                &self.model,
+            ))
+            .child(field(
+                theme,
+                window,
+                cx,
+                words.base_url,
+                words.base_url_hint,
+                &self.base_url,
+            ))
+            .child(self.secret_field(
+                theme,
+                window,
+                cx,
+                words.api_key,
+                &self.api_key,
+                self.api_key_name(),
+            ));
+        if !self.openai_compatible {
+            fields = fields.child(field(
+                theme,
+                window,
+                cx,
+                words.effort,
+                words.effort_hint,
+                &self.effort,
+            ));
+        }
+        div()
+            .flex()
+            .flex_col()
+            .gap_4()
+            .p_5()
+            .rounded_2xl()
+            .card(theme)
             .child(
                 div()
                     .flex()
-                    .flex_none()
-                    .items_center()
-                    .gap_3()
-                    .px_5()
-                    .py_3()
-                    .child(div().flex_1().child(note))
+                    .flex_col()
+                    .gap_1()
                     .child(
                         div()
-                            .id("save")
-                            .debug_selector(|| "save".to_owned())
-                            .flex_none()
-                            .px_5()
-                            .py_2()
-                            .rounded_lg()
-                            .cursor_pointer()
-                            .bg(theme.primary)
-                            .hover(|save| save.bg(theme.primary_hover))
-                            .text_color(theme.on_primary)
+                            .text_base()
                             .font_weight(FontWeight::SEMIBOLD)
-                            .child("저장")
-                            .on_click(cx.listener(Self::save)),
+                            .child(words.model_title),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.muted)
+                            .child((words.model_about)()),
                     ),
             )
+            .child(self.track(
+                theme,
+                PROVIDER,
+                usize::from(self.openai_compatible),
+                vec![
+                    provider("anthropic", "Anthropic", false, cx),
+                    provider("openai", words.openai_compatible, true, cx),
+                ],
+            ))
+            .child(fields)
     }
+}
+
+fn footer() -> Div {
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap_3()
+        .px_5()
+        .py_3()
+}
+
+fn primary_button(theme: &Theme, id: &'static str, label: &'static str) -> gpui::Stateful<Div> {
+    div()
+        .id(id)
+        .debug_selector(move || id.to_owned())
+        .flex_none()
+        .px_5()
+        .py_2()
+        .rounded_lg()
+        .cursor_pointer()
+        .main_button(theme)
+        .hover(|button| button.opacity(0.9))
+        .font_weight(FontWeight::SEMIBOLD)
+        .child(label)
 }
 
 impl SettingsView {
@@ -635,27 +947,80 @@ impl SettingsView {
         }
     }
 
-    fn keep_secrets(&mut self, cx: &mut Context<Self>) -> Result<(), String> {
-        let typed: Vec<(Entity<TextInput>, String, String)> = self
-            .secrets()
-            .into_iter()
-            .filter_map(|(input, name)| {
-                let value = input.read(cx).text().trim().to_owned();
-                Some((input.clone(), name?, value)).filter(|(_, _, value)| !value.is_empty())
+    fn typed_secrets(&self, model: &ModelForm, parts: &[&str], cx: &Context<Self>) -> Vec<Secret> {
+        let [(model_input, _), slack_app, slack_bot, telegram, discord] = self.secrets();
+        let model_key = model
+            .key_name()
+            .filter(|_| parts.contains(&"model"))
+            .map(|name| Secret {
+                input: model_input.clone(),
+                part: "model",
+                name,
+                value: model.key.clone(),
+            });
+        let channels = [
+            ("slack", self.slack_on, slack_app),
+            ("slack", self.slack_on, slack_bot),
+            ("telegram", self.telegram_on, telegram),
+            ("discord", self.discord_on, discord),
+        ]
+        .into_iter()
+        .filter(|(part, on, _)| *on && parts.contains(part))
+        .filter_map(|(part, _, (input, name))| {
+            Some(Secret {
+                input: input.clone(),
+                part,
+                name: name?,
+                value: input.read(cx).text().trim().to_owned(),
             })
+        });
+        model_key.into_iter().chain(channels).collect()
+    }
+
+    fn tokens_given(&self, typed: &[Secret], parts: &[&str]) -> Result<(), String> {
+        let words = &words().settings;
+        let given = |part: &str| {
+            typed
+                .iter()
+                .filter(|secret| secret.part == part)
+                .all(|secret| {
+                    !secret.value.is_empty()
+                        || environment(&secret.name).is_some()
+                        || self.kept.contains(&secret.name)
+                })
+        };
+        for (part, on, missing) in [
+            ("slack", self.slack_on, words.slack_tokens_needed),
+            ("telegram", self.telegram_on, words.telegram_token_needed),
+            ("discord", self.discord_on, words.discord_token_needed),
+        ] {
+            if on && parts.contains(&part) && !given(part) {
+                return Err(String::from(missing));
+            }
+        }
+        Ok(())
+    }
+
+    fn keep_secrets(&mut self, typed: &[Secret], cx: &mut Context<Self>) -> Result<(), String> {
+        let typed: Vec<&Secret> = typed
+            .iter()
+            .filter(|secret| !secret.value.is_empty())
             .collect();
-        if let Some((_, name, _)) = typed.iter().find(|(_, name, _)| accounts::is_account(name)) {
-            return Err(format!(
-                "{name}은(는) 연동한 사이트의 계정 자리라서 키를 넣을 수 없어요. 설정의 이름을 바꿔 주세요"
-            ));
+        if let Some(secret) = typed
+            .iter()
+            .find(|secret| accounts::is_account(&secret.name))
+        {
+            return Err((words().settings.name_is_an_account)(&secret.name));
         }
-        for (_, name, value) in &typed {
+        for secret in &typed {
             self.vault
-                .set(name, value, now_ms())
-                .map_err(|error| vault_failed("넣지", &error))?;
+                .set(&secret.name, &secret.value, now_ms())
+                .map_err(|error| vault_failed(true, &error))?;
         }
-        for (input, _, _) in typed {
-            input.update(cx, |input, cx| input.set_text("", cx));
+        if self.walk.is_none() {
+            for secret in typed {
+                secret.input.update(cx, |input, cx| input.set_text("", cx));
+            }
         }
         Ok(())
     }
@@ -680,7 +1045,7 @@ impl SettingsView {
         let forgot = self
             .vault
             .remove(name, now_ms())
-            .map_err(|error| vault_failed("지우지", &error))
+            .map_err(|error| vault_failed(false, &error))
             .and_then(|()| self.forget_model_key_name(name));
         self.kept = self.vault.names().unwrap_or_default();
         self.note = forgot
@@ -698,18 +1063,18 @@ impl SettingsView {
             (
                 self.api_key_name(),
                 if self.openai_compatible {
-                    "API 키"
+                    words().settings.api_key
                 } else {
-                    "Anthropic API 키"
+                    words().settings.anthropic_key
                 },
-                "대화 모델",
+                words().settings.model_title,
             ),
             (
                 Some(named(
                     slack.and_then(|slack| slack.app_token_env.as_ref()),
                     SLACK_APP_KEY,
                 )),
-                "Slack 앱 토큰",
+                words().settings.slack_app_key,
                 "Slack",
             ),
             (
@@ -717,7 +1082,7 @@ impl SettingsView {
                     slack.and_then(|slack| slack.bot_token_env.as_ref()),
                     SLACK_BOT_KEY,
                 )),
-                "Slack 봇 토큰",
+                words().settings.slack_bot_key,
                 "Slack",
             ),
             (
@@ -728,7 +1093,7 @@ impl SettingsView {
                         .and_then(|telegram| telegram.token_env.as_ref()),
                     TELEGRAM_KEY,
                 )),
-                "Telegram 봇 토큰",
+                words().settings.telegram_key,
                 "Telegram",
             ),
             (
@@ -739,7 +1104,7 @@ impl SettingsView {
                         .and_then(|discord| discord.token_env.as_ref()),
                     DISCORD_KEY,
                 )),
-                "Discord 봇 토큰",
+                words().settings.discord_key,
                 "Discord",
             ),
         ];
@@ -753,7 +1118,11 @@ impl SettingsView {
             .filter(|name| !accounts::is_account(name) && !known.contains(name))
             .cloned()
             .collect();
-        slots.extend(others.into_iter().map(|name| (Some(name), "", "다른 연동")));
+        slots.extend(
+            others
+                .into_iter()
+                .map(|name| (Some(name), "", words().settings.other_use)),
+        );
         slots
             .into_iter()
             .filter_map(|(name, title, what)| {
@@ -777,7 +1146,7 @@ impl SettingsView {
 
     fn unlink(&mut self, name: &str, cx: &mut Context<Self>) {
         let unlinked =
-            accounts::forget(&self.vault, name).map_err(|error| vault_failed("지우지", &error));
+            accounts::forget(&self.vault, name).map_err(|error| vault_failed(false, &error));
         self.kept = self.vault.names().unwrap_or_default();
         self.sites = accounts::sites(&self.vault).unwrap_or_default();
         self.note = unlinked
@@ -822,7 +1191,6 @@ impl SettingsView {
         };
         let muted = |words: String| {
             div()
-                .truncate()
                 .text_xs()
                 .text_color(theme.muted)
                 .child(words)
@@ -847,13 +1215,13 @@ impl SettingsView {
         };
         let keys = self.kept_keys();
         let key_rows: Vec<AnyElement> = if keys.is_empty() {
-            vec![empty("아직 보관한 키가 없어요").into_any_element()]
+            vec![empty(words().settings.no_keys).into_any_element()]
         } else {
             keys.into_iter()
                 .map(|key| {
                     let name = key.name.clone();
                     let under = if key.from_environment {
-                        format!("{}, 환경 변수에서 읽어요", key.what)
+                        (words().settings.read_from_environment)(key.what)
                     } else {
                         key.what.to_owned()
                     };
@@ -879,7 +1247,7 @@ impl SettingsView {
                 .collect()
         };
         let site_rows: Vec<AnyElement> = if self.sites.is_empty() {
-            vec![empty("아직 연동한 사이트가 없어요").into_any_element()]
+            vec![empty(words().settings.no_sites).into_any_element()]
         } else {
             self.sites
                 .iter()
@@ -900,7 +1268,7 @@ impl SettingsView {
                     let under = muted(
                         site.id
                             .clone()
-                            .unwrap_or_else(|| String::from("아이디 없음")),
+                            .unwrap_or_else(|| String::from(words().settings.no_id)),
                     );
                     row(title, under)
                         .when(site.trusted, |row| {
@@ -918,7 +1286,7 @@ impl SettingsView {
                                     .text_xs()
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child(bolt(theme, 12.))
-                                    .child("묻지 않고 로그인"),
+                                    .child(words().settings.trusted),
                             )
                         })
                         .child(
@@ -950,18 +1318,21 @@ impl SettingsView {
                         div()
                             .text_base()
                             .font_weight(FontWeight::SEMIBOLD)
-                            .child("금고"),
+                            .child(words().settings.vault_title),
                     )
-                    .child(div().text_xs().text_color(theme.muted).child(prose(
-                        "API 키, 토큰, 연동한 사이트의 계정은 암호화되어 보관되고 있어요. 대화하는 AI는 사이트와 아이디까지만 알고, 비밀번호는 보지 못해요.",
-                    ))),
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.muted)
+                            .child(prose(words().settings.vault_about)),
+                    ),
             )
             .child(
                 div()
                     .flex()
                     .flex_col()
                     .gap_0p5()
-                    .child(group("API 키와 토큰"))
+                    .child(group(words().settings.keys_group))
                     .children(key_rows),
             )
             .child(
@@ -969,7 +1340,7 @@ impl SettingsView {
                     .flex()
                     .flex_col()
                     .gap_0p5()
-                    .child(group("연동된 사이트"))
+                    .child(group(words().settings.sites_group))
                     .children(site_rows),
             )
     }
@@ -988,24 +1359,17 @@ impl SettingsView {
         let kept = name
             .as_ref()
             .is_some_and(|name| self.kept.iter().any(|kept| kept == name));
-        let (ink, soft, words) = if typed {
-            (
-                theme.muted,
-                theme.bubble,
-                "저장하면 금고에 안전하게 보관돼요",
-            )
+        let said = &words().settings;
+        let (ink, checked, words) = if typed {
+            (theme.muted, false, said.key_on_save)
         } else if from_environment {
-            (
-                theme.ok,
-                theme.ok_soft,
-                "이 PC의 환경 변수 값을 쓰고 있어요",
-            )
+            (theme.text, true, said.key_from_environment)
         } else if kept {
-            (theme.ok, theme.ok_soft, "금고에 안전하게 보관돼 있어요")
+            (theme.text, true, said.key_kept)
         } else if name.is_none() {
-            (theme.muted, theme.bubble, "키가 필요 없으면 비워 둬요")
+            (theme.muted, false, said.key_not_needed)
         } else {
-            (theme.warn, theme.warn_soft, "아직 넣지 않았어요")
+            (theme.warn, false, said.key_missing)
         };
         let forget = (kept && !typed).then(|| {
             let name = name.clone().unwrap_or_default();
@@ -1022,17 +1386,10 @@ impl SettingsView {
                 .text_color(theme.muted)
                 .cursor_pointer()
                 .hover(|forget| forget.bg(theme.danger_soft).text_color(theme.danger))
-                .child("지우기")
+                .child(said.remove)
                 .on_click(cx.listener(move |view, _, _, cx| view.forget(&name, cx)))
         });
-        let hint = match &name {
-            Some(name) => format!(
-                "이 PC에서만 열리게 잠가 금고에 보관하고, 묶인 PC에는 암호화해서 보내요. dotori는 이 값을 대화하는 AI에게 보내지 않아요. 같은 이름({name})의 환경 변수가 있으면 그 값을 먼저 써요."
-            ),
-            None => String::from(
-                "이 PC에서만 열리게 잠가 금고에 보관하고, 묶인 PC에는 암호화해서 보내요. dotori는 이 값을 대화하는 AI에게 보내지 않아요.",
-            ),
-        };
+        let hint = (said.key_hint)(name.as_deref());
         div()
             .flex()
             .flex_col()
@@ -1042,23 +1399,31 @@ impl SettingsView {
                 div()
                     .flex()
                     .items_center()
-                    .gap_2()
-                    .child(
-                        div()
-                            .px_2()
-                            .py_0p5()
-                            .rounded_full()
-                            .bg(soft)
-                            .text_color(ink)
-                            .text_xs()
-                            .child(words),
-                    )
+                    .gap_1p5()
+                    .when(checked, |row| {
+                        row.child(
+                            svg()
+                                .path(CHECK_ICON)
+                                .flex_none()
+                                .size(px(13.))
+                                .text_color(theme.ok),
+                        )
+                    })
+                    .child(div().flex_1().text_xs().text_color(ink).child(words))
                     .children(forget),
             )
             .child(div().text_xs().text_color(theme.muted).child(prose(&hint)))
     }
 
     fn set_look(&mut self, name: &str, look: Look, cx: &mut Context<Self>) {
+        let was = crate::window::theme::saved().1;
+        if was != look {
+            let looks = [Look::System, Look::Light, Look::Dark];
+            self.slid(
+                LOOK,
+                looks.iter().position(|option| *option == was).unwrap_or(0),
+            );
+        }
         crate::window::theme::choose(name, look);
         let path = self.home.settings();
         let window = WindowSettings {
@@ -1093,7 +1458,7 @@ impl SettingsView {
             files: true,
             directories: false,
             multiple: false,
-            prompt: Some(SharedString::new_static("이 그림 쓰기")),
+            prompt: Some(SharedString::new_static(words().settings.use_picture)),
         });
         let folder = self.home.icons();
         self.picking = Some(cx.spawn(async move |view, cx| {
@@ -1104,7 +1469,7 @@ impl SettingsView {
                     eprintln!("dotori: no file picker: {error}");
                     let _ = view.update(cx, |view, cx| {
                         view.note = Some(Note::Failed(SharedString::new_static(
-                            "그림을 고르는 창을 열지 못했어요",
+                            words().settings.no_picker,
                         )));
                         cx.notify();
                     });
@@ -1134,13 +1499,14 @@ impl SettingsView {
         let set = kept
             .map_err(|error| {
                 eprintln!("dotori: the picture was not kept: {error}");
-                if error == TOO_LARGE {
-                    String::from("20MB보다 작은 그림을 골라 주세요")
+                let words = &words().settings;
+                String::from(if error == TOO_LARGE {
+                    words.picture_too_large
                 } else if error.contains("does not read as an image") {
-                    String::from("그림으로 읽지 못했어요. PNG, JPEG, GIF, WebP 그림을 골라 주세요")
+                    words.picture_unreadable
                 } else {
-                    String::from("그림을 저장하지 못했어요. 잠시 뒤에 다시 해 보세요")
-                }
+                    words.picture_not_saved
+                })
             })
             .and_then(|name| self.set_icon(Some(name)));
         self.note = set
@@ -1192,16 +1558,14 @@ impl SettingsView {
                 .hover(|button| button.bg(theme.selection))
                 .child(label)
         };
+        let words = &words().settings;
         div()
             .flex()
             .flex_col()
             .gap_4()
             .p_5()
             .rounded_2xl()
-            .bg(theme.surface)
-            .border_t_1()
-            .border_color(theme.rim)
-            .shadow_sm()
+            .card(theme)
             .child(
                 div()
                     .flex()
@@ -1211,13 +1575,13 @@ impl SettingsView {
                         div()
                             .text_base()
                             .font_weight(FontWeight::SEMIBOLD)
-                            .child("이름과 아이콘"),
+                            .child(words.identity_title),
                     )
                     .child(
                         div()
                             .text_xs()
                             .text_color(theme.muted)
-                            .child("채팅창과 답에서 이 이름과 그림으로 보여요. 묶인 PC에도 같이 보내요."),
+                            .child(words.identity_about),
                     ),
             )
             .child(
@@ -1225,18 +1589,18 @@ impl SettingsView {
                     .flex()
                     .items_center()
                     .gap_4()
-                    .child(logo(theme, 56.))
+                    .child(logo(theme, PICTURE))
                     .child(
                         div()
                             .flex()
                             .flex_wrap()
                             .gap_2()
                             .child(
-                                button("icon-pick", "그림 올리기")
+                                button("icon-pick", words.choose_picture)
                                     .on_click(cx.listener(|view, _, _, cx| view.pick_icon(cx))),
                             )
                             .when(custom, |row| {
-                                row.child(button("icon-default", "도토리로 되돌리기").on_click(
+                                row.child(button("icon-default", words.default_picture).on_click(
                                     cx.listener(|view, _, _, cx| {
                                         let set = view.set_icon(None);
                                         view.note = set
@@ -1252,85 +1616,20 @@ impl SettingsView {
                 theme,
                 window,
                 cx,
-                "이름",
-                "비워 두면 dotori예요. 창에는 저장하면 바로, 대답에는 dotori를 다시 시작하면 적용돼요.",
+                words.name,
+                words.name_hint,
                 &self.name,
             ))
     }
 
     fn look_card(&self, theme: &Theme, cx: &mut Context<Self>) -> gpui::Div {
-        let (index, look) = crate::window::theme::saved();
-        let current = crate::window::theme::names().nth(index).unwrap_or_default();
-        let themes = crate::window::theme::names().map(|name| {
-            let chosen = name == current;
-            let (light, dark) = crate::window::theme::named(name).unwrap_or((*theme, *theme));
-            let swatch = |color| div().size(px(14.)).rounded_full().bg(color);
-            div()
-                .id(SharedString::from(format!("theme-{name}")))
-                .debug_selector(move || format!("theme-{name}"))
-                .flex()
-                .items_center()
-                .gap_3()
-                .px_3()
-                .py_2()
-                .rounded_lg()
-                .cursor_pointer()
-                .when(chosen, |row| {
-                    row.bg(theme.bubble).font_weight(FontWeight::SEMIBOLD)
-                })
-                .when(!chosen, |row| row.hover(|row| row.bg(theme.canvas)))
-                .child(div().flex_1().child(theme_label(name)))
-                .child(
-                    div()
-                        .flex()
-                        .gap_1()
-                        .child(swatch(light.canvas))
-                        .child(swatch(light.primary))
-                        .child(swatch(dark.canvas))
-                        .child(swatch(dark.primary)),
-                )
-                .on_click(cx.listener(move |view, _, _, cx| view.set_look(name, look, cx)))
-        });
-        let looks = [Look::System, Look::Light, Look::Dark].map(|option| {
-            let chosen = option == look;
-            let label = match option {
-                Look::System => "시스템 따라",
-                Look::Light => "밝게",
-                Look::Dark => "어둡게",
-            };
-            div()
-                .id(SharedString::from(format!("look-{}", option.name())))
-                .debug_selector(move || format!("look-{}", option.name()))
-                .flex_1()
-                .py_1p5()
-                .rounded_lg()
-                .text_center()
-                .cursor_pointer()
-                .when(chosen, |segment| {
-                    segment
-                        .bg(theme.surface)
-                        .shadow_sm()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(theme.text)
-                })
-                .when(!chosen, |segment| {
-                    segment
-                        .text_color(theme.muted)
-                        .hover(|segment| segment.text_color(theme.text))
-                })
-                .child(label)
-                .on_click(cx.listener(move |view, _, _, cx| view.set_look(current, option, cx)))
-        });
         div()
             .flex()
             .flex_col()
             .gap_4()
             .p_5()
             .rounded_2xl()
-            .bg(theme.surface)
-            .border_t_1()
-            .border_color(theme.rim)
-            .shadow_sm()
+            .card(theme)
             .child(
                 div()
                     .flex()
@@ -1340,29 +1639,208 @@ impl SettingsView {
                         div()
                             .text_base()
                             .font_weight(FontWeight::SEMIBOLD)
-                            .child("모양"),
+                            .child(words().settings.theme),
                     )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(theme.muted)
-                            .child(if crate::window::theme::overridden() {
-                                "DOTORI_THEME이 정해져 있어서 창은 그 모양으로 그려요. 고른 것은 저장돼요."
-                            } else {
-                                "고르면 모든 창이 바로 바뀌어요."
-                            }),
-                    ),
+                    .child(div().text_xs().text_color(theme.muted).child(
+                        if crate::window::theme::overridden() {
+                            words().settings.theme_overridden
+                        } else {
+                            words().settings.theme_about
+                        },
+                    )),
             )
-            .child(div().flex().flex_col().gap_1().children(themes))
+            .child(self.theme_list(theme, cx))
+            .child(self.look_switch(theme, cx))
+    }
+
+    fn theme_list(&self, theme: &Theme, cx: &mut Context<Self>) -> gpui::Div {
+        let (index, look) = crate::window::theme::saved();
+        let current = crate::window::theme::names().nth(index).unwrap_or_default();
+        let themes = crate::window::theme::names().map(|name| {
+            let chosen = name == current;
+            let (light, dark) = crate::window::theme::named(name).unwrap_or((*theme, *theme));
+            let swatch = |color| {
+                div()
+                    .size(px(10.))
+                    .rounded_full()
+                    .set_apart(theme)
+                    .bg(color)
+            };
+            div()
+                .id(SharedString::from(format!("theme-{name}")))
+                .debug_selector(move || format!("theme-{name}"))
+                .flex()
+                .items_center()
+                .gap_2p5()
+                .h(px(34.))
+                .px_3p5()
+                .rounded(px(10.))
+                .cursor_pointer()
+                .hover(|row| row.bg(theme.bubble))
+                .when(chosen, |row| row.font_weight(FontWeight::SEMIBOLD))
+                .child(div().flex_1().child(theme_label(name)))
+                .child(
+                    div()
+                        .flex()
+                        .gap(px(3.))
+                        .child(swatch(light.canvas))
+                        .child(swatch(light.primary))
+                        .child(swatch(dark.canvas))
+                        .child(swatch(dark.primary)),
+                )
+                .child(div().w(px(16.)).flex().justify_end().when(chosen, |mark| {
+                    mark.child(
+                        svg()
+                            .path(CHECK_ICON)
+                            .size(px(14.))
+                            .text_color(theme.primary),
+                    )
+                }))
+                .on_click(cx.listener(move |view, _, _, cx| view.set_look(name, look, cx)))
+        });
+        div().flex().flex_col().children(themes)
+    }
+
+    fn look_switch(&self, theme: &Theme, cx: &mut Context<Self>) -> gpui::Div {
+        let (index, look) = crate::window::theme::saved();
+        let current = crate::window::theme::names().nth(index).unwrap_or_default();
+        let looks = [Look::System, Look::Light, Look::Dark].map(|option| {
+            let chosen = option == look;
+            let common = &words().common;
+            let label = match option {
+                Look::System => common.follow_system,
+                Look::Light => common.light,
+                Look::Dark => common.dark,
+            };
+            segment(theme, format!("look-{}", option.name()), label, chosen)
+                .on_click(cx.listener(move |view, _, _, cx| view.set_look(current, option, cx)))
+        });
+        let at = [Look::System, Look::Light, Look::Dark]
+            .iter()
+            .position(|option| *option == look)
+            .unwrap_or(0);
+        self.track(theme, LOOK, at, looks.into_iter().collect())
+    }
+
+    fn flipped(&self, switch: &'static str) -> Option<usize> {
+        self.slides.get(switch).map(|(_, moved)| *moved)
+    }
+
+    fn slid(&mut self, switch: &'static str, from: usize) {
+        let (_, moved) = self.slides.get(switch).copied().unwrap_or_default();
+        self.slides.insert(switch, (from, moved + 1));
+    }
+
+    fn track(
+        &self,
+        theme: &Theme,
+        switch: &'static str,
+        chosen: usize,
+        options: Vec<gpui::Stateful<Div>>,
+    ) -> Div {
+        let count = options.len().max(1) as f32;
+        let to = chosen as f32;
+        let thumb = div()
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .w(relative(1. / count))
+            .left(relative(to / count))
+            .rounded(px(8.))
+            .raised(theme);
+        let thumb = match self.slides.get(switch).copied() {
+            Some((from, moved)) => {
+                let from = from as f32;
+                thumb
+                    .with_animation((switch, moved), SWITCH.animation(), move |thumb, t| {
+                        thumb.left(relative((from + (to - from) * t) / count))
+                    })
+                    .into_any_element()
+            }
+            None => thumb.into_any_element(),
+        };
+        div()
+            .p(px(3.))
+            .rounded(px(11.))
+            .bg(theme.bubble)
+            .child(div().relative().flex().child(thumb).children(options))
+    }
+
+    fn language_card(&self, theme: &Theme, cx: &mut Context<Self>) -> gpui::Div {
+        let chosen = language::chosen();
+        let options = Choice::ALL.map(|option| {
+            let label = match option {
+                Choice::System => words().common.follow_system,
+                Choice::Only(language) => language.name(),
+            };
+            segment(
+                theme,
+                format!("language-{}", option.code()),
+                label,
+                option == chosen,
+            )
+            .on_click(cx.listener(move |view, _, _, cx| view.set_language(option, cx)))
+        });
+        div()
+            .flex()
+            .flex_col()
+            .gap_4()
+            .p_5()
+            .rounded_2xl()
+            .card(theme)
             .child(
                 div()
-                    .flex()
-                    .p_1()
-                    .gap_1()
-                    .rounded_xl()
-                    .bg(theme.canvas)
-                    .children(looks),
+                    .text_base()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(words().common.language),
             )
+            .child(
+                self.track(
+                    theme,
+                    LANGUAGE,
+                    Choice::ALL
+                        .iter()
+                        .position(|option| *option == chosen)
+                        .unwrap_or(0),
+                    options.into_iter().collect(),
+                ),
+            )
+    }
+
+    fn set_language(&mut self, choice: Choice, cx: &mut Context<Self>) {
+        let was = language::chosen();
+        if was != choice {
+            self.slid(
+                LANGUAGE,
+                Choice::ALL
+                    .iter()
+                    .position(|option| *option == was)
+                    .unwrap_or(0),
+            );
+        }
+        language::choose(choice);
+        let path = self.home.settings();
+        let earlier = self.look_saving.take();
+        self.look_saving = Some(cx.spawn(async move |view, cx| {
+            if let Some(earlier) = earlier {
+                earlier.await;
+            }
+            let saved = cx
+                .background_spawn(async move {
+                    Settings::load(&path).and_then(|mut settings| {
+                        settings.language = Some(choice.code().to_owned());
+                        settings.save_parts(&path, &["language"])
+                    })
+                })
+                .await;
+            if let Err(error) = saved {
+                let _ = view.update(cx, |view, cx| {
+                    view.note = Some(Note::Failed(SharedString::from(error)));
+                    cx.notify();
+                });
+            }
+        }));
+        cx.refresh_windows();
     }
 
     fn slack_card(
@@ -1372,18 +1850,19 @@ impl SettingsView {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let on = self.slack_on;
+        let words = &words().settings;
         let card = channel_card(
             theme,
             "Slack",
-            format!(
-                "Slack에서도 {} 말할 수 있어요. DM이나 멘션으로 부르면 같은 대화로 이어져요.",
-                called(Particle::With)
-            ),
-            switch(theme, "slack-switch", on).on_click(cx.listener(|view, _, _, cx| {
-                view.slack_on = !view.slack_on;
-                view.note = None;
-                cx.notify();
-            })),
+            (words.slack_about)(),
+            switch(theme, "slack-switch", on, self.flipped("slack-switch")).on_click(cx.listener(
+                |view, _, _, cx| {
+                    view.slid("slack-switch", 0);
+                    view.slack_on = !view.slack_on;
+                    view.note = None;
+                    cx.notify();
+                },
+            )),
         );
         if !on {
             return card;
@@ -1393,7 +1872,7 @@ impl SettingsView {
             theme,
             window,
             cx,
-            "앱 토큰",
+            words.app_token,
             &self.slack_app_token,
             app_name,
         );
@@ -1401,28 +1880,21 @@ impl SettingsView {
             theme,
             window,
             cx,
-            "봇 토큰",
+            words.bot_token,
             &self.slack_bot_token,
             bot_name,
         );
-        card.child(guide(
-            theme,
-            &[
-                "api.slack.com/apps에서 앱을 만들고 Socket Mode와 Interactivity를 켜요. connections:write 권한으로 앱 토큰(xapp-)을 만들어요.",
-                "봇 권한 app_mentions:read, chat:write, im:history, im:read, im:write, users:read, channels:read, groups:read를 주고, app_mention과 message.im 이벤트를 구독한 뒤 설치해서 봇 토큰(xoxb-)을 받아요.",
-                "두 토큰을 아래에 붙여 넣고 저장한 뒤 dotori를 다시 시작해요.",
-            ],
-        ))
-        .child(field(
-            theme,
-            window,
-            cx,
-            "내 Slack 멤버 ID",
-            "Slack에서 내 프로필을 열고 더보기 메뉴의 \"멤버 ID 복사\"로 얻어요. 이 사람의 말만 들어요.",
-            &self.slack_owner,
-        ))
-        .child(app_token)
-        .child(bot_token)
+        card.child(guide(theme, &words.slack_steps))
+            .child(field(
+                theme,
+                window,
+                cx,
+                words.slack_owner,
+                words.slack_owner_hint,
+                &self.slack_owner,
+            ))
+            .child(app_token)
+            .child(bot_token)
     }
 
     fn telegram_card(
@@ -1432,11 +1904,19 @@ impl SettingsView {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let on = self.telegram_on;
+        let words = &words().settings;
         let card = channel_card(
             theme,
             "Telegram",
-            "Telegram 봇으로도 말할 수 있어요. 봇에게 바로 말하거나 그룹에서 부르면 같은 대화로 이어져요.",
-            switch(theme, "telegram-switch", on).on_click(cx.listener(|view, _, _, cx| {
+            words.telegram_about,
+            switch(
+                theme,
+                "telegram-switch",
+                on,
+                self.flipped("telegram-switch"),
+            )
+            .on_click(cx.listener(|view, _, _, cx| {
+                view.slid("telegram-switch", 0);
                 view.telegram_on = !view.telegram_on;
                 view.note = None;
                 cx.notify();
@@ -1446,24 +1926,24 @@ impl SettingsView {
             return card;
         }
         let [_, _, _, (_, name), _] = self.secrets();
-        let token = self.secret_field(theme, window, cx, "봇 토큰", &self.telegram_token, name);
-        card.child(guide(
-            theme,
-            &[
-                "Telegram에서 @BotFather에게 /newbot을 보내 봇을 만들고 토큰을 받아요.",
-                "토큰을 아래에 붙여 넣고 저장한 뒤 dotori를 다시 시작해요.",
-                "그룹에서도 쓰려면 봇을 그룹에 넣고 @봇이름으로 불러요.",
-            ],
-        ))
-        .child(field(
+        let token = self.secret_field(
             theme,
             window,
             cx,
-            "내 Telegram 사용자 ID",
-            "숫자예요. @userinfobot에게 아무 말이나 보내면 알려 줘요. 이 사람의 말만 들어요.",
-            &self.telegram_owner,
-        ))
-        .child(token)
+            words.bot_token,
+            &self.telegram_token,
+            name,
+        );
+        card.child(guide(theme, &words.telegram_steps))
+            .child(field(
+                theme,
+                window,
+                cx,
+                words.telegram_owner,
+                words.telegram_owner_hint,
+                &self.telegram_owner,
+            ))
+            .child(token)
     }
 }
 
@@ -1475,38 +1955,42 @@ impl SettingsView {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let on = self.discord_on;
+        let words = &words().settings;
         let card = channel_card(
             theme,
             "Discord",
-            "Discord 봇으로도 말할 수 있어요. 봇에게 DM을 보내거나 서버에서 부르면 같은 대화로 이어져요.",
-            switch(theme, "discord-switch", on).on_click(cx.listener(|view, _, _, cx| {
-                view.discord_on = !view.discord_on;
-                view.note = None;
-                cx.notify();
-            })),
+            words.discord_about,
+            switch(theme, "discord-switch", on, self.flipped("discord-switch")).on_click(
+                cx.listener(|view, _, _, cx| {
+                    view.slid("discord-switch", 0);
+                    view.discord_on = !view.discord_on;
+                    view.note = None;
+                    cx.notify();
+                }),
+            ),
         );
         if !on {
             return card;
         }
         let [_, _, _, _, (_, name)] = self.secrets();
-        let token = self.secret_field(theme, window, cx, "봇 토큰", &self.discord_token, name);
-        card.child(guide(
-            theme,
-            &[
-                "discord.com/developers/applications에서 앱을 만들고 Bot 메뉴에서 토큰을 받아요. 같은 화면에서 Message Content Intent를 켜요.",
-                "OAuth2 URL Generator에서 bot 범위와 View Channels, Send Messages, Read Message History 권한을 골라 내 서버에 봇을 초대해요.",
-                "토큰을 아래에 붙여 넣고 저장한 뒤 dotori를 다시 시작해요.",
-            ],
-        ))
-        .child(field(
+        let token = self.secret_field(
             theme,
             window,
             cx,
-            "내 Discord 사용자 ID",
-            "설정의 고급에서 개발자 모드를 켜고, 내 프로필을 눌러 \"사용자 ID 복사\"로 얻어요. 이 사람의 말만 들어요.",
-            &self.discord_owner,
-        ))
-        .child(token)
+            words.bot_token,
+            &self.discord_token,
+            name,
+        );
+        card.child(guide(theme, &words.discord_steps))
+            .child(field(
+                theme,
+                window,
+                cx,
+                words.discord_owner,
+                words.discord_owner_hint,
+                &self.discord_owner,
+            ))
+            .child(token)
     }
 }
 
@@ -1518,13 +2002,15 @@ struct KeyRow {
     from_environment: bool,
 }
 
-fn vault_failed(what: &str, error: &str) -> String {
+fn vault_failed(keeping: bool, error: &str) -> String {
     eprintln!("dotori: the vault: {error}");
-    if error.contains("another key") {
-        format!("이 PC의 금고 키가 금고와 맞지 않아서 키를 {what} 못했어요")
-    } else {
-        format!("키를 금고에 {what} 못했어요. 잠시 뒤에 다시 해 보세요")
-    }
+    let words = &words().settings;
+    String::from(match (error.contains("another key"), keeping) {
+        (true, true) => words.vault_mismatch_keep,
+        (true, false) => words.vault_mismatch_remove,
+        (false, true) => words.vault_failed_keep,
+        (false, false) => words.vault_failed_remove,
+    })
 }
 
 const VAULT_LOOK_EVERY: Duration = Duration::from_secs(3);
@@ -1535,12 +2021,10 @@ fn assistant_named(
     typed: &str,
 ) -> Result<Option<AssistantSettings>, String> {
     if typed.chars().count() > ASSISTANT_NAME_LONGEST {
-        return Err(format!(
-            "이름은 {ASSISTANT_NAME_LONGEST}자까지 쓸 수 있어요"
-        ));
+        return Err((words().settings.name_too_long)(ASSISTANT_NAME_LONGEST));
     }
     if typed.chars().any(char::is_control) {
-        return Err(String::from("이름에는 글자만 써 주세요"));
+        return Err(String::from(words().settings.name_control));
     }
     let mut assistant = assistant.unwrap_or_default();
     assistant.name = (!typed.is_empty() && typed != ASSISTANT_NAME).then(|| typed.to_owned());
@@ -1559,10 +2043,7 @@ fn channel_card(
         .gap_4()
         .p_5()
         .rounded_2xl()
-        .bg(theme.surface)
-        .border_t_1()
-        .border_color(theme.rim)
-        .shadow_sm()
+        .card(theme)
         .child(
             div()
                 .flex()
@@ -1592,27 +2073,57 @@ fn channel_card(
         )
 }
 
-fn switch(theme: &Theme, id: &'static str, on: bool) -> gpui::Stateful<gpui::Div> {
+fn switch(
+    theme: &Theme,
+    id: &'static str,
+    on: bool,
+    flipped: Option<usize>,
+) -> gpui::Stateful<gpui::Div> {
+    let to = if on { 1. } else { 0. };
+    let (lit, surface) = (theme.primary, theme.surface);
+    let drawn = move |inner: Div, at: f32| {
+        inner
+            .child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .rounded_full()
+                    .bg(lit)
+                    .opacity(at),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .top(px(2.))
+                    .left(px(2. + KNOB_TRAVEL * at))
+                    .size(px(18.))
+                    .rounded_full()
+                    .bg(surface)
+                    .shadow_sm(),
+            )
+    };
+    let inner = div().relative().size_full();
+    let inner = match flipped {
+        Some(moved) => inner
+            .with_animation(("flip", moved), SWITCH.animation(), move |inner, t| {
+                drawn(inner, (1. - to) + (2. * to - 1.) * t)
+            })
+            .into_any_element(),
+        None => drawn(inner, to).into_any_element(),
+    };
     div()
         .id(id)
-        .flex()
+        .debug_selector(move || id.to_owned())
         .flex_none()
-        .items_center()
         .w(px(40.))
         .h(px(22.))
-        .p(px(2.))
         .rounded_full()
         .cursor_pointer()
-        .bg(if on { theme.primary } else { theme.line })
-        .when(on, |switch| switch.justify_end())
-        .child(
-            div()
-                .size(px(18.))
-                .rounded_full()
-                .bg(theme.surface)
-                .shadow_sm(),
-        )
+        .bg(theme.line)
+        .child(inner)
 }
+
+const KNOB_TRAVEL: f32 = 18.;
 
 fn guide(theme: &Theme, steps: &[&'static str]) -> gpui::Div {
     div()
@@ -1657,44 +2168,115 @@ fn field(
     input: &Entity<TextInput>,
 ) -> impl IntoElement {
     let focus = input.focus_handle(cx);
-    let focused = focus.is_focused(window);
+    let ring =
+        (focus.is_focused(window) && window.is_window_active()).then(|| theme.primary.into());
+    let width = hairline(window);
     div()
         .flex()
         .flex_col()
         .gap_1p5()
         .child(div().font_weight(FontWeight::MEDIUM).child(label))
-        .child(
+        .child(framed(
+            ring,
+            FIELD_RADIUS - width,
+            width,
             div()
                 .id(label)
                 .px_3()
                 .py_2()
-                .rounded_lg()
-                .bg(theme.canvas)
-                .border_1()
-                .border_color(if focused {
-                    theme.primary.into()
-                } else {
-                    gpui::transparent_black()
-                })
+                .rounded(px(FIELD_RADIUS - width))
+                .card(theme)
                 .cursor_text()
-                .on_mouse_down(MouseButton::Left, move |_, window, _| window.focus(&focus))
+                .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                    window.focus(&focus);
+                    cx.stop_propagation();
+                })
                 .child(input.clone()),
-        )
+        ))
         .when(!hint.is_empty(), |field| {
             field.child(div().text_xs().text_color(theme.muted).child(hint))
         })
 }
 
-fn theme_label(name: &str) -> &'static str {
-    match name {
-        "graphite" => "그래파이트",
-        "paper" => "페이퍼",
-        "forest" => "포레스트",
-        "indigo" => "인디고",
-        "acorn" => "도토리",
-        _ => "테마",
+type Check =
+    fn(Home, ModelSettings, Option<(String, String)>) -> oneshot::Receiver<Result<(), CheckError>>;
+
+fn check_model(
+    home: Home,
+    model: ModelSettings,
+    typed: Option<(String, String)>,
+) -> oneshot::Receiver<Result<(), CheckError>> {
+    let (tell, told) = oneshot::channel();
+    thread::spawn(move || {
+        let unbuilt = |error: String| {
+            eprintln!("dotori: the model to check could not be made: {error}");
+            CheckError::NoAnswer
+        };
+        let checked = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| unbuilt(error.to_string()))
+            .and_then(|runtime| {
+                let vault = Vault::new(&home.root);
+                let saved = vault::lookup(&vault);
+                let key = |name: &str| match &typed {
+                    Some((typed_name, value)) if typed_name == name => Some(value.clone()),
+                    _ => saved(name),
+                };
+                let model = Settings {
+                    model,
+                    ..Settings::default()
+                }
+                .model(key)
+                .map_err(|error| unbuilt(error.to_string()))?;
+                runtime.block_on(model.check())
+            });
+        let _ = tell.send(checked);
+    });
+    told
+}
+
+fn check_failed(error: &CheckError, anthropic: bool) -> String {
+    let words = &words().onboarding;
+    match error {
+        CheckError::KeyRefused => words.key_refused.to_owned(),
+        CheckError::NoAnswer if anthropic => words.no_anthropic.to_owned(),
+        CheckError::NoAnswer => words.no_server.to_owned(),
     }
 }
+
+const PROVIDER: &str = "provider";
+const LOOK: &str = "look";
+const LANGUAGE: &str = "language";
+
+fn segment(theme: &Theme, id: String, label: &'static str, chosen: bool) -> gpui::Stateful<Div> {
+    div()
+        .id(SharedString::from(id.clone()))
+        .debug_selector(move || id.clone())
+        .flex_1()
+        .py_1()
+        .rounded(px(8.))
+        .flex()
+        .justify_center()
+        .text_size(px(13.))
+        .cursor_pointer()
+        .when(chosen, |segment| {
+            segment
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme.text)
+        })
+        .when(!chosen, |segment| segment.text_color(theme.muted))
+        .child(label)
+}
+
+fn theme_label(name: &str) -> &'static str {
+    (words().common.theme)(name)
+}
+
+const FIELD_RADIUS: f32 = 14.;
+
+#[path = "onboarding.rs"]
+mod onboarding;
 
 #[cfg(test)]
 #[path = "settings.test.rs"]

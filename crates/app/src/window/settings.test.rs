@@ -245,3 +245,420 @@ fn each_linked_account_has_its_own_row_and_one_can_be_unlinked(cx: &mut TestAppC
     assert_eq!(ids, [second.id]);
     let _ = std::fs::remove_dir_all(&root);
 }
+
+fn onboarding_home(name: &str, settings: &str) -> (Home, std::path::PathBuf) {
+    let root = std::env::temp_dir().join(format!("dotori-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("a home");
+    std::fs::write(root.join("settings.toml"), settings).expect("settings");
+    (Home { root: root.clone() }, root)
+}
+
+fn walked(view: &Entity<SettingsView>, cx: &mut VisualTestContext) -> Option<Step> {
+    view.read_with(cx, |view, _| view.walk)
+}
+
+fn answered(answer: Result<(), CheckError>) -> oneshot::Receiver<Result<(), CheckError>> {
+    let (tell, told) = oneshot::channel();
+    let _ = tell.send(answer);
+    told
+}
+
+fn checked_as(view: &Entity<SettingsView>, cx: &mut VisualTestContext, check: Check) {
+    view.update(cx, |view, _| view.check = check);
+}
+
+fn walk_to(view: &Entity<SettingsView>, cx: &mut VisualTestContext, step: Step) {
+    view.update(cx, |view, cx| {
+        view.walk = Some(step);
+        cx.notify();
+    });
+    cx.run_until_parked();
+}
+
+const NAMED_KEY_ABSENT: &str = "[model]\nprovider = \"openai-compatible\"\nbase_url = \"http://127.0.0.1:1/v1\"\nmodel = \"m\"\napi_key_env = \"DOTORI_TEST_KEY_THAT_IS_NEVER_SET\"\n";
+
+#[gpui::test]
+fn onboarding_starts_at_the_greeting_and_holds_on_the_key_until_one_is_there(
+    cx: &mut TestAppContext,
+) {
+    let (home, root) = onboarding_home("onboarding-key", NAMED_KEY_ABSENT);
+    let settings = Settings::load(&home.settings()).expect("loaded");
+    let (view, cx) = cx.add_window_view(|_, cx| SettingsView::onboarding(home, settings, cx));
+    cx.run_until_parked();
+    assert_eq!(walked(&view, cx), Some(Step::Welcome));
+
+    click(cx, "next");
+    assert_eq!(walked(&view, cx), Some(Step::Key));
+
+    click(cx, "next");
+    assert_eq!(walked(&view, cx), Some(Step::Key));
+    let note = view.read_with(cx, |view, _| view.note.clone());
+    assert!(matches!(note, Some(Note::Failed(error)) if error == words().settings.key_needed));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[gpui::test]
+fn a_model_without_a_key_name_passes_the_key_step(cx: &mut TestAppContext) {
+    let (home, root) = onboarding_home(
+        "onboarding-keyless",
+        "[model]
+provider = \"openai-compatible\"
+base_url = \"http://127.0.0.1:1/v1\"
+model = \"m\"
+",
+    );
+    let settings = Settings::load(&home.settings()).expect("loaded");
+    let (view, cx) = cx.add_window_view(|_, cx| SettingsView::onboarding(home, settings, cx));
+    cx.run_until_parked();
+    walk_to(&view, cx, Step::Key);
+    checked_as(&view, cx, |_, _, _| answered(Ok(())));
+
+    click(cx, "next");
+
+    assert_eq!(walked(&view, cx), Some(Step::Look));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[gpui::test]
+fn a_typed_key_is_kept_in_the_vault_and_the_walk_moves_on(cx: &mut TestAppContext) {
+    let (home, root) = onboarding_home("onboarding-vault", "");
+    let settings = Settings::load(&home.settings()).expect("loaded");
+    let (view, cx) = cx.add_window_view(|_, cx| SettingsView::onboarding(home, settings, cx));
+    cx.run_until_parked();
+    walk_to(&view, cx, Step::Key);
+    view.update(cx, |view, cx| {
+        view.api_key
+            .update(cx, |input, cx| input.set_text("sk-ant-walked", cx));
+    });
+    checked_as(&view, cx, |_, _, typed| {
+        assert_eq!(
+            typed,
+            Some((ANTHROPIC_KEY.to_owned(), String::from("sk-ant-walked"))),
+            "the typed key is checked before it is kept"
+        );
+        answered(Ok(()))
+    });
+
+    click(cx, "next");
+
+    assert_eq!(walked(&view, cx), Some(Step::Look));
+    assert_eq!(
+        Vault::new(&root)
+            .get(ANTHROPIC_KEY)
+            .expect("read")
+            .as_deref(),
+        Some("sk-ant-walked")
+    );
+    assert!(view.read_with(cx, |view, _| view.note.is_none()));
+    let file = std::fs::read_to_string(root.join("settings.toml")).expect("settings");
+    assert!(!file.contains("sk-ant-walked"));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[gpui::test]
+fn a_refused_key_holds_the_walk_and_is_not_kept(cx: &mut TestAppContext) {
+    let (home, root) = onboarding_home("onboarding-refused", "");
+    let settings = Settings::load(&home.settings()).expect("loaded");
+    let (view, cx) = cx.add_window_view(|_, cx| SettingsView::onboarding(home, settings, cx));
+    cx.run_until_parked();
+    walk_to(&view, cx, Step::Key);
+    view.update(cx, |view, cx| {
+        view.api_key
+            .update(cx, |input, cx| input.set_text("sk-ant-wrong", cx));
+    });
+    checked_as(&view, cx, |_, _, _| answered(Err(CheckError::KeyRefused)));
+
+    click(cx, "next");
+
+    assert_eq!(walked(&view, cx), Some(Step::Key));
+    let note = view.read_with(cx, |view, _| view.note.clone());
+    assert!(matches!(note, Some(Note::Failed(error)) if error == words().onboarding.key_refused));
+    assert_eq!(Vault::new(&root).get(ANTHROPIC_KEY).expect("read"), None);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[gpui::test]
+fn back_goes_one_step_and_next_reaches_the_other_places(cx: &mut TestAppContext) {
+    let (home, root) = onboarding_home("onboarding-walk", "");
+    let settings = Settings::load(&home.settings()).expect("loaded");
+    let (view, cx) = cx.add_window_view(|_, cx| SettingsView::onboarding(home, settings, cx));
+    cx.run_until_parked();
+    walk_to(&view, cx, Step::Look);
+
+    click(cx, "back");
+    assert_eq!(walked(&view, cx), Some(Step::Key));
+
+    walk_to(&view, cx, Step::Look);
+    click(cx, "next");
+    assert_eq!(walked(&view, cx), Some(Step::Elsewhere));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[gpui::test]
+fn a_channel_turned_on_without_its_details_keeps_the_last_step(cx: &mut TestAppContext) {
+    let (home, root) = onboarding_home("onboarding-channel", "");
+    let settings = Settings::load(&home.settings()).expect("loaded");
+    let (view, cx) = cx.add_window_view(|_, cx| SettingsView::onboarding(home, settings, cx));
+    cx.run_until_parked();
+    walk_to(&view, cx, Step::Elsewhere);
+
+    click(cx, "telegram-switch");
+    click(cx, "next");
+
+    assert_eq!(walked(&view, cx), Some(Step::Elsewhere));
+    assert!(view.read_with(cx, |view, _| matches!(view.note, Some(Note::Failed(_)))));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[gpui::test]
+fn a_channel_left_half_done_does_not_hold_an_earlier_step(cx: &mut TestAppContext) {
+    let (home, root) = onboarding_home(
+        "onboarding-back",
+        "[model]
+provider = \"openai-compatible\"
+base_url = \"http://127.0.0.1:1/v1\"
+model = \"m\"
+",
+    );
+    let settings = Settings::load(&home.settings()).expect("loaded");
+    let (view, cx) =
+        cx.add_window_view(|_, cx| SettingsView::onboarding(home.clone(), settings, cx));
+    cx.run_until_parked();
+    checked_as(&view, cx, |_, _, _| answered(Ok(())));
+    walk_to(&view, cx, Step::Elsewhere);
+    click(cx, "slack-switch");
+    click(cx, "back");
+    click(cx, "back");
+
+    click(cx, "next");
+
+    assert_eq!(walked(&view, cx), Some(Step::Look));
+    assert!(view.read_with(cx, |view, _| view.note.is_none()));
+    let saved = Settings::load(&home.settings()).expect("saved");
+    assert!(saved.slack.is_none(), "the channel waits for its own step");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn the_progress_bar_names_the_three_steps_after_the_greeting() {
+    assert_eq!(Step::Welcome.label(), None);
+    assert_eq!(
+        Step::ALL.iter().filter_map(|step| step.label()).count(),
+        3,
+        "the progress bar counts the three steps after the greeting"
+    );
+}
+
+thread_local! {
+    static LATER: std::cell::RefCell<Option<oneshot::Sender<Result<(), CheckError>>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+fn answered_later(
+    _: Home,
+    _: ModelSettings,
+    _: Option<(String, String)>,
+) -> oneshot::Receiver<Result<(), CheckError>> {
+    let (tell, told) = oneshot::channel();
+    LATER.with(|later| *later.borrow_mut() = Some(tell));
+    told
+}
+
+fn answer_now(cx: &mut VisualTestContext, answer: Result<(), CheckError>) {
+    let tell = LATER
+        .with(|later| later.borrow_mut().take())
+        .expect("a check waits");
+    let _ = tell.send(answer);
+    cx.run_until_parked();
+}
+
+fn key_typed(view: &Entity<SettingsView>, cx: &mut VisualTestContext, key: &str) {
+    view.update(cx, |view, cx| {
+        view.api_key.update(cx, |input, cx| input.set_text(key, cx));
+    });
+}
+
+#[gpui::test]
+fn the_key_that_was_checked_is_the_one_kept_whatever_changes_meanwhile(cx: &mut TestAppContext) {
+    let (home, root) = onboarding_home("check-typed", "");
+    let settings = Settings::load(&home.settings()).expect("loaded");
+    let (view, cx) = cx.add_window_view(|_, cx| SettingsView::onboarding(home, settings, cx));
+    cx.run_until_parked();
+    walk_to(&view, cx, Step::Key);
+    key_typed(&view, cx, "sk-ant-checked");
+    checked_as(&view, cx, answered_later);
+
+    click(cx, "next");
+    assert!(view.read_with(cx, |view, _| view.checking()));
+    view.update_in(cx, |view, window, cx| {
+        window.focus(&view.api_key.focus_handle(cx))
+    });
+    cx.simulate_input("-typed");
+    assert_eq!(
+        view.read_with(cx, |view, cx| view.api_key.read(cx).text().to_owned()),
+        "sk-ant-checked",
+        "the field holds still while the key is checked"
+    );
+    click(cx, "openai");
+    assert!(view.read_with(cx, |view, _| !view.openai_compatible));
+    key_typed(&view, cx, "sk-ant-other");
+
+    answer_now(cx, Ok(()));
+
+    assert_eq!(walked(&view, cx), Some(Step::Look));
+    assert_eq!(
+        Vault::new(&root)
+            .get(ANTHROPIC_KEY)
+            .expect("read")
+            .as_deref(),
+        Some("sk-ant-checked")
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[gpui::test]
+fn back_waits_for_the_check_and_an_answer_after_the_walk_moved_is_dropped(cx: &mut TestAppContext) {
+    let (home, root) = onboarding_home("check-back", "");
+    let settings = Settings::load(&home.settings()).expect("loaded");
+    let (view, cx) = cx.add_window_view(|_, cx| SettingsView::onboarding(home, settings, cx));
+    cx.run_until_parked();
+    walk_to(&view, cx, Step::Key);
+    key_typed(&view, cx, "sk-ant-late");
+    checked_as(&view, cx, answered_later);
+
+    click(cx, "next");
+    click(cx, "back");
+    assert_eq!(
+        walked(&view, cx),
+        Some(Step::Key),
+        "back waits for the check"
+    );
+
+    view.update(cx, |view, cx| {
+        view.walk = Some(Step::Welcome);
+        view.moves += 1;
+        cx.notify();
+    });
+    answer_now(cx, Ok(()));
+
+    assert_eq!(walked(&view, cx), Some(Step::Welcome));
+    assert_eq!(Vault::new(&root).get(ANTHROPIC_KEY).expect("read"), None);
+    assert!(view.read_with(cx, |view, _| !view.checking()));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[gpui::test]
+fn onboarding_opens_again_at_the_step_left_unfinished(cx: &mut TestAppContext) {
+    let (home, root) = onboarding_home("resume", "");
+    first_run::write(&home.first_run(), FirstRun::At(Step::Look)).expect("written");
+    let settings = Settings::load(&home.settings()).expect("loaded");
+    let (view, cx) =
+        cx.add_window_view(|_, cx| SettingsView::onboarding(home.clone(), settings, cx));
+    cx.run_until_parked();
+    assert_eq!(walked(&view, cx), Some(Step::Look));
+
+    click(cx, "next");
+    assert_eq!(walked(&view, cx), Some(Step::Elsewhere));
+    assert_eq!(
+        first_run::read(&home.first_run()),
+        FirstRun::At(Step::Elsewhere)
+    );
+
+    view.update(cx, |view, _| view.open_chat = || {});
+    click(cx, "next");
+    assert_eq!(first_run::read(&home.first_run()), FirstRun::Done);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[gpui::test]
+fn slack_turned_on_needs_its_tokens_and_a_channel_left_off_keeps_none(cx: &mut TestAppContext) {
+    let (home, root) = onboarding_home("tokens", "");
+    let settings = Settings::load(&home.settings()).expect("loaded");
+    let (view, cx) =
+        cx.add_window_view(|_, cx| SettingsView::onboarding(home.clone(), settings, cx));
+    cx.run_until_parked();
+    walk_to(&view, cx, Step::Elsewhere);
+    click(cx, "slack-switch");
+    view.update(cx, |view, cx| {
+        view.slack_owner
+            .update(cx, |input, cx| input.set_text("U012AB3CD", cx));
+        view.telegram_token
+            .update(cx, |input, cx| input.set_text("123:telegram", cx));
+    });
+
+    click(cx, "next");
+
+    assert_eq!(walked(&view, cx), Some(Step::Elsewhere));
+    assert!(view.read_with(cx, |view, _| matches!(
+        &view.note,
+        Some(Note::Failed(error)) if error == words().settings.slack_tokens_needed
+    )));
+    let vault = Vault::new(&root);
+    assert_eq!(
+        vault.get(TELEGRAM_KEY).expect("read"),
+        None,
+        "Telegram is off"
+    );
+    assert!(
+        Settings::load(&home.settings())
+            .expect("saved")
+            .slack
+            .is_none()
+    );
+
+    view.update(cx, |view, cx| {
+        view.slack_app_token
+            .update(cx, |input, cx| input.set_text("xapp-1", cx));
+        view.slack_bot_token
+            .update(cx, |input, cx| input.set_text("xoxb-1", cx));
+        view.open_chat = || {};
+    });
+    click(cx, "next");
+
+    assert_eq!(
+        vault.get(SLACK_APP_KEY).expect("read").as_deref(),
+        Some("xapp-1")
+    );
+    assert_eq!(
+        vault.get(SLACK_BOT_KEY).expect("read").as_deref(),
+        Some("xoxb-1")
+    );
+    assert_eq!(
+        vault.get(TELEGRAM_KEY).expect("read"),
+        None,
+        "Telegram is off"
+    );
+    assert!(
+        Settings::load(&home.settings())
+            .expect("saved")
+            .slack
+            .is_some()
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[gpui::test]
+fn a_channel_token_waits_for_its_own_step(cx: &mut TestAppContext) {
+    let (home, root) = onboarding_home(
+        "token-step",
+        "[model]\nprovider = \"openai-compatible\"\nbase_url = \"http://127.0.0.1:1/v1\"\nmodel = \"m\"\n",
+    );
+    let settings = Settings::load(&home.settings()).expect("loaded");
+    let (view, cx) = cx.add_window_view(|_, cx| SettingsView::onboarding(home, settings, cx));
+    cx.run_until_parked();
+    checked_as(&view, cx, |_, _, _| answered(Ok(())));
+    walk_to(&view, cx, Step::Elsewhere);
+    click(cx, "discord-switch");
+    view.update(cx, |view, cx| {
+        view.discord_token
+            .update(cx, |input, cx| input.set_text("discord-token", cx));
+    });
+    walk_to(&view, cx, Step::Key);
+
+    click(cx, "next");
+
+    assert_eq!(walked(&view, cx), Some(Step::Look));
+    assert_eq!(Vault::new(&root).get(DISCORD_KEY).expect("read"), None);
+    let _ = std::fs::remove_dir_all(&root);
+}

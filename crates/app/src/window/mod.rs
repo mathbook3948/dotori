@@ -12,10 +12,13 @@ mod routines;
 mod sandbox;
 mod screen;
 mod settings;
+mod surface;
 mod theme;
 mod themes;
+mod tokens;
 mod when;
 
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::fs;
 use std::path::Path;
@@ -42,13 +45,18 @@ use gpui::px;
 use gpui::size;
 
 use crate::home::Home;
+use crate::language;
 use crate::link;
 use crate::screen_link;
 use crate::window::chat::ChatView;
 use crate::window::identity::Identity;
 use crate::window::parts::Assets;
+use crate::window::parts::FONT_FILES;
 use crate::window::settings::SettingsView;
 use crate::window::theme::Look;
+use crate::window::tokens::WINDOW;
+use crate::window::tokens::WINDOW_MIN;
+use crate::words::words;
 
 actions!(dotori, [Quit]);
 
@@ -61,17 +69,21 @@ const ICON_EVERY: u32 = 4;
 pub(crate) enum Which {
     Chat,
     Settings,
+    Onboarding,
 }
 
 pub(crate) fn run(home: Home, which: Which) -> Result<(), String> {
     let settings = match which {
-        Which::Settings => Some(crate::settings::Settings::load(&home.settings())?),
+        Which::Settings | Which::Onboarding => {
+            Some(crate::settings::Settings::load(&home.settings())?)
+        }
         Which::Chat => None,
     };
     let settings_path = home.settings();
     let icon_folder = home.icons();
     let seen = stamp(&settings_path);
     apply_look(&settings_path);
+    language::choose(language::saved(&settings_path));
     identity::choose(Identity::read(&settings_path, &icon_folder));
     let failed = Rc::new(RefCell::new(None));
     let failure = Rc::clone(&failed);
@@ -79,26 +91,28 @@ pub(crate) fn run(home: Home, which: Which) -> Result<(), String> {
         .with_assets(Assets)
         .run(move |cx: &mut App| {
             let failed = failure;
+            let fonts = FONT_FILES.iter().map(|file| Cow::Borrowed(*file)).collect();
+            if let Err(error) = cx.text_system().add_fonts(fonts) {
+                eprintln!("dotori: the windows write in the system font: {error}");
+            }
             cx.bind_keys(input::bindings());
             cx.bind_keys([KeyBinding::new("secondary-q", Quit, None)]);
-            let (title, wide, tall) = match which {
-                Which::Chat => ("dotori", 560., 760.),
-                Which::Settings => ("dotori 설정", 520., 640.),
+            let title = match which {
+                Which::Chat => "dotori",
+                Which::Settings => words().common.settings_title,
+                Which::Onboarding => words().common.onboarding_title,
             };
-            let bounds = Bounds::centered(None, size(px(wide), px(tall)), cx);
+            let bounds = Bounds::centered(None, size(px(WINDOW.0), px(WINDOW.1)), cx);
             let options = WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
-                window_min_size: Some(size(px(360.), px(420.))),
+                window_min_size: Some(size(px(WINDOW_MIN.0), px(WINDOW_MIN.1))),
+                is_resizable: !matches!(which, Which::Onboarding),
                 titlebar: Some(TitlebarOptions {
                     title: Some(SharedString::new_static(title)),
                     appears_transparent: true,
                     traffic_light_position: Some(point(px(16.), px(12.))),
                 }),
-                window_background: if theme::SEE_THROUGH {
-                    WindowBackgroundAppearance::Blurred
-                } else {
-                    WindowBackgroundAppearance::Opaque
-                },
+                window_background: WindowBackgroundAppearance::Opaque,
                 window_decorations: Some(WindowDecorations::Client),
                 app_id: Some(String::from("dotori")),
                 ..WindowOptions::default()
@@ -120,7 +134,10 @@ pub(crate) fn run(home: Home, which: Which) -> Result<(), String> {
                         let view = cx.new(|cx| {
                             cx.observe_window_appearance(window, |_, _, cx| cx.notify())
                                 .detach();
-                            SettingsView::new(home, settings, cx)
+                            match which {
+                                Which::Onboarding => SettingsView::onboarding(home, settings, cx),
+                                _ => SettingsView::new(home, settings, cx),
+                            }
                         });
                         window.focus(&view.read(cx).focus_handle(cx));
                         view
@@ -187,7 +204,11 @@ fn follow_look(settings: PathBuf, icon_folder: PathBuf, mut seen: Stamp, cx: &mu
                 .spawn(async move {
                     let now = stamp(&path);
                     let changed = now != last;
-                    let look = if changed { saved_look(&path) } else { None };
+                    let look = if changed {
+                        saved_look(&path).map(|look| (look, language::saved(&path)))
+                    } else {
+                        None
+                    };
                     let identity = (changed || look_again).then(|| Identity::read(&path, &folder));
                     (now, look, identity)
                 })
@@ -197,8 +218,9 @@ fn follow_look(settings: PathBuf, icon_folder: PathBuf, mut seen: Stamp, cx: &mu
                 continue;
             }
             seen = now;
-            if let Some((name, look)) = look {
+            if let Some(((name, look), speaking)) = look {
                 theme::choose(&name, look);
+                language::choose(speaking);
             }
             if cx.update(|cx| cx.refresh_windows()).is_err() {
                 return;

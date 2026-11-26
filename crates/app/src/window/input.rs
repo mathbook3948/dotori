@@ -10,6 +10,7 @@ use gpui::App;
 use gpui::AvailableSpace;
 use gpui::Bounds;
 use gpui::ClipboardItem;
+use gpui::ContentMask;
 use gpui::Context;
 use gpui::CursorStyle;
 use gpui::ElementId;
@@ -87,9 +88,11 @@ pub(crate) struct TextInput {
     marked_range: Option<Range<usize>>,
     last_layout: Option<Shaped>,
     last_bounds: Option<Bounds<Pixels>>,
+    shift: Pixels,
     is_selecting: bool,
     multiline: bool,
     masked: bool,
+    locked: bool,
     scroll: ScrollHandle,
     followed: Option<(SharedString, usize, Pixels)>,
     column: Option<Pixels>,
@@ -315,7 +318,9 @@ impl TextInput {
         if position.y > bounds.bottom() {
             return self.content.len();
         }
-        self.within(self.hidden(shaped.index(position - bounds.origin)))
+        self.within(
+            self.hidden(shaped.index(position - bounds.origin + point(self.shift, Pixels::ZERO))),
+        )
     }
 
     fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
@@ -396,9 +401,11 @@ impl TextInput {
             marked_range: None,
             last_layout: None,
             last_bounds: None,
+            shift: Pixels::ZERO,
             is_selecting: false,
             multiline: false,
             masked: false,
+            locked: false,
             scroll: ScrollHandle::new(),
             followed: None,
             column: None,
@@ -448,6 +455,15 @@ impl TextInput {
     pub(crate) fn set_placeholder(&mut self, placeholder: SharedString, cx: &mut Context<Self>) {
         if self.placeholder != placeholder {
             self.placeholder = placeholder;
+            cx.notify();
+        }
+    }
+
+    /// Holds the text as it is while `locked`, so neither typing nor pasting changes it.
+    pub(crate) fn set_locked(&mut self, locked: bool, cx: &mut Context<Self>) {
+        if self.locked != locked {
+            self.locked = locked;
+            self.marked_range = None;
             cx.notify();
         }
     }
@@ -540,6 +556,9 @@ impl EntityInputHandler for TextInput {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.locked {
+            return;
+        }
         let range = range_utf16
             .as_ref()
             .map(|range_utf16| self.range_from_utf16(range_utf16))
@@ -563,6 +582,9 @@ impl EntityInputHandler for TextInput {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.locked {
+            return;
+        }
         let range = range_utf16
             .as_ref()
             .map(|range_utf16| self.range_from_utf16(range_utf16))
@@ -598,9 +620,10 @@ impl EntityInputHandler for TextInput {
         let range = self.range_from_utf16(&range_utf16);
         let start = shaped.position(self.shown(range.start));
         let end = shaped.position(self.shown(range.end));
+        let origin = bounds.origin - point(self.shift, Pixels::ZERO);
         Some(Bounds::from_corners(
-            bounds.origin + start,
-            bounds.origin + point(end.x.max(start.x), start.y + shaped.line_height),
+            origin + start,
+            origin + point(end.x.max(start.x), start.y + shaped.line_height),
         ))
     }
 
@@ -610,7 +633,7 @@ impl EntityInputHandler for TextInput {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<usize> {
-        let inside = self.last_bounds?.localize(&point)?;
+        let inside = self.last_bounds?.localize(&point)? + gpui::point(self.shift, Pixels::ZERO);
         let shaped = self.last_layout.as_ref()?;
         Some(self.offset_to_utf16(self.within(self.hidden(shaped.index(inside)))))
     }
@@ -723,6 +746,7 @@ struct PrepaintState {
     shaped: Option<Shaped>,
     cursor: Option<PaintQuad>,
     selection: Vec<PaintQuad>,
+    shift: Pixels,
 }
 
 impl IntoElement for TextElement {
@@ -842,16 +866,36 @@ impl Element for TextElement {
         let shaped = Shaped::new(&text, &runs, font_size, wrap, window.line_height(), window);
         let theme = Theme::of(window);
         let selected = input.selected_range.clone();
+        let cursor_at = shaped.position(if input.content.is_empty() {
+            0
+        } else {
+            input.shown(input.cursor_offset())
+        });
+        let shift = if input.multiline {
+            Pixels::ZERO
+        } else {
+            let room = bounds.size.width - px(2.);
+            let widest = shaped
+                .lines
+                .first()
+                .map_or(Pixels::ZERO, |line| line.width());
+            let mut shift = input.shift;
+            if cursor_at.x - shift > room {
+                shift = cursor_at.x - room;
+            }
+            if cursor_at.x < shift {
+                shift = cursor_at.x;
+            }
+            shift
+                .min((widest - room).max(Pixels::ZERO))
+                .max(Pixels::ZERO)
+        };
+        let origin = bounds.origin - point(shift, Pixels::ZERO);
         let (selection, cursor) = if selected.is_empty() || input.content.is_empty() {
-            let at = shaped.position(if input.content.is_empty() {
-                0
-            } else {
-                input.shown(input.cursor_offset())
-            });
             (
                 Vec::new(),
                 Some(fill(
-                    Bounds::new(bounds.origin + at, size(px(1.5), shaped.line_height)),
+                    Bounds::new(origin + cursor_at, size(px(1.5), shaped.line_height)),
                     theme.primary,
                 )),
             )
@@ -863,20 +907,17 @@ impl Element for TextElement {
                         bounds.size.width,
                     )
                     .into_iter()
-                    .map(|row| {
-                        fill(
-                            Bounds::new(bounds.origin + row.origin, row.size),
-                            theme.selection,
-                        )
-                    })
+                    .map(|row| fill(Bounds::new(origin + row.origin, row.size), theme.selection))
                     .collect(),
                 None,
             )
         };
+        self.input.update(cx, |input, _| input.shift = shift);
         PrepaintState {
             shaped: Some(shaped),
             cursor,
             selection,
+            shift,
         }
     }
 
@@ -896,30 +937,36 @@ impl Element for TextElement {
             ElementInputHandler::new(bounds, self.input.clone()),
             cx,
         );
-        for selection in prepaint.selection.drain(..) {
-            window.paint_quad(selection)
-        }
         let Some(shaped) = prepaint.shaped.take() else {
             return;
         };
-        let mut top = bounds.top();
-        for line in &shaped.lines {
-            let _ = line.paint(
-                point(bounds.left(), top),
-                shaped.line_height,
-                TextAlign::Left,
-                None,
-                window,
-                cx,
-            );
-            top += line.size(shaped.line_height).height;
-        }
-
-        if focus_handle.is_focused(window)
-            && let Some(cursor) = prepaint.cursor.take()
-        {
-            window.paint_quad(cursor);
-        }
+        let shown = focus_handle.is_focused(window) && window.is_window_active();
+        let mask = ContentMask {
+            bounds: Bounds::new(
+                bounds.origin - point(px(2.), Pixels::ZERO),
+                size(bounds.size.width + px(4.), bounds.size.height),
+            ),
+        };
+        window.with_content_mask(Some(mask), |window| {
+            for selection in prepaint.selection.drain(..) {
+                window.paint_quad(selection)
+            }
+            let mut top = bounds.top();
+            for line in &shaped.lines {
+                let _ = line.paint(
+                    point(bounds.left() - prepaint.shift, top),
+                    shaped.line_height,
+                    TextAlign::Left,
+                    None,
+                    window,
+                    cx,
+                );
+                top += line.size(shaped.line_height).height;
+            }
+            if shown && let Some(cursor) = prepaint.cursor.take() {
+                window.paint_quad(cursor);
+            }
+        });
 
         let followed = self.input.update(cx, |input, _cx| {
             let cursor = (
@@ -1019,3 +1066,7 @@ pub(crate) fn bindings() -> Vec<KeyBinding> {
         KeyBinding::new("shift-enter", Newline, field),
     ]
 }
+
+#[cfg(test)]
+#[path = "input.test.rs"]
+mod tests;

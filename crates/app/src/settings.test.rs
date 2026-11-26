@@ -51,7 +51,7 @@ fn the_anthropic_key_comes_from_the_named_variable() {
         parse("[model]\nprovider = \"anthropic\"\napi_key_env = \"MY_KEY\"").expect("parsed");
 
     let missing = settings.model(|_| None).err().expect("needs a key");
-    assert!(missing.contains("MY_KEY"));
+    assert!(matches!(missing, ModelError::MissingKey { name, .. } if name == "MY_KEY"));
     assert!(
         settings
             .model(|name| (name == "MY_KEY").then(|| String::from("k")))
@@ -61,7 +61,11 @@ fn the_anthropic_key_comes_from_the_named_variable() {
         .model(|_| None)
         .err()
         .expect("needs a key");
-    assert!(error.contains("ANTHROPIC_API_KEY"));
+    assert!(matches!(&error, ModelError::MissingKey { name, .. } if name == "ANTHROPIC_API_KEY"));
+    assert_eq!(
+        error.to_string(),
+        "set ANTHROPIC_API_KEY to your Anthropic API key"
+    );
 }
 
 #[test]
@@ -380,7 +384,10 @@ fn the_slack_form_refuses_a_missing_owner_and_a_pasted_token() {
     );
     form.app_token_env = Some(String::from("xapp-1-A0-123-abc"));
     let refused = form.settings().expect_err("a token is not a name");
-    assert!(refused.contains("키 이름이 아니에요"), "{refused}");
+    assert_eq!(
+        refused,
+        (crate::words::words().settings.not_a_key_name)("xapp-1-A0-123-abc")
+    );
 }
 
 #[test]
@@ -485,10 +492,9 @@ fn the_telegram_form_needs_a_numeric_owner_and_a_variable_name() {
     assert!(form.settings().is_err());
     form.owner = Some(String::from("123456789"));
     form.token_env = Some(String::from("123:secret"));
-    assert!(
-        form.settings()
-            .expect_err("a token")
-            .contains("키 이름이 아니에요")
+    assert_eq!(
+        form.settings().expect_err("a token"),
+        (crate::words::words().settings.not_a_key_name)("123:secret")
     );
     form.token_env = None;
 
@@ -539,10 +545,9 @@ fn the_discord_form_needs_a_snowflake_owner_and_a_variable_name() {
     assert!(form.settings().is_err());
     form.owner = Some(String::from("123456789012345678"));
     form.token_env = Some(String::from("MTIz.abc.def"));
-    assert!(
-        form.settings()
-            .expect_err("a token")
-            .contains("키 이름이 아니에요")
+    assert_eq!(
+        form.settings().expect_err("a token"),
+        (crate::words::words().settings.not_a_key_name)("MTIz.abc.def")
     );
     form.token_env = None;
 

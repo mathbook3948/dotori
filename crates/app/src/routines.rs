@@ -35,6 +35,7 @@ use tokio::sync::Notify;
 use tokio::time;
 
 use crate::versioned;
+use crate::words::words;
 
 /// The channel routines speak on.
 pub(crate) const ROUTINE: &str = "routine";
@@ -45,14 +46,14 @@ const MAX_NAME: usize = 60;
 const MAX_TASK: usize = 1000;
 const LOOK_EVERY: Duration = Duration::from_secs(20);
 const LATE_MS: i64 = 30 * 60 * 1000;
-const DAYS: [(&str, &str, Weekday); 7] = [
-    ("mon", "월", Weekday::Monday),
-    ("tue", "화", Weekday::Tuesday),
-    ("wed", "수", Weekday::Wednesday),
-    ("thu", "목", Weekday::Thursday),
-    ("fri", "금", Weekday::Friday),
-    ("sat", "토", Weekday::Saturday),
-    ("sun", "일", Weekday::Sunday),
+const DAYS: [(&str, Weekday); 7] = [
+    ("mon", Weekday::Monday),
+    ("tue", Weekday::Tuesday),
+    ("wed", Weekday::Wednesday),
+    ("thu", Weekday::Thursday),
+    ("fri", Weekday::Friday),
+    ("sat", Weekday::Saturday),
+    ("sun", Weekday::Sunday),
 ];
 const WEEKDAYS: u8 = 0b001_1111;
 const WEEKEND: u8 = 0b110_0000;
@@ -137,20 +138,21 @@ impl Routine {
 
     /// Which days it happens, in the owner's words.
     pub(crate) fn when(&self) -> String {
+        let strings = &words().routines;
         if let Some(date) = &self.date {
             return match date.parse::<Date>() {
-                Ok(day) => format!("{}년 {}월 {}일 한 번", day.year(), day.month(), day.day()),
-                Err(_) => format!("{date} 한 번"),
+                Ok(day) => (strings.once)(day),
+                Err(_) => (strings.once_raw)(date),
             };
         }
         match self.days {
-            0 | 0b111_1111 => String::from("매일"),
-            WEEKDAYS => String::from("평일"),
-            WEEKEND => String::from("주말"),
+            0 | 0b111_1111 => String::from(strings.every_day),
+            WEEKDAYS => String::from(strings.weekdays),
+            WEEKEND => String::from(strings.weekend),
             days => DAYS
                 .iter()
-                .filter(|(_, _, day)| days & bit(*day) != 0)
-                .map(|(_, name, _)| *name)
+                .filter(|(_, day)| days & bit(*day) != 0)
+                .map(|(_, day)| (strings.weekday_short)(*day))
                 .collect::<Vec<_>>()
                 .join(", "),
         }
@@ -165,8 +167,8 @@ impl Routine {
         }
         let days: Vec<&str> = DAYS
             .iter()
-            .filter(|(_, _, day)| self.days & bit(*day) != 0)
-            .map(|(english, _, _)| *english)
+            .filter(|(_, day)| self.days & bit(*day) != 0)
+            .map(|(english, _)| *english)
             .collect();
         format!("on {} at {}", days.join(", "), self.time)
     }
@@ -296,9 +298,9 @@ impl Routines {
             .flatten()
         {
             let name = day.as_str().unwrap_or_default().to_lowercase();
-            let (_, _, weekday) = DAYS
+            let (_, weekday) = DAYS
                 .iter()
-                .find(|(english, _, _)| name.starts_with(english))
+                .find(|(english, _)| name.starts_with(english))
                 .ok_or(format!(
                     "`{name}` is not a day; use mon, tue, wed, thu, fri, sat or sun"
                 ))?;
@@ -589,7 +591,7 @@ fn incoming(routine: &Routine, slot: i64) -> Option<Incoming> {
         id: ExternalMessageId::new(format!("routine-{}-{slot}", routine.id)),
         place: Place::new(one_line(&routine.name)),
         sender_id: ExternalUserId::new(ROUTINE),
-        sender_name: String::from("예약"),
+        sender_name: String::from(words().routines.sender),
         content,
         audience: Audience::Owner,
     })

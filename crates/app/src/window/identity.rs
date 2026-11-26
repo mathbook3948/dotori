@@ -24,6 +24,7 @@ pub(crate) enum Particle {
     With,
     To,
     Of,
+    Is,
 }
 
 static CHOSEN: RwLock<Option<Identity>> = RwLock::new(None);
@@ -72,10 +73,13 @@ pub(crate) fn icon() -> Option<PathBuf> {
         .and_then(|chosen| chosen.icon.clone())
 }
 
-/// The assistant's name followed by `particle`, such as "dotori가" or "별이".
+/// The assistant's name followed by `particle`, such as "dotori가", "별이" or "dotori예요".
 pub(crate) fn called(particle: Particle) -> String {
-    let name = name();
-    let closed = ends_closed(&name);
+    followed(&name(), particle)
+}
+
+fn followed(name: &str, particle: Particle) -> String {
+    let closed = ends_closed(name);
     let after = match (particle, closed) {
         (Particle::Subject, true) => "이",
         (Particle::Subject, false) => "가",
@@ -83,6 +87,8 @@ pub(crate) fn called(particle: Particle) -> String {
         (Particle::With, false) => "와",
         (Particle::To, _) => "에게",
         (Particle::Of, _) => "의",
+        (Particle::Is, true) => "이에요",
+        (Particle::Is, false) => "예요",
     };
     format!("{name}{after}")
 }

@@ -48,20 +48,15 @@ cargo install --locked --git https://github.com/mathbook3948/dotori dotori
 
 dotori를 시작하려면:
 
-1. Anthropic API 키를 환경 변수에 넣습니다.
-
-	```bash
-	export ANTHROPIC_API_KEY=sk-ant-...
-	```
-
-2. dotori를 실행합니다. 트레이에 아이콘이 생깁니다.
+1. dotori를 실행합니다. 트레이에 아이콘이 생깁니다.
 
 	```bash
 	dotori
 	```
 
+2. 처음 실행하면 시작하기 창이 열립니다. Anthropic API 키를 붙여 넣고 단계를 따라가면 키를 저장하는 대로 dotori가 시작합니다. 키를 환경 변수 `ANTHROPIC_API_KEY`에 넣어도 됩니다.
 3. 트레이 메뉴의 **대화창 열기**를 누르거나 `dotori window`를 실행합니다.
-4. 모델을 바꾸거나 Slack, Telegram, Discord를 연결하려면 트레이 메뉴의 **설정**을 누르거나 `dotori settings`를 실행합니다.
+4. 모델이나 언어를 바꾸거나 Slack, Telegram, Discord를 연결하려면 트레이 메뉴의 **설정**을 누르거나 `dotori settings`를 실행합니다. 창은 한국어와 영어로 말하고, 언어를 고르기 전에는 시스템 언어를 따릅니다.
 
 dotori는 설정과 기록을 폴더 하나에 둡니다. 다른 폴더를 쓰려면 `DOTORI_HOME`을 설정합니다.
 
@@ -80,7 +75,7 @@ mise install
 mise run check
 ```
 
-소스에서 실행하려면 `cargo run -p dotori`를 씁니다. 창 하나만 열려면 뒤에 `window`나 `settings`를 붙입니다. 디버그 빌드는 위 폴더 옆의 `dotori-dev`에 파일을 두므로, 평소 쓰는 dotori의 파일을 건드리지 않습니다.
+소스에서 실행하려면 `cargo run -p dotori`를 씁니다. 창 하나만 열려면 뒤에 `window`, `settings`, `onboarding` 중 하나를 붙입니다. 디버그 빌드는 위 폴더 옆의 `dotori-dev`에 파일을 두므로, 평소 쓰는 dotori의 파일을 건드리지 않습니다.
 
 설계 결정은 [`docs/`](docs/README.md)에 있습니다. 기여하려면 [CONTRIBUTING](.github/CONTRIBUTING.md)을 읽어 주세요. 보안 문제는 [보안 정책](.github/SECURITY.md)에 따라 알려 주세요.
 
