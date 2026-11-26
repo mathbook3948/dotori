@@ -507,7 +507,7 @@ impl RoomCards {
             None => {
                 let room = self.rooms.lock().expect("unpoisoned").get(channel).cloned();
                 if let Some(room) = room {
-                    edit(room, press.posted, None, String::from(asked::LAPSED)).await;
+                    edit(room, press.posted, None, String::from(asked::lapsed())).await;
                 }
             }
         }
@@ -554,7 +554,7 @@ fn said(owner: &str, ok: Option<bool>) -> String {
     match ok {
         Some(true) => format!("{owner} 님이 허락했어요"),
         Some(false) => format!("{owner} 님이 거절했어요"),
-        None => String::from(asked::LAPSED),
+        None => String::from(asked::lapsed()),
     }
 }
 

@@ -11,7 +11,7 @@ fn what_came_of_a_decided_call_reads_in_the_owner_s_words() {
     assert_eq!(
         decision_shown(ran),
         (
-            Some((SharedString::new_static("실행했어요"), Tone::Ok)),
+            Some((SharedString::new_static(words().chat.ran), Tone::Ok)),
             String::from("sent to team@example.com")
         )
     );
@@ -37,26 +37,29 @@ fn a_shell_result_splits_into_how_it_ended_and_what_it_printed() {
     let shown = shell_shown(true, &ran).expect("a shell result");
 
     assert_eq!(shown.status.1, Tone::Warn);
-    assert!(shown.status.0.contains("코드 2"));
-    assert_eq!(shown.streams, [("오류 출력", String::from(tricky))]);
+    assert_eq!(shown.status.0, (words().chat.command_exited)(2));
+    assert_eq!(shown.streams, [(words().chat.stderr, String::from(tricky))]);
 
     let signalled = format!(
         "exit code: none (stopped by a signal)\n{}",
         outputs("x", "")
     );
     let shown = shell_shown(true, &signalled).expect("read");
-    assert!(shown.status.0.contains("신호"));
-    assert_eq!(shown.streams, [("출력", String::from("x"))]);
+    assert_eq!(shown.status.0, words().chat.command_signalled);
+    assert_eq!(shown.streams, [(words().chat.stdout, String::from("x"))]);
 
     let late = format!(
         "the command did not finish in 110 seconds and was stopped. Its output so far:\n{}",
         outputs("(only the last part)\nbuilding", "")
     );
     let shown = shell_shown(false, &late).expect("read");
-    assert!(shown.status.0.contains("110초"));
+    assert_eq!(shown.status.0, (words().chat.command_too_slow)("110"));
     assert_eq!(
         shown.streams,
-        [("출력", String::from("(끝부분만 보여요)\nbuilding"))]
+        [(
+            words().chat.stdout,
+            format!("{}\nbuilding", words().chat.only_the_end)
+        )]
     );
 
     assert!(shell_shown(true, "sent to team@example.com").is_none());
@@ -271,8 +274,8 @@ fn the_header_says_nothing_while_things_work(cx: &mut TestAppContext) {
     let (view, cx, wired) = open(cx);
     wired.updates.send(Update::Connected).expect("sent");
     cx.run_until_parked();
-    let words = |view: &ChatView| view.notice().map(|(words, _)| words);
-    view.read_with(cx, |view, _| assert_eq!(words(view), None));
+    let said = |view: &ChatView| view.notice().map(|(said, _)| said);
+    view.read_with(cx, |view, _| assert_eq!(said(view), None));
 
     let answering = |here| {
         Update::Event(ToWindow::Answering {
@@ -283,13 +286,16 @@ fn the_header_says_nothing_while_things_work(cx: &mut TestAppContext) {
     wired.updates.send(answering(true)).expect("sent");
     cx.run_until_parked();
     view.read_with(cx, |view, _| {
-        assert_eq!(words(view), None, "this PC answers")
+        assert_eq!(said(view), None, "this PC answers")
     });
 
     wired.updates.send(answering(false)).expect("sent");
     cx.run_until_parked();
     view.read_with(cx, |view, _| {
-        assert_eq!(words(view).as_deref(), Some("지금은 회사 PC에서 답해요"))
+        assert_eq!(
+            said(view),
+            Some((words().chat.answering_elsewhere)("회사 PC"))
+        )
     });
 
     wired
@@ -298,9 +304,9 @@ fn the_header_says_nothing_while_things_work(cx: &mut TestAppContext) {
         .expect("sent");
     cx.run_until_parked();
     view.read_with(cx, |view, _| {
-        let (words, detail) = view.notice().expect("a notice");
-        assert!(words.contains("꺼져 있어요"));
-        assert_eq!(detail.as_deref(), Some("dotori is not running"));
+        let (said, detail) = view.notice().expect("a notice");
+        assert_eq!(said, words().chat.not_running);
+        assert_eq!(detail, None, "the reason only repeats the notice");
     });
 }
 

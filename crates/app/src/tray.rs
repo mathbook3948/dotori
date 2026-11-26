@@ -29,6 +29,8 @@ use tray_icon::menu::MenuItem;
 
 use crate::daemon;
 use crate::home::Home;
+use crate::language;
+use crate::words::words;
 
 const POLL: Duration = Duration::from_millis(100);
 const ICON_SIZE: u32 = 32;
@@ -48,9 +50,13 @@ pub(crate) async fn run(home: Home) -> Result<(), String> {
     let (quit, quitting) = oneshot::channel::<()>();
     let ready = Arc::new(AtomicBool::new(false));
     let daemon_ready = Arc::clone(&ready);
+    let needs_key = Arc::new(AtomicBool::new(false));
+    let daemon_needs_key = Arc::clone(&needs_key);
     let door = home.door();
+    language::choose(language::saved(&home.settings()));
     let daemon = tokio::spawn(daemon::serve(
         home,
+        move || daemon_needs_key.store(true, Ordering::SeqCst),
         move || daemon_ready.store(true, Ordering::SeqCst),
         async {
             let _ = quitting.await;
@@ -67,7 +73,7 @@ pub(crate) async fn run(home: Home) -> Result<(), String> {
             async {}
         })
         .detach();
-        cx.spawn(async move |cx| watch(daemon, ready, quit, cx).await)
+        cx.spawn(async move |cx| watch(daemon, ready, needs_key, quit, cx).await)
             .detach();
     });
     Ok(())
@@ -82,6 +88,7 @@ struct Items {
 async fn watch(
     daemon: JoinHandle<Result<(), String>>,
     ready: Arc<AtomicBool>,
+    needs_key: Arc<AtomicBool>,
     quit: Rc<RefCell<Option<oneshot::Sender<()>>>>,
     cx: &mut AsyncApp,
 ) {
@@ -103,8 +110,12 @@ async fn watch(
             let _ = cx.update(|cx| cx.quit());
             return;
         }
-        if !tried && ready.load(Ordering::SeqCst) {
+        let key_needed = needs_key.load(Ordering::SeqCst);
+        if !tried && (ready.load(Ordering::SeqCst) || key_needed) {
             tried = true;
+            if key_needed {
+                open("onboarding");
+            }
             match tray() {
                 Ok(made) => shown = Some(made),
                 Err(error) => eprintln!("dotori: no tray icon: {error}"),
@@ -129,9 +140,10 @@ async fn watch(
 }
 
 fn tray() -> Result<(TrayIcon, Items), String> {
-    let chat = MenuItem::new("대화창 열기", true, None);
-    let settings = MenuItem::new("설정", true, None);
-    let quit = MenuItem::new("끝내기", true, None);
+    let words = &words().common;
+    let chat = MenuItem::new(words.open_chat, true, None);
+    let settings = MenuItem::new(words.settings, true, None);
+    let quit = MenuItem::new(words.quit, true, None);
     let menu = Menu::new();
     menu.append_items(&[&chat, &settings, &quit])
         .map_err(|error| error.to_string())?;

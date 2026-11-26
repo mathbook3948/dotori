@@ -25,6 +25,7 @@ use crate::window::parts::MONO;
 use crate::window::parts::SHIELD_ICON;
 use crate::window::parts::SHIELD_ON_ICON;
 use crate::window::parts::prose;
+use crate::window::surface::SurfaceExt;
 use crate::window::theme::Theme;
 
 const REFRESH: Duration = Duration::from_secs(5);
@@ -443,10 +444,9 @@ fn button(
         .cursor_pointer()
         .when(next, |button| {
             button
-                .bg(theme.primary)
-                .text_color(theme.on_primary)
+                .main_button(theme)
                 .font_weight(FontWeight::SEMIBOLD)
-                .hover(|button| button.bg(theme.primary_hover))
+                .hover(|button| button.opacity(0.9))
         })
         .when(!next, |button| {
             button

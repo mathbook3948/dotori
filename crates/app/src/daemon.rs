@@ -87,6 +87,7 @@ use crate::routines;
 use crate::routines::RoutineChannel;
 use crate::routines::Routines;
 use crate::settings::AssistantSettings;
+use crate::settings::ModelError;
 use crate::settings::RunnerChoice;
 use crate::settings::Settings;
 use crate::settings_copies::SettingsCopies;
@@ -107,24 +108,32 @@ const SETTLE: Duration = Duration::from_secs(1);
 const RELEASE_SENT: Duration = Duration::from_millis(300);
 const FLUSH_EVERY: Duration = Duration::from_secs(2);
 const LOOK_FOR_PCS: Duration = Duration::from_secs(2);
+const WAIT_FOR_KEY: Duration = Duration::from_secs(2);
 
 /// Runs the agent until Ctrl-C or a terminate signal, with the app channel open for windows.
 pub(crate) async fn run(home: Home) -> Result<(), String> {
-    serve(home, || {}, future::pending()).await
+    serve(home, || {}, || {}, future::pending()).await
 }
 
 /// Runs the agent like `run`. It calls `ready` once windows can connect, and also stops when
-/// `quit` completes.
+/// `quit` completes. Without a model key it calls `needs_key` once and waits for the owner to
+/// give one.
 pub(crate) async fn serve(
     home: Home,
+    needs_key: impl FnOnce(),
     ready: impl FnOnce(),
     quit: impl Future<Output = ()>,
 ) -> Result<(), String> {
     keep_to_itself();
     let _lock = DaemonLock::take(&home.lock())?;
-    let settings = Settings::load(&home.settings())?;
     let vault = Arc::new(Vault::new(&home.root));
-    let model = settings.model(vault::lookup(&vault))?;
+    let mut stop = std::pin::pin!(stop_signal());
+    let mut quit = std::pin::pin!(quit);
+    let (settings, model) =
+        match model_when_keyed(&home, &vault, needs_key, &mut stop, &mut quit).await? {
+            Keyed::Ready(settings, model) => (*settings, model),
+            Keyed::Stopped(stopped) => return stopped,
+        };
     let secrets = vault::secret_names(&settings, &vault);
     let basic = basic(&home, &secrets);
     let shared = match tools::SharedTools::start().await {
@@ -482,8 +491,6 @@ pub(crate) async fn serve(
     door.write(&home.door())?;
     eprintln!("dotori is running. Open a window with `dotori chat`.");
     ready();
-    let mut stop = std::pin::pin!(stop_signal());
-    let mut quit = std::pin::pin!(quit);
     let stopped = loop {
         tokio::select! {
             () = gained(linked.as_ref()) => {}
@@ -572,6 +579,41 @@ pub(crate) async fn serve(
         time::sleep(RELEASE_SENT).await;
     }
     stopped
+}
+
+enum Keyed {
+    Ready(Box<Settings>, Arc<dyn Model>),
+    Stopped(Result<(), String>),
+}
+
+async fn model_when_keyed(
+    home: &Home,
+    vault: &Vault,
+    needs_key: impl FnOnce(),
+    stop: &mut (impl Future<Output = Result<(), String>> + Unpin),
+    quit: &mut (impl Future<Output = ()> + Unpin),
+) -> Result<Keyed, String> {
+    let mut needs_key = Some(needs_key);
+    loop {
+        let settings = Settings::load(&home.settings())?;
+        match settings.model(vault::lookup(vault)) {
+            Ok(model) => return Ok(Keyed::Ready(Box::new(settings), model)),
+            Err(ModelError::MissingKey { name, .. }) => {
+                if let Some(needs_key) = needs_key.take() {
+                    eprintln!(
+                        "dotori: waiting for {name}; save it in the window dotori opened (`dotori onboarding`) or set it in the environment"
+                    );
+                    needs_key();
+                }
+            }
+            Err(error) => return Err(error.to_string()),
+        }
+        tokio::select! {
+            () = time::sleep(WAIT_FOR_KEY) => {}
+            stopped = &mut *stop => return Ok(Keyed::Stopped(stopped)),
+            () = &mut *quit => return Ok(Keyed::Stopped(Ok(()))),
+        }
+    }
 }
 
 async fn link(
@@ -700,7 +742,9 @@ fn sub_session_runner(
     let agent = match chosen.runner.unwrap_or_default() {
         RunnerChoice::Llm => {
             return Ok(Arc::new(LlmRunner {
-                model: settings.sub_session_model(vault::lookup(vault))?,
+                model: settings
+                    .sub_session_model(vault::lookup(vault))
+                    .map_err(|error| error.to_string())?,
                 basic: basic.clone(),
                 rest: Arc::clone(toolbox),
                 max_turns: SUB_SESSION_TURNS,

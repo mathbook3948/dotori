@@ -16,6 +16,7 @@ use dotori_core::tool::Toolbox;
 use dotori_core::tool::asked_from;
 
 use super::*;
+use crate::words::words;
 
 const WAIT: Duration = Duration::from_secs(5);
 
@@ -203,12 +204,15 @@ async fn a_call_asked_in_a_chat_room_goes_there_as_the_window_shows_it() {
 
     let (place, card) = desk.posted().await;
     assert_eq!(place, Place::new("C1/10.5"));
-    assert_eq!(card.title, "dotori가 이 일을 해도 될지 물어요");
+    assert_eq!(card.title, asked::title("dotori가"));
     assert_eq!(
         card.rows,
         [
-            (String::from("도구"), String::from("명령 실행")),
-            (String::from("명령"), String::from("ls -la")),
+            (String::from("도구"), String::from(words().chat.run_shell)),
+            (
+                String::from(asked::field_label("command")),
+                String::from("ls -la")
+            ),
         ]
     );
     assert!(!card.cut);
@@ -216,7 +220,7 @@ async fn a_call_asked_in_a_chat_room_goes_there_as_the_window_shows_it() {
         card.notes,
         [
             String::from(asked::SANDBOXED),
-            String::from("허락하면 dotori가 이 명령을 바로 실행해요"),
+            asked::hint("run_shell", "dotori가"),
         ]
     );
     assert_eq!(labels(&card), ["거절", "허락"]);
@@ -340,12 +344,12 @@ async fn a_call_that_no_longer_waits_says_it_can_no_longer_be_done() {
     desk.posted().await;
 
     desk.app.lapsed(7);
-    assert_eq!(desk.settled().await.2, asked::LAPSED);
+    assert_eq!(desk.settled().await.2, asked::lapsed());
     desk.cards.lapse_calls();
     let (posted, _, said) = desk.settled().await;
     assert_eq!(
         (posted.message.as_str(), said.as_str()),
-        ("2", asked::LAPSED)
+        ("2", asked::lapsed())
     );
 }
 
@@ -377,7 +381,7 @@ async fn a_press_on_a_card_from_before_dotori_started_says_it_can_no_longer_be_d
     let (posted, card, said) = desk.settled().await;
     assert_eq!(posted.message, "9");
     assert_eq!(card, None);
-    assert_eq!(said, asked::LAPSED);
+    assert_eq!(said, asked::lapsed());
 }
 
 struct Ran;
@@ -566,7 +570,7 @@ async fn a_log_in_card_that_waited_too_long_says_it_can_no_longer_be_done() {
         }),
     );
 
-    assert_eq!(desk.settled().await.2, asked::LAPSED);
+    assert_eq!(desk.settled().await.2, asked::lapsed());
 }
 
 fn fill_state(id: u64, ticket: u64, keep: bool) -> Value {
@@ -760,7 +764,7 @@ async fn missed_lines_settle_the_cards_by_what_became_of_each_call() {
     let mut settled = [desk.settled().await, desk.settled().await];
     settled.sort_by(|one, other| one.0.message.cmp(&other.0.message));
     assert_eq!(settled[0].2, "김민지 님이 허락했어요");
-    assert_eq!(settled[1].2, asked::LAPSED);
+    assert_eq!(settled[1].2, asked::lapsed());
     time::sleep(Duration::from_millis(50)).await;
     assert!(
         desk.seen.settles.try_recv().is_err(),

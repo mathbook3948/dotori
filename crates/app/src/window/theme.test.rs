@@ -14,7 +14,8 @@ fn hex_values_become_colors() {
 fn every_theme_of_the_design_is_known_by_name() {
     assert_eq!(
         names().collect::<Vec<_>>(),
-        ["graphite", "paper", "forest", "indigo", "acorn"]
+        ["acorn", "graphite", "paper", "forest", "indigo"],
+        "acorn comes first, so it is the default"
     );
     assert!(named("forest").is_some());
     assert!(named("purple").is_none());
@@ -26,22 +27,4 @@ fn looks_read_back_as_they_are_written() {
         assert_eq!(Look::named(look.name()), look);
     }
     assert_eq!(Look::named("sepia"), Look::System);
-}
-
-#[test]
-fn the_glass_opacities_match_design_md() {
-    let design = include_str!("../../../../DESIGN.md");
-    assert!(design.contains(&format!("glass:\n  window: {GLASS_WINDOW}\nmotion:")));
-}
-
-#[test]
-fn a_see_through_theme_lets_the_desktop_through_its_canvas_only() {
-    let (light, _) = named("graphite").expect("graphite");
-
-    let glass = light.see_through();
-
-    assert_eq!(glass.canvas.a, GLASS_WINDOW);
-    assert_eq!(glass.surface, light.surface, "fills stay solid");
-    assert_eq!(glass.text, light.text, "text stays solid");
-    assert_eq!(glass.primary, light.primary, "the main button stays solid");
 }

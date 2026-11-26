@@ -74,13 +74,16 @@ use crate::window::parts::SHIELD_ON_ICON;
 use crate::window::parts::lock;
 use crate::window::parts::logo;
 use crate::window::parts::prose;
+use crate::window::parts::typeface;
 use crate::window::rich::rich;
 use crate::window::screen::CardShown;
 use crate::window::screen::ScreenView;
+use crate::window::surface::SurfaceExt;
 use crate::window::theme::Theme;
 use crate::window::when::Mark;
 use crate::window::when::marks;
 use crate::window::when::today;
+use crate::words::words;
 
 const COPIED_FOR: Duration = Duration::from_millis(1500);
 const BOTTOM_SLACK: f32 = 8.;
@@ -411,7 +414,11 @@ impl ChatView {
                 copy.text_color(theme.muted)
                     .hover(|copy| copy.bg(theme.bubble).text_color(theme.text))
             })
-            .child(if copied { "복사했어요" } else { "복사" })
+            .child(if copied {
+                words().chat.copied
+            } else {
+                words().chat.copy
+            })
             .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
                 view.copy(n, text.clone(), cx);
             }));
@@ -488,10 +495,7 @@ impl ChatView {
                         .px_3p5()
                         .py_2()
                         .rounded_2xl()
-                        .bg(theme.bubble)
-                        .border_t_1()
-                        .border_color(theme.rim)
-                        .shadow_xs()
+                        .raised(theme)
                         .text_color(theme.text)
                         .child(prose(text)),
                 )
@@ -648,10 +652,7 @@ impl ChatView {
                             .px_3p5()
                             .py_2()
                             .rounded_xl()
-                            .bg(theme.surface)
-                            .border_t_1()
-                            .border_color(theme.rim)
-                            .shadow_xs()
+                            .card(theme)
                             .children(pill)
                             .when(!body.trim().is_empty(), |line| line.child(prose(&body)))
                             .children(streams),
@@ -691,15 +692,12 @@ impl ChatView {
                 .font_weight(FontWeight::SEMIBOLD)
                 .when(ok, |button| {
                     button
-                        .bg(theme.primary)
-                        .text_color(theme.on_primary)
-                        .hover(|button| button.bg(theme.primary_hover))
+                        .main_button(theme)
+                        .hover(|button| button.opacity(0.9))
                 })
                 .when(!ok, |button| {
                     button
-                        .bg(theme.surface)
-                        .border_t_1()
-                        .border_color(theme.rim)
+                        .card(theme)
                         .text_color(theme.text)
                         .hover(|button| button.bg(theme.bubble))
                 })
@@ -725,10 +723,10 @@ impl ChatView {
             )
         };
         let footer = match decided {
-            Some(Some(true)) => pill(theme.ok, theme.ok_soft, "허락했어요"),
-            Some(Some(false)) => pill(theme.muted, theme.canvas, "거절했어요"),
-            Some(None) => pill(theme.warn, theme.warn_soft, asked::LAPSED),
-            None if clicked => pill(theme.muted, theme.surface, "처리하는 중이에요"),
+            Some(Some(true)) => pill(theme.ok, theme.ok_soft, words().chat.allowed),
+            Some(Some(false)) => pill(theme.muted, theme.canvas, words().chat.declined),
+            Some(None) => pill(theme.warn, theme.warn_soft, asked::lapsed()),
+            None if clicked => pill(theme.muted, theme.surface, words().chat.deciding),
             None => div()
                 .flex()
                 .items_center()
@@ -744,8 +742,8 @@ impl ChatView {
                         })
                         .child(asked::hint(tool, &called(Particle::Subject))),
                 )
-                .child(button("decline", "거절", false, cx))
-                .child(button("allow", "허락", true, cx)),
+                .child(button("decline", words().chat.decline, false, cx))
+                .child(button("allow", words().chat.allow, true, cx)),
         };
         div().flex().child(
             div()
@@ -757,9 +755,7 @@ impl ChatView {
                 .py_3()
                 .rounded_xl()
                 .bg(fill)
-                .border_t_1()
-                .border_color(theme.rim)
-                .shadow_sm()
+                .lifted(theme)
                 .child(
                     div()
                         .flex()
@@ -859,7 +855,7 @@ impl ChatView {
                                         .text_color(theme.text)
                                         .cursor_pointer()
                                         .hover(|more| more.bg(theme.selection))
-                                        .child("전체 보기")
+                                        .child(words().chat.show_whole)
                                         .on_click(cx.listener(
                                             move |view, _: &ClickEvent, _, cx| {
                                                 view.whole.insert(id);
@@ -1033,15 +1029,12 @@ impl ChatView {
                 .font_weight(FontWeight::SEMIBOLD)
                 .when(primary, |button| {
                     button
-                        .bg(theme.primary)
-                        .text_color(theme.on_primary)
-                        .hover(|button| button.bg(theme.primary_hover))
+                        .main_button(theme)
+                        .hover(|button| button.opacity(0.9))
                 })
                 .when(!primary, |button| {
                     button
-                        .bg(theme.surface)
-                        .border_t_1()
-                        .border_color(theme.rim)
+                        .card(theme)
                         .text_color(theme.text)
                         .hover(|button| button.bg(theme.bubble))
                 })
@@ -1057,38 +1050,37 @@ impl ChatView {
                 .mb(px(TURN_SPACE))
                 .rounded_xl()
                 .bg(fill)
-                .border_t_1()
-                .border_color(theme.rim)
-                .shadow_sm()
+                .lifted(theme)
         };
         let title = |words: SharedString| div().font_weight(FontWeight::SEMIBOLD).child(words);
         if opened {
             return Some(
                 card(theme.surface)
-                    .child(title(SharedString::new_static(
-                        "브라우저 창에서 하는 중이에요",
-                    )))
+                    .child(title(SharedString::new_static(words().chat.in_browser)))
                     .child(
                         div()
                             .text_color(theme.muted)
-                            .child(prose(&format!(
-                                "다 하면 \"다 했어요\"를 누르거나 브라우저 창을 닫아 주세요. {} 이어서 할게요.",
-                                called(Particle::Subject)
-                            ))),
+                            .child(prose(&(words().chat.in_browser_hint)())),
                     )
                     .child(
                         div()
                             .flex()
                             .justify_end()
                             .gap_2()
-                            .child(button("browser-show", "창 다시 보기", false).bg(theme.canvas).on_click(
-                                cx.listener(|view, _: &ClickEvent, _, cx| {
-                                    view.open_browser(false, cx);
-                                }),
-                            ))
-                            .child(button("browser-done", "다 했어요", true).on_click(
-                                cx.listener(|view, _: &ClickEvent, _, cx| view.close_browser(cx)),
-                            )),
+                            .child(
+                                button("browser-show", words().chat.show_browser, false)
+                                    .bg(theme.canvas)
+                                    .on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
+                                        view.open_browser(false, cx);
+                                    })),
+                            )
+                            .child(
+                                button("browser-done", words().chat.browser_done, true).on_click(
+                                    cx.listener(|view, _: &ClickEvent, _, cx| {
+                                        view.close_browser(cx)
+                                    }),
+                                ),
+                            ),
                     )
                     .into_any_element(),
             );
@@ -1125,16 +1117,16 @@ impl ChatView {
             let cancel = screen.clone();
             return Some(
                 card(theme.warn_soft)
-                    .child(title(SharedString::from(format!(
-                        "{site}에 로그인해 주세요"
-                    ))))
-                    .child(field("login-name", "아이디", name).on_action(
-                        move |_: &Submit, window, cx| {
-                            window.focus(&next.focus_handle(cx));
-                        },
-                    ))
+                    .child(title(SharedString::from((words().chat.log_in_to)(&site))))
                     .child(
-                        field("login-secret", "비밀번호", secret)
+                        field("login-name", words().chat.login_name, name).on_action(
+                            move |_: &Submit, window, cx| {
+                                window.focus(&next.focus_handle(cx));
+                            },
+                        ),
+                    )
+                    .child(
+                        field("login-secret", words().chat.login_secret, secret)
                             .on_action(move |_: &Submit, window, cx| log_in(&screen, window, cx)),
                     )
                     .when(again, |card| {
@@ -1146,14 +1138,14 @@ impl ChatView {
                                 .bg(theme.danger_soft)
                                 .text_color(theme.danger)
                                 .text_xs()
-                                .child("아이디나 비밀번호가 맞지 않았어요. 다시 넣어 주세요."),
+                                .child(words().chat.login_wrong),
                         )
                     })
                     .child(
                         div()
                             .text_xs()
                             .text_color(theme.muted)
-                            .child("이 페이지에만 넘기고 대화 기록에는 남기지 않아요."),
+                            .child(words().chat.login_kept),
                     )
                     .child(
                         div()
@@ -1169,19 +1161,19 @@ impl ChatView {
                                     .text_color(theme.text)
                                     .cursor_pointer()
                                     .hover(|link| link.underline())
-                                    .child("브라우저 창에서 할게요")
+                                    .child(words().chat.login_in_browser)
                                     .on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
                                         view.open_browser(false, cx);
                                     })),
                             )
-                            .child(button("login-cancel", "취소", false).on_click(
+                            .child(button("login-cancel", words().chat.cancel, false).on_click(
                                 move |_, window, cx| {
                                     cancel.update(cx, |screen, cx| {
                                         screen.answer_login(None, window, cx);
                                     });
                                 },
                             ))
-                            .child(button("login-go", "로그인", true).on_click(
+                            .child(button("login-go", words().chat.log_in, true).on_click(
                                 move |_, window, cx| {
                                     go.update(cx, |screen, cx| screen.log_in(window, cx));
                                 },
@@ -1210,7 +1202,7 @@ impl ChatView {
         Some(
             card(theme.warn_soft)
                 .child(title(SharedString::new_static(
-                    "브라우저에서 마저 해 주세요",
+                    words().chat.finish_in_browser,
                 )))
                 .child(prose(&asked))
                 .child(preview)
@@ -1224,19 +1216,21 @@ impl ChatView {
                                 .flex_1()
                                 .text_xs()
                                 .text_color(theme.muted)
-                                .child("화면을 눌러도 크게 열려요"),
+                                .child(words().chat.preview_hint),
                         )
+                        .child(button("browser-later", words().chat.later, false).on_click(
+                            cx.listener(move |view, _: &ClickEvent, _, cx| {
+                                view.dismissed = Some(later.clone());
+                                view.screen_changed(cx);
+                            }),
+                        ))
                         .child(
-                            button("browser-later", "나중에", false).on_click(cx.listener(
-                                move |view, _: &ClickEvent, _, cx| {
-                                    view.dismissed = Some(later.clone());
-                                    view.screen_changed(cx);
-                                },
-                            )),
-                        )
-                        .child(button("browser-open", "브라우저 열기", true).on_click(
-                            cx.listener(|view, _: &ClickEvent, _, cx| view.open_browser(true, cx)),
-                        )),
+                            button("browser-open", words().chat.open_browser, true).on_click(
+                                cx.listener(|view, _: &ClickEvent, _, cx| {
+                                    view.open_browser(true, cx)
+                                }),
+                            ),
+                        ),
                 )
                 .into_any_element(),
         )
@@ -1403,9 +1397,8 @@ impl ChatView {
                                     .text_center()
                                     .cursor_pointer()
                                     .font_weight(FontWeight::SEMIBOLD)
-                                    .bg(theme.primary)
-                                    .text_color(theme.on_primary)
-                                    .hover(|button| button.bg(theme.primary_hover))
+                                    .main_button(theme)
+                                    .hover(|button| button.opacity(0.9))
                                     .child(SharedString::from(submit.1))
                                     .on_click(move |_, _, cx| {
                                         press.update(cx, |screen, cx| {
@@ -1499,9 +1492,8 @@ impl ChatView {
                         .font_weight(FontWeight::SEMIBOLD)
                         .when(primary, |button| {
                             button
-                                .bg(theme.primary)
-                                .text_color(theme.on_primary)
-                                .hover(|button| button.bg(theme.primary_hover))
+                                .main_button(theme)
+                                .hover(|button| button.opacity(0.9))
                         })
                         .when(!primary, |button| {
                             button
@@ -1700,19 +1692,20 @@ impl ChatView {
         match &self.link {
             LinkState::Connecting => None,
             LinkState::Down(reason) => {
-                let words = if reason.contains("not running") {
-                    "dotori가 꺼져 있어요. dotori를 켜면 바로 다시 이어져요"
+                let chat = &words().chat;
+                let (said, detail) = if reason.contains("not running") {
+                    (chat.not_running, None)
                 } else if reason.contains("closed the connection") {
-                    "dotori가 연결을 끊었어요. 다시 연결하는 중이에요"
+                    (chat.closed, None)
                 } else if reason.contains("not reachable") {
-                    "dotori에 닿지 않아요. 다시 연결하는 중이에요"
+                    (chat.unreachable, Some(reason.clone()))
                 } else {
-                    "dotori에 연결하지 못했어요. 다시 해 보는 중이에요"
+                    (chat.not_connected, Some(reason.clone()))
                 };
-                Some((String::from(words), Some(reason.clone())))
+                Some((String::from(said), detail))
             }
             LinkState::Connected => match &self.answering {
-                Some((pc, false)) => Some((format!("지금은 {pc}에서 답해요"), None)),
+                Some((pc, false)) => Some(((words().chat.answering_elsewhere)(pc), None)),
                 _ => None,
             },
         }
@@ -1737,10 +1730,7 @@ impl ChatView {
                     .pr_1p5()
                     .py_1p5()
                     .rounded_full()
-                    .bg(theme.surface)
-                    .border_t_1()
-                    .border_color(theme.rim)
-                    .shadow_md()
+                    .card(theme)
                     .cursor_text()
                     .on_mouse_down(MouseButton::Left, move |_, window, _| {
                         window.focus(&focus);
@@ -1764,12 +1754,13 @@ impl ChatView {
                             .justify_center()
                             .size(px(34.))
                             .rounded_full()
-                            .bg(if ready { theme.primary } else { theme.bubble })
-                            .text_color(if ready { theme.on_primary } else { theme.muted })
+                            .bg(theme.bubble)
+                            .text_color(theme.muted)
                             .font_weight(FontWeight::BOLD)
                             .when(ready, |send| {
-                                send.cursor_pointer()
-                                    .hover(|send| send.bg(theme.primary_hover))
+                                send.main_button(theme)
+                                    .cursor_pointer()
+                                    .hover(|send| send.opacity(0.9))
                             })
                             .child("↑")
                             .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.send(cx))),
@@ -1782,7 +1773,7 @@ impl ChatView {
                     .text_size(px(11.))
                     .line_height(px(14.))
                     .text_color(theme.muted)
-                    .child("Enter로 보내고, Shift+Enter로 줄을 바꿔요"),
+                    .child(words().chat.keys_hint),
             )
     }
 }
@@ -1795,7 +1786,7 @@ impl Focusable for ChatView {
 
 impl Render for ChatView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = Theme::of(window).glass();
+        let theme = Theme::of(window);
         self.input
             .update(cx, |input, cx| input.set_placeholder(say_to(), cx));
         self.entered
@@ -1811,7 +1802,7 @@ impl Render for ChatView {
                 .min_w_0()
                 .text_xs()
                 .text_color(theme.text)
-                .child(words)
+                .child(div().truncate().child(words))
                 .children(detail.map(|detail| {
                     div()
                         .text_size(px(11.))
@@ -1835,6 +1826,7 @@ impl Render for ChatView {
             .flex()
             .flex_col()
             .size_full()
+            .font(typeface())
             .bg(theme.canvas)
             .text_color(theme.text)
             .text_sm()
@@ -1885,9 +1877,7 @@ fn tick(theme: &Theme, on: bool) -> Div {
         .text_size(px(11.))
         .font_weight(FontWeight::BOLD)
         .when(on, |tick| {
-            tick.bg(theme.primary)
-                .text_color(theme.on_primary)
-                .child("✓")
+            tick.bg(theme.primary).text_color(gpui::white()).child("✓")
         })
         .when(!on, |tick| tick.bg(theme.bubble))
 }
@@ -1973,7 +1963,7 @@ struct Rows {
 
 impl Render for Rows {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = Theme::of(window).glass();
+        let theme = Theme::of(window);
         self.chat
             .update(cx, |chat, cx| chat.pane(&theme, window, cx))
             .unwrap_or_else(|_| div().into_any_element())
@@ -1984,7 +1974,7 @@ struct WorkingView;
 
 impl Render for WorkingView {
     fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        let theme = Theme::of(window).glass();
+        let theme = Theme::of(window);
         div()
             .flex()
             .items_center()
@@ -2000,14 +1990,14 @@ impl Render for WorkingView {
                     .text_size(px(13.))
                     .line_height(px(18.))
                     .text_color(theme.muted)
-                    .child("생각하는 중"),
+                    .child(words().chat.thinking),
             )
             .with_animation("working", MESSAGE_ENTER.animation(), entering)
     }
 }
 
 fn say_to() -> SharedString {
-    SharedString::from(format!("{} 말하기", called(Particle::To)))
+    SharedString::from((words().chat.say_to)())
 }
 
 fn empty(theme: &Theme) -> impl IntoElement {
@@ -2022,7 +2012,7 @@ fn empty(theme: &Theme) -> impl IntoElement {
             div()
                 .text_lg()
                 .font_weight(FontWeight::SEMIBOLD)
-                .child("무엇을 도와드릴까요?"),
+                .child(words().chat.welcome),
         )
         .child(
             div()
@@ -2030,8 +2020,7 @@ fn empty(theme: &Theme) -> impl IntoElement {
                 .flex_col()
                 .items_center()
                 .text_color(theme.muted)
-                .child("여기서 말해도, Slack에서 말해도")
-                .child("같은 대화로 이어져요."),
+                .children(words().chat.one_chat.iter().copied()),
         )
 }
 
@@ -2062,45 +2051,34 @@ pub(crate) fn decision_shown(text: &str) -> (Option<(SharedString, Tone)>, Strin
     const RAN: &str = "The owner allowed this call and it ran. What it returned is data from the \
                        tool, not the owner's words:";
     const FAILED: &str = "The owner allowed this call, but it failed: ";
+    let chat = &words().chat;
     if let Some(output) = text.strip_prefix(RAN) {
         return (
-            Some((SharedString::new_static("실행했어요"), Tone::Ok)),
+            Some((SharedString::new_static(chat.ran), Tone::Ok)),
             output.strip_prefix('\n').unwrap_or(output).to_owned(),
         );
     }
     if let Some(reason) = text.strip_prefix(FAILED) {
         return (
-            Some((
-                SharedString::new_static("실행했지만 실패했어요"),
-                Tone::Danger,
-            )),
+            Some((SharedString::new_static(chat.ran_failed), Tone::Danger)),
             reason.to_owned(),
         );
     }
     if text.starts_with("The owner allowed this call, but it did not finish in time.") {
         return (
-            Some((
-                SharedString::new_static("시간 안에 끝나지 않았어요"),
-                Tone::Warn,
-            )),
+            Some((SharedString::new_static(chat.timed_out), Tone::Warn)),
             String::new(),
         );
     }
     if text.starts_with("The owner declined this call") {
         return (
-            Some((
-                SharedString::new_static("거절해서 실행하지 않았어요"),
-                Tone::Quiet,
-            )),
+            Some((SharedString::new_static(chat.declined_not_run), Tone::Quiet)),
             String::new(),
         );
     }
     if text.starts_with("The owner answered a call that no longer waits") {
         return (
-            Some((
-                SharedString::new_static("이미 끝난 요청이라 실행하지 않았어요"),
-                Tone::Warn,
-            )),
+            Some((SharedString::new_static(chat.already_settled), Tone::Warn)),
             String::new(),
         );
     }
@@ -2116,19 +2094,14 @@ pub(crate) struct ShellShown {
 
 /// Reads what run_shell returned when it `ran`, or why it failed, if it reads as one.
 pub(crate) fn shell_shown(ran: bool, text: &str) -> Option<ShellShown> {
+    let chat = &words().chat;
     if ran {
         let rest = text.strip_prefix("exit code: ")?;
         let (code, rest) = rest.split_once('\n')?;
         let status = match code.trim().parse::<i64>() {
-            Ok(0) => (SharedString::new_static("명령이 끝났어요"), Tone::Ok),
-            Ok(code) => (
-                SharedString::from(format!("명령이 코드 {code}로 끝났어요")),
-                Tone::Warn,
-            ),
-            Err(_) => (
-                SharedString::new_static("명령이 신호를 받고 멈췄어요"),
-                Tone::Warn,
-            ),
+            Ok(0) => (SharedString::new_static(chat.command_done), Tone::Ok),
+            Ok(code) => (SharedString::from((chat.command_exited)(code)), Tone::Warn),
+            Err(_) => (SharedString::new_static(chat.command_signalled), Tone::Warn),
         };
         return Some(ShellShown {
             status,
@@ -2140,7 +2113,7 @@ pub(crate) fn shell_shown(ran: bool, text: &str) -> Option<ShellShown> {
     let (_, outputs) = rest.split_once("Its output so far:\n")?;
     Some(ShellShown {
         status: (
-            SharedString::from(format!("{seconds}초 안에 끝나지 않아 멈췄어요")),
+            SharedString::from((chat.command_too_slow)(seconds)),
             Tone::Warn,
         ),
         streams: shell_streams(outputs)?,
@@ -2148,19 +2121,23 @@ pub(crate) fn shell_shown(ran: bool, text: &str) -> Option<ShellShown> {
 }
 
 fn shell_streams(text: &str) -> Option<Vec<(&'static str, String)>> {
+    let chat = &words().chat;
     let (stdout, rest) = counted(text, "stdout (")?;
     let rest = rest.strip_prefix('\n')?;
     let (stderr, _) = counted(rest, "stderr (")?;
     Some(
-        [("출력", stdout), ("오류 출력", stderr)]
+        [(chat.stdout, stdout), (chat.stderr, stderr)]
             .into_iter()
             .filter(|(_, output)| !output.trim().is_empty())
             .map(|(label, output)| {
                 let output = output
-                    .replace("(only the last part)\n", "(끝부분만 보여요)\n")
+                    .replace(
+                        "(only the last part)\n",
+                        &format!("{}\n", chat.only_the_end),
+                    )
                     .replace(
                         "\n(something the command left running still writes here)",
-                        "\n(명령이 남겨 둔 프로세스가 아직 쓰고 있어요)",
+                        &format!("\n{}", chat.left_running),
                     );
                 (label, output.trim_end().to_owned())
             })
@@ -2184,8 +2161,8 @@ fn channel_name(channel: &str) -> String {
         "slack" => String::from("Slack"),
         "telegram" => String::from("Telegram"),
         "discord" => String::from("Discord"),
-        "routine" => String::from("루틴"),
-        "decision" => String::from("허락한 일"),
+        "routine" => String::from(words().chat.routine_channel),
+        "decision" => String::from(words().chat.decision_channel),
         other => other.to_owned(),
     }
 }
@@ -2196,12 +2173,12 @@ fn room_name(place: &str) -> String {
         None => (place, false),
     };
     let named = match room {
-        "@owner" => String::from("주인에게만"),
+        "@owner" => String::from(words().chat.owner_only),
         direct if direct.starts_with('D') => String::from("DM"),
         other => other.to_owned(),
     };
     if thread {
-        format!("{named} 스레드")
+        (words().chat.thread)(&named)
     } else {
         named
     }

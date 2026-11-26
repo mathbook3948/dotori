@@ -93,13 +93,21 @@ fn a_one_time_routine_is_due_only_on_its_day() {
 
 #[test]
 fn the_schedule_reads_the_way_the_owner_would_say_it() {
-    assert_eq!(routine("08:00", 0, None).when(), "매일");
-    assert_eq!(routine("08:00", WEEKDAYS, None).when(), "평일");
-    assert_eq!(routine("08:00", WEEKEND, None).when(), "주말");
-    assert_eq!(routine("08:00", 0b000_0101, None).when(), "월, 수");
+    let strings = &words().routines;
+    assert_eq!(routine("08:00", 0, None).when(), strings.every_day);
+    assert_eq!(routine("08:00", WEEKDAYS, None).when(), strings.weekdays);
+    assert_eq!(routine("08:00", WEEKEND, None).when(), strings.weekend);
+    assert_eq!(
+        routine("08:00", 0b000_0101, None).when(),
+        format!(
+            "{}, {}",
+            (strings.weekday_short)(Weekday::Monday),
+            (strings.weekday_short)(Weekday::Wednesday)
+        )
+    );
     assert_eq!(
         routine("14:00", 0, Some("2026-12-24")).when(),
-        "2026년 12월 24일 한 번"
+        (strings.once)(date(2026, 12, 24))
     );
 }
 

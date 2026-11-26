@@ -5,8 +5,9 @@ use dotori_connectors::channel::app::ToWindow;
 use jiff::Timestamp;
 use jiff::ZonedDateTime;
 use jiff::civil::Date;
-use jiff::civil::Weekday;
 use jiff::tz::TimeZone;
+
+use crate::words::words;
 
 /// What to show around one line of the conversation.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -67,40 +68,21 @@ fn local(at: i64, zone: &TimeZone) -> Option<ZonedDateTime> {
 }
 
 fn clock(at: &ZonedDateTime) -> String {
-    let hour = at.hour();
-    let half = if hour < 12 { "오전" } else { "오후" };
-    let shown = match hour % 12 {
-        0 => 12,
-        other => other,
-    };
-    format!("{half} {shown}:{:02}", at.minute())
+    (words().routines.clock)(at.hour(), at.minute())
 }
 
 fn day_name(date: Date, today: Date) -> String {
+    let strings = &words().routines;
     if date == today {
-        return String::from("오늘");
+        return String::from(strings.today);
     }
     if today.yesterday().ok() == Some(date) {
-        return String::from("어제");
+        return String::from(strings.yesterday);
     }
-    let weekday = match date.weekday() {
-        Weekday::Monday => "월요일",
-        Weekday::Tuesday => "화요일",
-        Weekday::Wednesday => "수요일",
-        Weekday::Thursday => "목요일",
-        Weekday::Friday => "금요일",
-        Weekday::Saturday => "토요일",
-        Weekday::Sunday => "일요일",
-    };
     if date.year() == today.year() {
-        format!("{}월 {}일 {weekday}", date.month(), date.day())
+        (strings.day_this_year)(date)
     } else {
-        format!(
-            "{}년 {}월 {}일 {weekday}",
-            date.year(),
-            date.month(),
-            date.day()
-        )
+        (strings.day_other_year)(date)
     }
 }
 

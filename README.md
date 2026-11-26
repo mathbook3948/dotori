@@ -48,20 +48,15 @@ Each tagged version also has builds for Linux, macOS, and Windows on the [Releas
 
 To start dotori:
 
-1. Put your Anthropic API key in the environment.
-
-	```bash
-	export ANTHROPIC_API_KEY=sk-ant-...
-	```
-
-2. Start dotori. It puts an icon in the tray.
+1. Start dotori. It puts an icon in the tray.
 
 	```bash
 	dotori
 	```
 
+2. On the first run the onboarding window opens. Paste your Anthropic API key, then continue through the steps. dotori starts when the key is saved. You can also set `ANTHROPIC_API_KEY` in the environment instead.
 3. Open the chat window from the tray menu, or run `dotori window`.
-4. To change the model or connect Slack, Telegram, or Discord, open the settings window from the tray menu, or run `dotori settings`.
+4. To change the model or the language, or to connect Slack, Telegram, or Discord, open the settings window from the tray menu, or run `dotori settings`. The windows speak Korean or English and follow your system language until you choose one.
 
 dotori keeps its settings and records in one folder. Set `DOTORI_HOME` to use another folder.
 
@@ -80,7 +75,7 @@ mise install
 mise run check
 ```
 
-To run dotori from source, use `cargo run -p dotori`, or add `window` or `settings` to open just that window. A debug build keeps its files in `dotori-dev` next to the folder above, so it never touches the dotori you use.
+To run dotori from source, use `cargo run -p dotori`, or add `window`, `settings` or `onboarding` to open just that window. A debug build keeps its files in `dotori-dev` next to the folder above, so it never touches the dotori you use.
 
 The design decisions are in [`docs/`](docs/README.md), in Korean. To contribute, read [CONTRIBUTING](.github/CONTRIBUTING.md). To report a security problem, follow the [security policy](.github/SECURITY.md).
 

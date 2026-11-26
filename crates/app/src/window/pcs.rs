@@ -32,7 +32,11 @@ use crate::settings::Settings;
 use crate::window::input::TextInput;
 use crate::window::parts::MONO;
 use crate::window::parts::prose;
+use crate::window::surface::SurfaceExt;
+use crate::window::surface::framed;
+use crate::window::surface::hairline;
 use crate::window::theme::Theme;
+use crate::words::words;
 
 const INVITE_OPEN: u64 = 10 * 60;
 const REFRESH: Duration = Duration::from_secs(2);
@@ -70,8 +74,8 @@ impl PcsView {
             seen: Seen::default(),
             invite: None,
             copied: false,
-            code: cx.new(|cx| TextInput::new("다른 PC에서 만든 연결 코드", cx)),
-            address: cx.new(|cx| TextInput::new("그 PC의 주소:포트 (코드에 있으면 비워 둬요)", cx)),
+            code: cx.new(|cx| TextInput::new(words().pcs.code_placeholder, cx)),
+            address: cx.new(|cx| TextInput::new(words().pcs.address_placeholder, cx)),
             joining: false,
             note: None,
             _refresh: refresh,
@@ -138,9 +142,7 @@ impl PcsView {
         }
         let typed = self.code.read(cx).text().trim().to_owned();
         let Some(code) = Code::read(&typed) else {
-            self.note = Some(Err(SharedString::new_static(
-                "연결 코드를 읽지 못했어요. 다른 PC에서 복사한 코드를 그대로 붙여 넣어요.",
-            )));
+            self.note = Some(Err(SharedString::new_static(words().pcs.unreadable_code)));
             cx.notify();
             return;
         };
@@ -149,9 +151,7 @@ impl PcsView {
             .then_some(typed_address)
             .or_else(|| code.address.clone())
         else {
-            self.note = Some(Err(SharedString::new_static(
-                "코드에 주소가 없어요. 그 PC의 주소와 포트를 적어요.",
-            )));
+            self.note = Some(Err(SharedString::new_static(words().pcs.no_address)));
             cx.notify();
             return;
         };
@@ -183,17 +183,17 @@ impl PcsView {
         cx.spawn(async move |view, cx| {
             let joined = result
                 .await
-                .unwrap_or_else(|_| Err(String::from("묶는 중에 멈췄어요")));
+                .unwrap_or_else(|_| Err(String::from(words().pcs.join_stopped)));
             let _ = view.update(cx, |view, cx| {
                 view.joining = false;
                 view.note = Some(match joined {
                     Ok(peer) => {
                         view.code.update(cx, |input, cx| input.set_text("", cx));
                         view.address.update(cx, |input, cx| input.set_text("", cx));
-                        Ok(SharedString::from(format!(
-                            "{}와 묶었어요. dotori가 돌고 있으면 곧 연결돼요.",
-                            shown_name(&peer.name, &peer.device)
-                        )))
+                        Ok(SharedString::from((words().pcs.joined)(&shown_name(
+                            &peer.name,
+                            &peer.device,
+                        ))))
                     }
                     Err(error) => Err(SharedString::from(error)),
                 });
@@ -228,19 +228,10 @@ fn shown_name(name: &str, device: &str) -> String {
     }
 }
 
-fn ago(at: u64) -> String {
-    let passed = now().saturating_sub(at);
-    match passed {
-        0..60 => String::from("방금"),
-        60..3600 => format!("{}분 전", passed / 60),
-        3600..86400 => format!("{}시간 전", passed / 3600),
-        _ => format!("{}일 전", passed / 86400),
-    }
-}
-
 impl Render for PcsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(window);
+        let words = &words().pcs;
         let listening = self.settings.peers.is_some();
         let this_pc = div()
             .flex()
@@ -260,7 +251,7 @@ impl Render for PcsView {
                     .child(
                         div()
                             .font_weight(FontWeight::MEDIUM)
-                            .child(format!("{} (이 PC)", self.name)),
+                            .child((words.this_pc)(&self.name)),
                     )
                     .child(div().text_xs().text_color(theme.muted).child(if listening {
                         match self
@@ -269,18 +260,18 @@ impl Render for PcsView {
                             .as_ref()
                             .and_then(|peers| peers.address.clone())
                         {
-                            Some(address) => format!("다른 PC가 {address}로 찾아와요"),
-                            None => String::from("다른 PC가 찾아올 수 있어요"),
+                            Some(address) => (words.reachable_at)(&address),
+                            None => String::from(words.reachable),
                         }
                     } else {
-                        String::from("다른 PC에 연결만 해요. 찾아오게 하려면 [peers]를 켜요")
+                        String::from(words.not_listening)
                     })),
             );
         let invite = match &self.invite {
             None => div().flex().child(button(
                 &theme,
                 "invite",
-                "연결 코드 만들기",
+                words.make_invite,
                 false,
                 cx.listener(|view, _, _, cx| view.make_invite(cx)),
             )),
@@ -309,18 +300,22 @@ impl Render for PcsView {
                             &theme,
                             "copy",
                             if self.copied {
-                                "복사했어요"
+                                words.copied
                             } else {
-                                "복사"
+                                words.copy
                             },
                             true,
                             cx.listener(|view, _, _, cx| view.copy(cx)),
                         )),
                 )
-                .child(div().text_xs().text_color(theme.muted).child(format!(
-                    "다른 PC의 설정에 붙여 넣어요. {}분 동안 한 번만 쓸 수 있어요.",
-                    until.saturating_sub(now()).div_ceil(60)
-                ))),
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme.muted)
+                        .child((words.invite_hint)(
+                            until.saturating_sub(now()).div_ceil(60),
+                        )),
+                ),
         };
         let join_form = div()
             .flex()
@@ -332,9 +327,9 @@ impl Render for PcsView {
                 &theme,
                 "join",
                 if self.joining {
-                    "묶는 중…"
+                    words.joining
                 } else {
-                    "이 코드로 묶기"
+                    words.join
                 },
                 true,
                 cx.listener(|view, _, _, cx| view.join(cx)),
@@ -347,16 +342,16 @@ impl Render for PcsView {
                     .text_center()
                     .text_xs()
                     .text_color(theme.muted)
-                    .child("아직 묶은 PC가 없어요"),
+                    .child(words.no_pcs),
             );
         }
         for peer in &self.book.peers {
             let seen = self.seen.peers.get(&peer.key);
             let linked = seen.is_some_and(|seen| seen.linked);
             let state = match seen {
-                Some(seen) if seen.linked => String::from("연결됨"),
-                Some(seen) => format!("{} 끊김", ago(seen.at)),
-                None => String::from("아직 연결되지 않음"),
+                Some(seen) if seen.linked => String::from(words.connected),
+                Some(seen) => (words.dropped)(now().saturating_sub(seen.at)),
+                None => String::from(words.never_connected),
             };
             let name = shown_name(&peer.name, &peer.device);
             let key = peer.key.clone();
@@ -405,7 +400,7 @@ impl Render for PcsView {
                             .text_color(theme.muted)
                             .cursor_pointer()
                             .hover(|remove| remove.bg(theme.danger_soft).text_color(theme.danger))
-                            .child("빼기")
+                            .child(words.remove)
                             .on_click(
                                 cx.listener(move |view, _, _, cx| view.remove(key.clone(), cx)),
                             ),
@@ -432,10 +427,7 @@ impl Render for PcsView {
             .gap_4()
             .p_5()
             .rounded_2xl()
-            .bg(theme.surface)
-            .border_t_1()
-            .border_color(theme.rim)
-            .shadow_sm()
+            .card(&theme)
             .child(
                 div()
                     .flex()
@@ -445,16 +437,19 @@ impl Render for PcsView {
                         div()
                             .text_base()
                             .font_weight(FontWeight::SEMIBOLD)
-                            .child("여러 PC"),
+                            .child(words.title),
                     )
-                    .child(div().text_xs().text_color(theme.muted).child(
-                        "다른 PC의 dotori와 묶으면 어디서 말을 걸어도 같은 비서와 같은 기억으로 이어져요. 주고받는 내용은 모두 암호화해요.",
-                    )),
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.muted)
+                            .child((words.about)()),
+                    ),
             )
             .child(this_pc)
-            .child(section(&theme, "이 PC로 초대하기", invite))
-            .child(section(&theme, "다른 PC에 합류하기", join_form))
-            .child(section(&theme, "묶은 PC", list))
+            .child(section(&theme, words.invite_section, invite))
+            .child(section(&theme, words.join_section, join_form))
+            .child(section(&theme, words.linked_section, list))
             .children(note)
     }
 }
@@ -518,9 +513,8 @@ fn button(
         })
         .when(!quiet, |button| {
             button
-                .bg(theme.primary)
-                .text_color(theme.on_primary)
-                .hover(|button| button.bg(theme.primary_hover))
+                .main_button(theme)
+                .hover(|button| button.opacity(0.9))
         })
         .child(label)
         .on_click(click)
@@ -534,20 +528,24 @@ fn input_box(
     input: &Entity<TextInput>,
 ) -> impl IntoElement {
     let focus = input.focus_handle(cx);
-    let focused = focus.is_focused(window);
-    div()
-        .id(id)
-        .px_3()
-        .py_2()
-        .rounded_lg()
-        .bg(theme.canvas)
-        .border_1()
-        .border_color(if focused {
-            theme.primary.into()
-        } else {
-            gpui::transparent_black()
-        })
-        .cursor_text()
-        .on_mouse_down(MouseButton::Left, move |_, window, _| window.focus(&focus))
-        .child(input.clone())
+    let ring =
+        (focus.is_focused(window) && window.is_window_active()).then(|| theme.primary.into());
+    let width = hairline(window);
+    framed(
+        ring,
+        8. - width,
+        width,
+        div()
+            .id(id)
+            .px_3()
+            .py_2()
+            .rounded(px(8. - width))
+            .bg(theme.canvas)
+            .cursor_text()
+            .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                window.focus(&focus);
+                cx.stop_propagation();
+            })
+            .child(input.clone()),
+    )
 }

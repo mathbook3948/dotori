@@ -1,4 +1,5 @@
 use std::env;
+use std::fmt;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::ErrorKind;
@@ -28,6 +29,7 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use crate::replace::replace;
+use crate::words::words;
 
 /// Where the Anthropic API key is when the settings do not say.
 pub(crate) const ANTHROPIC_KEY: &str = "ANTHROPIC_API_KEY";
@@ -44,12 +46,36 @@ pub(crate) const SLACK_BOT_KEY: &str = "SLACK_BOT_TOKEN";
 /// sent in its place.
 pub(crate) const MODEL_KEY: &str = "DOTORI_MODEL_API_KEY";
 
+/// Why a model could not be built.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ModelError {
+    /// The key named `name` is neither in the environment nor in the vault. The owner can still
+    /// give it while dotori runs.
+    MissingKey {
+        name: String,
+        what: &'static str,
+    },
+    Other(String),
+}
+
+impl fmt::Display for ModelError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingKey { name, what } => write!(f, "set {name} to your {what}"),
+            Self::Other(message) => f.write_str(message),
+        }
+    }
+}
+
 /// What the user sets in `settings.toml`. A missing file means every default.
 /// Keys never live in the file. It names each key, which is read from the environment variable
 /// of that name or else from the vault.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Settings {
+    /// The language the windows speak: `ko`, `en`, or `system` to follow the system.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) language: Option<String>,
     #[serde(default)]
     pub(crate) model: ModelSettings,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -86,7 +112,7 @@ pub(crate) struct AssistantSettings {
 }
 
 /// The name the assistant goes by when the owner gives none.
-pub(crate) const ASSISTANT_NAME: &str = "dotori";
+pub(crate) const ASSISTANT_NAME: &str = "Dotori";
 /// The longest name the assistant may be given, in characters.
 pub(crate) const ASSISTANT_NAME_LONGEST: usize = 20;
 
@@ -357,25 +383,21 @@ impl SlackForm {
             .owner
             .as_deref()
             .map(str::to_ascii_uppercase)
-            .ok_or("Slack을 쓰려면 내 Slack 멤버 ID를 적어 주세요")?;
+            .ok_or(words().settings.slack_owner_missing)?;
         if !(owner.starts_with('U') || owner.starts_with('W'))
             || owner.len() < 3
             || !owner
                 .chars()
                 .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
         {
-            return Err(String::from(
-                "Slack 멤버 ID는 U012AB3CD처럼 U나 W로 시작하는 대문자와 숫자예요",
-            ));
+            return Err(String::from(words().settings.slack_owner_shape));
         }
         for name in [&self.app_token_env, &self.bot_token_env]
             .into_iter()
             .flatten()
         {
             if !variable_name(name) {
-                return Err(format!(
-                    "`{name}`은 키 이름이 아니에요. 토큰은 설정창의 칸에 붙여 넣어 주세요"
-                ));
+                return Err((words().settings.not_a_key_name)(name));
             }
         }
         Ok(Some(SlackSettings {
@@ -414,17 +436,15 @@ impl TelegramForm {
         let owner = self
             .owner
             .as_deref()
-            .ok_or("Telegram을 쓰려면 내 Telegram 사용자 ID를 적어 주세요")?
+            .ok_or(words().settings.telegram_owner_missing)?
             .parse::<i64>()
             .ok()
             .filter(|owner| *owner > 0)
-            .ok_or("Telegram 사용자 ID는 123456789처럼 숫자예요")?;
+            .ok_or(words().settings.telegram_owner_shape)?;
         if let Some(name) = &self.token_env
             && !variable_name(name)
         {
-            return Err(format!(
-                "`{name}`은 키 이름이 아니에요. 토큰은 설정창의 칸에 붙여 넣어 주세요"
-            ));
+            return Err((words().settings.not_a_key_name)(name));
         }
         Ok(Some(TelegramSettings {
             token_env: self.token_env.clone(),
@@ -461,18 +481,14 @@ impl DiscordForm {
         let owner = self
             .owner
             .as_deref()
-            .ok_or("Discord를 쓰려면 내 Discord 사용자 ID를 적어 주세요")?;
+            .ok_or(words().settings.discord_owner_missing)?;
         if !discord_id(owner) {
-            return Err(String::from(
-                "Discord 사용자 ID는 123456789012345678처럼 긴 숫자예요",
-            ));
+            return Err(String::from(words().settings.discord_owner_shape));
         }
         if let Some(name) = &self.token_env
             && !variable_name(name)
         {
-            return Err(format!(
-                "`{name}`은 키 이름이 아니에요. 토큰은 설정창의 칸에 붙여 넣어 주세요"
-            ));
+            return Err((words().settings.not_a_key_name)(name));
         }
         Ok(Some(DiscordSettings {
             token_env: self.token_env.clone(),
@@ -556,7 +572,7 @@ impl Form {
                 api_key_env: self.api_key_env,
                 max_tokens: kept_max_tokens,
             }),
-            _ => Err(String::from("OpenAI 호환 API는 주소와 모델이 필요합니다.")),
+            _ => Err(String::from(words().settings.openai_needs_address)),
         }
     }
 }
@@ -622,7 +638,7 @@ impl Settings {
     pub(crate) fn model(
         &self,
         key: impl Fn(&str) -> Option<String>,
-    ) -> Result<Arc<dyn Model>, String> {
+    ) -> Result<Arc<dyn Model>, ModelError> {
         self.model_told(Some(self.named(DEFAULT_SYSTEM)), key)
     }
 
@@ -641,7 +657,7 @@ impl Settings {
     pub(crate) fn sub_session_model(
         &self,
         key: impl Fn(&str) -> Option<String>,
-    ) -> Result<Arc<dyn Model>, String> {
+    ) -> Result<Arc<dyn Model>, ModelError> {
         self.model_told(
             Some(self.named(&format!("{SUB_SESSION_SYSTEM}\n{LLM_SUB_SESSION_SYSTEM}"))),
             key,
@@ -652,7 +668,7 @@ impl Settings {
         &self,
         system: Option<String>,
         key: impl Fn(&str) -> Option<String>,
-    ) -> Result<Arc<dyn Model>, String> {
+    ) -> Result<Arc<dyn Model>, ModelError> {
         match &self.model {
             ModelSettings::Anthropic {
                 api_key_env,
@@ -662,8 +678,10 @@ impl Settings {
                 effort,
             } => {
                 let variable = api_key_env.as_deref().unwrap_or(ANTHROPIC_KEY);
-                let api_key = key(variable)
-                    .ok_or_else(|| format!("set {variable} to your Anthropic API key"))?;
+                let api_key = key(variable).ok_or_else(|| ModelError::MissingKey {
+                    name: variable.to_owned(),
+                    what: "Anthropic API key",
+                })?;
                 let mut config = AnthropicConfig::new(api_key);
                 if let Some(model) = model {
                     config.model.clone_from(model);
@@ -679,7 +697,7 @@ impl Settings {
                     config.system = system;
                 }
                 Ok(Arc::new(
-                    Anthropic::new(config).map_err(|error| error.to_string())?,
+                    Anthropic::new(config).map_err(|error| ModelError::Other(error.to_string()))?,
                 ))
             }
             ModelSettings::OpenaiCompatible {
@@ -690,16 +708,17 @@ impl Settings {
             } => {
                 let mut config = OpenAiConfig::new(base_url.clone(), model.clone());
                 if let Some(variable) = api_key_env {
-                    config.api_key = Some(
-                        key(variable).ok_or_else(|| format!("set {variable} to your API key"))?,
-                    );
+                    config.api_key = Some(key(variable).ok_or_else(|| ModelError::MissingKey {
+                        name: variable.clone(),
+                        what: "API key",
+                    })?);
                 }
                 config.max_tokens = *max_tokens;
                 if let Some(system) = system {
                     config.system = system;
                 }
                 Ok(Arc::new(
-                    OpenAi::new(config).map_err(|error| error.to_string())?,
+                    OpenAi::new(config).map_err(|error| ModelError::Other(error.to_string()))?,
                 ))
             }
         }

@@ -9,6 +9,7 @@
 - [여러 PC](architecture/devices.md): 여러 PC에 설치한 dotori를 비서 하나로 묶는 방법을 정한다.
 - [Discord 연결](architecture/discord.md): Discord를 주인이 비서와 말하는 채널로 어떻게 쓰는지 정한다.
 - [그래프 DB](architecture/graph.md): 메모리의 대상과 관계를 저장하고 질의하는 그래프 DB를 Rust로 직접 만든다.
+- [언어](architecture/language.md): dotori가 주인에게 어떤 언어로 말하는지 정한다.
 - [LLM 연결](architecture/llm.md): 메인 세션이 LLM API와 주고받는 방식을 정한다.
 - [MCP](architecture/mcp.md): 에이전트가 쓰는 도구를 어떻게 제공하는지 정한다.
 - [메모리](architecture/memory.md): 비서가 몇 달에서 몇 년 동안 기억을 유지하는 방법을 정한다.
@@ -19,7 +20,7 @@
 - [Slack 연결](architecture/slack.md): Slack을 채널과 연동으로 어떻게 쓰는지 정한다.
 - [Telegram 연결](architecture/telegram.md): Telegram을 주인이 비서와 말하는 채널로 어떻게 쓰는지 정한다.
 - [비밀값 보관](architecture/vault.md): API 키, 봇 토큰, 연동한 사이트의 계정 같은 비밀값을 어디에 두고 어떻게 다른 PC로 옮기는지 정한다.
-- [창](architecture/windows.md): 채팅창과 설정창이 어떻게 보이는지 정한다.
+- [창](architecture/windows.md): 채팅창, 설정창, 시작하기 창이 어떻게 보이는지 정한다.
 
 ## engineering
 
