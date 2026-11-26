@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Drives the real dotori windows on a virtual screen with the end-to-end test's fake model.
-#   demo.sh start <home>                    build, then start Xvfb, a window manager, the fake model and the daemon
+#   demo.sh start <home>                    build, then start Xvfb, a window manager, the fake model and dotori with its tray
 #   demo.sh talk <home> [message ...]       send messages through `dotori chat` (the demo conversation by default)
 #   demo.sh shot <home> <out.png> [look] [frames]   open the chat window and save it; frames > 1 saves out-1.png, out-2.png, ...
 #   demo.sh settings <home> <out.png> [look]       open the settings window and save it
@@ -54,12 +54,12 @@ api_key_env = "DOTORI_DEMO_KEY"
 path = "no-browser-in-demo"
 EOF
   rm -f "$home/door.json"
-  background "$home/daemon.log" \
-    env -u DISPLAY -u WAYLAND_DISPLAY HOME="$home" DOTORI_HOME="$home" DOTORI_DEMO_KEY=fake \
+  background "$home/dotori.log" \
+    env -u WAYLAND_DISPLAY DISPLAY=":$display" HOME="$home" DOTORI_HOME="$home" DOTORI_DEMO_KEY=fake \
     HTTPS_PROXY="$offline" HTTP_PROXY="$offline" ALL_PROXY="$offline" NO_PROXY=127.0.0.1,localhost \
-    "$dotori" daemon
+    "$dotori"
   for _ in $(seq 100); do [ -s "$home/door.json" ] && break; sleep 0.1; done
-  [ -s "$home/door.json" ] || { echo "the daemon did not start; see $home/daemon.log" >&2; exit 1; }
+  [ -s "$home/door.json" ] || { echo "dotori did not start; see $home/dotori.log" >&2; exit 1; }
   echo "ready: $home"
   ;;
 talk)
