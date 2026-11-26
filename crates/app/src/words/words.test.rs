@@ -30,7 +30,6 @@ fn every_function(words: &Words) -> Vec<(&'static str, String)> {
         ("chat.asking", (chat.asking)("Dotori")),
         ("chat.in_browser_hint", (chat.in_browser_hint)()),
         ("chat.log_in_to", (chat.log_in_to)("example.com")),
-        ("chat.answering_elsewhere", (chat.answering_elsewhere)("pc")),
         ("chat.say_to", (chat.say_to)()),
         ("chat.command_exited", (chat.command_exited)(3)),
         ("chat.command_too_slow", (chat.command_too_slow)("110")),
