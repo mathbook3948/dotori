@@ -116,7 +116,7 @@ impl Model for Anthropic {
             .get(url)
             .header("x-api-key", &self.config.api_key)
             .header("anthropic-version", VERSION);
-        Box::pin(http::check(PROVIDER, request))
+        Box::pin(http::check(request))
     }
 }
 

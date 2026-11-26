@@ -49,8 +49,6 @@ pub enum CheckError {
     KeyRefused,
     /// Nothing answered at the model's address.
     NoAnswer,
-    /// Anything else, as the provider or the network said it.
-    Other(String),
 }
 
 pub trait Model: Send + Sync + 'static {

@@ -99,10 +99,11 @@ pub(crate) async fn send(
 
 const CHECK_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// Sends `request` once to see whether the provider answers and takes the key.
-pub(crate) async fn check(provider: &str, request: RequestBuilder) -> Result<(), CheckError> {
+/// Sends `request` once to see whether the provider answers and takes the key. Only a refused key
+/// and an address that does not answer fail; anything else, such as a busy provider or a server
+/// that does not list its models, passes.
+pub(crate) async fn check(request: RequestBuilder) -> Result<(), CheckError> {
     match request.timeout(CHECK_TIMEOUT).send().await {
-        Ok(response) if response.status().is_success() => Ok(()),
         Ok(response)
             if matches!(
                 response.status(),
@@ -111,13 +112,9 @@ pub(crate) async fn check(provider: &str, request: RequestBuilder) -> Result<(),
         {
             Err(CheckError::KeyRefused)
         }
-        Ok(response) => {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            Err(CheckError::Other(status_detail(provider, status, &body)))
-        }
+        Ok(_) => Ok(()),
         Err(error) if error.is_connect() || error.is_timeout() => Err(CheckError::NoAnswer),
-        Err(error) => Err(CheckError::Other(chain(&error))),
+        Err(_) => Ok(()),
     }
 }
 
