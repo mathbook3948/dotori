@@ -571,7 +571,14 @@ fn the_assistant_is_told_the_name_the_owner_gave_it() {
     let told = settings.named(DEFAULT_SYSTEM);
 
     assert!(
-        told.starts_with("You are 별, a personal assistant"),
+        told.starts_with("You are 별, the owner's personal assistant"),
+        "{told}"
+    );
+    assert!(
+        told.contains(&format!(
+            "When nothing shows it, write in {}.",
+            crate::language::current().english_name()
+        )),
         "{told}"
     );
     assert!(

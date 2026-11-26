@@ -60,6 +60,7 @@ use crate::first_run::Step;
 use crate::forget::FORGET;
 use crate::forget::Forget;
 use crate::forget::Previewed;
+use crate::greeting::Greeting;
 use crate::handoff;
 use crate::handoff::HandedOff;
 use crate::handoff::Handoff;
@@ -177,8 +178,6 @@ pub(crate) async fn serve(
     let model: Arc<dyn Model> = Arc::new(Noted {
         model,
         notes: Arc::clone(&notes),
-        routines: Arc::clone(&routines),
-        sites: Some(Arc::new(LinkedSites::new(Arc::clone(&vault)))),
     });
     let owner: Arc<dyn Toolbox> = match &shared {
         Some(tools) => tools.owner(),
@@ -221,6 +220,7 @@ pub(crate) async fn serve(
         store: records.clone(),
         memory: forgetting.clone(),
         copies: Arc::clone(&forget_copies),
+        notes: Arc::clone(&notes),
     }));
     for tool in [FORGET, RUN_SHELL, WRITE_FILE, EDIT_FILE] {
         asked.always(tool);
@@ -251,6 +251,7 @@ pub(crate) async fn serve(
     let toolbox: Arc<dyn Toolbox> = Arc::new(MainTools {
         notes: Arc::clone(&notes),
         routines: Arc::clone(&routines),
+        sites: Some(Arc::new(LinkedSites::new(Arc::clone(&vault)))),
         shared: Arc::new(Previewed {
             inner: Arc::new(Waits {
                 asking: Arc::clone(&asking),
@@ -258,6 +259,7 @@ pub(crate) async fn serve(
                 outcomes: outcomes.clone(),
             }),
             store: records.clone(),
+            notes: Arc::clone(&notes),
         }),
     });
     match records.load().await {
@@ -511,6 +513,9 @@ pub(crate) async fn serve(
             .collect();
         channels.push(Arc::new(RoutineChannel::new(Arc::clone(&routines))) as Arc<dyn Channel>);
         channels.push(Arc::clone(&decision) as Arc<dyn Channel>);
+        if records.load().await.is_ok_and(|earlier| earlier.is_empty()) {
+            channels.push(Arc::new(Greeting::new()) as Arc<dyn Channel>);
+        }
         let channels = channels
             .into_iter()
             .map(|channel| {

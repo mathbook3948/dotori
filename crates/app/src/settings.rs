@@ -15,6 +15,7 @@ use dotori_connectors::channel::slack::SlackConfig;
 use dotori_connectors::channel::telegram::TelegramChannel;
 use dotori_connectors::channel::telegram::TelegramConfig;
 use dotori_connectors::llm::DEFAULT_SYSTEM;
+use dotori_connectors::llm::FALLBACK_LANGUAGE;
 use dotori_connectors::llm::anthropic::Anthropic;
 use dotori_connectors::llm::anthropic::AnthropicConfig;
 use dotori_connectors::llm::openai::OpenAi;
@@ -653,13 +654,19 @@ impl Settings {
         &self,
         key: impl Fn(&str) -> Option<String>,
     ) -> Result<Arc<dyn Model>, ModelError> {
-        self.model_told(Some(self.named(DEFAULT_SYSTEM)), key)
+        self.model_told(Some(self.named(DEFAULT_SYSTEM)), true, key)
     }
 
     fn named(&self, system: &str) -> String {
         let name = AssistantSettings::name_of(self.assistant.as_ref());
+        let language = crate::language::current().english_name();
         system
             .replacen("You are dotori,", &format!("You are {name},"), 1)
+            .replacen(
+                FALLBACK_LANGUAGE,
+                &format!("When nothing shows it, write in {language}."),
+                1,
+            )
             .replacen(
                 "sub-session of dotori,",
                 &format!("sub-session of {name},"),
@@ -674,6 +681,7 @@ impl Settings {
     ) -> Result<Arc<dyn Model>, ModelError> {
         self.model_told(
             Some(self.named(&format!("{SUB_SESSION_SYSTEM}\n{LLM_SUB_SESSION_SYSTEM}"))),
+            false,
             key,
         )
     }
@@ -681,6 +689,7 @@ impl Settings {
     fn model_told(
         &self,
         system: Option<String>,
+        delegates: bool,
         key: impl Fn(&str) -> Option<String>,
     ) -> Result<Arc<dyn Model>, ModelError> {
         match &self.model {
@@ -707,6 +716,7 @@ impl Settings {
                     config.max_tokens = *max_tokens;
                 }
                 config.effort.clone_from(effort);
+                config.delegates = delegates;
                 if let Some(system) = system {
                     config.system = system;
                 }
@@ -728,6 +738,7 @@ impl Settings {
                     })?);
                 }
                 config.max_tokens = *max_tokens;
+                config.delegates = delegates;
                 if let Some(system) = system {
                     config.system = system;
                 }

@@ -375,3 +375,19 @@ fn a_user_turn_that_ends_in_a_tool_result_is_marked_on_the_result() {
         "ephemeral"
     );
 }
+
+#[test]
+fn a_model_that_may_not_delegate_is_not_offered_delegate() {
+    let mut config = AnthropicConfig::new("key");
+    config.delegates = false;
+
+    let body = sent(&config, &request(vec![heard("hi")]));
+
+    let names: Vec<&str> = body["tools"]
+        .as_array()
+        .expect("tools")
+        .iter()
+        .filter_map(|tool| tool["name"].as_str())
+        .collect();
+    assert_eq!(names, ["say", "read_file"]);
+}

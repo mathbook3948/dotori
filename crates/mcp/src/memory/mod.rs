@@ -843,7 +843,7 @@ impl Tool for MemorySearch {
     }
 
     fn description(&self) -> &str {
-        "Searches everything dotori has heard and said for these words, and for their meaning \
+        "Searches everything you have heard and said for these words, and for their meaning \
          when that is set up, best matches first. \
          Each hit names its record, time, place, and who said it. Hits can hold the owner's \
          private messages: pass them on only to the owner."

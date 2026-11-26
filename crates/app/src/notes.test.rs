@@ -80,6 +80,7 @@ async fn the_owner_can_keep_and_drop_notes_and_the_model_sees_them() {
     let tools = MainTools {
         routines: routines(),
         notes: Arc::clone(&notes),
+        sites: None,
         shared: Arc::new(Nothing),
     };
     assert_eq!(notes.context(), None);
@@ -96,12 +97,23 @@ async fn the_owner_can_keep_and_drop_notes_and_the_model_sees_them() {
         "{context}"
     );
 
-    tools
-        .run(call(FORGET, json!({ "id": 1 })))
-        .await
-        .expect("forgot");
+    notes.drop_note(1).expect("dropped");
     assert_eq!(notes.context(), None);
-    assert!(tools.run(call(FORGET, json!({ "id": 1 }))).await.is_err());
+    assert!(notes.drop_note(1).is_err());
+    assert_eq!(
+        tools
+            .run(call(READ_ROUTINES, json!({})))
+            .await
+            .expect("listed"),
+        "The owner has no routines."
+    );
+    assert_eq!(
+        tools
+            .run(call(READ_SITES, json!({})))
+            .await
+            .expect("listed"),
+        "No sites are linked."
+    );
     assert_eq!(
         tools
             .run(call("fetch_url", json!({})))
@@ -117,6 +129,7 @@ async fn notes_cannot_change_after_someone_else_spoke_last() {
     let tools = MainTools {
         routines: routines(),
         notes: Arc::clone(&notes),
+        sites: None,
         shared: Arc::new(Nothing),
     };
     notes.heard(&[heard(Role::Owner), heard(Role::Other)]);
@@ -155,15 +168,25 @@ fn the_tools_come_before_the_shared_ones() {
     let tools = MainTools {
         routines: routines(),
         notes: notes(),
+        sites: None,
         shared: Arc::new(Nothing),
     };
     let names: Vec<String> = tools.specs().into_iter().map(|spec| spec.name).collect();
-    assert_eq!(names, [REMEMBER, FORGET, routines::ADD, routines::REMOVE]);
+    assert_eq!(
+        names,
+        [
+            REMEMBER,
+            READ_ROUTINES,
+            READ_SITES,
+            routines::ADD,
+            routines::REMOVE
+        ]
+    );
 
     struct Clashing;
     impl Toolbox for Clashing {
         fn specs(&self) -> Vec<ToolSpec> {
-            ["add_note", "add_routine", "fetch_url"]
+            ["add_memory", "add_routine", "fetch_url"]
                 .map(|name| ToolSpec {
                     name: String::from(name),
                     description: String::new(),
@@ -179,6 +202,7 @@ fn the_tools_come_before_the_shared_ones() {
     let clashing = MainTools {
         routines: routines(),
         notes: notes(),
+        sites: None,
         shared: Arc::new(Clashing),
     };
     let names: Vec<String> = clashing.specs().into_iter().map(|spec| spec.name).collect();
@@ -186,7 +210,8 @@ fn the_tools_come_before_the_shared_ones() {
         names,
         [
             REMEMBER,
-            FORGET,
+            READ_ROUTINES,
+            READ_SITES,
             routines::ADD,
             routines::REMOVE,
             "fetch_url"
@@ -285,7 +310,7 @@ async fn notes_changed_later_on_another_pc_replace_these_and_older_ones_do_not()
     assert!(!there.take(&older).expect("checked"));
     assert!(!here.take(&there.copy().expect("copied")).expect("same"));
 
-    here.forget(&json!({ "id": 1 })).expect("forgot");
+    here.drop_note(1).expect("dropped");
     assert!(there.take(&here.copy().expect("copied")).expect("taken"));
     assert_eq!(
         there.copy().expect("copied").notes,
@@ -298,12 +323,13 @@ async fn notes_changed_later_on_another_pc_replace_these_and_older_ones_do_not()
 }
 
 #[tokio::test]
-async fn routines_follow_the_owner_like_notes_and_the_model_sees_both() {
+async fn routines_follow_the_owner_like_notes_and_the_model_reads_them_with_a_tool() {
     let notes = notes();
     let routines = routines();
     let tools = MainTools {
         routines: Arc::clone(&routines),
         notes: Arc::clone(&notes),
+        sites: None,
         shared: Arc::new(Nothing),
     };
     let wish = json!({ "name": "아침", "time": "08:00", "task": "일정 알려줘" });
@@ -342,8 +368,6 @@ async fn routines_follow_the_owner_like_notes_and_the_model_sees_both() {
     let noted = Noted {
         model: Arc::clone(&seen) as Arc<dyn Model>,
         notes: Arc::clone(&notes),
-        routines: Arc::clone(&routines),
-        sites: None,
     };
     noted
         .complete(ModelRequest {
@@ -356,15 +380,23 @@ async fn routines_follow_the_owner_like_notes_and_the_model_sees_both() {
     let context = seen.0.lock().expect("unpoisoned").clone().expect("context");
     assert!(context.contains("[1] 커피는 아이스"), "{context}");
     assert!(
-        context.contains("[1] 아침, every day at 08:00: 일정 알려줘"),
-        "{context}"
+        !context.contains("아침"),
+        "routines stay out of every request: {context}"
+    );
+    let listed = tools
+        .run(call(READ_ROUTINES, json!({})))
+        .await
+        .expect("listed");
+    assert!(
+        listed.contains("[1] 아침, every day at 08:00: 일정 알려줘"),
+        "{listed}"
     );
 
     tools
         .run(call(routines::REMOVE, json!({ "id": 1 })))
         .await
         .expect("removed");
-    assert_eq!(routines.context(), None);
+    assert_eq!(routines.listed(), "The owner has no routines.");
 }
 
 #[test]

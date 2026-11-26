@@ -7,7 +7,7 @@ use crate::words::speak;
 fn dotori_s_own_tools_are_named_as_the_owner_would_say() {
     speak(Language::Korean);
     assert_eq!(own_tool("run_shell"), Some("명령 실행"));
-    assert_eq!(own_tool("erase_records"), Some("기록 지우기"));
+    assert_eq!(own_tool("erase_memory"), Some("기억 지우기"));
     assert_eq!(own_tool("mail__send"), None);
     assert_eq!(field_label("command"), "명령");
     assert_eq!(field_label("to"), "to");
@@ -22,7 +22,7 @@ fn dotori_s_own_tools_are_named_as_the_owner_would_say() {
 fn a_forget_card_shows_what_goes_and_not_the_numbers() {
     let input = r#"{"records":["019a"],"carriers":["019b"],"지울 기록":"2026-11-24 09:00 유노: 카드 번호"}"#;
 
-    let (forget, _) = asked_fields("erase_records", input, false);
+    let (forget, _) = asked_fields("erase_memory", input, false);
     let (other, _) = asked_fields("mail__send", input, false);
 
     let keys: Vec<&str> = forget.iter().map(|(key, _)| key.as_str()).collect();
@@ -60,7 +60,7 @@ fn a_card_says_what_allowing_does() {
         "허락하면 dotori가 파일을 바로 바꿔요"
     );
     assert_eq!(
-        hint("erase_records", "dotori가"),
+        hint("erase_memory", "dotori가"),
         of(Language::Korean).chat.erase_hint
     );
     assert_eq!(hint("mail__send", "dotori가"), "허락하면 바로 실행해요");

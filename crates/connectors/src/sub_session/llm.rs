@@ -34,8 +34,7 @@ use crate::tool::basic::WithBasic;
 
 /// What the model of an LLM sub-session is told, to be appended to its system prompt.
 pub const LLM_SUB_SESSION_SYSTEM: &str = "\
-Your brief arrives as a message on thread 0. Call `say` on thread 0 with your whole result when you are done.
-Do not use `delegate`.";
+Your task comes as the first message. When you are done, give your whole result with `say` in that message's thread.";
 
 /// Runs each sub-session as its own conversation with the model, until the model answers on the
 /// brief's thread and calls no more tools.

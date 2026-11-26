@@ -38,6 +38,9 @@ pub struct OpenAiConfig {
     /// `None` leaves the reply length to the server.
     pub max_tokens: Option<u32>,
     pub system: String,
+    /// Whether the model may hand work to a sub-session with `delegate`. A sub-session's own
+    /// model may not.
+    pub delegates: bool,
 }
 
 impl OpenAiConfig {
@@ -48,6 +51,7 @@ impl OpenAiConfig {
             api_key: None,
             max_tokens: None,
             system: String::from(DEFAULT_SYSTEM),
+            delegates: true,
         }
     }
 }
@@ -121,7 +125,7 @@ impl Model for OpenAi {
 
 fn body(config: &OpenAiConfig, request: &ModelRequest) -> Result<String, ModelError> {
     let mut tools = Vec::new();
-    for spec in reply::tools(&request.tools) {
+    for spec in reply::tools(&request.tools, config.delegates) {
         let schema = RawValue::from_string(spec.input_schema).map_err(|error| ModelError {
             detail: format!("tool `{}` has an invalid input schema: {error}", spec.name),
         })?;

@@ -11,11 +11,10 @@ const PRIVATE: [&str; 2] = ["AppData", "Library"];
 
 /// What a sub-session is told about itself, on top of its brief.
 pub const SUB_SESSION_SYSTEM: &str = "\
-You are a sub-session of dotori, a personal assistant that lives on its owner's computer.
-The brief you get is all you know, and nobody will answer questions. Do the work with your tools.
+You are a sub-session of dotori, the owner's personal assistant, which handed you a task.
+The task's description is all you know, and nobody will answer questions. Finish the task with your tools.
 When you are done, give your whole result in one final answer. The main session reads only that.
-When dotori's own tools, such as fetch_url, the browser and search_memory, can do part of the work,
-use them rather than tools of your own that do the same.";
+When several tools do the same thing, use fetch_url, the browser and search_memory first.";
 
 /// The folder a sub-session works in: the one its job is about, or dotori's work folder `work`
 /// when the job names none. A folder no sub-session may work in is refused with the reason.

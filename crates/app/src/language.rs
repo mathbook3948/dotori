@@ -27,6 +27,14 @@ const SYSTEM: &str = "system";
 static CHOSEN: RwLock<Option<(Choice, Language)>> = RwLock::new(None);
 
 impl Language {
+    /// The language's name in English, as the model is told it.
+    pub(crate) fn english_name(self) -> &'static str {
+        match self {
+            Self::Korean => "Korean",
+            Self::English => "English",
+        }
+    }
+
     /// The value the settings file keeps for this language.
     pub(crate) fn code(self) -> &'static str {
         match self {

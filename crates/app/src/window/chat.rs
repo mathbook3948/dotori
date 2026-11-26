@@ -246,6 +246,9 @@ impl ChatView {
     }
 
     fn show(&mut self, event: ToWindow) {
+        let Some(event) = crate::greeting::shown(event) else {
+            return;
+        };
         if !self.live {
             self.lines.push(event);
             self.scroll.scroll_to_bottom();
@@ -734,7 +737,7 @@ impl ChatView {
                     div()
                         .flex_1()
                         .text_xs()
-                        .text_color(if tool == "erase_records" {
+                        .text_color(if tool == crate::forget::FORGET {
                             theme.danger
                         } else {
                             theme.muted
