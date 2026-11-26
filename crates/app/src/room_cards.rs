@@ -179,7 +179,7 @@ impl RoomCards {
             )
             .collect();
         let notes = sandboxed
-            .then(|| String::from(asked::sandboxed()))
+            .then(asked::sandboxed)
             .into_iter()
             .chain(std::iter::once(asked::hint(tool, &self.subject)))
             .collect();
@@ -330,7 +330,7 @@ impl RoomCards {
                 let note = if origin.audience == Some(Audience::Owner) {
                     (words().chat.card_on_pc)(&host, logs_in(shown))
                 } else {
-                    String::from(words().chat.input_card_on_pc)
+                    (words().chat.input_card_on_pc)()
                 };
                 note_in(room, origin.address.place, note);
             }
@@ -583,7 +583,7 @@ fn log_in(subject: &str, host: &str, site: &str, path: &str, ids: &[Option<Strin
     };
     let mut notes = vec![asked::log_in_note(subject, host, path)];
     if ids.len() > MOST_ACCOUNTS {
-        notes.push(String::from(words().chat.rest_on_pc));
+        notes.push((words().chat.rest_on_pc)());
     }
     (
         asked::log_in_title(host, site),

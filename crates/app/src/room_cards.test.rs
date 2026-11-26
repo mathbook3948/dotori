@@ -218,7 +218,7 @@ async fn a_call_asked_in_a_chat_room_goes_there_as_the_window_shows_it() {
     assert_eq!(
         card.notes,
         [
-            String::from("샌드박스 안에서 실행해요. dotori의 금고와 기록은 보이지 않아요."),
+            String::from("샌드박스 안에서 실행해요. Dotori의 금고와 기록은 보이지 않아요."),
             String::from("허락하면 dotori가 이 명령을 바로 실행해요"),
         ]
     );
@@ -251,7 +251,7 @@ async fn a_card_in_a_chat_room_speaks_english_when_dotori_does() {
     assert_eq!(
         card.notes,
         [
-            String::from(english.chat.sandboxed),
+            (english.chat.sandboxed)(),
             String::from("Allow and I'll run this command right away."),
         ]
     );
@@ -651,13 +651,13 @@ async fn a_card_that_takes_typed_values_only_tells_the_room_the_window_shows_it(
 
     assert_eq!(
         note.title,
-        "PC의 dotori 창에 bank.example.com 입력 카드를 띄웠어요."
+        "PC의 Dotori 창에 bank.example.com 입력 카드를 띄웠어요."
     );
     assert_eq!(
         log_in.title,
-        "PC의 dotori 창에 bank.example.com 로그인 카드를 띄웠어요."
+        "PC의 Dotori 창에 bank.example.com 로그인 카드를 띄웠어요."
     );
-    assert_eq!(plain.title, "PC의 dotori 창에 입력 카드를 띄웠어요.");
+    assert_eq!(plain.title, "PC의 Dotori 창에 입력 카드를 띄웠어요.");
     for card in [note, log_in, plain] {
         assert!(card.rows.is_empty() && card.notes.is_empty() && card.buttons.is_empty());
         let text = card.text(None, 4000);
@@ -779,7 +779,7 @@ async fn thirty_accounts_show_a_few_and_leave_the_rest_to_the_window() {
     assert_eq!(card.rows[0].1.lines().count(), MOST_ACCOUNTS);
     assert!(
         card.notes
-            .contains(&String::from("나머지는 PC의 dotori 창에서 골라 주세요"))
+            .contains(&String::from("나머지는 PC의 Dotori 창에서 골라 주세요"))
     );
 }
 

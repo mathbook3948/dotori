@@ -44,7 +44,7 @@ pub(crate) const KOREAN: Pcs = Pcs {
     title: "여러 PC",
     about: || {
         format!(
-            "다른 PC의 dotori와 묶으면 어디서 말을 걸어도 같은 {} 같은 기억으로 이어져요. 주고받는 내용은 모두 암호화해요.",
+            "다른 PC와 묶으면 어디서 말을 걸어도 같은 {} 같은 기억으로 이어져요. 주고받는 내용은 모두 암호화해요.",
             identity::called(Particle::With)
         )
     },
@@ -80,7 +80,10 @@ pub(crate) const KOREAN: Pcs = Pcs {
         } else {
             "와"
         };
-        format!("{name}{with} 묶었어요. dotori가 돌고 있으면 곧 연결돼요.")
+        format!(
+            "{name}{with} 묶었어요. 그 PC에서 {} 켜져 있으면 곧 연결돼요.",
+            identity::called(Particle::Subject)
+        )
     },
     linked_section: "묶은 PC",
     no_pcs: "아직 묶은 PC가 없어요",
@@ -99,7 +102,7 @@ pub(crate) const ENGLISH: Pcs = Pcs {
     title: "Your PCs",
     about: || {
         format!(
-            "Link dotori on your other PCs, and {} keeps the same memory wherever you talk. Everything sent between them is encrypted.",
+            "Link your other PCs, and {} keeps the same memory wherever you talk. Everything sent between them is encrypted.",
             identity::name()
         )
     },
@@ -127,7 +130,12 @@ pub(crate) const ENGLISH: Pcs = Pcs {
     unreadable_code: "I couldn't read that link code. Paste it again.",
     no_address: "The code has no address. Enter that PC's address and port.",
     join_stopped: "Linking stopped partway. Try again.",
-    joined: |name| format!("Linked with {name}. It connects as soon as dotori runs there."),
+    joined: |name| {
+        format!(
+            "Linked with {name}. It connects as soon as {} runs there.",
+            identity::name()
+        )
+    },
     linked_section: "Linked PCs",
     no_pcs: "No PCs linked yet",
     connected: "Connected",

@@ -369,7 +369,7 @@ impl SettingsView {
                     eprintln!("dotori: joining another PC failed: {error}");
                     let failure = match error {
                         JoinError::There(_) => {
-                            SharedString::new_static(words().onboarding.join_failed)
+                            SharedString::from((words().onboarding.join_failed)())
                         }
                         JoinError::Here(error) => {
                             SharedString::from((words().onboarding.join_here_failed)(&error))

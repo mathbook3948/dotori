@@ -82,7 +82,7 @@ talk)
   if [ $# -eq 0 ]; then
     set -- "내일 오전 10시 30분에 치과 예약 있어. 아침 8시에 알려 줘" "이번 주 일정 정리해 줘" "다운로드 폴더의 영수증 PDF를 문서/영수증으로 옮겨 줘"
   fi
-  open_window window '^dotori$' light
+  open_window window '^Dotori$' light
   DISPLAY=":$display" xdotool windowactivate --sync "$window"
   for message in "$@"; do
     LC_ALL=C.UTF-8 DISPLAY=":$display" xdotool type --delay 60 "$message"
@@ -95,9 +95,9 @@ shot|settings)
   [ $# -ge 3 ] || usage
   out="$3"; look="${4:-light}"; frames="${5:-1}"
   if [ "$command" = shot ]; then
-    open_window window '^dotori$' "$look"
+    open_window window '^Dotori$' "$look"
   else
-    open_window settings '^dotori .' "$look"
+    open_window settings '^Dotori .' "$look"
   fi
   if [ "$frames" -le 1 ]; then
     DISPLAY=":$display" import -window "$window" -frame "$out"

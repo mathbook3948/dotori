@@ -103,6 +103,8 @@ use crate::vault::Vault;
 use crate::vector_copies;
 use crate::vector_copies::VECTORS_JOB;
 use crate::vector_copies::VectorCopies;
+use crate::window::identity;
+use crate::window::identity::Identity;
 
 const QUEUE: NonZeroUsize = NonZeroUsize::new(256).expect("non-zero");
 const SEEN: NonZeroUsize = NonZeroUsize::new(4096).expect("non-zero");
@@ -135,6 +137,7 @@ pub(crate) async fn serve(
     keep_to_itself();
     let _lock = DaemonLock::take(&home.lock())?;
     language::choose(language::saved(&home.settings()));
+    identity::choose(Identity::read(&home.settings(), &home.icons()));
     let vault = Arc::new(Vault::new(&home.root));
     let settings_copies = Arc::new(SettingsCopies::new(home.settings(), home.settings_stamp()));
     let peers = peers::start(&home, &Settings::load(&home.settings())?)

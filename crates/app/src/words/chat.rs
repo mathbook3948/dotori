@@ -42,12 +42,15 @@ pub(crate) struct Chat {
     pub(crate) preview_hint: &'static str,
     pub(crate) later: &'static str,
     pub(crate) open_browser: &'static str,
-    pub(crate) starting: &'static str,
+    /// The splash's first line, under the assistant's name, when it did not come up.
     pub(crate) could_not_start: &'static str,
-    pub(crate) closed: &'static str,
-    pub(crate) unreachable: &'static str,
-    pub(crate) not_connected: &'static str,
-    /// The header line while the given PC answers instead of this one.
+    pub(crate) open_again: &'static str,
+    /// The line under the composer when the assistant hung up, naming it.
+    pub(crate) closed: fn() -> String,
+    /// The line under the composer when the assistant cannot be reached, naming it.
+    pub(crate) unreachable: fn() -> String,
+    /// The line under the composer when the link failed some other way, naming the assistant.
+    pub(crate) not_connected: fn() -> String,
     pub(crate) keys_hint: &'static str,
     pub(crate) thinking: &'static str,
     /// The composer's placeholder, naming the assistant.
@@ -99,8 +102,10 @@ pub(crate) struct Chat {
     /// What a chat room hears when the window shows a card that takes typed values, given the
     /// host and whether the card is a login.
     pub(crate) card_on_pc: fn(&str, bool) -> String,
-    pub(crate) input_card_on_pc: &'static str,
-    pub(crate) sandboxed: &'static str,
+    /// What a chat room hears when the window shows a card of typed values with no host.
+    pub(crate) input_card_on_pc: fn() -> String,
+    /// The note on a sandboxed command, naming the assistant whose files it cannot see.
+    pub(crate) sandboxed: fn() -> String,
     /// The title of a card that asks to log in with a kept account, given the host and the site.
     pub(crate) log_in_with_kept: fn(&str, &str) -> String,
     /// Where a log-in card's account goes, given the assistant with its particle, the host and
@@ -114,7 +119,8 @@ pub(crate) struct Chat {
     pub(crate) log_in_as: fn(&str) -> String,
     pub(crate) log_in_without_id: &'static str,
     pub(crate) without_id: &'static str,
-    pub(crate) rest_on_pc: &'static str,
+    /// Where a chat room's owner picks from the accounts left, naming the assistant's window.
+    pub(crate) rest_on_pc: fn() -> String,
 }
 
 pub(crate) const KOREAN: Chat = Chat {
@@ -153,11 +159,21 @@ pub(crate) const KOREAN: Chat = Chat {
     preview_hint: "화면을 눌러도 크게 열려요",
     later: "나중에",
     open_browser: "브라우저 열기",
-    starting: "dotori를 켜고 있어요",
-    could_not_start: "dotori를 켜지 못했어요. 앱을 다시 열어 주세요",
-    closed: "dotori가 연결을 끊었어요. 다시 연결하고 있어요",
-    unreachable: "dotori에 닿지 않아요. 다시 연결하고 있어요",
-    not_connected: "dotori에 연결하지 못했어요. 다시 해 보고 있어요",
+    could_not_start: "켜지 못했어요",
+    open_again: "앱을 다시 열어 주세요",
+    closed: || {
+        format!(
+            "{} 연결을 끊었어요. 다시 연결하고 있어요",
+            called(Particle::Subject)
+        )
+    },
+    unreachable: || format!("{} 닿지 않아요. 다시 연결하고 있어요", called(Particle::To)),
+    not_connected: || {
+        format!(
+            "{} 연결하지 못했어요. 다시 해 보고 있어요",
+            called(Particle::With)
+        )
+    },
     keys_hint: "Enter로 보내고, Shift+Enter로 줄을 바꿔요",
     thinking: "생각하는 중",
     say_to: || format!("{} 말하기", called(Particle::To)),
@@ -213,10 +229,18 @@ pub(crate) const KOREAN: Chat = Chat {
     sent_by_dm: "확인할 일을 DM으로 보냈어요.",
     card_on_pc: |host, log_in| {
         let kind = if log_in { "로그인" } else { "입력" };
-        format!("PC의 dotori 창에 {host} {kind} 카드를 띄웠어요.")
+        format!(
+            "PC의 {} 창에 {host} {kind} 카드를 띄웠어요.",
+            identity::name()
+        )
     },
-    input_card_on_pc: "PC의 dotori 창에 입력 카드를 띄웠어요.",
-    sandboxed: "샌드박스 안에서 실행해요. dotori의 금고와 기록은 보이지 않아요.",
+    input_card_on_pc: || format!("PC의 {} 창에 입력 카드를 띄웠어요.", identity::name()),
+    sandboxed: || {
+        format!(
+            "샌드박스 안에서 실행해요. {} 금고와 기록은 보이지 않아요.",
+            called(Particle::Of)
+        )
+    },
     log_in_with_kept: |host, site| format!("금고의 {host} ({site}) 계정으로 로그인해도 될까요?"),
     log_in_note: |subject, host, path| {
         format!(
@@ -230,7 +254,7 @@ pub(crate) const KOREAN: Chat = Chat {
     log_in_as: |id| format!("{id} 계정으로 로그인"),
     log_in_without_id: "아이디 없는 계정으로 로그인",
     without_id: "아이디 없이",
-    rest_on_pc: "나머지는 PC의 dotori 창에서 골라 주세요",
+    rest_on_pc: || format!("나머지는 PC의 {} 창에서 골라 주세요", identity::name()),
 };
 
 pub(crate) const ENGLISH: Chat = Chat {
@@ -268,11 +292,11 @@ pub(crate) const ENGLISH: Chat = Chat {
     preview_hint: "Or click the preview.",
     later: "Hide",
     open_browser: "Open browser",
-    starting: "dotori is starting.",
-    could_not_start: "Couldn't start dotori. Please open the app again.",
-    closed: "dotori closed the connection. Reconnecting.",
-    unreachable: "Can't reach dotori. Reconnecting.",
-    not_connected: "Couldn't connect to dotori. Trying again.",
+    could_not_start: "It couldn't start.",
+    open_again: "Open the app again.",
+    closed: || format!("{} closed the connection. Reconnecting.", identity::name()),
+    unreachable: || format!("Can't reach {}. Reconnecting.", identity::name()),
+    not_connected: || format!("Couldn't connect to {}. Trying again.", identity::name()),
     keys_hint: "Enter sends, Shift+Enter adds a line.",
     thinking: "Thinking",
     say_to: || format!("Message {}", identity::name()),
@@ -322,10 +346,20 @@ pub(crate) const ENGLISH: Chat = Chat {
     sent_by_dm: "I sent you a DM to check.",
     card_on_pc: |host, log_in| {
         let kind = if log_in { "login" } else { "input" };
-        format!("I opened a {kind} card for {host} in the dotori window on your PC.")
+        format!(
+            "I opened a {kind} card for {host} in the {} window on your PC.",
+            identity::name()
+        )
     },
-    input_card_on_pc: "I opened an input card in the dotori window on your PC.",
-    sandboxed: "It runs in a sandbox, where dotori's vault and records stay out of sight.",
+    input_card_on_pc: || {
+        format!(
+            "I opened an input card in the {} window on your PC.",
+            identity::name()
+        )
+    },
+    sandboxed: || {
+        String::from("It runs in a sandbox, where my vault and records stay out of sight.")
+    },
     log_in_with_kept: |host, site| {
         format!("Can I log in with the {host} ({site}) account from your vault?")
     },
@@ -339,5 +373,10 @@ pub(crate) const ENGLISH: Chat = Chat {
     log_in_as: |id| format!("Log in as {id}"),
     log_in_without_id: "Log in with the account without a username",
     without_id: "no username",
-    rest_on_pc: "Pick from the rest in the dotori window on your PC.",
+    rest_on_pc: || {
+        format!(
+            "Pick from the rest in the {} window on your PC.",
+            identity::name()
+        )
+    },
 };

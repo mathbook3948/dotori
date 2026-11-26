@@ -703,7 +703,7 @@ impl Render for SettingsView {
                 Note::Saved => (
                     theme.ok,
                     theme.ok_soft,
-                    SharedString::new_static(words().settings.saved),
+                    SharedString::from((words().settings.saved)()),
                 ),
                 Note::Failed(error) => (theme.danger, theme.danger_soft, error),
             };
@@ -793,7 +793,7 @@ impl SettingsView {
             div()
                 .text_xs()
                 .text_color(theme.muted)
-                .child(prose(words().settings.applies_on_restart))
+                .child(prose(&(words().settings.applies_on_restart)()))
                 .into_any_element()
         });
         footer().child(div().flex_1().min_w_0().child(note)).child(

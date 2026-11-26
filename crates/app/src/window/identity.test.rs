@@ -25,3 +25,9 @@ fn the_copula_follows_the_last_sound_of_the_name() {
     assert_eq!(followed("도토리", Particle::Is), "도토리예요");
     assert_eq!(followed("dotori", Particle::Is), "dotori예요");
 }
+
+#[test]
+fn the_object_particle_follows_the_last_sound_of_the_name() {
+    assert_eq!(followed("별", Particle::Object), "별을");
+    assert_eq!(followed("Dotori", Particle::Object), "Dotori를");
+}

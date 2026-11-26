@@ -75,7 +75,7 @@ pub(crate) const STEP: Motion = Motion::new(240, Curve::EaseOut);
 pub(crate) const SWITCH: Motion = Motion::new(180, Curve::EaseOut);
 /// The conversation following new text.
 pub(crate) const FOLLOW: Motion = Motion::new(180, Curve::EaseOut);
-/// One breath of the logo while dotori works. The only motion that repeats.
+/// One breath of the logo while dotori works or starts. The only motion that repeats.
 pub(crate) const WORKING: Motion = Motion::new(1600, Curve::EaseInOut);
 
 /// How far what arrives rises as it fades in, `spacing.rise` of DESIGN.md.

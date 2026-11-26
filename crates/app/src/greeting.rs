@@ -28,8 +28,9 @@ pub(crate) const GREETING: &str = "greeting";
 
 fn note(name: &str, language: &str) -> String {
     format!(
-        "The owner just finished setting up and opened the chat window, and you have not talked \
-         yet. Greet them in {language}, in this thread, with two `say` calls. In the first, say \
+        "The owner just finished setting up and opened the chat window. They have not written \
+         anything yet, and this note is in English only for you, so greet them in {language}, \
+         in this thread, with two `say` calls. In the first, say \
          hello, give your name, {name}, as their personal assistant, and tell them to call on you \
          whenever they are curious about something or short of hands. In the second, ask what \
          you should call them. When they answer, keep it with `add_memory`."

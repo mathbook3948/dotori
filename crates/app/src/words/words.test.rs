@@ -29,6 +29,12 @@ fn every_function(words: &Words) -> Vec<(&'static str, String)> {
         ("chat.write_hint", (chat.write_hint)("Dotori")),
         ("chat.asking", (chat.asking)("Dotori")),
         ("chat.in_browser_hint", (chat.in_browser_hint)()),
+        ("chat.closed", (chat.closed)()),
+        ("chat.unreachable", (chat.unreachable)()),
+        ("chat.not_connected", (chat.not_connected)()),
+        ("chat.input_card_on_pc", (chat.input_card_on_pc)()),
+        ("chat.sandboxed", (chat.sandboxed)()),
+        ("chat.rest_on_pc", (chat.rest_on_pc)()),
         ("chat.log_in_to", (chat.log_in_to)("example.com")),
         ("chat.say_to", (chat.say_to)()),
         ("chat.command_exited", (chat.command_exited)(3)),
@@ -56,6 +62,9 @@ fn every_function(words: &Words) -> Vec<(&'static str, String)> {
             (chat.log_in_note)("Dotori", "example.com", "/login"),
         ),
         ("chat.log_in_as", (chat.log_in_as)("minji")),
+        ("common.settings_title", (common.settings_title)()),
+        ("common.onboarding_title", (common.onboarding_title)()),
+        ("common.browser_title", (common.browser_title)()),
         (
             "common.theme",
             THEMES.map(|name| (common.theme)(name)).join(" "),
@@ -63,6 +72,7 @@ fn every_function(words: &Words) -> Vec<(&'static str, String)> {
         ("onboarding.hello", (onboarding.hello)()),
         ("onboarding.key_use", (onboarding.key_use)()),
         ("onboarding.elsewhere_hint", (onboarding.elsewhere_hint)()),
+        ("onboarding.join_failed", (onboarding.join_failed)()),
         ("onboarding.joined", (onboarding.joined)("laptop")),
         ("onboarding.received", (onboarding.received)("laptop")),
         (
@@ -113,6 +123,11 @@ fn every_function(words: &Words) -> Vec<(&'static str, String)> {
         ("screen.page_connecting", (screen.page_connecting)()),
         ("screen.page_empty", (screen.page_empty)()),
         ("screen.asks", (screen.asks)("a code")),
+        ("settings.saved", (settings.saved)()),
+        (
+            "settings.applies_on_restart",
+            (settings.applies_on_restart)(),
+        ),
         ("settings.model_about", (settings.model_about)()),
         (
             "settings.key_hint",
@@ -153,6 +168,15 @@ fn the_english_strings_carry_no_korean() {
             .iter()
             .fold(text.clone(), |text, name| text.replace(name.as_str(), ""));
         assert!(!hangul(&unnamed), "{field}: {text}");
+    }
+}
+
+#[test]
+fn no_string_calls_the_assistant_dotori_in_lowercase() {
+    for language in [Language::Korean, Language::English] {
+        for (field, text) in every_function(of(language)) {
+            assert!(!text.contains("dotori"), "{field}: {text}");
+        }
     }
 }
 

@@ -63,7 +63,7 @@ pub(crate) fn show(
         window_bounds: Some(WindowBounds::Windowed(bounds)),
         window_min_size: Some(size(px(480.), px(360.))),
         titlebar: Some(TitlebarOptions {
-            title: Some(SharedString::new_static(words().common.browser_title)),
+            title: Some(SharedString::from((words().common.browser_title)())),
             ..TitlebarOptions::default()
         }),
         app_id: Some(String::from("dotori")),

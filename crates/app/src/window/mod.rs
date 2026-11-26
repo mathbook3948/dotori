@@ -98,9 +98,9 @@ pub(crate) fn run(home: Home, which: Which) -> Result<(), String> {
             cx.bind_keys(input::bindings());
             cx.bind_keys([KeyBinding::new("secondary-q", Quit, None)]);
             let title = match which {
-                Which::Chat => "dotori",
-                Which::Settings => words().common.settings_title,
-                Which::Onboarding => words().common.onboarding_title,
+                Which::Chat => identity::name(),
+                Which::Settings => (words().common.settings_title)(),
+                Which::Onboarding => (words().common.onboarding_title)(),
             };
             let bounds = Bounds::centered(None, size(px(WINDOW.0), px(WINDOW.1)), cx);
             let options = WindowOptions {
@@ -108,7 +108,7 @@ pub(crate) fn run(home: Home, which: Which) -> Result<(), String> {
                 window_min_size: Some(size(px(WINDOW_MIN.0), px(WINDOW_MIN.1))),
                 is_resizable: !matches!(which, Which::Onboarding),
                 titlebar: Some(TitlebarOptions {
-                    title: Some(SharedString::new_static(title)),
+                    title: Some(SharedString::from(title)),
                     appears_transparent: true,
                     traffic_light_position: Some(point(px(16.), px(12.))),
                 }),

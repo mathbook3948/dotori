@@ -21,6 +21,7 @@ pub(crate) struct Identity {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Particle {
     Subject,
+    Object,
     With,
     To,
     Of,
@@ -73,7 +74,7 @@ pub(crate) fn icon() -> Option<PathBuf> {
         .and_then(|chosen| chosen.icon.clone())
 }
 
-/// The assistant's name followed by `particle`, such as "dotori가", "별이" or "dotori예요".
+/// The assistant's name followed by `particle`, such as "Dotori가", "별을" or "Dotori예요".
 pub(crate) fn called(particle: Particle) -> String {
     followed(&name(), particle)
 }
@@ -83,6 +84,8 @@ fn followed(name: &str, particle: Particle) -> String {
     let after = match (particle, closed) {
         (Particle::Subject, true) => "이",
         (Particle::Subject, false) => "가",
+        (Particle::Object, true) => "을",
+        (Particle::Object, false) => "를",
         (Particle::With, true) => "과",
         (Particle::With, false) => "와",
         (Particle::To, _) => "에게",

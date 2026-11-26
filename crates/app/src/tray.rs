@@ -155,7 +155,7 @@ fn tray() -> Result<(TrayIcon, Items), String> {
     let icon = Icon::from_rgba(acorn(), ICON_SIZE, ICON_SIZE).map_err(|error| error.to_string())?;
     let tray = TrayIconBuilder::new()
         .with_menu(Box::new(menu))
-        .with_tooltip("dotori")
+        .with_tooltip(crate::window::identity::name())
         .with_icon(icon)
         .build()
         .map_err(|error| error.to_string())?;

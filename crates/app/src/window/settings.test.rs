@@ -800,7 +800,7 @@ fn a_refused_join_says_so_and_back_returns_to_the_greeting(cx: &mut TestAppConte
     assert_eq!(
         joining(&view, cx),
         Some(onboarding::Joining::Typing(Some(
-            onboarding::Failure::Joining(SharedString::new_static(words().onboarding.join_failed))
+            onboarding::Failure::Joining(SharedString::from((words().onboarding.join_failed)()))
         )))
     );
     click(cx, "back");

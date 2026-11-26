@@ -47,7 +47,7 @@ bash .claude/skills/gpui-design/demo.sh stop "$home"
 
 `talk` opens the chat window and types into it with `xdotool`, the way the owner talks to dotori, so it needs no other client. It takes your own messages too. `shot ... light 5` saves five frames a few milliseconds apart, for checking that motion shows steps between its start and its end.
 
-`ask "$home" "<what dotori asks>"` stands in for dotori's browser and asks the owner for it, so the browser card shows; run it before `shot`. Given a JSON object instead, such as `'{"card": {...}}'`, it sends that as the browser's state, so a login card or an account card shows. What the windows send back, such as `{"kind":"take"}`, lands in `$home/screen.log`, and the browser window opens as `dotori 브라우저`, or `dotori browser` in English.
+`ask "$home" "<what dotori asks>"` stands in for dotori's browser and asks the owner for it, so the browser card shows; run it before `shot`. Given a JSON object instead, such as `'{"card": {...}}'`, it sends that as the browser's state, so a login card or an account card shows. What the windows send back, such as `{"kind":"take"}`, lands in `$home/screen.log`, and the browser window opens as `Dotori 브라우저`, or `Dotori browser` in English.
 
 On Windows, `win.ps1` next to this file does the same without touching the owner's screen, mouse or keyboard. Never drive dotori with the real cursor or bring its window forward: the owner is using the PC.
 

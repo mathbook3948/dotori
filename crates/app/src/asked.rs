@@ -122,8 +122,8 @@ pub(crate) fn lapsed() -> &'static str {
 }
 
 /// What a card says under a command that would run in the sandbox.
-pub(crate) fn sandboxed() -> &'static str {
-    words().chat.sandboxed
+pub(crate) fn sandboxed() -> String {
+    (words().chat.sandboxed)()
 }
 
 /// The title of a card that asks to log in with a kept account.
