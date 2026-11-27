@@ -849,6 +849,127 @@ fn the_gear_shows_the_settings_in_the_same_window_and_back_returns(cx: &mut Test
     let _ = std::fs::remove_dir_all(&root);
 }
 
+struct AtHome<'a> {
+    view: Entity<ChatView>,
+    cx: &'a mut VisualTestContext,
+    root: std::path::PathBuf,
+    updates: mpsc::UnboundedSender<Update>,
+    said: mpsc::UnboundedReceiver<FromWindow>,
+}
+
+fn wired_at_home<'a>(cx: &'a mut TestAppContext, name: &str) -> AtHome<'a> {
+    let root = std::env::temp_dir().join(format!("dotori-chat-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("a home");
+    std::fs::write(root.join("settings.toml"), "").expect("settings");
+    let home = Home { root: root.clone() };
+    let (updates, updates_rx) = mpsc::unbounded_channel();
+    let (say, said) = mpsc::unbounded_channel();
+    let (_shown, seen) = mpsc::unbounded_channel();
+    let (send, _browser) = mpsc::unbounded_channel();
+    cx.update(|cx| cx.bind_keys(crate::window::input::bindings()));
+    let (view, cx) = cx.add_window_view(|_, cx| {
+        ChatView::new(
+            Link {
+                updates: updates_rx,
+                say,
+            },
+            ScreenLink { seen, send },
+            Some(home),
+            false,
+            cx,
+        )
+    });
+    updates.send(Update::Connected).expect("sent");
+    cx.run_until_parked();
+    AtHome {
+        view,
+        cx,
+        root,
+        updates,
+        said,
+    }
+}
+
+#[gpui::test]
+fn enter_in_a_settings_field_keeps_the_draft_and_back_returns_to_it(cx: &mut TestAppContext) {
+    let AtHome {
+        view,
+        cx,
+        root,
+        updates,
+        mut said,
+    } = wired_at_home(cx, "enter");
+    cx.update(|window, cx| window.focus(&view.read(cx).input.focus_handle(cx)));
+    cx.simulate_input("안녕");
+    cx.run_until_parked();
+
+    click(cx, "settings");
+    click(cx, "section-model");
+    cx.update(|window, cx| {
+        let settings = view.read(cx).settings.clone().expect("the settings show");
+        window.focus(&settings.focus_handle(cx));
+    });
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+
+    assert!(said.try_recv().is_err(), "the draft was not sent");
+    click(cx, "back-to-chat");
+    cx.update(|window, cx| {
+        let input = view.read(cx).input.clone();
+        assert_eq!(input.read(cx).text(), "안녕");
+        assert!(
+            input.focus_handle(cx).is_focused(window),
+            "typing goes on in the draft"
+        );
+    });
+    drop(updates);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[gpui::test]
+fn a_card_that_waits_behind_the_settings_marks_the_way_back(cx: &mut TestAppContext) {
+    let AtHome {
+        view: _view,
+        cx,
+        root,
+        updates,
+        said: _said,
+    } = wired_at_home(cx, "waits");
+    click(cx, "settings");
+    assert!(cx.debug_bounds("chat-waits").is_none());
+
+    updates
+        .send(Update::Event(ToWindow::Ask {
+            id: 7,
+            tool: String::from("run_shell"),
+            input: String::from(r#"{"command":"ls"}"#),
+            at: 0,
+            sandboxed: false,
+        }))
+        .expect("sent");
+    cx.run_until_parked();
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+
+    assert!(cx.debug_bounds("chat-waits").is_some());
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[gpui::test]
+fn the_settings_read_the_file_again_each_time_they_open(cx: &mut TestAppContext) {
+    let (view, cx, root) = open_at_home(cx, "reread");
+
+    click(cx, "settings");
+    let first = view.read_with(cx, |view, _| view.settings.as_ref().map(Entity::entity_id));
+    click(cx, "back-to-chat");
+    click(cx, "settings");
+    let second = view.read_with(cx, |view, _| view.settings.as_ref().map(Entity::entity_id));
+
+    assert!(first.is_some() && first != second);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 #[gpui::test]
 fn a_heading_of_the_side_panel_opens_its_part_of_the_settings(cx: &mut TestAppContext) {
     let (view, cx, root) = open_at_home(cx, "side");

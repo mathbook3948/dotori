@@ -29,6 +29,8 @@ mod windows_icon {
     use windows::Win32::Foundation::LPARAM;
     use windows::Win32::Foundation::WPARAM;
     use windows::Win32::UI::WindowsAndMessaging::CreateIconFromResourceEx;
+    use windows::Win32::UI::WindowsAndMessaging::DestroyIcon;
+    use windows::Win32::UI::WindowsAndMessaging::HICON;
     use windows::Win32::UI::WindowsAndMessaging::ICON_BIG;
     use windows::Win32::UI::WindowsAndMessaging::ICON_SMALL;
     use windows::Win32::UI::WindowsAndMessaging::IsWindow;
@@ -61,13 +63,18 @@ mod windows_icon {
             .map_err(|error| format!("the icon cannot be made: {error}"))?;
             // ast-grep-ignore
             // SAFETY: `hwnd` names a live window, checked above, and `icon` was made just now.
-            unsafe {
+            let previous = unsafe {
                 SendMessageW(
                     hwnd,
                     WM_SETICON,
                     Some(WPARAM(which as usize)),
                     Some(LPARAM(icon.0 as isize)),
-                );
+                )
+            };
+            if previous.0 != 0 {
+                // ast-grep-ignore
+                // SAFETY: only this function sets icons by message, so the one handed back is ours and unset.
+                let _ = unsafe { DestroyIcon(HICON(previous.0 as *mut _)) };
             }
         }
         Ok(())

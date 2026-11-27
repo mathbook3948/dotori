@@ -5,7 +5,6 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use tokio::sync::Notify;
 use tokio::sync::mpsc;
 use tokio::time;
 
@@ -46,6 +45,7 @@ use dotori_mcp::relay::relay;
 use crate::accounts::LinkedSites;
 use crate::browser_route::BROWSER_JOB;
 use crate::browser_route::BrowserRoute;
+use crate::channel_slots::ChannelSlots;
 use crate::confirm;
 use crate::confirm::Asking;
 use crate::confirm::DecisionChannel;
@@ -95,7 +95,6 @@ use crate::room_cards::RoomCards;
 use crate::routines;
 use crate::routines::RoutineChannel;
 use crate::routines::Routines;
-use crate::settings::AssistantSettings;
 use crate::settings::ModelError;
 use crate::settings::RunnerChoice;
 use crate::settings::Settings;
@@ -122,6 +121,7 @@ const RELEASE_SENT: Duration = Duration::from_millis(300);
 const FLUSH_EVERY: Duration = Duration::from_secs(2);
 const WAIT_FOR_SETUP: Duration = Duration::from_secs(2);
 const FOLLOW_EVERY: Duration = Duration::from_millis(500);
+const PICTURE_EVERY: u32 = 4;
 
 /// Runs the agent without a tray, for the end-to-end test, until Ctrl-C or a terminate signal.
 #[cfg(debug_assertions)]
@@ -143,7 +143,7 @@ pub(crate) async fn serve(
     keep_to_itself();
     let _lock = DaemonLock::take(&home.lock())?;
     let seen = stamp(&home.settings());
-    take_settings(&home);
+    live::take_settings(&home);
     let _following = Following(tokio::spawn(follow_settings(home.clone(), seen)));
     let vault = Arc::new(Vault::new(&home.root));
     let settings_copies = Arc::new(SettingsCopies::new(home.settings(), home.settings_stamp()));
@@ -208,18 +208,15 @@ pub(crate) async fn serve(
         Arc::clone(&rooms),
         screen_lines,
     ));
-    let channels_changed = Arc::new(Notify::new());
-    {
-        let followed = Followed {
-            home: home.clone(),
-            vault: Arc::clone(&vault),
-            main: live_model,
-            sub: sub_model,
-            channels_changed: Arc::clone(&channels_changed),
-        };
-        let started_with = settings.clone();
-        tokio::spawn(async move { live::follow(followed, &started_with).await });
-    }
+    let slots = Arc::new(ChannelSlots::new()?);
+    rooms.connect(&slots.all());
+    let _live = Following(tokio::spawn(live::follow(Followed {
+        home: home.clone(),
+        vault: Arc::clone(&vault),
+        main: live_model,
+        sub: sub_model,
+        slots: Arc::clone(&slots),
+    })));
     let (guarded, wrong) = settings.relays(vault::lookup(&vault), true, &secrets);
     let (mut guarded, failed) = relay(guarded).await;
     for problem in wrong.iter().chain(&failed) {
@@ -515,34 +512,20 @@ pub(crate) async fn serve(
     door.write(&home.door())?;
     eprintln!("dotori: running; open the chat window from the tray");
     ready();
-    let mut restarting = false;
     let stopped = loop {
-        if !restarting {
-            tokio::select! {
-                () = gained(linked.as_ref()) => {}
-                stopped = &mut stop => break stopped,
-                () = &mut quit => break Ok(()),
-            }
-            if let Some(linked) = &linked {
-                time::sleep(SETTLE).await;
-                if !linked.keeper.holds(MAIN_JOB) {
-                    continue;
-                }
+        tokio::select! {
+            () = gained(linked.as_ref()) => {}
+            stopped = &mut stop => break stopped,
+            () = &mut quit => break Ok(()),
+        }
+        if let Some(linked) = &linked {
+            time::sleep(SETTLE).await;
+            if !linked.keeper.holds(MAIN_JOB) {
+                continue;
             }
         }
-        restarting = false;
-        let settings = Settings::load(&home.settings()).unwrap_or_else(|error| {
-            eprintln!(
-                "dotori: the settings do not read, so the ones dotori started with stay: {error}"
-            );
-            settings.clone()
-        });
-        let (chats, off) = settings.channels(vault::lookup(&vault));
-        for problem in off {
-            eprintln!("dotori: {problem}");
-        }
-        rooms.connect(&chats);
-        let mut channels: Vec<Arc<dyn Channel>> = chats
+        let mut channels: Vec<Arc<dyn Channel>> = slots
+            .all()
             .into_iter()
             .map(|chat| chat as Arc<dyn Channel>)
             .collect();
@@ -552,9 +535,8 @@ pub(crate) async fn serve(
             .as_ref()
             .is_some_and(|linked| !linked.hub.approved().is_empty());
         if greeting::is_new(records.as_ref(), &notes, joined).await {
-            let name = AssistantSettings::name_of(settings.assistant.as_ref());
             let language = language::current().english_name();
-            channels.push(Arc::new(Greeting::new(&name, language)) as Arc<dyn Channel>);
+            channels.push(Arc::new(Greeting::new(&identity::name(), language)) as Arc<dyn Channel>);
         }
         let channels = channels
             .into_iter()
@@ -597,7 +579,6 @@ pub(crate) async fn serve(
         route.hand_waiting(&app).await;
         let ended = tokio::select! {
             () = lost(linked.as_ref()) => Ended::Lost,
-            () = channels_changed.notified() => Ended::ChannelsChanged,
             stopped = &mut stop => Ended::Stopped(stopped),
             () = &mut quit => Ended::Stopped(Ok(())),
         };
@@ -609,18 +590,12 @@ pub(crate) async fn serve(
                 agent.shutdown().await;
                 handoff.stop_all();
             }
-            Ended::Lost | Ended::ChannelsChanged => agent.hand_off().await,
+            Ended::Lost => agent.hand_off().await,
         }
         asking.lapse_waiting();
         match ended {
             Ended::Stopped(stopped) => break stopped,
             Ended::Lost => eprintln!("dotori: another PC runs the assistant now"),
-            Ended::ChannelsChanged => {
-                eprintln!(
-                    "dotori: the chat channels changed, so the assistant starts again with them"
-                );
-                restarting = true;
-            }
         }
     };
     let _ = fs::remove_file(home.door());
@@ -632,19 +607,18 @@ pub(crate) async fn serve(
 }
 
 async fn follow_settings(home: Home, mut seen: Stamp) {
+    let mut ticks = 0_u32;
     loop {
         time::sleep(FOLLOW_EVERY).await;
+        ticks = ticks.wrapping_add(1);
         let now = stamp(&home.settings());
         if now != seen {
             seen = now;
-            take_settings(&home);
+            live::take_settings(&home);
+        } else if ticks.is_multiple_of(PICTURE_EVERY) {
+            identity::choose(Identity::read(&home.settings(), &home.icons()));
         }
     }
-}
-
-fn take_settings(home: &Home) {
-    language::choose(language::saved(&home.settings()));
-    identity::choose(Identity::read(&home.settings(), &home.icons()));
 }
 
 struct Following(tokio::task::JoinHandle<()>);
@@ -659,7 +633,6 @@ type SubSessions = (Arc<dyn SubSessionRunner>, Option<Arc<LiveModel>>);
 
 enum Ended {
     Lost,
-    ChannelsChanged,
     Stopped(Result<(), String>),
 }
 

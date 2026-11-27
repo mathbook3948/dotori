@@ -3,6 +3,7 @@
 mod accounts;
 mod asked;
 mod browser_route;
+mod channel_slots;
 mod confirm;
 mod daemon;
 mod device;

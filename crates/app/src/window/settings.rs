@@ -127,6 +127,7 @@ pub(crate) struct SettingsView {
     name: Entity<TextInput>,
     picking: Option<Task<()>>,
     note: Option<Note>,
+    gaps: Vec<Gap>,
     look_saving: Option<Task<()>>,
     pcs: Entity<PcsView>,
     routines: Entity<RoutinesView>,
@@ -146,6 +147,11 @@ pub(crate) struct SettingsView {
     saved: HashMap<&'static str, String>,
     watching: Vec<Subscription>,
     open_picker: Option<&'static str>,
+    /// Whether the chat behind the settings waits on the owner, as for a card to answer.
+    pub(crate) chat_waits: bool,
+    highlight: usize,
+    picker_focus: FocusHandle,
+    picker_scroll: ScrollHandle,
     drawn: picker::Drawn,
     served: Served,
     served_for: Option<picker::Asked>,
@@ -334,8 +340,6 @@ impl gpui::EventEmitter<BackToChat> for SettingsView {}
 #[derive(Clone)]
 enum Note {
     Failed(SharedString),
-    /// A channel turned on lacks fields, which are ringed, and the line under them names them.
-    Missing(Vec<Gap>),
 }
 
 #[derive(Clone)]
@@ -485,6 +489,7 @@ impl SettingsView {
             name,
             picking: None,
             note: None,
+            gaps: Vec::new(),
             look_saving: None,
             walk,
             moves: 0,
@@ -500,6 +505,10 @@ impl SettingsView {
             saved: HashMap::new(),
             watching: Vec::new(),
             open_picker: None,
+            chat_waits: false,
+            highlight: 0,
+            picker_focus: cx.focus_handle(),
+            picker_scroll: ScrollHandle::new(),
             drawn: picker::Drawn::default(),
             served: Served::Unasked,
             served_for: None,
@@ -676,9 +685,12 @@ impl SettingsView {
             return;
         }
         let gaps = self.gaps(&[part], cx);
+        if !quiet || gaps.is_empty() {
+            self.gaps.retain(|gap| gap.part != part);
+        }
         if !gaps.is_empty() {
             if !quiet {
-                self.note = Some(Note::Missing(gaps));
+                self.gaps.extend(gaps);
             }
             cx.notify();
             return;
@@ -924,8 +936,9 @@ impl SettingsView {
             return;
         }
         let gaps = self.gaps(step.parts(), cx);
+        self.gaps.retain(|gap| !step.parts().contains(&gap.part));
         if !gaps.is_empty() {
-            self.note = Some(Note::Missing(gaps));
+            self.gaps.extend(gaps);
             cx.notify();
             return;
         }
@@ -1054,22 +1067,19 @@ impl Render for SettingsView {
         if self.section == Section::Model {
             self.ask_served_once(cx);
         }
-        let note = self.note.clone().and_then(|note| {
+        let note = self.note.clone().map(|note| {
             let (color, soft, words) = match note {
                 Note::Failed(error) => (theme.danger, theme.danger_soft, error),
-                Note::Missing(_) => return None,
             };
-            Some(
-                div().flex_none().px(px(PANE_EDGE)).pb_4().pt_2().child(
-                    div()
-                        .px_3()
-                        .py_1p5()
-                        .rounded_lg()
-                        .bg(soft)
-                        .text_color(color)
-                        .text_xs()
-                        .child(prose(&words)),
-                ),
+            div().flex_none().px(px(PANE_EDGE)).pb_4().pt_2().child(
+                div()
+                    .px_3()
+                    .py_1p5()
+                    .rounded_lg()
+                    .bg(soft)
+                    .text_color(color)
+                    .text_xs()
+                    .child(prose(&words)),
             )
         });
         let blocks = self
@@ -1237,6 +1247,16 @@ impl SettingsView {
                     .text_color(theme.muted),
             )
             .child(words().chat.back)
+            .when(self.chat_waits, |back| {
+                back.child(
+                    div()
+                        .debug_selector(|| "chat-waits".to_owned())
+                        .ml_auto()
+                        .text_xs()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(words().settings.chat_waits),
+                )
+            })
             .on_click(cx.listener(|_, _, _, cx| cx.emit(BackToChat)));
         div()
             .flex_none()
@@ -1554,15 +1574,13 @@ impl SettingsView {
     }
 
     fn alarmed(&self, input: &Entity<TextInput>) -> bool {
-        matches!(&self.note, Some(Note::Missing(gaps))
-            if gaps.iter().any(|gap| gap.fields.contains(&input.entity_id())))
+        self.gaps
+            .iter()
+            .any(|gap| gap.fields.contains(&input.entity_id()))
     }
 
     fn missing_line(&self, theme: &Theme, part: &str) -> Option<Div> {
-        let Some(Note::Missing(gaps)) = &self.note else {
-            return None;
-        };
-        let gap = gaps.iter().find(|gap| gap.part == part)?;
+        let gap = self.gaps.iter().find(|gap| gap.part == part)?;
         Some(
             div()
                 .text_xs()

@@ -430,10 +430,9 @@ fn a_channel_turned_on_without_its_details_keeps_the_last_step(cx: &mut TestAppC
     click(cx, "next");
 
     assert_eq!(walked(&view, cx), Some(Step::Elsewhere));
-    assert!(view.read_with(cx, |view, _| matches!(
-        &view.note,
-        Some(Note::Missing(gaps)) if gaps.iter().any(|gap| gap.part == "telegram")
-    )));
+    assert!(view.read_with(cx, |view, _| {
+        view.gaps.iter().any(|gap| gap.part == "telegram")
+    }));
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -617,9 +616,7 @@ fn slack_turned_on_needs_its_tokens_and_a_channel_left_off_keeps_none(cx: &mut T
 
     assert_eq!(walked(&view, cx), Some(Step::Elsewhere));
     view.read_with(cx, |view, _| {
-        let Some(Note::Missing(gaps)) = &view.note else {
-            panic!("the missing tokens are named");
-        };
+        let gaps = &view.gaps;
         assert_eq!(gaps.len(), 1, "Telegram is off");
         let gap = &gaps[0];
         assert_eq!(gap.part, "slack");
@@ -1043,9 +1040,19 @@ fn a_channel_switched_on_waits_quietly_for_its_tokens(cx: &mut TestAppContext) {
 
     type_and_leave(&view, cx, |view, _| view.telegram_owner.clone(), "42");
     view.read_with(cx, |view, _| {
-        assert!(matches!(&view.note, Some(Note::Missing(gaps)) if gaps[0].part == "telegram"));
+        assert_eq!(view.gaps[0].part, "telegram");
         assert!(view.alarmed(&view.telegram_token));
         assert!(!view.alarmed(&view.telegram_owner));
+    });
+
+    click(cx, "section-general");
+    type_and_leave(&view, cx, |view, _| view.name.clone(), "별");
+    click(cx, "section-elsewhere");
+    view.read_with(cx, |view, _| {
+        assert!(
+            view.alarmed(&view.telegram_token),
+            "the ring stays until Telegram is tried again"
+        );
     });
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -1213,9 +1220,7 @@ fn a_channel_turned_on_with_nothing_names_every_empty_field_at_once(cx: &mut Tes
     click(cx, "next");
 
     view.read_with(cx, |view, _| {
-        let Some(Note::Missing(gaps)) = &view.note else {
-            panic!("the empty fields are named");
-        };
+        let gaps = &view.gaps;
         let gap = &gaps[0];
         assert_eq!(gap.fields.len(), 3);
         assert!(view.alarmed(&view.slack_owner));
@@ -1250,9 +1255,7 @@ fn every_channel_turned_on_shows_what_it_lacks_at_once(cx: &mut TestAppContext) 
     click(cx, "next");
 
     view.read_with(cx, |view, _| {
-        let Some(Note::Missing(gaps)) = &view.note else {
-            panic!("the empty fields are named");
-        };
+        let gaps = &view.gaps;
         let parts: Vec<&str> = gaps.iter().map(|gap| gap.part).collect();
         assert_eq!(parts, ["slack", "telegram"]);
         let said = &words().settings;
@@ -1383,8 +1386,78 @@ fn the_time_zone_is_picked_in_general_from_a_list_that_can_be_searched(cx: &mut 
     assert_eq!(view.read_with(cx, |view, _| view.open_picker), None);
 
     click(cx, "zone-picker");
+    let shown = view.read_with(cx, |view, cx| view.shown_picks(cx).expect("open").1);
+    let highlighted = view.read_with(cx, |view, _| view.highlight);
+    assert_eq!(
+        shown[highlighted].value, "Asia/Seoul",
+        "the list opens at the zone in use"
+    );
+    cx.simulate_input(words().common.follow_system);
     click(cx, "zone-picker-default");
     assert_eq!(zone(), None, "back to each PC's own");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[gpui::test]
+fn a_time_zone_is_found_by_its_korean_name_and_picked_with_the_keys(cx: &mut TestAppContext) {
+    let (home, root) = onboarding_home("zone-keys", "");
+    let settings = Settings::load(&home.settings()).expect("loaded");
+    cx.update(|cx| cx.bind_keys(crate::window::input::bindings()));
+    let (view, cx) = cx.add_window_view(|_, cx| SettingsView::new(home.clone(), settings, cx));
+    cx.run_until_parked();
+
+    click(cx, "zone-picker");
+    cx.simulate_input("서울");
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("zone-picker-Asia/Seoul").is_some());
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+
+    let zone = || Routines::new(home.routines()).zone_name().expect("read");
+    assert_eq!(zone().as_deref(), Some("Asia/Seoul"));
+    assert_eq!(view.read_with(cx, |view, _| view.open_picker), None);
+
+    click(cx, "zone-picker");
+    cx.simulate_input("없는 도시");
+    cx.run_until_parked();
+    assert!(
+        cx.debug_bounds("zone-picker-nothing").is_some(),
+        "a search with no match says so"
+    );
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert_eq!(view.read_with(cx, |view, _| view.open_picker), None);
+    assert_eq!(
+        zone().as_deref(),
+        Some("Asia/Seoul"),
+        "escape picks nothing"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[gpui::test]
+fn the_arrow_keys_walk_a_list_that_has_no_search(cx: &mut TestAppContext) {
+    let (home, root) = onboarding_home("language-keys", "");
+    let settings = Settings::load(&home.settings()).expect("loaded");
+    let (view, cx) = cx.add_window_view(|_, cx| SettingsView::new(home.clone(), settings, cx));
+    cx.run_until_parked();
+
+    click(cx, "language-picker");
+    let start = view.read_with(cx, |view, _| view.highlight);
+    cx.simulate_keystrokes("down");
+    cx.run_until_parked();
+    assert_eq!(view.read_with(cx, |view, _| view.highlight), start + 1);
+    cx.simulate_keystrokes("up up up");
+    cx.run_until_parked();
+    assert_eq!(
+        view.read_with(cx, |view, _| view.highlight),
+        0,
+        "it stops at the top"
+    );
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+
+    assert_eq!(view.read_with(cx, |view, _| view.open_picker), None);
     let _ = std::fs::remove_dir_all(&root);
 }
 

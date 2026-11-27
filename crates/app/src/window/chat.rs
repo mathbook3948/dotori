@@ -134,6 +134,7 @@ pub(crate) struct ChatView {
     dismissed: Option<SharedString>,
     preview: Option<Arc<RenderImage>>,
     focus_card: bool,
+    focus_composer: bool,
     _uncopy: Option<Task<()>>,
     title: Title,
     _pump: Task<()>,
@@ -240,6 +241,9 @@ impl ChatView {
 
     /// Shows the settings in this window, at `part` when one is named.
     pub(crate) fn open_settings(&mut self, part: Option<Part>, cx: &mut Context<Self>) {
+        if !self.in_settings {
+            self.settings = None;
+        }
         if self.settings.is_none() {
             let Some(home) = self.home.clone() else {
                 return;
@@ -253,7 +257,9 @@ impl ChatView {
             };
             let view = cx.new(|cx| SettingsView::new(home, settings, cx));
             cx.subscribe(&view, |chat, _, _: &BackToChat, cx| {
+                chat.keep_settings(cx);
                 chat.in_settings = false;
+                chat.focus_composer = true;
                 cx.notify();
             })
             .detach();
@@ -264,6 +270,12 @@ impl ChatView {
         }
         self.in_settings = true;
         cx.notify();
+    }
+
+    fn keep_settings(&self, cx: &mut App) {
+        if let Some(settings) = &self.settings {
+            settings.update(cx, |settings, cx| settings.save_all(cx));
+        }
     }
 
     fn shows_buttons(&self) -> bool {
@@ -382,6 +394,12 @@ impl ChatView {
             }
         });
         let working = cx.new(|_| WorkingView);
+        cx.on_app_quit(|chat, cx| {
+            chat.keep_settings(cx);
+            async {}
+        })
+        .detach();
+        cx.on_release(|chat, cx| chat.keep_settings(cx)).detach();
         let pump = cx.spawn(async move |view, cx| {
             while let Some(update) = updates.recv().await {
                 if update == Update::Gone {
@@ -425,6 +443,7 @@ impl ChatView {
             dismissed: None,
             preview: None,
             focus_card: false,
+            focus_composer: false,
             _uncopy: None,
             title: Title::new(identity::name),
             _pump: pump,
@@ -2099,6 +2118,19 @@ impl Focusable for ChatView {
 impl Render for ChatView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.title.keep(window);
+        if self.focus_composer && !self.in_settings {
+            self.focus_composer = false;
+            window.focus(&self.input.focus_handle(cx));
+        }
+        if let Some(settings) = &self.settings {
+            let waits = self.waits_on_the_owner() || self.card.kind.is_some();
+            if settings.read(cx).chat_waits != waits {
+                settings.update(cx, |settings, cx| {
+                    settings.chat_waits = waits;
+                    cx.notify();
+                });
+            }
+        }
         let theme = Theme::of(window);
         self.input
             .update(cx, |input, cx| input.set_placeholder(say_to(), cx));
@@ -2149,6 +2181,7 @@ impl Render for ChatView {
             .min_w_0()
             .flex()
             .flex_col()
+            .on_action(cx.listener(Self::submit))
             .child(
                 div().flex_1().min_h_0().flex().justify_center().child(
                     div()
@@ -2204,7 +2237,6 @@ impl Render for ChatView {
             .text_color(theme.text)
             .text_sm()
             .line_height(px(21.))
-            .on_action(cx.listener(Self::submit))
             .child(frame.strip(&theme, self.settings_button(&theme, cx), div()))
             .child(body)
             .into_any_element()

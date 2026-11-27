@@ -18,6 +18,10 @@ pub(crate) struct Settings {
     pub(crate) choose_model: &'static str,
     /// The mark next to the choice a setting left unset takes.
     pub(crate) default_pick: &'static str,
+    /// Beside the way back to the chat, while a card there waits on the owner.
+    pub(crate) chat_waits: &'static str,
+    /// The line in a searched list when nothing matches.
+    pub(crate) no_match: &'static str,
     /// What the search field in a long list shows before anything is typed.
     pub(crate) search: &'static str,
     pub(crate) zone_title: &'static str,
@@ -123,6 +127,8 @@ pub(crate) const KOREAN: Settings = Settings {
     model: "모델",
     choose_model: "모델을 골라 주세요",
     default_pick: "기본",
+    no_match: "맞는 항목이 없어요",
+    chat_waits: "답을 기다려요",
     search: "찾기",
     zone_title: "시간대",
     zone_about: "루틴의 시간을 이 시간대로 읽어요.",
@@ -245,6 +251,8 @@ pub(crate) const ENGLISH: Settings = Settings {
     model: "Model",
     choose_model: "Choose a model",
     default_pick: "Default",
+    no_match: "Nothing matches",
+    chat_waits: "Needs you",
     search: "Search",
     zone_title: "Time zone",
     zone_about: "Routine times are read in this zone.",

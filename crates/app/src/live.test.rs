@@ -27,6 +27,15 @@ fn request() -> ModelRequest {
 }
 
 #[tokio::test]
+async fn a_model_the_settings_cannot_build_fails_each_request_with_why() {
+    let model = Unbuilt(String::from("set ANTHROPIC_API_KEY"));
+
+    let failed = model.complete(request()).await.expect_err("no model");
+
+    assert_eq!(failed.detail, "set ANTHROPIC_API_KEY");
+}
+
+#[tokio::test]
 async fn the_next_request_goes_to_the_model_swapped_in() {
     let first = Arc::new(Named("first", Mutex::new(Vec::new())));
     let second = Arc::new(Named("second", Mutex::new(Vec::new())));
@@ -41,7 +50,7 @@ async fn the_next_request_goes_to_the_model_swapped_in() {
 }
 
 #[test]
-fn turning_a_channel_on_changes_the_fingerprint_and_the_model_does_not() {
+fn turning_a_channel_on_changes_its_fingerprint_alone_and_the_model_changes_none() {
     let root = std::env::temp_dir().join(format!("dotori-live-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).expect("a home");
@@ -56,6 +65,12 @@ fn turning_a_channel_on_changes_the_fingerprint_and_the_model_does_not() {
     let telegram = channels_of(&parse("[telegram]\nowner = 42\n"), &vault);
 
     assert_eq!(alone, other_model);
-    assert_ne!(alone, telegram);
+    let differ: Vec<&str> = alone
+        .iter()
+        .zip(&telegram)
+        .filter(|(before, after)| before != after)
+        .map(|(before, _)| before.0)
+        .collect();
+    assert_eq!(differ, [TELEGRAM]);
     let _ = std::fs::remove_dir_all(&root);
 }

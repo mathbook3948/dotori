@@ -20,6 +20,7 @@ use gpui::Div;
 use gpui::Entity;
 use gpui::Focusable;
 use gpui::FontWeight;
+use gpui::KeyDownEvent;
 use gpui::MouseDownEvent;
 use gpui::Pixels;
 use gpui::SharedString;
@@ -36,7 +37,10 @@ use tokio::sync::oneshot;
 
 use super::SettingsView;
 use crate::language::Choice;
+use crate::window::input::Down;
+use crate::window::input::Submit;
 use crate::window::input::TextInput;
+use crate::window::input::Up;
 use crate::window::parts::CHECK_ICON;
 use crate::window::parts::CHEVRON_ICON;
 use crate::window::parts::SEARCH_ICON;
@@ -168,8 +172,8 @@ pub(super) type Action = (
 /// The id an open menu of actions keeps in `open_picker`, as the menu under the picture.
 pub(super) const AVATAR_MENU: &str = "avatar-menu";
 
-struct Pick {
-    value: String,
+pub(super) struct Pick {
+    pub(super) value: String,
     label: SharedString,
     default: bool,
 }
@@ -204,6 +208,55 @@ fn zone_names() -> &'static [String] {
         names.sort();
         names
     })
+}
+
+const KOREAN_ZONES: [(&str, &str); 32] = [
+    ("Asia/Seoul", "서울 한국"),
+    ("Asia/Tokyo", "도쿄 일본"),
+    ("Asia/Shanghai", "상하이 베이징 중국"),
+    ("Asia/Hong_Kong", "홍콩"),
+    ("Asia/Taipei", "타이베이 대만"),
+    ("Asia/Singapore", "싱가포르"),
+    ("Asia/Bangkok", "방콕 태국"),
+    ("Asia/Ho_Chi_Minh", "호찌민 베트남"),
+    ("Asia/Jakarta", "자카르타 인도네시아"),
+    ("Asia/Manila", "마닐라 필리핀"),
+    ("Asia/Kolkata", "콜카타 뭄바이 인도"),
+    ("Asia/Dubai", "두바이 아랍에미리트"),
+    ("Europe/London", "런던 영국"),
+    ("Europe/Paris", "파리 프랑스"),
+    ("Europe/Berlin", "베를린 독일"),
+    ("Europe/Madrid", "마드리드 스페인"),
+    ("Europe/Rome", "로마 이탈리아"),
+    ("Europe/Amsterdam", "암스테르담 네덜란드"),
+    ("Europe/Moscow", "모스크바 러시아"),
+    ("Europe/Istanbul", "이스탄불 튀르키예"),
+    ("America/New_York", "뉴욕 미국 동부"),
+    ("America/Chicago", "시카고 미국 중부"),
+    ("America/Denver", "덴버 미국 산악"),
+    ("America/Los_Angeles", "로스앤젤레스 샌프란시스코 미국 서부"),
+    ("America/Toronto", "토론토 캐나다"),
+    ("America/Vancouver", "밴쿠버 캐나다"),
+    ("America/Mexico_City", "멕시코시티 멕시코"),
+    ("America/Sao_Paulo", "상파울루 브라질"),
+    ("Australia/Sydney", "시드니 호주"),
+    ("Australia/Melbourne", "멜버른 호주"),
+    ("Pacific/Auckland", "오클랜드 뉴질랜드"),
+    ("Pacific/Honolulu", "호놀룰루 하와이"),
+];
+
+fn matches(query: &str, value: &str, label: &str) -> bool {
+    let query = query.trim().to_lowercase().replace(' ', "_");
+    if query.is_empty() {
+        return true;
+    }
+    let korean = KOREAN_ZONES
+        .iter()
+        .find(|(zone, _)| *zone == value)
+        .map_or("", |(_, names)| names);
+    label.to_lowercase().replace(' ', "_").contains(&query)
+        || value.to_lowercase().contains(&query)
+        || korean.replace(' ', "_").contains(&query)
 }
 
 impl SettingsView {
@@ -499,9 +552,23 @@ impl SettingsView {
                 } else {
                     Some(id)
                 };
-                if searchable && view.open_picker == Some(id) {
-                    view.search.update(cx, |input, cx| input.set_text("", cx));
-                    window.focus(&view.search.focus_handle(cx));
+                if view.open_picker == Some(id) {
+                    view.highlight = view
+                        .picks_of(id, cx)
+                        .and_then(|picker| {
+                            picker
+                                .picks
+                                .iter()
+                                .position(|pick| pick.value == picker.chosen)
+                        })
+                        .unwrap_or(0);
+                    view.picker_scroll.scroll_to_item(view.highlight);
+                    if searchable {
+                        view.search.update(cx, |input, cx| input.set_text("", cx));
+                        window.focus(&view.search.focus_handle(cx));
+                    } else {
+                        window.focus(&view.picker_focus);
+                    }
                 }
                 cx.notify();
             }));
@@ -531,19 +598,9 @@ impl SettingsView {
             searchable,
             ..
         } = picker;
-        let query = self.search.read(cx).text().trim().to_lowercase();
-        let picks: Vec<Pick> = if searchable && !query.is_empty() {
-            let query = query.replace(' ', "_");
-            picks
-                .into_iter()
-                .filter(|pick| {
-                    pick.label.to_lowercase().replace(' ', "_").contains(&query)
-                        || pick.value.to_lowercase().contains(&query)
-                })
-                .collect()
-        } else {
-            picks
-        };
+        let picks = self.matching(searchable, picks, cx);
+        let highlight = self.highlight.min(picks.len().saturating_sub(1));
+        let nothing = picks.is_empty();
         let radius = match sits {
             Sits::Settings => super::FIELD_RADIUS,
             Sits::Onboarding { .. } => super::onboarding::FIELD,
@@ -569,7 +626,7 @@ impl SettingsView {
         };
         let drawn = self.drawn.clone();
         let rows =
-            picks.into_iter().map(|pick| {
+            picks.into_iter().enumerate().map(|(n, pick)| {
                 let is_chosen = pick.value == *chosen;
                 let name = if pick.value.is_empty() {
                     String::from("default")
@@ -588,6 +645,7 @@ impl SettingsView {
                     .gap_2()
                     .rounded_md()
                     .cursor_pointer()
+                    .when(n == highlight, |row| row.bg(theme.bubble))
                     .hover(|row| row.bg(theme.bubble))
                     .child(
                         div()
@@ -632,6 +690,29 @@ impl SettingsView {
                         })
                         .when(sits != Sits::Settings, |list| list.card(theme))
                         .text_color(theme.text)
+                        .when(!searchable, |list| list.track_focus(&self.picker_focus))
+                        .capture_action(cx.listener(|view, _: &Up, _, cx| {
+                            view.step_highlight(-1, cx);
+                            cx.stop_propagation();
+                        }))
+                        .capture_action(cx.listener(|view, _: &Down, _, cx| {
+                            view.step_highlight(1, cx);
+                            cx.stop_propagation();
+                        }))
+                        .capture_action(cx.listener(|view, _: &Submit, window, cx| {
+                            view.choose_highlighted(window, cx);
+                            cx.stop_propagation();
+                        }))
+                        .on_key_down(cx.listener(|view, event: &KeyDownEvent, window, cx| {
+                            match event.keystroke.key.as_str() {
+                                "up" => view.step_highlight(-1, cx),
+                                "down" => view.step_highlight(1, cx),
+                                "enter" => view.choose_highlighted(window, cx),
+                                "escape" => view.close_picker(window, cx),
+                                _ => return,
+                            }
+                            cx.stop_propagation();
+                        }))
                         .when(searchable, |list| {
                             list.child(
                                 div()
@@ -660,10 +741,24 @@ impl SettingsView {
                                 .id(SharedString::from(format!("{id}-list")))
                                 .max_h(rows_tall)
                                 .overflow_y_scroll()
+                                .track_scroll(&self.picker_scroll)
                                 .p(px(MENU_EDGE))
                                 .flex()
                                 .flex_col()
-                                .children(rows),
+                                .children(rows)
+                                .when(nothing, |list| {
+                                    list.child(
+                                        div()
+                                            .id(SharedString::from(format!("{id}-nothing")))
+                                            .debug_selector(move || format!("{id}-nothing"))
+                                            .h(px(ROW))
+                                            .px_3()
+                                            .flex()
+                                            .items_center()
+                                            .text_color(theme.muted)
+                                            .child(words().settings.no_match),
+                                    )
+                                }),
                         )
                         .on_mouse_down_out(cx.listener(
                             move |view, event: &MouseDownEvent, _, cx| {
@@ -765,6 +860,62 @@ impl SettingsView {
             )
             .with_priority(1),
         )
+    }
+
+    fn picks_of(&self, id: &'static str, cx: &App) -> Option<Picker> {
+        match id {
+            MODEL_PICKER => Some(self.model_picks(cx)),
+            EFFORT_PICKER => Some(self.effort_picks(cx)),
+            LANGUAGE_PICKER => Some(self.language_picks()),
+            ZONE_PICKER => Some(self.zone_picks()),
+            _ => None,
+        }
+    }
+
+    fn matching(&self, searchable: bool, picks: Vec<Pick>, cx: &App) -> Vec<Pick> {
+        if !searchable {
+            return picks;
+        }
+        let query = self.search.read(cx).text().to_owned();
+        picks
+            .into_iter()
+            .filter(|pick| matches(&query, &pick.value, &pick.label))
+            .collect()
+    }
+
+    pub(super) fn shown_picks(&self, cx: &App) -> Option<(&'static str, Vec<Pick>)> {
+        let id = self.open_picker?;
+        let picker = self.picks_of(id, cx)?;
+        Some((id, self.matching(picker.searchable, picker.picks, cx)))
+    }
+
+    fn step_highlight(&mut self, by: isize, cx: &mut Context<Self>) {
+        let Some((_, picks)) = self.shown_picks(cx) else {
+            return;
+        };
+        let Some(last) = picks.len().checked_sub(1) else {
+            return;
+        };
+        self.highlight = self.highlight.min(last).saturating_add_signed(by).min(last);
+        self.picker_scroll.scroll_to_item(self.highlight);
+        cx.notify();
+    }
+
+    fn choose_highlighted(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((id, picks)) = self.shown_picks(cx) else {
+            return;
+        };
+        let Some(pick) = picks.get(self.highlight.min(picks.len().saturating_sub(1))) else {
+            return;
+        };
+        self.pick(id, pick.value.clone(), cx);
+        window.blur();
+    }
+
+    fn close_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_picker = None;
+        window.blur();
+        cx.notify();
     }
 
     fn pick(&mut self, id: &'static str, value: String, cx: &mut Context<Self>) {

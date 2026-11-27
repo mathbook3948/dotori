@@ -67,9 +67,12 @@ fn acorn(side: u32) -> RgbaImage {
     image
 }
 
-/// Shows the picture on the window's taskbar button and in its corner, where the OS takes one
-/// from the app.
+/// Shows the picture on the window's taskbar button and in its corner, on Windows. Elsewhere the
+/// desktop takes the app's own icon, and asking GPUI for an X11 window's handle panics.
 pub(crate) fn show_on(window: &gpui::Window) {
+    if !cfg!(target_os = "windows") {
+        return;
+    }
     use raw_window_handle::HasWindowHandle;
     use raw_window_handle::RawWindowHandle;
     let Ok(handle) = HasWindowHandle::window_handle(window) else {
