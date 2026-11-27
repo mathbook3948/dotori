@@ -13,7 +13,6 @@ use crate::home::Home;
 use crate::notes::MAX_NOTES;
 use crate::notes::Notes;
 use crate::window::parts::prose;
-use crate::window::surface::SurfaceExt;
 use crate::window::theme::Theme;
 use crate::words::words;
 
@@ -125,9 +124,6 @@ impl Render for NotesView {
             .flex()
             .flex_col()
             .gap_4()
-            .p_5()
-            .rounded_2xl()
-            .card(&theme)
             .child(
                 div()
                     .flex()

@@ -36,6 +36,7 @@ fn the_motion_tokens_match_design_md() {
         ("greet", GREET),
         ("step", STEP),
         ("switch", SWITCH),
+        ("glide", GLIDE),
     ] {
         assert_eq!(
             token(name),
@@ -45,6 +46,7 @@ fn the_motion_tokens_match_design_md() {
             ),
             "motion.{name}"
         );
+        assert_eq!(motion.name, name, "a token goes by its name in DESIGN.md");
     }
     assert!(DESIGN.contains(&format!("  rise: {}px\n", RISE as u32)));
     assert!(DESIGN.contains(&format!("  slide: {}px\n", SLIDE as u32)));

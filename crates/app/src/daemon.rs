@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
 
+use tokio::sync::Notify;
 use tokio::sync::mpsc;
 use tokio::time;
 
@@ -69,6 +70,9 @@ use crate::home::Home;
 use crate::icons;
 use crate::idle::NoTools;
 use crate::language;
+use crate::live;
+use crate::live::Followed;
+use crate::live::LiveModel;
 use crate::lock::DaemonLock;
 use crate::logins;
 use crate::logins::LoginFiles;
@@ -175,15 +179,18 @@ pub(crate) async fn serve(
         None => Arc::new(NoTools),
     };
     let handoff = Arc::new(Handoff::default());
+    let (sub_runner, sub_model) =
+        sub_session_runner(&home, &settings, &vault, &basic, &toolbox, shared.clone())?;
     let sub_sessions: Arc<dyn SubSessionRunner> = Arc::new(HandedOff {
         handoff: Arc::clone(&handoff),
-        inner: sub_session_runner(&home, &settings, &vault, &basic, &toolbox, shared.clone())?,
+        inner: sub_runner,
     });
     let records = open_record(&home).await?;
     let notes = Notes::new(home.notes());
     let routines = Routines::new(home.routines());
+    let live_model = LiveModel::new(model);
     let model: Arc<dyn Model> = Arc::new(Noted {
-        model,
+        model: Arc::clone(&live_model) as Arc<dyn Model>,
         notes: Arc::clone(&notes),
         routines: Arc::clone(&routines),
     });
@@ -201,6 +208,18 @@ pub(crate) async fn serve(
         Arc::clone(&rooms),
         screen_lines,
     ));
+    let channels_changed = Arc::new(Notify::new());
+    {
+        let followed = Followed {
+            home: home.clone(),
+            vault: Arc::clone(&vault),
+            main: live_model,
+            sub: sub_model,
+            channels_changed: Arc::clone(&channels_changed),
+        };
+        let started_with = settings.clone();
+        tokio::spawn(async move { live::follow(followed, &started_with).await });
+    }
     let (guarded, wrong) = settings.relays(vault::lookup(&vault), true, &secrets);
     let (mut guarded, failed) = relay(guarded).await;
     for problem in wrong.iter().chain(&failed) {
@@ -496,18 +515,28 @@ pub(crate) async fn serve(
     door.write(&home.door())?;
     eprintln!("dotori: running; open the chat window from the tray");
     ready();
+    let mut restarting = false;
     let stopped = loop {
-        tokio::select! {
-            () = gained(linked.as_ref()) => {}
-            stopped = &mut stop => break stopped,
-            () = &mut quit => break Ok(()),
-        }
-        if let Some(linked) = &linked {
-            time::sleep(SETTLE).await;
-            if !linked.keeper.holds(MAIN_JOB) {
-                continue;
+        if !restarting {
+            tokio::select! {
+                () = gained(linked.as_ref()) => {}
+                stopped = &mut stop => break stopped,
+                () = &mut quit => break Ok(()),
+            }
+            if let Some(linked) = &linked {
+                time::sleep(SETTLE).await;
+                if !linked.keeper.holds(MAIN_JOB) {
+                    continue;
+                }
             }
         }
+        restarting = false;
+        let settings = Settings::load(&home.settings()).unwrap_or_else(|error| {
+            eprintln!(
+                "dotori: the settings do not read, so the ones dotori started with stay: {error}"
+            );
+            settings.clone()
+        });
         let (chats, off) = settings.channels(vault::lookup(&vault));
         for problem in off {
             eprintln!("dotori: {problem}");
@@ -567,23 +596,31 @@ pub(crate) async fn serve(
         }
         route.hand_waiting(&app).await;
         let ended = tokio::select! {
-            () = lost(linked.as_ref()) => None,
-            stopped = &mut stop => Some(stopped),
-            () = &mut quit => Some(Ok(())),
+            () = lost(linked.as_ref()) => Ended::Lost,
+            () = channels_changed.notified() => Ended::ChannelsChanged,
+            stopped = &mut stop => Ended::Stopped(stopped),
+            () = &mut quit => Ended::Stopped(Ok(())),
         };
         route.elsewhere();
         handoff.serve(None);
-        if ended.is_some() {
-            handoff.quit();
-            agent.shutdown().await;
-            handoff.stop_all();
-        } else {
-            agent.hand_off().await;
+        match &ended {
+            Ended::Stopped(_) => {
+                handoff.quit();
+                agent.shutdown().await;
+                handoff.stop_all();
+            }
+            Ended::Lost | Ended::ChannelsChanged => agent.hand_off().await,
         }
         asking.lapse_waiting();
         match ended {
-            Some(stopped) => break stopped,
-            None => eprintln!("dotori: another PC runs the assistant now"),
+            Ended::Stopped(stopped) => break stopped,
+            Ended::Lost => eprintln!("dotori: another PC runs the assistant now"),
+            Ended::ChannelsChanged => {
+                eprintln!(
+                    "dotori: the chat channels changed, so the assistant starts again with them"
+                );
+                restarting = true;
+            }
         }
     };
     let _ = fs::remove_file(home.door());
@@ -616,6 +653,14 @@ impl Drop for Following {
     fn drop(&mut self) {
         self.0.abort();
     }
+}
+
+type SubSessions = (Arc<dyn SubSessionRunner>, Option<Arc<LiveModel>>);
+
+enum Ended {
+    Lost,
+    ChannelsChanged,
+    Stopped(Result<(), String>),
 }
 
 enum Keyed {
@@ -822,24 +867,28 @@ fn sub_session_runner(
     basic: &BasicTools,
     toolbox: &Arc<dyn Toolbox>,
     shared: Option<Arc<tools::SharedTools>>,
-) -> Result<Arc<dyn SubSessionRunner>, String> {
+) -> Result<SubSessions, String> {
     let chosen = settings.sub_sessions.clone().unwrap_or_default();
     let agent = match chosen.runner.unwrap_or_default() {
         RunnerChoice::Llm => {
-            return Ok(Arc::new(LlmRunner {
-                model: settings
+            let model = LiveModel::new(
+                settings
                     .sub_session_model(vault::lookup(vault))
                     .map_err(|error| error.to_string())?,
+            );
+            let runner = Arc::new(LlmRunner {
+                model: Arc::clone(&model) as Arc<dyn Model>,
                 basic: basic.clone(),
                 rest: Arc::clone(toolbox),
                 max_turns: SUB_SESSION_TURNS,
                 tool_timeout: TOOL_TIMEOUT,
-            }));
+            });
+            return Ok((runner, Some(model)));
         }
         RunnerChoice::ClaudeCode => CodingAgent::ClaudeCode,
         RunnerChoice::Codex => CodingAgent::Codex,
     };
-    Ok(Arc::new(CliRunner {
+    let runner = Arc::new(CliRunner {
         agent,
         program: chosen
             .path
@@ -849,7 +898,8 @@ fn sub_session_runner(
         mcp: shared.map(|shared| shared as Arc<dyn McpServer>),
         limit: SUB_SESSION_LIMIT,
         hidden_env: settings.guarded_secrets(),
-    }))
+    });
+    Ok((runner, None))
 }
 
 #[cfg(unix)]

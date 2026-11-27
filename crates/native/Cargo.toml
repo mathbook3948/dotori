@@ -1,0 +1,18 @@
+[package]
+name = "dotori-native"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The few calls into the operating system that need unsafe code, behind safe functions"
+rust-version.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish = false
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.61.3", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+
+[lints]
+workspace = true

@@ -398,7 +398,10 @@ impl SlackForm {
             .owner
             .as_deref()
             .map(str::to_ascii_uppercase)
-            .ok_or(words().settings.slack_owner_missing)?;
+            .ok_or_else(|| {
+                let said = &words().settings;
+                (said.channel_missing)("Slack", &[said.missing_member_id])
+            })?;
         if !(owner.starts_with('U') || owner.starts_with('W'))
             || owner.len() < 3
             || !owner
@@ -451,7 +454,10 @@ impl TelegramForm {
         let owner = self
             .owner
             .as_deref()
-            .ok_or(words().settings.telegram_owner_missing)?
+            .ok_or_else(|| {
+                let said = &words().settings;
+                (said.channel_missing)("Telegram", &[said.missing_user_id])
+            })?
             .parse::<i64>()
             .ok()
             .filter(|owner| *owner > 0)
@@ -493,10 +499,10 @@ impl DiscordForm {
         if !self.on {
             return Ok(None);
         }
-        let owner = self
-            .owner
-            .as_deref()
-            .ok_or(words().settings.discord_owner_missing)?;
+        let owner = self.owner.as_deref().ok_or_else(|| {
+            let said = &words().settings;
+            (said.channel_missing)("Discord", &[said.missing_user_id])
+        })?;
         if !discord_id(owner) {
             return Err(String::from(words().settings.discord_owner_shape));
         }

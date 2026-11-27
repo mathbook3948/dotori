@@ -13,12 +13,15 @@ use gpui::ClickEvent;
 use gpui::Context;
 use gpui::Div;
 use gpui::Entity;
+use gpui::EntityId;
 use gpui::FocusHandle;
 use gpui::Focusable;
 use gpui::FontWeight;
 use gpui::MouseButton;
 use gpui::PathPromptOptions;
+use gpui::ScrollHandle;
 use gpui::SharedString;
+use gpui::Subscription;
 use gpui::Task;
 use gpui::Window;
 use gpui::div;
@@ -38,6 +41,7 @@ use crate::home::Home;
 use crate::icons;
 use crate::language;
 use crate::language::Choice;
+use crate::routines::Routines;
 use crate::settings::ANTHROPIC_KEY;
 use crate::settings::ASSISTANT_NAME;
 use crate::settings::ASSISTANT_NAME_LONGEST;
@@ -61,17 +65,24 @@ use crate::vault;
 use crate::vault::Vault;
 use crate::vault::now_ms;
 use crate::window::Title;
-use crate::window::chrome::Frame;
 use crate::window::identity;
 use crate::window::identity::Identity;
 use crate::window::input::TextInput;
+use crate::window::motion::GLIDE;
 use crate::window::motion::SWITCH;
 use crate::window::notes::NotesView;
+use crate::window::parts::BACK_ICON;
+use crate::window::parts::BUBBLE_ICON;
 use crate::window::parts::CHECK_ICON;
+use crate::window::parts::CHIP_ICON;
+use crate::window::parts::CLOCK_ICON;
+use crate::window::parts::NOTEBOOK_ICON;
+use crate::window::parts::SCREEN_ICON;
+use crate::window::parts::SHIELD_ICON;
+use crate::window::parts::SLIDERS_ICON;
 use crate::window::parts::TRASH_ICON;
 use crate::window::parts::bolt;
 use crate::window::parts::lock;
-use crate::window::parts::logo;
 use crate::window::parts::prose;
 use crate::window::parts::typeface;
 use crate::window::pcs::Joiner;
@@ -84,13 +95,13 @@ use crate::window::surface::framed;
 use crate::window::surface::hairline;
 use crate::window::theme::Look;
 use crate::window::theme::Theme;
-use crate::window::tokens::PICTURE;
+use crate::window::tokens::SIDEBAR;
 use crate::words::words;
 
 /// The settings window. It writes `settings.toml`, which the daemon reads when it starts.
 pub(crate) struct SettingsView {
     home: Home,
-    title: Title,
+    title: Option<Title>,
     earlier: Settings,
     openai_compatible: bool,
     model: Entity<TextInput>,
@@ -130,6 +141,26 @@ pub(crate) struct SettingsView {
     open_chat: fn(),
     join: Option<onboarding::JoinScreen>,
     joiner: Joiner,
+    section: Section,
+    scroll: ScrollHandle,
+    saved: HashMap<&'static str, String>,
+    watching: Vec<Subscription>,
+    open_picker: Option<&'static str>,
+    drawn: picker::Drawn,
+    served: Served,
+    served_for: Option<picker::Asked>,
+    asking: Option<Task<()>>,
+    list: picker::List,
+    served_watch: Vec<Subscription>,
+    zone: Option<String>,
+    search: Entity<TextInput>,
+    glide: Option<Glide>,
+}
+
+#[derive(Clone, Copy)]
+struct Glide {
+    part: Part,
+    began: Option<(std::time::Instant, gpui::Pixels)>,
 }
 
 const ALL_PARTS: [&str; 6] = ["model", "slack", "telegram", "discord", "assistant", "pc"];
@@ -164,10 +195,154 @@ impl Step {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Section {
+    General,
+    Model,
+    Elsewhere,
+    Memory,
+    Routines,
+    Pcs,
+    Safety,
+}
+
+impl Section {
+    const ALL: [Self; 7] = [
+        Self::General,
+        Self::Model,
+        Self::Elsewhere,
+        Self::Memory,
+        Self::Routines,
+        Self::Pcs,
+        Self::Safety,
+    ];
+
+    fn id(self) -> &'static str {
+        match self {
+            Self::General => "general",
+            Self::Model => "model",
+            Self::Elsewhere => "elsewhere",
+            Self::Memory => "memory",
+            Self::Routines => "routines",
+            Self::Pcs => "pcs",
+            Self::Safety => "safety",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        let all = words();
+        match self {
+            Self::General => all.settings.general,
+            Self::Model => all.settings.model_title,
+            Self::Elsewhere => all.onboarding.elsewhere_step,
+            Self::Memory => all.settings.notes_title,
+            Self::Routines => all.routines.title,
+            Self::Pcs => all.pcs.title,
+            Self::Safety => all.settings.safety,
+        }
+    }
+
+    fn icon(self) -> &'static str {
+        match self {
+            Self::General => SLIDERS_ICON,
+            Self::Model => CHIP_ICON,
+            Self::Elsewhere => BUBBLE_ICON,
+            Self::Memory => NOTEBOOK_ICON,
+            Self::Routines => CLOCK_ICON,
+            Self::Pcs => SCREEN_ICON,
+            Self::Safety => SHIELD_ICON,
+        }
+    }
+}
+
+const PANE_EDGE: f32 = 40.;
+
+/// One part of the settings, which a section shows as a block and a link can lead to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Part {
+    Identity,
+    Look,
+    Language,
+    Zone,
+    Model,
+    Slack,
+    Telegram,
+    Discord,
+    Notes,
+    Routines,
+    Pcs,
+    Sandbox,
+    Vault,
+}
+
+impl Part {
+    const ALL: [Self; 13] = [
+        Self::Identity,
+        Self::Look,
+        Self::Language,
+        Self::Zone,
+        Self::Model,
+        Self::Slack,
+        Self::Telegram,
+        Self::Discord,
+        Self::Notes,
+        Self::Routines,
+        Self::Pcs,
+        Self::Sandbox,
+        Self::Vault,
+    ];
+
+    fn section(self) -> Section {
+        match self {
+            Self::Identity | Self::Look | Self::Language | Self::Zone => Section::General,
+            Self::Model => Section::Model,
+            Self::Slack | Self::Telegram | Self::Discord => Section::Elsewhere,
+            Self::Notes => Section::Memory,
+            Self::Routines => Section::Routines,
+            Self::Pcs => Section::Pcs,
+            Self::Sandbox | Self::Vault => Section::Safety,
+        }
+    }
+
+    fn id(self) -> &'static str {
+        match self {
+            Self::Identity => "part-identity",
+            Self::Look => "part-look",
+            Self::Language => "part-language",
+            Self::Zone => "part-zone",
+            Self::Model => "part-model",
+            Self::Slack => "part-slack",
+            Self::Telegram => "part-telegram",
+            Self::Discord => "part-discord",
+            Self::Notes => "part-notes",
+            Self::Routines => "part-routines",
+            Self::Pcs => "part-pcs",
+            Self::Sandbox => "part-sandbox",
+            Self::Vault => "part-vault",
+        }
+    }
+}
+
+/// Asks the settings window to show a part, from a view inside it such as the routines card.
+pub(crate) struct GoTo(pub(crate) Part);
+
+/// Asks the window the settings are in to show the conversation again.
+pub(crate) struct BackToChat;
+
+impl gpui::EventEmitter<BackToChat> for SettingsView {}
+
 #[derive(Clone)]
 enum Note {
-    Saved,
     Failed(SharedString),
+    /// A channel turned on lacks fields, which are ringed, and the line under them names them.
+    Missing(Vec<Gap>),
+}
+
+#[derive(Clone)]
+struct Gap {
+    part: &'static str,
+    fields: Vec<EntityId>,
+    words: SharedString,
 }
 
 impl SettingsView {
@@ -197,7 +372,7 @@ impl SettingsView {
             })
         };
         let secret = |cx: &mut Context<Self>| {
-            let input = cx.new(|cx| TextInput::masked(words().settings.paste, cx));
+            let input = cx.new(|cx| TextInput::masked("", cx));
             cx.observe(&input, |_, _, cx| cx.notify()).detach();
             input
         };
@@ -212,6 +387,13 @@ impl SettingsView {
             cx.new(|cx| PcsView::new(home, settings, cx))
         };
         let routines = cx.new(|cx| RoutinesView::new(&home, cx));
+        cx.subscribe(&routines, |view: &mut Self, _, GoTo(part): &GoTo, cx| {
+            view.go_to(*part, cx);
+        })
+        .detach();
+        let zone = Routines::new(home.routines()).zone_name().ok().flatten();
+        let search = cx.new(|cx| TextInput::new(words().settings.search, cx));
+        cx.observe(&search, |_, _, cx| cx.notify()).detach();
         let notes = cx.new(|cx| NotesView::new(&home, cx));
         let sandbox = {
             let home = home.clone();
@@ -269,13 +451,10 @@ impl SettingsView {
                 .and_then(|assistant| assistant.name.clone()),
             cx,
         );
-        let says: fn() -> String = if walk.is_some() {
-            || (words().common.onboarding_title)()
-        } else {
-            || (words().common.settings_title)()
-        };
         let mut view = Self {
-            title: Title::new(says),
+            title: walk
+                .is_some()
+                .then(|| Title::new(|| (words().common.onboarding_title)())),
             pcs,
             routines,
             notes,
@@ -283,11 +462,11 @@ impl SettingsView {
             home,
             earlier: settings,
             openai_compatible: form.openai_compatible,
-            model: field(words().settings.default_value, form.model, cx),
-            base_url: field(words().settings.default_value, form.base_url, cx),
+            model: field("", form.model, cx),
+            base_url: field("", form.base_url, cx),
             api_key_env: form.api_key_env,
             api_key,
-            effort: field(words().settings.default_value, form.effort, cx),
+            effort: field("", form.effort, cx),
             other,
             slack_on: slack.on,
             slack_owner: field("U012AB3CD", slack.owner, cx),
@@ -316,8 +495,27 @@ impl SettingsView {
             open_chat: || crate::tray::open("window"),
             join: None,
             joiner: join_in_background,
+            section: Section::General,
+            scroll: ScrollHandle::new(),
+            saved: HashMap::new(),
+            watching: Vec::new(),
+            open_picker: None,
+            drawn: picker::Drawn::default(),
+            served: Served::Unasked,
+            served_for: None,
+            asking: None,
+            list: picker::LIST,
+            served_watch: Vec::new(),
+            zone,
+            search,
+            glide: None,
         };
+        view.name_the_fields(cx);
         view.show_saved_key(cx);
+        view.saved = ALL_PARTS
+            .iter()
+            .map(|part| (*part, view.shown_part(part, cx)))
+            .collect();
         view
     }
 
@@ -352,8 +550,13 @@ impl SettingsView {
         self.api_key.update(cx, |input, cx| input.set_text("", cx));
         fill(&self.effort, next.effort, cx);
         self.openai_compatible = openai_compatible;
+        self.served = Served::Unasked;
+        self.served_for = None;
+        self.open_picker = None;
+        self.name_the_fields(cx);
         self.show_saved_key(cx);
         self.note = None;
+        self.save_part("model", true, cx);
         cx.notify();
     }
 
@@ -426,17 +629,141 @@ impl SettingsView {
         }
     }
 
-    fn save(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
-        self.note = Some(match self.persist(cx) {
-            Ok(()) => Note::Saved,
-            Err(error) => Note::Failed(SharedString::from(error)),
+    fn shown_part(&self, part: &str, cx: &App) -> String {
+        let text = |input: &Entity<TextInput>| input.read(cx).text().to_owned();
+        match part {
+            "model" => format!(
+                "{}\n{}\n{}\n{}\n{}\n{:?}",
+                self.openai_compatible,
+                text(&self.model),
+                text(&self.base_url),
+                text(&self.api_key),
+                text(&self.effort),
+                self.api_key_env,
+            ),
+            "slack" => format!(
+                "{}\n{}\n{}\n{}",
+                self.slack_on,
+                text(&self.slack_owner),
+                text(&self.slack_app_token),
+                text(&self.slack_bot_token),
+            ),
+            "telegram" => format!(
+                "{}\n{}\n{}",
+                self.telegram_on,
+                text(&self.telegram_owner),
+                text(&self.telegram_token),
+            ),
+            "discord" => format!(
+                "{}\n{}\n{}",
+                self.discord_on,
+                text(&self.discord_owner),
+                text(&self.discord_token),
+            ),
+            "assistant" => text(&self.name),
+            "pc" => self.pcs.read(cx).typed_name(cx),
+            _ => String::new(),
+        }
+    }
+
+    fn save_part(&mut self, part: &'static str, quiet: bool, cx: &mut Context<Self>) {
+        let shown = self.shown_part(part, cx);
+        if self.walk.is_some() || self.saved.get(part) == Some(&shown) {
+            return;
+        }
+        let unpicked = self.openai_compatible && self.model.read(cx).text().trim().is_empty();
+        if part == "model" && unpicked {
+            return;
+        }
+        let gaps = self.gaps(&[part], cx);
+        if !gaps.is_empty() {
+            if !quiet {
+                self.note = Some(Note::Missing(gaps));
+            }
+            cx.notify();
+            return;
+        }
+        let model = self.model_form(cx);
+        match self.persist_with(&model, &[part], cx) {
+            Ok(()) => {
+                self.saved.insert(part, self.shown_part(part, cx));
+                self.note = None;
+            }
+            Err(_) if quiet => {}
+            Err(error) => self.note = Some(Note::Failed(SharedString::from(error))),
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn save_all(&mut self, cx: &mut Context<Self>) {
+        for part in ALL_PARTS {
+            self.save_part(part, true, cx);
+        }
+    }
+
+    fn watch_fields(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.served_watch.is_empty() {
+            for input in [&self.base_url, &self.api_key] {
+                let handle = input.focus_handle(cx);
+                let watched = cx.on_blur(&handle, window, |view, _, cx| view.ask_served(cx));
+                self.served_watch.push(watched);
+            }
+        }
+        if self.walk.is_some() || !self.watching.is_empty() {
+            return;
+        }
+        let fields = [
+            (&self.model, "model"),
+            (&self.base_url, "model"),
+            (&self.api_key, "model"),
+            (&self.effort, "model"),
+            (&self.slack_owner, "slack"),
+            (&self.slack_app_token, "slack"),
+            (&self.slack_bot_token, "slack"),
+            (&self.telegram_owner, "telegram"),
+            (&self.telegram_token, "telegram"),
+            (&self.discord_owner, "discord"),
+            (&self.discord_token, "discord"),
+            (&self.name, "assistant"),
+            (&self.pcs.read(cx).name, "pc"),
+        ]
+        .map(|(input, part)| (input.focus_handle(cx), part));
+        for (handle, part) in fields {
+            let watched = cx.on_blur(&handle, window, move |view, _, cx| {
+                view.save_part(part, false, cx);
+            });
+            self.watching.push(watched);
+        }
+        let view = cx.entity().downgrade();
+        window.on_window_should_close(cx, move |_, cx| {
+            let _ = view.update(cx, |view, cx| view.save_all(cx));
+            true
         });
+    }
+
+    fn open_section(&mut self, section: Section, cx: &mut Context<Self>) {
+        if self.section == section {
+            return;
+        }
+        self.section = section;
+        self.glide = None;
+        self.note = None;
+        self.open_picker = None;
+        if section == Section::General {
+            self.zone = Routines::new(self.home.routines())
+                .zone_name()
+                .ok()
+                .flatten();
+        }
+        self.slides.clear();
+        self.scroll.set_offset(gpui::point(px(0.), px(0.)));
         cx.notify();
     }
 
     fn persist(&mut self, cx: &mut Context<Self>) -> Result<(), String> {
         let model = self.model_form(cx);
-        self.persist_with(&model, cx)
+        let parts = self.walk.map_or(&ALL_PARTS[..], Step::parts);
+        self.persist_with(&model, parts, cx)
     }
 
     fn model_form(&self, cx: &Context<Self>) -> ModelForm {
@@ -448,13 +775,17 @@ impl SettingsView {
         ModelForm { form, key }
     }
 
-    fn persist_with(&mut self, model: &ModelForm, cx: &mut Context<Self>) -> Result<(), String> {
+    fn persist_with(
+        &mut self,
+        model: &ModelForm,
+        parts: &[&'static str],
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
         let slack = self.slack_form(cx);
         let telegram = self.telegram_form(cx);
         let discord = self.discord_form(cx);
         let typed_name = self.name.read(cx).text().trim().to_owned();
         let typed_pc = self.pcs.read(cx).typed_name(cx);
-        let parts = self.walk.map_or(&ALL_PARTS[..], Step::parts);
         let owns = |part: &str| parts.contains(&part);
         let earlier_model = &self.earlier.model;
         let wanted = Settings::load(&self.home.settings()).and_then(|on_disk| {
@@ -494,7 +825,9 @@ impl SettingsView {
         });
         let saved = wanted.and_then(|settings| {
             let typed = self.typed_secrets(model, parts, cx);
-            self.tokens_given(&typed, parts)?;
+            if let Some(gap) = self.gaps(parts, cx).first() {
+                return Err(gap.words.to_string());
+            }
             let before = if owns("model") {
                 mem::replace(&mut self.api_key_env, model.form.api_key_env.clone())
             } else {
@@ -532,7 +865,7 @@ impl SettingsView {
     ) -> Result<(), String> {
         if step != Step::Welcome {
             match model {
-                Some(model) => self.persist_with(model, cx)?,
+                Some(model) => self.persist_with(model, step.parts(), cx)?,
                 None => self.persist(cx)?,
             }
         }
@@ -590,6 +923,12 @@ impl SettingsView {
             cx.notify();
             return;
         }
+        let gaps = self.gaps(step.parts(), cx);
+        if !gaps.is_empty() {
+            self.note = Some(Note::Missing(gaps));
+            cx.notify();
+            return;
+        }
         match self.leave(step, None, cx) {
             Err(error) => self.note = Some(Note::Failed(SharedString::from(error))),
             Ok(()) => self.step_on(step, window, cx),
@@ -636,6 +975,7 @@ impl SettingsView {
             Some(next) => {
                 self.walk = Some(next);
                 self.moves += 1;
+                self.slides.clear();
                 self.forward = true;
                 self.note = None;
                 if next == Step::Key {
@@ -660,6 +1000,7 @@ impl SettingsView {
         if let Some(previous) = self.walk.and_then(Step::previous) {
             self.walk = Some(previous);
             self.moves += 1;
+            self.slides.clear();
             self.forward = false;
             self.note = None;
             cx.notify();
@@ -669,7 +1010,6 @@ impl SettingsView {
 
 struct Secret {
     input: Entity<TextInput>,
-    part: &'static str,
     name: String,
     value: String,
 }
@@ -698,44 +1038,58 @@ impl Focusable for SettingsView {
 
 impl Render for SettingsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.title.keep(window);
+        if let Some(title) = &mut self.title {
+            title.keep(window);
+        }
         let theme = Theme::of(window);
         if let Some(step) = self.walk {
+            self.watch_fields(window, cx);
             return self
                 .walk_view(step, &theme, window, cx)
                 .on_mouse_down(MouseButton::Left, |_, window, _| window.blur())
                 .into_any_element();
         }
-        let frame = Frame::of(window);
-        let note = self.note.clone().map(|note| {
+        self.watch_fields(window, cx);
+        self.step_glide(window, cx);
+        if self.section == Section::Model {
+            self.ask_served_once(cx);
+        }
+        let note = self.note.clone().and_then(|note| {
             let (color, soft, words) = match note {
-                Note::Saved => (
-                    theme.ok,
-                    theme.ok_soft,
-                    SharedString::from((words().settings.saved)()),
-                ),
                 Note::Failed(error) => (theme.danger, theme.danger_soft, error),
+                Note::Missing(_) => return None,
             };
-            div()
-                .flex_1()
-                .px_3()
-                .py_1p5()
-                .rounded_lg()
-                .bg(soft)
-                .text_color(color)
-                .text_xs()
-                .child(prose(&words))
-                .into_any_element()
+            Some(
+                div().flex_none().px(px(PANE_EDGE)).pb_4().pt_2().child(
+                    div()
+                        .px_3()
+                        .py_1p5()
+                        .rounded_lg()
+                        .bg(soft)
+                        .text_color(color)
+                        .text_xs()
+                        .child(prose(&words)),
+                ),
+            )
         });
-        let spaced = self
-            .settings_cards(&theme, window, cx)
+        let blocks = self
+            .section_blocks(&theme, window, cx)
             .into_iter()
             .enumerate()
-            .flat_map(|(n, card)| [(n > 0).then(|| div().h_4().into_any_element()), Some(card)])
+            .flat_map(|(n, block)| {
+                [
+                    (n > 0).then(|| {
+                        div()
+                            .my(px(28.))
+                            .h(px(1.))
+                            .bg(theme.line)
+                            .into_any_element()
+                    }),
+                    Some(block),
+                ]
+            })
             .flatten();
-        let footer = self.settings_footer(&theme, note, cx);
-        frame
-            .resizable(div())
+        div()
             .on_mouse_down(MouseButton::Left, |_, window, _| window.blur())
             .flex()
             .flex_col()
@@ -746,72 +1100,180 @@ impl Render for SettingsView {
             .text_sm()
             .line_height(px(21.))
             .child(
-                frame.strip(
-                    &theme,
-                    div()
-                        .text_base()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child(words().common.settings),
-                    div(),
-                ),
-            )
-            .child(
                 div()
-                    .id("settings")
                     .flex_1()
-                    .overflow_y_scroll()
-                    .px_5()
-                    .pb_5()
-                    .children(spaced),
+                    .min_h_0()
+                    .flex()
+                    .child(self.sidebar(&theme, cx))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .rounded_tl(px(16.))
+                            .bg(theme.surface)
+                            .child(
+                                div()
+                                    .id("settings")
+                                    .flex_1()
+                                    .overflow_y_scroll()
+                                    .track_scroll(&self.scroll)
+                                    .px(px(PANE_EDGE))
+                                    .pt(px(28.))
+                                    .pb(px(PANE_EDGE))
+                                    .children(blocks),
+                            )
+                            .children(note),
+                    ),
             )
-            .child(footer)
             .into_any_element()
     }
 }
 
 impl SettingsView {
-    fn settings_cards(
+    fn shown_parts(&self, cx: &App) -> Vec<Part> {
+        Part::ALL
+            .into_iter()
+            .filter(|part| part.section() == self.section)
+            .filter(|part| *part != Part::Sandbox || self.sandbox.read(cx).shown())
+            .collect()
+    }
+
+    fn section_blocks(
         &self,
         theme: &Theme,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
-        vec![
-            self.identity_card(theme, window, cx).into_any_element(),
-            self.look_card(theme, cx).into_any_element(),
-            self.language_card(theme, cx).into_any_element(),
-            self.sandbox.clone().into_any_element(),
-            self.vault_card(theme, cx).into_any_element(),
-            self.model_card(theme, window, cx).into_any_element(),
-            self.slack_card(theme, window, cx).into_any_element(),
-            self.telegram_card(theme, window, cx).into_any_element(),
-            self.discord_card(theme, window, cx).into_any_element(),
-            self.notes.clone().into_any_element(),
-            self.routines.clone().into_any_element(),
-            self.pcs.clone().into_any_element(),
-        ]
+        self.shown_parts(cx)
+            .into_iter()
+            .map(|part| {
+                let block = match part {
+                    Part::Identity => self.identity_card(theme, window, cx).into_any_element(),
+                    Part::Look => self.look_card(theme, cx).into_any_element(),
+                    Part::Language => self.language_card(theme, window, cx).into_any_element(),
+                    Part::Zone => self.zone_card(theme, window, cx).into_any_element(),
+                    Part::Model => self.model_card(theme, window, cx).into_any_element(),
+                    Part::Slack => self.slack_card(theme, window, cx).into_any_element(),
+                    Part::Telegram => self.telegram_card(theme, window, cx).into_any_element(),
+                    Part::Discord => self.discord_card(theme, window, cx).into_any_element(),
+                    Part::Notes => self.notes.clone().into_any_element(),
+                    Part::Routines => self.routines.clone().into_any_element(),
+                    Part::Pcs => self.pcs.clone().into_any_element(),
+                    Part::Sandbox => self.sandbox.clone().into_any_element(),
+                    Part::Vault => self.vault_card(theme, cx).into_any_element(),
+                };
+                div()
+                    .debug_selector(move || part.id().to_owned())
+                    .child(block)
+                    .into_any_element()
+            })
+            .collect()
     }
 
-    fn settings_footer(
-        &self,
-        theme: &Theme,
-        note: Option<AnyElement>,
-        cx: &mut Context<Self>,
-    ) -> Div {
-        let note = note.unwrap_or_else(|| {
-            div()
-                .text_xs()
-                .text_color(theme.muted)
-                .child(prose(&(words().settings.applies_on_restart)()))
-                .into_any_element()
-        });
-        footer().child(div().flex_1().min_w_0().child(note)).child(
-            primary_button(theme, "save", words().settings.save)
-                .flex_none()
-                .on_click(cx.listener(Self::save)),
-        )
+    /// Opens the section `part` is in and scrolls it to the top of the pane, as a link to it does.
+    pub(crate) fn go_to(&mut self, part: Part, cx: &mut Context<Self>) {
+        self.open_section(part.section(), cx);
+        self.glide = Some(Glide { part, began: None });
+        cx.notify();
     }
 
+    fn step_glide(&mut self, window: &mut Window, cx: &App) {
+        let Some(glide) = self.glide else {
+            return;
+        };
+        window.request_animation_frame();
+        let Some((began, from)) = glide.began else {
+            self.glide = Some(Glide {
+                began: Some((std::time::Instant::now(), self.scroll.offset().y)),
+                ..glide
+            });
+            return;
+        };
+        let to = self
+            .shown_parts(cx)
+            .iter()
+            .position(|shown| *shown == glide.part)
+            .and_then(|at| self.scroll.bounds_for_item(at * 2))
+            .map(|part| {
+                let top = self.scroll.bounds().top() - part.top() + px(28.);
+                top.clamp(-self.scroll.max_offset().height, px(0.))
+            });
+        let Some(to) = to else {
+            self.glide = None;
+            return;
+        };
+        let elapsed = began.elapsed();
+        let moving = GLIDE.moving(elapsed);
+        let t = if moving { GLIDE.at(elapsed) } else { 1. };
+        crate::window::motion::seen::moving(GLIDE.name, if moving { t } else { 1. });
+        let offset = self.scroll.offset();
+        self.scroll
+            .set_offset(gpui::point(offset.x, from + (to - from) * t));
+        if !moving {
+            self.glide = None;
+        }
+    }
+
+    fn sidebar(&self, theme: &Theme, cx: &mut Context<Self>) -> Div {
+        let back = div()
+            .id("back-to-chat")
+            .debug_selector(|| "back-to-chat".to_owned())
+            .flex()
+            .items_center()
+            .gap(px(10.))
+            .h(px(38.))
+            .px_3()
+            .mb_2()
+            .rounded_md()
+            .cursor_pointer()
+            .hover(|item| item.bg(theme.bubble))
+            .child(
+                svg()
+                    .path(BACK_ICON)
+                    .flex_none()
+                    .size(px(17.))
+                    .text_color(theme.muted),
+            )
+            .child(words().chat.back)
+            .on_click(cx.listener(|_, _, _, cx| cx.emit(BackToChat)));
+        div()
+            .flex_none()
+            .w(px(SIDEBAR))
+            .flex()
+            .flex_col()
+            .gap(px(2.))
+            .px_3()
+            .pt_1()
+            .child(back)
+            .children(Section::ALL.map(|section| {
+                let chosen = self.section == section;
+                div()
+                    .id(section.id())
+                    .debug_selector(move || format!("section-{}", section.id()))
+                    .flex()
+                    .items_center()
+                    .gap(px(10.))
+                    .h(px(38.))
+                    .px_3()
+                    .rounded_md()
+                    .cursor_pointer()
+                    .when(chosen, |item| {
+                        item.bg(theme.bubble).font_weight(FontWeight::SEMIBOLD)
+                    })
+                    .when(!chosen, |item| item.hover(|item| item.bg(theme.bubble)))
+                    .child(
+                        svg()
+                            .path(section.icon())
+                            .flex_none()
+                            .size(px(17.))
+                            .text_color(if chosen { theme.text } else { theme.muted }),
+                    )
+                    .child(section.label())
+                    .on_click(cx.listener(move |view, _, _, cx| view.open_section(section, cx)))
+            }))
+    }
     fn model_card(&self, theme: &Theme, window: &Window, cx: &mut Context<Self>) -> Div {
         let provider =
             |id: &'static str, label: &'static str, openai: bool, cx: &mut Context<Self>| {
@@ -824,51 +1286,61 @@ impl SettingsView {
                 .on_click(cx.listener(move |view, _, _, cx| view.choose(openai, cx)))
             };
         let words = &words().settings;
-        let mut fields = div()
+        let served = self.served_line(cx).map(|(line, warn)| {
+            div()
+                .text_xs()
+                .text_color(if warn { theme.warn } else { theme.muted })
+                .child(line)
+        });
+        let model = div()
             .flex()
             .flex_col()
-            .gap_4()
-            .child(field(
-                theme,
-                window,
-                cx,
-                words.model,
-                words.model_hint,
-                &self.model,
-            ))
-            .child(field(
-                theme,
-                window,
-                cx,
-                words.base_url,
-                words.base_url_hint,
-                &self.base_url,
-            ))
-            .child(self.secret_field(
-                theme,
-                window,
-                cx,
-                words.api_key,
-                &self.api_key,
-                self.api_key_name(),
-            ));
-        if !self.openai_compatible {
-            fields = fields.child(field(
-                theme,
-                window,
-                cx,
-                words.effort,
-                words.effort_hint,
-                &self.effort,
-            ));
-        }
+            .gap_1p5()
+            .child(div().font_weight(FontWeight::MEDIUM).child(words.model))
+            .child(self.model_picker(theme, window, cx, Sits::Settings))
+            .children(served);
+        let address = field(
+            theme,
+            window,
+            cx,
+            words.base_url,
+            if self.openai_compatible {
+                crate::words::words().onboarding.server_hint
+            } else {
+                ""
+            },
+            &self.base_url,
+        );
+        let key = self.secret_field(
+            theme,
+            window,
+            cx,
+            words.api_key,
+            &self.api_key,
+            self.api_key_name(),
+        );
+        let fields = div().flex().flex_col().gap_4();
+        let fields = if self.openai_compatible {
+            fields.child(address).child(model).child(key)
+        } else {
+            let effort = div()
+                .flex()
+                .flex_col()
+                .gap_1p5()
+                .child(div().font_weight(FontWeight::MEDIUM).child(words.effort))
+                .child(self.effort_picker(theme, window, cx, Sits::Settings))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme.muted)
+                        .child(words.effort_hint),
+                );
+            fields.child(model).child(key).child(effort).child(address)
+        };
         div()
             .flex()
             .flex_col()
             .gap_4()
-            .p_5()
-            .rounded_2xl()
-            .card(theme)
             .child(
                 div()
                     .flex()
@@ -898,31 +1370,6 @@ impl SettingsView {
             ))
             .child(fields)
     }
-}
-
-fn footer() -> Div {
-    div()
-        .flex()
-        .flex_none()
-        .items_center()
-        .gap_3()
-        .px_5()
-        .py_3()
-}
-
-fn primary_button(theme: &Theme, id: &'static str, label: &'static str) -> gpui::Stateful<Div> {
-    div()
-        .id(id)
-        .debug_selector(move || id.to_owned())
-        .flex_none()
-        .px_5()
-        .py_2()
-        .rounded_lg()
-        .cursor_pointer()
-        .main_button(theme)
-        .hover(|button| button.opacity(0.9))
-        .font_weight(FontWeight::SEMIBOLD)
-        .child(label)
 }
 
 impl SettingsView {
@@ -985,7 +1432,6 @@ impl SettingsView {
             .filter(|_| parts.contains(&"model"))
             .map(|name| Secret {
                 input: model_input.clone(),
-                part: "model",
                 name,
                 value: model.key.clone(),
             });
@@ -997,10 +1443,9 @@ impl SettingsView {
         ]
         .into_iter()
         .filter(|(part, on, _)| *on && parts.contains(part))
-        .filter_map(|(part, _, (input, name))| {
+        .filter_map(|(_, _, (input, name))| {
             Some(Secret {
                 input: input.clone(),
-                part,
                 name: name?,
                 value: input.read(cx).text().trim().to_owned(),
             })
@@ -1008,28 +1453,122 @@ impl SettingsView {
         model_key.into_iter().chain(channels).collect()
     }
 
-    fn tokens_given(&self, typed: &[Secret], parts: &[&str]) -> Result<(), String> {
-        let words = &words().settings;
-        let given = |part: &str| {
-            typed
-                .iter()
-                .filter(|secret| secret.part == part)
-                .all(|secret| {
-                    !secret.value.is_empty()
-                        || environment(&secret.name).is_some()
-                        || self.kept.contains(&secret.name)
-                })
+    fn gaps(&self, parts: &[&str], cx: &Context<Self>) -> Vec<Gap> {
+        let said = &words().settings;
+        let [
+            _,
+            (app, app_name),
+            (bot, bot_name),
+            (telegram, telegram_name),
+            (discord, discord_name),
+        ] = self.secrets();
+        let empty = |input: &Entity<TextInput>| input.read(cx).text().trim().is_empty();
+        let no_token = |input: &Entity<TextInput>, name: Option<String>| {
+            empty(input)
+                && name
+                    .is_none_or(|name| environment(&name).is_none() && !self.kept.contains(&name))
         };
-        for (part, on, missing) in [
-            ("slack", self.slack_on, words.slack_tokens_needed),
-            ("telegram", self.telegram_on, words.telegram_token_needed),
-            ("discord", self.discord_on, words.discord_token_needed),
-        ] {
-            if on && parts.contains(&part) && !given(part) {
-                return Err(String::from(missing));
+        let shape = |part: &str| match part {
+            "slack" => self.slack_form(cx).settings().err(),
+            "telegram" => self.telegram_form(cx).settings().err(),
+            _ => self.discord_form(cx).settings().err(),
+        };
+        let channels = [
+            (
+                "slack",
+                "Slack",
+                self.slack_on,
+                vec![
+                    (app, no_token(app, app_name), said.missing_app_token),
+                    (bot, no_token(bot, bot_name), said.missing_bot_token),
+                    (
+                        &self.slack_owner,
+                        empty(&self.slack_owner),
+                        said.missing_member_id,
+                    ),
+                ],
+                &self.slack_owner,
+            ),
+            (
+                "telegram",
+                "Telegram",
+                self.telegram_on,
+                vec![
+                    (
+                        telegram,
+                        no_token(telegram, telegram_name),
+                        said.missing_bot_token,
+                    ),
+                    (
+                        &self.telegram_owner,
+                        empty(&self.telegram_owner),
+                        said.missing_user_id,
+                    ),
+                ],
+                &self.telegram_owner,
+            ),
+            (
+                "discord",
+                "Discord",
+                self.discord_on,
+                vec![
+                    (
+                        discord,
+                        no_token(discord, discord_name),
+                        said.missing_bot_token,
+                    ),
+                    (
+                        &self.discord_owner,
+                        empty(&self.discord_owner),
+                        said.missing_user_id,
+                    ),
+                ],
+                &self.discord_owner,
+            ),
+        ];
+        let mut gaps = Vec::new();
+        for (part, name, on, fields, owner) in channels {
+            if !on || !parts.contains(&part) {
+                continue;
+            }
+            let missing: Vec<_> = fields.into_iter().filter(|(_, gone, _)| *gone).collect();
+            if !missing.is_empty() {
+                let named: Vec<&str> = missing.iter().map(|(_, _, named)| *named).collect();
+                gaps.push(Gap {
+                    part,
+                    fields: missing
+                        .iter()
+                        .map(|(input, _, _)| input.entity_id())
+                        .collect(),
+                    words: SharedString::from((said.channel_missing)(name, &named)),
+                });
+            } else if let Some(error) = shape(part) {
+                gaps.push(Gap {
+                    part,
+                    fields: vec![owner.entity_id()],
+                    words: SharedString::from(error),
+                });
             }
         }
-        Ok(())
+        gaps
+    }
+
+    fn alarmed(&self, input: &Entity<TextInput>) -> bool {
+        matches!(&self.note, Some(Note::Missing(gaps))
+            if gaps.iter().any(|gap| gap.fields.contains(&input.entity_id())))
+    }
+
+    fn missing_line(&self, theme: &Theme, part: &str) -> Option<Div> {
+        let Some(Note::Missing(gaps)) = &self.note else {
+            return None;
+        };
+        let gap = gaps.iter().find(|gap| gap.part == part)?;
+        Some(
+            div()
+                .text_xs()
+                .text_color(theme.danger)
+                .child(prose(&gap.words)),
+        )
     }
 
     fn keep_secrets(&mut self, typed: &[Secret], cx: &mut Context<Self>) -> Result<(), String> {
@@ -1334,12 +1873,6 @@ impl SettingsView {
             .flex()
             .flex_col()
             .gap_3()
-            .p_5()
-            .rounded_2xl()
-            .bg(theme.surface)
-            .border_t_1()
-            .border_color(theme.rim)
-            .shadow_sm()
             .child(
                 div()
                     .flex()
@@ -1391,42 +1924,26 @@ impl SettingsView {
             .as_ref()
             .is_some_and(|name| self.kept.iter().any(|kept| kept == name));
         let said = &words().settings;
-        let (ink, checked, words) = if typed {
-            (theme.muted, false, said.key_on_save)
+        let alarmed = self.alarmed(input);
+        let line = if alarmed {
+            None
+        } else if typed {
+            Some((theme.muted, false, said.key_on_save))
         } else if from_environment {
-            (theme.text, true, said.key_from_environment)
+            Some((theme.text, true, said.key_from_environment))
         } else if kept {
-            (theme.text, true, said.key_kept)
+            Some((theme.text, true, said.key_kept))
         } else if name.is_none() {
-            (theme.muted, false, said.key_not_needed)
+            None
         } else {
-            (theme.warn, false, said.key_missing)
+            Some((theme.warn, false, said.key_missing))
         };
-        let forget = (kept && !typed).then(|| {
-            let name = name.clone().unwrap_or_default();
-            div()
-                .id(SharedString::from(format!("forget-{name}")))
-                .debug_selector({
-                    let name = name.clone();
-                    move || format!("forget-{name}")
-                })
-                .px_2()
-                .py_0p5()
-                .rounded_md()
-                .text_xs()
-                .text_color(theme.muted)
-                .cursor_pointer()
-                .hover(|forget| forget.bg(theme.danger_soft).text_color(theme.danger))
-                .child(said.remove)
-                .on_click(cx.listener(move |view, _, _, cx| view.forget(&name, cx)))
-        });
-        let hint = (said.key_hint)(name.as_deref());
         div()
             .flex()
             .flex_col()
             .gap_1p5()
-            .child(field(theme, window, cx, label, "", input))
-            .child(
+            .child(field_ringed(theme, window, cx, label, "", input, alarmed))
+            .children(line.map(|(ink, checked, words)| {
                 div()
                     .flex()
                     .items_center()
@@ -1441,9 +1958,7 @@ impl SettingsView {
                         )
                     })
                     .child(div().flex_1().text_xs().text_color(ink).child(words))
-                    .children(forget),
-            )
-            .child(div().text_xs().text_color(theme.muted).child(prose(&hint)))
+            }))
     }
 
     fn set_look(&mut self, name: &str, look: Look, cx: &mut Context<Self>) {
@@ -1571,32 +2086,11 @@ impl SettingsView {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let custom = self
-            .earlier
-            .assistant
-            .as_ref()
-            .is_some_and(|assistant| assistant.icon.is_some());
-        let button = |id: &'static str, label: &'static str| {
-            div()
-                .id(id)
-                .debug_selector(move || id.to_owned())
-                .px_3()
-                .py_1p5()
-                .rounded_lg()
-                .bg(theme.bubble)
-                .font_weight(FontWeight::MEDIUM)
-                .cursor_pointer()
-                .hover(|button| button.bg(theme.selection))
-                .child(label)
-        };
         let words = &words().settings;
         div()
             .flex()
             .flex_col()
             .gap_4()
-            .p_5()
-            .rounded_2xl()
-            .card(theme)
             .child(
                 div()
                     .flex()
@@ -1618,39 +2112,24 @@ impl SettingsView {
             .child(
                 div()
                     .flex()
-                    .items_center()
-                    .gap_4()
-                    .child(logo(theme, PICTURE))
+                    .items_end()
+                    .gap_3p5()
+                    .child(self.avatar(theme, window, cx))
                     .child(
                         div()
-                            .flex()
-                            .flex_wrap()
-                            .gap_2()
-                            .child(
-                                button("icon-pick", words.choose_picture)
-                                    .on_click(cx.listener(|view, _, _, cx| view.pick_icon(cx))),
-                            )
-                            .when(custom, |row| {
-                                row.child(button("icon-default", words.default_picture).on_click(
-                                    cx.listener(|view, _, _, cx| {
-                                        let set = view.set_icon(None);
-                                        view.note = set
-                                            .err()
-                                            .map(|error| Note::Failed(SharedString::from(error)));
-                                        cx.refresh_windows();
-                                    }),
-                                ))
-                            }),
+                            .flex_1()
+                            .min_w_0()
+                            .child(field(theme, window, cx, words.name, "", &self.name)),
                     ),
             )
-            .child(field(
-                theme,
-                window,
-                cx,
-                words.name,
-                words.name_hint,
-                &self.name,
-            ))
+    }
+
+    fn drop_icon(&mut self, cx: &mut Context<Self>) {
+        let set = self.set_icon(None);
+        self.note = set
+            .err()
+            .map(|error| Note::Failed(SharedString::from(error)));
+        cx.refresh_windows();
     }
 
     fn look_card(&self, theme: &Theme, cx: &mut Context<Self>) -> gpui::Div {
@@ -1658,9 +2137,6 @@ impl SettingsView {
             .flex()
             .flex_col()
             .gap_4()
-            .p_5()
-            .rounded_2xl()
-            .card(theme)
             .child(
                 div()
                     .flex()
@@ -1672,13 +2148,14 @@ impl SettingsView {
                             .font_weight(FontWeight::SEMIBOLD)
                             .child(words().settings.theme),
                     )
-                    .child(div().text_xs().text_color(theme.muted).child(
-                        if crate::window::theme::overridden() {
-                            words().settings.theme_overridden
-                        } else {
-                            words().settings.theme_about
-                        },
-                    )),
+                    .when(crate::window::theme::overridden(), |title| {
+                        title.child(
+                            div()
+                                .text_xs()
+                                .text_color(theme.muted)
+                                .child(words().settings.theme_overridden),
+                        )
+                    }),
             )
             .child(self.theme_list(theme, cx))
             .child(self.look_switch(theme, cx))
@@ -1797,58 +2274,60 @@ impl SettingsView {
             .child(div().relative().flex().child(thumb).children(options))
     }
 
-    fn language_card(&self, theme: &Theme, cx: &mut Context<Self>) -> gpui::Div {
-        let chosen = language::chosen();
-        let options = Choice::ALL.map(|option| {
-            let label = match option {
-                Choice::System => words().common.follow_system,
-                Choice::Only(language) => language.name(),
-            };
-            segment(
-                theme,
-                format!("language-{}", option.code()),
-                label,
-                option == chosen,
-            )
-            .on_click(cx.listener(move |view, _, _, cx| view.set_language(option, cx)))
-        });
+    fn language_card(&self, theme: &Theme, window: &Window, cx: &mut Context<Self>) -> Div {
         div()
             .flex()
             .flex_col()
             .gap_4()
-            .p_5()
-            .rounded_2xl()
-            .card(theme)
             .child(
                 div()
                     .text_base()
                     .font_weight(FontWeight::SEMIBOLD)
                     .child(words().common.language),
             )
+            .child(self.language_picker(theme, window, cx))
+    }
+
+    fn zone_card(&self, theme: &Theme, window: &Window, cx: &mut Context<Self>) -> Div {
+        let said = &words().settings;
+        div()
+            .flex()
+            .flex_col()
+            .gap_4()
             .child(
-                self.track(
-                    theme,
-                    LANGUAGE,
-                    Choice::ALL
-                        .iter()
-                        .position(|option| *option == chosen)
-                        .unwrap_or(0),
-                    options.into_iter().collect(),
-                ),
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_base()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(said.zone_title),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.muted)
+                            .child(said.zone_about),
+                    ),
             )
+            .child(self.zone_picker(theme, window, cx))
+    }
+
+    fn set_zone(&mut self, name: Option<String>, cx: &mut Context<Self>) {
+        let routines = Routines::new(self.home.routines());
+        match routines.set_zone(name.as_deref(), now_ms()) {
+            Ok(()) => {
+                self.zone = routines.zone_name().ok().flatten();
+                self.note = None;
+            }
+            Err(error) => self.note = Some(Note::Failed(SharedString::from(error))),
+        }
+        cx.notify();
     }
 
     fn set_language(&mut self, choice: Choice, cx: &mut Context<Self>) {
-        let was = language::chosen();
-        if was != choice {
-            self.slid(
-                LANGUAGE,
-                Choice::ALL
-                    .iter()
-                    .position(|option| *option == was)
-                    .unwrap_or(0),
-            );
-        }
         language::choose(choice);
         let path = self.home.settings();
         let earlier = self.look_saving.take();
@@ -1891,7 +2370,7 @@ impl SettingsView {
                     view.slid("slack-switch", 0);
                     view.slack_on = !view.slack_on;
                     view.note = None;
-                    cx.notify();
+                    view.save_part("slack", true, cx);
                 },
             )),
         );
@@ -1916,16 +2395,18 @@ impl SettingsView {
             bot_name,
         );
         card.child(guide(theme, &words.slack_steps))
-            .child(field(
+            .child(field_ringed(
                 theme,
                 window,
                 cx,
                 words.slack_owner,
                 words.slack_owner_hint,
                 &self.slack_owner,
+                self.alarmed(&self.slack_owner),
             ))
             .child(app_token)
             .child(bot_token)
+            .children(self.missing_line(theme, "slack"))
     }
 
     fn telegram_card(
@@ -1939,7 +2420,7 @@ impl SettingsView {
         let card = channel_card(
             theme,
             "Telegram",
-            words.telegram_about,
+            (words.telegram_about)(),
             switch(
                 theme,
                 "telegram-switch",
@@ -1950,7 +2431,7 @@ impl SettingsView {
                 view.slid("telegram-switch", 0);
                 view.telegram_on = !view.telegram_on;
                 view.note = None;
-                cx.notify();
+                view.save_part("telegram", true, cx);
             })),
         );
         if !on {
@@ -1966,15 +2447,17 @@ impl SettingsView {
             name,
         );
         card.child(guide(theme, &words.telegram_steps))
-            .child(field(
+            .child(field_ringed(
                 theme,
                 window,
                 cx,
                 words.telegram_owner,
                 words.telegram_owner_hint,
                 &self.telegram_owner,
+                self.alarmed(&self.telegram_owner),
             ))
             .child(token)
+            .children(self.missing_line(theme, "telegram"))
     }
 }
 
@@ -1990,13 +2473,13 @@ impl SettingsView {
         let card = channel_card(
             theme,
             "Discord",
-            words.discord_about,
+            (words.discord_about)(),
             switch(theme, "discord-switch", on, self.flipped("discord-switch")).on_click(
                 cx.listener(|view, _, _, cx| {
                     view.slid("discord-switch", 0);
                     view.discord_on = !view.discord_on;
                     view.note = None;
-                    cx.notify();
+                    view.save_part("discord", true, cx);
                 }),
             ),
         );
@@ -2013,15 +2496,17 @@ impl SettingsView {
             name,
         );
         card.child(guide(theme, &words.discord_steps))
-            .child(field(
+            .child(field_ringed(
                 theme,
                 window,
                 cx,
                 words.discord_owner,
                 words.discord_owner_hint,
                 &self.discord_owner,
+                self.alarmed(&self.discord_owner),
             ))
             .child(token)
+            .children(self.missing_line(theme, "discord"))
     }
 }
 
@@ -2080,40 +2565,33 @@ fn channel_card(
     about: impl Into<SharedString>,
     switch: impl IntoElement,
 ) -> gpui::Div {
-    div()
-        .flex()
-        .flex_col()
-        .gap_4()
-        .p_5()
-        .rounded_2xl()
-        .card(theme)
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap_3()
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .flex_1()
-                        .min_w_0()
-                        .gap_1()
-                        .child(
-                            div()
-                                .text_base()
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child(title),
-                        )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(theme.muted)
-                                .child(prose(&about.into())),
-                        ),
-                )
-                .child(switch),
-        )
+    div().flex().flex_col().gap_4().child(
+        div()
+            .flex()
+            .items_center()
+            .gap_3()
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_w_0()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_base()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(title),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.muted)
+                            .child(prose(&about.into())),
+                    ),
+            )
+            .child(switch),
+    )
 }
 
 fn switch(
@@ -2209,10 +2687,25 @@ fn field(
     label: &'static str,
     hint: &'static str,
     input: &Entity<TextInput>,
-) -> impl IntoElement {
+) -> Div {
+    field_ringed(theme, window, cx, label, hint, input, false)
+}
+
+fn field_ringed(
+    theme: &Theme,
+    window: &Window,
+    cx: &App,
+    label: &'static str,
+    hint: &'static str,
+    input: &Entity<TextInput>,
+    alarm: bool,
+) -> Div {
     let focus = input.focus_handle(cx);
-    let ring =
-        (focus.is_focused(window) && window.is_window_active()).then(|| theme.primary.into());
+    let ring = if alarm {
+        Some(theme.danger.into())
+    } else {
+        (focus.is_focused(window) && window.is_window_active()).then(|| theme.primary.into())
+    };
     let width = hairline(window);
     div()
         .flex()
@@ -2228,7 +2721,7 @@ fn field(
                 .px_3()
                 .py_2()
                 .rounded(px(FIELD_RADIUS - width))
-                .card(theme)
+                .bg(theme.canvas)
                 .cursor_text()
                 .on_mouse_down(MouseButton::Left, move |_, window, cx| {
                     window.focus(&focus);
@@ -2290,7 +2783,6 @@ fn check_failed(error: &CheckError, anthropic: bool) -> String {
 
 const PROVIDER: &str = "provider";
 const LOOK: &str = "look";
-const LANGUAGE: &str = "language";
 
 fn segment(theme: &Theme, id: String, label: &'static str, chosen: bool) -> gpui::Stateful<Div> {
     div()
@@ -2320,6 +2812,12 @@ const FIELD_RADIUS: f32 = 14.;
 
 #[path = "onboarding.rs"]
 mod onboarding;
+
+#[path = "picker.rs"]
+mod picker;
+
+use picker::Served;
+use picker::Sits;
 
 #[cfg(test)]
 #[path = "settings.test.rs"]

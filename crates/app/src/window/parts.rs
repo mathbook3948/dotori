@@ -3,6 +3,7 @@ use std::io::Cursor;
 use std::path::Path;
 use std::sync::Arc;
 
+use gpui::AnimationExt;
 use gpui::AssetSource;
 use gpui::Div;
 use gpui::Font;
@@ -22,6 +23,10 @@ use image::ImageFormat;
 use image::imageops::FilterType;
 
 use crate::window::identity;
+use crate::window::motion::WORKING;
+use crate::window::motion::breath;
+use crate::window::surface::SurfaceExt;
+use crate::window::theme::Logo;
 use crate::window::theme::Theme;
 use crate::window::themes::LOGO;
 
@@ -45,6 +50,28 @@ pub(crate) fn logo(theme: &Theme, size: f32) -> Img {
         .flex_none()
         .size(px(size)),
     }
+}
+
+/// The assistant's picture on its tile: the owner's picture filling it, or the acorn on the
+/// `tile` fill, with the soft shadow of a card. Every window shows the assistant this way.
+pub(crate) fn picture_tile(theme: &Theme, size: f32, radius: f32) -> Div {
+    let shown: gpui::AnyElement = match identity::icon() {
+        Some(icon) => img(picture(&icon, size))
+            .size_full()
+            .rounded(px(radius))
+            .into_any_element(),
+        None => logo(theme, size * 0.62).into_any_element(),
+    };
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .size(px(size))
+        .rounded(px(radius))
+        .bg(theme.tile())
+        .lifted(theme)
+        .child(shown)
 }
 
 /// The bolt that marks an account dotori logs in with without asking, in `primary`.
@@ -100,16 +127,9 @@ impl AssetSource for Assets {
             (_, Some((side, ""))) => (LOGO.1, side),
             _ => return Ok(None),
         };
-        let height = side as f32 / 2.;
-        let svg = ACORN
-            .replace(
-                "{width}",
-                &format!("{}", height * ACORN_WIDTH / ACORN_HEIGHT),
-            )
-            .replace("{height}", &format!("{height}"))
-            .replace("{cap}", &css(colors.cap))
-            .replace("{nut}", &css(colors.nut));
-        Ok(Some(Cow::Owned(svg.into_bytes())))
+        Ok(Some(Cow::Owned(
+            acorn_in(colors, side as f32 / 2.).into_bytes(),
+        )))
     }
 
     fn list(&self, _path: &str) -> gpui::Result<Vec<SharedString>> {
@@ -127,6 +147,17 @@ impl AssetSource for Assets {
             SharedString::new_static(CLOCK_ICON),
             SharedString::new_static(GLOBE_ICON),
             SharedString::new_static(FOLDER_ICON),
+            SharedString::new_static(SLIDERS_ICON),
+            SharedString::new_static(CHIP_ICON),
+            SharedString::new_static(BUBBLE_ICON),
+            SharedString::new_static(NOTEBOOK_ICON),
+            SharedString::new_static(SCREEN_ICON),
+            SharedString::new_static(CHEVRON_ICON),
+            SharedString::new_static(SEARCH_ICON),
+            SharedString::new_static(BACK_ICON),
+            SharedString::new_static(MAXIMIZE_ICON),
+            SharedString::new_static(RESTORE_ICON),
+            SharedString::new_static(THINKING_ICON),
         ])
     }
 }
@@ -185,7 +216,73 @@ pub(crate) const CLOCK_ICON: &str = "icons/clock.svg";
 pub(crate) const GLOBE_ICON: &str = "icons/globe.svg";
 /// What dotori can do with the files on this PC.
 pub(crate) const FOLDER_ICON: &str = "icons/folder.svg";
-const ICONS: [(&str, &str); 12] = [
+/// Sliders, for the settings that shape the assistant and the windows.
+pub(crate) const SLIDERS_ICON: &str = "icons/sliders.svg";
+/// A chip, for the model the assistant thinks with.
+pub(crate) const CHIP_ICON: &str = "icons/chip.svg";
+/// A speech bubble, for the other places to talk.
+pub(crate) const BUBBLE_ICON: &str = "icons/bubble.svg";
+/// A notebook, for what the assistant keeps in mind.
+pub(crate) const NOTEBOOK_ICON: &str = "icons/notebook.svg";
+/// A screen, for the owner's PCs.
+pub(crate) const SCREEN_ICON: &str = "icons/screen.svg";
+/// A chevron pointing down, on a field that opens a list of choices.
+pub(crate) const CHEVRON_ICON: &str = "icons/chevron.svg";
+/// A magnifying glass, before the search field of a long list.
+pub(crate) const SEARCH_ICON: &str = "icons/search.svg";
+/// An arrow pointing left, for going back to the conversation from the settings.
+pub(crate) const BACK_ICON: &str = "icons/back.svg";
+/// A square, for the button that fills the screen with the window.
+pub(crate) const MAXIMIZE_ICON: &str = "icons/maximize.svg";
+/// Two squares, for the button that brings a window that fills the screen back to its size.
+pub(crate) const RESTORE_ICON: &str = "icons/restore.svg";
+/// Three dots in a row, the assistant thinking.
+pub(crate) const THINKING_ICON: &str = "icons/thinking.svg";
+const ICONS: [(&str, &str); 23] = [
+    (
+        THINKING_ICON,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 28 6" fill="black"><circle cx="3" cy="3" r="3"/><circle cx="14" cy="3" r="3"/><circle cx="25" cy="3" r="3"/></svg>"#,
+    ),
+    (
+        MAXIMIZE_ICON,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>"#,
+    ),
+    (
+        RESTORE_ICON,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linejoin="round"><rect x="5" y="9" width="10" height="10" rx="2"/><path d="M9 9V7a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2h-2"/></svg>"#,
+    ),
+    (
+        BACK_ICON,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M11 6l-6 6 6 6"/></svg>"#,
+    ),
+    (
+        SEARCH_ICON,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>"#,
+    ),
+    (
+        CHEVRON_ICON,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>"#,
+    ),
+    (
+        SLIDERS_ICON,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.8" stroke-linecap="round"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></svg>"#,
+    ),
+    (
+        CHIP_ICON,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M10 10h4v4h-4z"/><path d="M9.5 3v3M14.5 3v3M9.5 18v3M14.5 18v3M3 9.5h3M3 14.5h3M18 9.5h3M18 14.5h3"/></svg>"#,
+    ),
+    (
+        BUBBLE_ICON,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 5h14a1.5 1.5 0 0 1 1.5 1.5v9a1.5 1.5 0 0 1-1.5 1.5h-7l-4.5 3.5V17H5a1.5 1.5 0 0 1-1.5-1.5v-9A1.5 1.5 0 0 1 5 5z"/><path d="M8 10h8M8 13h5"/></svg>"#,
+    ),
+    (
+        NOTEBOOK_ICON,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 3.5h11a1.5 1.5 0 0 1 1.5 1.5v14a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 5 19V5a1.5 1.5 0 0 1 1.5-1.5z"/><path d="M9 3.5v17M12 8h4M12 11.5h4"/></svg>"#,
+    ),
+    (
+        SCREEN_ICON,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="4.5" width="17" height="11.5" rx="1.5"/><path d="M9 20h6M12 16v4"/></svg>"#,
+    ),
     (
         TRASH_ICON,
         r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M9 7V4h6v3"/><path d="M6 7l1 13h10l1-13"/><path d="M10 11v6M14 11v6"/></svg>"#,
@@ -238,6 +335,22 @@ const ICONS: [(&str, &str); 12] = [
 const GEAR: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.08a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.08a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>"#;
 const DARK_LOGO: &str = "logo/dark";
 
+/// The acorn in its light colors, `height` pixels tall, as an SVG.
+pub(crate) fn acorn_svg(height: f32) -> String {
+    acorn_in(LOGO.0, height)
+}
+
+fn acorn_in(colors: Logo, height: f32) -> String {
+    ACORN
+        .replace(
+            "{width}",
+            &format!("{}", height * ACORN_WIDTH / ACORN_HEIGHT),
+        )
+        .replace("{height}", &format!("{height}"))
+        .replace("{cap}", &css(colors.cap))
+        .replace("{nut}", &css(colors.nut))
+}
+
 fn css(color: Rgba) -> String {
     let channel = |value: f32| (value.clamp(0.0, 1.0) * 255.0).round() as u8;
     format!(
@@ -250,11 +363,69 @@ fn css(color: Rgba) -> String {
 
 const ACORN_WIDTH: f32 = 176.;
 const ACORN_HEIGHT: f32 = 196.;
-const ACORN: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="40 34 176 196" width="{width}" height="{height}"><g transform="translate(128 128) scale(0.72) translate(-128 -128) rotate(15 128 140) translate(0 -4)"><path fill="{nut}" d="M 64 124 Q 128 152 192 124 C 202 154 196 190 162 214 C 146 226 134 231 128 236 C 122 231 110 226 94 214 C 60 190 54 154 64 124 Z"/><path fill="{cap}" d="M 56 112 Q 46 112 46 102 C 46 70 82 52 128 52 C 174 52 210 70 210 102 Q 210 112 200 112 Q 128 140 56 112 Z"/><path d="M128 54 Q128 36 112 26" fill="none" stroke="{cap}" stroke-width="16" stroke-linecap="round"/></g></svg>"#;
+const ACORN: &str = include_str!("acorn.svg");
 
 /// Text that wraps only between words. GPUI breaks Korean between any two syllables, so each
 /// word is laid out on its own and lines break at the spaces. Runs of spaces and indentation keep
 /// their width. A word wider than the line still wraps inside itself.
+/// A `caption` line that leads somewhere else in the settings: the words before the link, the
+/// link in `text` underlined, and the words after. `id` names the link for tests.
+pub(crate) fn link_line(
+    theme: &Theme,
+    id: &'static str,
+    words: [&'static str; 3],
+    on_click: impl Fn(&gpui::ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static,
+) -> Div {
+    let [before, link, after] = words;
+    div()
+        .flex()
+        .flex_wrap()
+        .gap_1()
+        .text_xs()
+        .text_color(theme.muted)
+        .when(!before.is_empty(), |line| line.child(before))
+        .child(
+            div()
+                .flex()
+                .child(
+                    div()
+                        .id(id)
+                        .debug_selector(move || id.to_owned())
+                        .text_color(theme.text)
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .underline()
+                        .cursor_pointer()
+                        .child(link)
+                        .on_click(on_click),
+                )
+                .child(after),
+        )
+}
+
+/// The assistant thinking before its first word: three `muted` dots breathing with
+/// `motion.working`. It goes in the assistant's bubble wherever that bubble stands.
+pub(crate) fn thinking(
+    theme: &Theme,
+    id: impl Into<gpui::ElementId>,
+) -> gpui::AnimationElement<Div> {
+    div()
+        .flex()
+        .items_center()
+        .h(px(21.))
+        .child(
+            svg()
+                .path(THINKING_ICON)
+                .w(px(28.))
+                .h(px(6.))
+                .text_color(theme.muted),
+        )
+        .with_animation(
+            id,
+            WORKING.animation().repeat().with_easing(|t| t),
+            |dots, progress| dots.opacity(breath(progress)),
+        )
+}
+
 pub(crate) fn prose(text: &str) -> Div {
     div()
         .flex()

@@ -15,6 +15,7 @@ publish = false
 dotori-connectors = { path = "../connectors" }
 dotori-core = { path = "../core" }
 dotori-mcp = { path = "../mcp" }
+dotori-native = { path = "../native" }
 chacha20poly1305 = "0.10.1"
 getrandom = "0.4"
 gpui = "0.2.2"
@@ -31,9 +32,15 @@ base64 = "0.22.1"
 jiff = "1.0.2"
 sys-locale = "0.3.2"
 keyring = "4.2.0"
+raw-window-handle = "0.6.2"
+resvg = { version = "0.45.1", default-features = false }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 rustix = { version = "1.1.6", features = ["process"] }
+
+[build-dependencies]
+embed-resource = "3.0.12"
+resvg = { version = "0.45.1", default-features = false }
 
 [dev-dependencies]
 gpui = { version = "0.2.2", features = ["test-support"] }

@@ -85,6 +85,17 @@ impl OpenAi {
         })
     }
 
+    /// The models the server lists at `/models`, sorted by name.
+    pub async fn models(&self) -> Result<Vec<String>, CheckError> {
+        let url = format!("{}/models", self.config.base_url.trim_end_matches('/'));
+        let request = self.client.get(url);
+        let request = match &self.config.api_key {
+            Some(key) => request.bearer_auth(key),
+            None => request,
+        };
+        model_names(&http::fetch(request).await?).ok_or(CheckError::NoAnswer)
+    }
+
     async fn call(&self, request: ModelRequest) -> Result<ModelReply, ModelError> {
         let body = body(&self.config, &request)?;
         let url = format!(
@@ -259,6 +270,29 @@ struct Call {
 struct Function {
     name: String,
     arguments: Option<Value>,
+}
+
+#[derive(Deserialize)]
+struct Listed {
+    data: Vec<ListedModel>,
+}
+
+#[derive(Deserialize)]
+struct ListedModel {
+    id: String,
+}
+
+fn model_names(text: &str) -> Option<Vec<String>> {
+    let listed: Listed = serde_json::from_str(text).ok()?;
+    let mut names: Vec<String> = listed
+        .data
+        .into_iter()
+        .map(|model| model.id)
+        .filter(|id| !id.trim().is_empty())
+        .collect();
+    names.sort();
+    names.dedup();
+    Some(names)
 }
 
 fn parse(text: &str) -> Result<ModelReply, ModelError> {

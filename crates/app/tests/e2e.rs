@@ -265,3 +265,55 @@ async fn the_owner_talks_to_dotori_and_decides_on_a_command() {
     window.decide(declined, false).await;
     window.reply(model::SKIPPED).await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_model_changed_in_the_settings_answers_the_next_message_without_a_restart() {
+    let script = |tools: &std::sync::Arc<std::sync::Mutex<Vec<String>>>| Script {
+        command: String::from("echo e2e"),
+        think: Duration::from_millis(50),
+        tools: std::sync::Arc::clone(tools),
+    };
+    let (first_heard, second_heard) = (std::sync::Arc::default(), std::sync::Arc::default());
+    let first = model::start(script(&first_heard)).await;
+    let second = model::start(script(&second_heard)).await;
+    let home = home("live-model");
+    settings(&home, first);
+    let _running = Running {
+        daemon: daemon(&home),
+        home: home.clone(),
+    };
+    let mut window = Window::open(&home).await;
+    let (mut live, mut greeted) = (false, false);
+    window
+        .until("the backlog to end and the first greeting", |event| {
+            match event {
+                ToWindow::Live => live = true,
+                ToWindow::Traffic { channel, text, .. }
+                    if channel == "greeting" && text == model::GREETED =>
+                {
+                    greeted = true;
+                }
+                _ => {}
+            }
+            (live && greeted).then_some(())
+        })
+        .await;
+    window.say("안녕").await;
+    window.reply(model::OTHER).await;
+    let heard_second = |heard: &std::sync::Arc<std::sync::Mutex<Vec<String>>>| {
+        !heard.lock().expect("heard").is_empty()
+    };
+    assert!(heard_second(&first_heard));
+    assert!(!heard_second(&second_heard));
+
+    time::sleep(Duration::from_millis(1100)).await;
+    settings(&home, second);
+    time::sleep(Duration::from_secs(3)).await;
+    window.say("다시 안녕").await;
+    window.reply(model::OTHER).await;
+
+    assert!(
+        heard_second(&second_heard),
+        "the next message went to the model the settings name now"
+    );
+}

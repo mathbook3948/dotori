@@ -392,3 +392,24 @@ fn a_model_that_may_not_delegate_is_not_offered_delegate() {
         .collect();
     assert_eq!(names, ["say", "read_file"]);
 }
+
+#[test]
+fn the_listed_models_keep_their_order_and_names() {
+    let names = model_names(
+        r#"{"data":[{"type":"model","id":"claude-opus-5-5","display_name":"Claude Opus 5.5","created_at":"2026-10-01T00:00:00Z"},{"type":"model","id":"claude-haiku-4-5"}],"has_more":false}"#,
+    );
+
+    assert_eq!(
+        names,
+        Some(vec![
+            (
+                String::from("claude-opus-5-5"),
+                String::from("Claude Opus 5.5")
+            ),
+            (
+                String::from("claude-haiku-4-5"),
+                String::from("claude-haiku-4-5")
+            ),
+        ])
+    );
+}

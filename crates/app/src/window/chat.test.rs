@@ -95,7 +95,13 @@ fn open(cx: &mut TestAppContext) -> (Entity<ChatView>, &mut VisualTestContext, W
     let (send, browser) = mpsc::unbounded_channel();
     cx.update(|cx| cx.bind_keys(crate::window::input::bindings()));
     let (view, cx) = cx.add_window_view(|_, cx| {
-        ChatView::new(Link { updates, say }, ScreenLink { seen, send }, cx)
+        ChatView::new(
+            Link { updates, say },
+            ScreenLink { seen, send },
+            None,
+            false,
+            cx,
+        )
     });
     (
         view,
@@ -351,6 +357,11 @@ fn a_splash_stands_in_for_the_chat_until_dotori_answers(cx: &mut TestAppContext)
         view.read_with(cx, |view, _| {
             assert_eq!(view.link, state, "{reason}");
             assert_eq!(view.status(), None, "the splash says it, not the composer");
+            assert_eq!(
+                view.shows_buttons(),
+                state == LinkState::CouldNotStart,
+                "the strip is bare while dotori starts, and the owner can close it once it could not"
+            );
         });
         assert!(cx.debug_bounds("splash").is_some(), "{reason}");
     }
@@ -778,4 +789,76 @@ fn a_card_shows_even_when_a_login_with_the_same_number_was_answered(cx: &mut Tes
         "card",
         "a card is not taken for the answered login"
     );
+}
+
+fn open_at_home<'a>(
+    cx: &'a mut TestAppContext,
+    name: &str,
+) -> (
+    Entity<ChatView>,
+    &'a mut VisualTestContext,
+    std::path::PathBuf,
+) {
+    let root = std::env::temp_dir().join(format!("dotori-chat-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("a home");
+    std::fs::write(root.join("settings.toml"), "").expect("settings");
+    let home = Home { root: root.clone() };
+    let (updates_tx, updates) = mpsc::unbounded_channel();
+    let (say, _said) = mpsc::unbounded_channel();
+    let (_shown, seen) = mpsc::unbounded_channel();
+    let (send, _browser) = mpsc::unbounded_channel();
+    let (view, cx) = cx.add_window_view(|_, cx| {
+        ChatView::new(
+            Link { updates, say },
+            ScreenLink { seen, send },
+            Some(home),
+            false,
+            cx,
+        )
+    });
+    let _ = updates_tx.send(Update::Connected);
+    std::mem::forget(updates_tx);
+    cx.run_until_parked();
+    (view, cx, root)
+}
+
+#[gpui::test]
+fn the_gear_shows_the_settings_in_the_same_window_and_back_returns(cx: &mut TestAppContext) {
+    let (view, cx, root) = open_at_home(cx, "gear");
+
+    click(cx, "settings");
+    assert!(view.read_with(cx, |view, _| view.in_settings));
+    assert!(
+        cx.debug_bounds("section-general").is_some(),
+        "the settings are drawn here"
+    );
+    click(cx, "settings");
+    assert!(
+        view.read_with(cx, |view, _| view.in_settings),
+        "the gear hides while the settings show, so where it was does nothing"
+    );
+
+    click(cx, "back-to-chat");
+    assert!(!view.read_with(cx, |view, _| view.in_settings));
+    click(cx, "settings");
+    assert!(
+        view.read_with(cx, |view, _| view.in_settings),
+        "the gear comes back with the chat"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[gpui::test]
+fn a_heading_of_the_side_panel_opens_its_part_of_the_settings(cx: &mut TestAppContext) {
+    let (view, cx, root) = open_at_home(cx, "side");
+
+    click(cx, "side-notes");
+
+    assert!(view.read_with(cx, |view, _| view.in_settings));
+    assert!(
+        cx.debug_bounds("part-notes").is_some(),
+        "the notes are shown"
+    );
+    let _ = std::fs::remove_dir_all(&root);
 }

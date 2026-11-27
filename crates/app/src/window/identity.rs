@@ -22,7 +22,6 @@ pub(crate) struct Identity {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Particle {
     Subject,
-    Object,
     With,
     To,
     Of,
@@ -102,8 +101,6 @@ fn followed(name: &str, particle: Particle) -> String {
     let after = match (particle, closed) {
         (Particle::Subject, true) => "이",
         (Particle::Subject, false) => "가",
-        (Particle::Object, true) => "을",
-        (Particle::Object, false) => "를",
         (Particle::With, true) => "과",
         (Particle::With, false) => "와",
         (Particle::To, _) => "에게",

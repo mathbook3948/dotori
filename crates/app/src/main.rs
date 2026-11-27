@@ -17,6 +17,7 @@ mod icons;
 mod idle;
 mod language;
 mod link;
+mod live;
 mod lock;
 mod logins;
 mod main_session;

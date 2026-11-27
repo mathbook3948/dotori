@@ -1,3 +1,4 @@
+pub(crate) mod app_icon;
 mod browser;
 mod chat;
 mod chrome;
@@ -39,6 +40,7 @@ use gpui::Window;
 use gpui::WindowBackgroundAppearance;
 use gpui::WindowBounds;
 use gpui::WindowDecorations;
+use gpui::WindowHandle;
 use gpui::WindowOptions;
 use gpui::actions;
 use gpui::point;
@@ -48,6 +50,7 @@ use gpui::size;
 use crate::home::Home;
 use crate::language;
 use crate::link;
+use crate::lock::DaemonLock;
 use crate::screen_link;
 use crate::window::chat::ChatView;
 use crate::window::identity::Identity;
@@ -75,12 +78,11 @@ pub(crate) enum Which {
 
 pub(crate) fn run(home: Home, which: Which) -> Result<(), String> {
     let settings = match which {
-        Which::Settings | Which::Onboarding => {
-            Some(crate::settings::Settings::load(&home.settings())?)
-        }
-        Which::Chat => None,
+        Which::Onboarding => Some(crate::settings::Settings::load(&home.settings())?),
+        Which::Chat | Which::Settings => None,
     };
     let settings_path = home.settings();
+    let home_lock = home.lock();
     let icon_folder = home.icons();
     let seen = stamp(&settings_path);
     apply_look(&settings_path);
@@ -99,15 +101,15 @@ pub(crate) fn run(home: Home, which: Which) -> Result<(), String> {
             cx.bind_keys(input::bindings());
             cx.bind_keys([KeyBinding::new("secondary-q", Quit, None)]);
             let title = match which {
-                Which::Chat => identity::name(),
-                Which::Settings => (words().common.settings_title)(),
+                Which::Chat | Which::Settings => identity::name(),
                 Which::Onboarding => (words().common.onboarding_title)(),
             };
-            let bounds = Bounds::centered(None, size(px(WINDOW.0), px(WINDOW.1)), cx);
+            let (opens_at, smallest) = (WINDOW, WINDOW_MIN);
+            let bounds = Bounds::centered(None, size(px(opens_at.0), px(opens_at.1)), cx);
             let options = WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
-                window_min_size: Some(size(px(WINDOW_MIN.0), px(WINDOW_MIN.1))),
-                is_resizable: !matches!(which, Which::Onboarding),
+                window_min_size: Some(size(px(smallest.0), px(smallest.1))),
+                is_resizable: true,
                 titlebar: Some(TitlebarOptions {
                     title: Some(SharedString::from(title)),
                     appears_transparent: true,
@@ -124,9 +126,16 @@ pub(crate) fn run(home: Home, which: Which) -> Result<(), String> {
                         let view = cx.new(|cx| {
                             cx.observe_window_appearance(window, |_, _, cx| cx.notify())
                                 .detach();
-                            ChatView::new(link::open(home.clone()), screen_link::open(home), cx)
+                            ChatView::new(
+                                link::open(home.clone()),
+                                screen_link::open(home.clone()),
+                                Some(home),
+                                which == Which::Settings,
+                                cx,
+                            )
                         });
                         window.focus(&view.read(cx).focus_handle(cx));
+                        app_icon::show_on(window);
                         view
                     })
                     .map(|_| ()),
@@ -140,10 +149,13 @@ pub(crate) fn run(home: Home, which: Which) -> Result<(), String> {
                                 _ => SettingsView::new(home, settings, cx),
                             }
                         });
-                        window.focus(&view.read(cx).focus_handle(cx));
+                        if which == Which::Onboarding {
+                            window.focus(&view.read(cx).focus_handle(cx));
+                        }
+                        app_icon::show_on(window);
                         view
                     })
-                    .map(|_| ()),
+                    .map(|handle| close_with_dotori(home_lock.clone(), handle, cx)),
             };
             if let Err(error) = opened {
                 *failed.borrow_mut() = Some(error.to_string());
@@ -183,6 +195,37 @@ fn apply_look(settings: &Path) {
     }
 }
 
+fn dotori_stopped(seen: &mut bool, held: bool) -> bool {
+    if held {
+        *seen = true;
+        return false;
+    }
+    *seen
+}
+
+fn close_with_dotori(lock: PathBuf, handle: WindowHandle<SettingsView>, cx: &mut App) {
+    cx.spawn(async move |cx| {
+        let mut seen = false;
+        loop {
+            cx.background_executor().timer(LOOK_EVERY).await;
+            let path = lock.clone();
+            let held = cx
+                .background_executor()
+                .spawn(async move { DaemonLock::held(&path) })
+                .await;
+            let Ok(held) = held else {
+                continue;
+            };
+            if dotori_stopped(&mut seen, held) {
+                let _ = handle.update(cx, |view, _, cx| view.save_all(cx));
+                let _ = cx.update(|cx| cx.quit());
+                return;
+            }
+        }
+    })
+    .detach();
+}
+
 /// A window's title, which names the assistant in the language in use. The window sets it
 /// again when either changes, since the title bar, the taskbar and Alt+Tab show it.
 pub(crate) struct Title {
@@ -219,6 +262,7 @@ pub(crate) fn stamp(path: &Path) -> Stamp {
 }
 
 fn follow_look(settings: PathBuf, icon_folder: PathBuf, mut seen: Stamp, cx: &mut App) {
+    let mut shown_icon = identity::icon();
     cx.spawn(async move |cx| {
         let mut ticks = 0_u32;
         loop {
@@ -243,18 +287,33 @@ fn follow_look(settings: PathBuf, icon_folder: PathBuf, mut seen: Stamp, cx: &mu
                 })
                 .await;
             let renamed = identity.is_some_and(identity::choose);
-            if now == seen && !renamed {
+            let icon = identity::icon();
+            let new_icon = icon != shown_icon;
+            if now == seen && !renamed && !new_icon {
                 continue;
             }
+            shown_icon = icon;
             seen = now;
             if let Some(((name, look), speaking)) = look {
                 theme::choose(&name, look);
                 language::choose(speaking);
             }
-            if cx.update(|cx| cx.refresh_windows()).is_err() {
+            let refreshed = cx.update(|cx| {
+                if new_icon {
+                    for window in cx.windows() {
+                        let _ = window.update(cx, |_, window, _| app_icon::show_on(window));
+                    }
+                }
+                cx.refresh_windows();
+            });
+            if refreshed.is_err() {
                 return;
             }
         }
     })
     .detach();
 }
+
+#[cfg(test)]
+#[path = "mod.test.rs"]
+mod tests;

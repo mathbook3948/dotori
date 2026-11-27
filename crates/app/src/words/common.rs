@@ -3,8 +3,6 @@ use crate::window::identity;
 /// Strings more than one window or the tray shows.
 #[derive(Debug)]
 pub(crate) struct Common {
-    /// The settings window's title, naming the assistant.
-    pub(crate) settings_title: fn() -> String,
     /// The onboarding window's title, naming the assistant.
     pub(crate) onboarding_title: fn() -> String,
     /// The browser window's title, naming the assistant.
@@ -21,7 +19,6 @@ pub(crate) struct Common {
 }
 
 pub(crate) const KOREAN: Common = Common {
-    settings_title: || format!("{} 설정", identity::name()),
     onboarding_title: || format!("{} 시작하기", identity::name()),
     browser_title: || format!("{} 브라우저", identity::name()),
     open_chat: "대화창 열기",
@@ -42,7 +39,6 @@ pub(crate) const KOREAN: Common = Common {
 };
 
 pub(crate) const ENGLISH: Common = Common {
-    settings_title: || format!("{} settings", identity::name()),
     onboarding_title: || format!("Welcome to {}", identity::name()),
     browser_title: || format!("{} browser", identity::name()),
     open_chat: "Open chat",

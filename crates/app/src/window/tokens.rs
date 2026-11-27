@@ -8,13 +8,21 @@ use crate::window::theme::Theme;
 use crate::window::theme::hex;
 
 /// `size.window`: the width and height every window opens at.
-pub(crate) const WINDOW: (f32, f32) = (340., 604.);
-/// `size.window-min`: the smallest the chat and settings windows shrink to.
-pub(crate) const WINDOW_MIN: (f32, f32) = (320., 420.);
+pub(crate) const WINDOW: (f32, f32) = (880., 640.);
+/// `size.window-min`: the smallest the chat window shrinks to.
+pub(crate) const WINDOW_MIN: (f32, f32) = (720., 480.);
+/// `size.column`: the widest the conversation and the composer grow in the chat window.
+pub(crate) const COLUMN: f32 = 720.;
+/// `size.walk`: the widest an onboarding step grows, and the greeting's column.
+pub(crate) const WALK: f32 = 560.;
+/// `size.greet-text`: the column of the greeting on the left of the first screen.
+pub(crate) const GREET_TEXT: f32 = 380.;
+/// `size.sidebar`: the width of the settings window's list of sections.
+pub(crate) const SIDEBAR: f32 = 220.;
 /// `size.picture`: the assistant's picture where a window shows it large.
 pub(crate) const PICTURE: f32 = 56.;
 /// `size.tile`: the picture tile of the greeting.
-pub(crate) const TILE: f32 = 88.;
+pub(crate) const TILE: f32 = 72.;
 /// `size.avatar`: the picture tile of the name and theme step.
 pub(crate) const AVATAR: f32 = 60.;
 
