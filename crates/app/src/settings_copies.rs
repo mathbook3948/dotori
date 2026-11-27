@@ -1,8 +1,8 @@
 //! Keeps the settings that mean the same on every PC the same on all of them: the model, Slack,
 //! Telegram, Discord, memory search, and the assistant's name and icon. What belongs to one
 //! machine, such as how other PCs reach it, its browser, its coding agent and its MCP servers,
-//! stays with it. Each of the parts goes by its own time, the one changed last wins, and like any
-//! setting they take effect when dotori starts again.
+//! stays with it. Each of the parts goes by its own time, and the one changed last wins. The daemon
+//! follows the settings file, so a part taken from another PC applies as a change made here does.
 
 use std::path::Path;
 use std::path::PathBuf;

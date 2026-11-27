@@ -1673,12 +1673,16 @@ dependencies = [
  "dotori-connectors",
  "dotori-core",
  "dotori-mcp",
+ "dotori-native",
+ "embed-resource",
  "getrandom 0.4.3",
  "gpui",
  "image",
  "jiff",
  "keyring",
  "proptest",
+ "raw-window-handle",
+ "resvg",
  "rusqlite",
  "rustix 1.1.6",
  "serde",
@@ -1739,6 +1743,13 @@ dependencies = [
  "tokio-native-tls",
  "tokio-tungstenite",
  "zip",
+]
+
+[[package]]
+name = "dotori-native"
+version = "0.1.0"
+dependencies = [
+ "windows 0.61.3",
 ]
 
 [[package]]

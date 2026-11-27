@@ -20,7 +20,9 @@ use gpui::px;
 use gpui::svg;
 
 use crate::window::parts::CLOSE_ICON;
+use crate::window::parts::MAXIMIZE_ICON;
 use crate::window::parts::MINIMIZE_ICON;
+use crate::window::parts::RESTORE_ICON;
 use crate::window::surface::SurfaceExt;
 use crate::window::theme::Theme;
 
@@ -34,38 +36,40 @@ const TOP_HEIGHT: f32 = if cfg!(target_os = "macos") { 40. } else { 52. };
 pub(crate) struct Frame {
     drawn: bool,
     tiling: Tiling,
-    fixed: bool,
+    maximized: bool,
+    bare: bool,
 }
 
 impl Frame {
     /// The frame `window` has now.
     pub(crate) fn of(window: &Window) -> Self {
+        let maximized = window.is_maximized();
         match window.window_decorations() {
             Decorations::Client { tiling } => Self {
                 drawn: true,
                 tiling,
-                fixed: false,
+                maximized,
+                bare: false,
             },
             Decorations::Server => Self {
                 drawn: false,
                 tiling: Tiling::default(),
-                fixed: false,
+                maximized,
+                bare: false,
             },
         }
     }
 
-    /// The same frame for a window of one size: no resizing edges, and only the close button.
-    pub(crate) fn fixed(self) -> Self {
-        Self {
-            fixed: true,
-            ..self
-        }
+    /// The same frame with no buttons in its strip, as while dotori starts: the strip still
+    /// moves the window.
+    pub(crate) fn bare(self) -> Self {
+        Self { bare: true, ..self }
     }
 
     /// Lets the window be resized from its edges when dotori draws the frame.
     pub(crate) fn resizable(self, root: Div) -> Div {
         let tiling = self.tiling;
-        root.when(self.drawn && !self.fixed, |root| {
+        root.when(self.drawn && !self.maximized, |root| {
             root.on_mouse_down(
                 MouseButton::Left,
                 move |event: &MouseDownEvent, window, cx| {
@@ -80,15 +84,15 @@ impl Frame {
     }
 
     /// The strip at the top of a window: `left` after the system's buttons, `middle` taking the
-    /// rest, and the window buttons on the right. Dragging it moves the window. A double click
-    /// does nothing, since dotori's windows never fill the screen.
+    /// rest, and the window buttons on the right. Dragging it moves the window, and a double click
+    /// fills the screen with it or brings it back.
     pub(crate) fn strip(
         self,
         theme: &Theme,
         left: impl IntoElement,
         middle: impl IntoElement,
     ) -> Div {
-        let (drawn, tiling, fixed) = (self.drawn, self.tiling, self.fixed);
+        let (drawn, tiling, maximized) = (self.drawn, self.tiling, self.maximized);
         div()
             .flex_none()
             .h(px(TOP_HEIGHT))
@@ -115,11 +119,15 @@ impl Frame {
                                 MouseButton::Left,
                                 move |event: &MouseDownEvent, window, cx| {
                                     if event.click_count > 1 {
+                                        if !cfg!(target_os = "windows") {
+                                            window.zoom_window();
+                                        }
                                         cx.stop_propagation();
                                         return;
                                     }
                                     let at = (event.position, window.viewport_size());
-                                    if drawn && (fixed || resize_edge(at.0, at.1, tiling).is_none())
+                                    if drawn
+                                        && (maximized || resize_edge(at.0, at.1, tiling).is_none())
                                     {
                                         window.start_window_move();
                                     }
@@ -128,7 +136,9 @@ impl Frame {
                             .child(left)
                             .child(div().flex_1().min_w_0().child(middle)),
                     )
-                    .children(window_buttons(theme, drawn, fixed)),
+                    .when(!self.bare, |strip| {
+                        strip.children(window_buttons(theme, drawn, maximized))
+                    }),
             )
     }
 }
@@ -149,13 +159,21 @@ pub(crate) fn round_button(id: &'static str, theme: &Theme) -> Stateful<Div> {
         .hover(|button| button.bg(theme.bubble))
 }
 
-fn window_buttons(theme: &Theme, drawn: bool, fixed: bool) -> Vec<AnyElement> {
+fn window_buttons(theme: &Theme, drawn: bool, maximized: bool) -> Vec<AnyElement> {
     let buttons = [
         ("minimize", MINIMIZE_ICON, WindowControlArea::Min),
+        (
+            "maximize",
+            if maximized {
+                RESTORE_ICON
+            } else {
+                MAXIMIZE_ICON
+            },
+            WindowControlArea::Max,
+        ),
         ("close", CLOSE_ICON, WindowControlArea::Close),
     ]
-    .into_iter()
-    .filter(|(id, _, _)| !fixed || *id == "close");
+    .into_iter();
     let native = cfg!(target_os = "windows");
     if !native && !drawn {
         return Vec::new();
@@ -171,6 +189,7 @@ fn window_buttons(theme: &Theme, drawn: bool, fixed: bool) -> Vec<AnyElement> {
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_click(move |_, window, _| match area {
                     WindowControlArea::Min => window.minimize_window(),
+                    WindowControlArea::Max => window.zoom_window(),
                     _ => window.remove_window(),
                 })
                 .into_any_element()

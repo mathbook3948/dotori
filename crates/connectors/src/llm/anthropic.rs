@@ -28,6 +28,9 @@ const PROVIDER: &str = "anthropic";
 const VERSION: &str = "2026-10-21";
 const BETAS: &str = "server-side-fallback-2026-07-01,thinking-binding-controls-2026-08-01";
 
+/// The model a Claude API key thinks with when the settings name none.
+pub const DEFAULT_MODEL: &str = "claude-sonnet-5-5";
+
 /// Settings for the Claude API. `new` fills in everything but the key.
 #[derive(Clone)]
 pub struct AnthropicConfig {
@@ -47,7 +50,7 @@ impl AnthropicConfig {
     pub fn new(api_key: impl Into<String>) -> Self {
         Self {
             api_key: api_key.into(),
-            model: String::from("claude-sonnet-5-5"),
+            model: String::from(DEFAULT_MODEL),
             base_url: String::from("https://api.anthropic.com"),
             max_tokens: 16000,
             effort: None,
@@ -86,6 +89,20 @@ impl Anthropic {
             client,
             retry: http::RETRY,
         })
+    }
+
+    /// The models this key may use, as their ids and the names Anthropic shows, newest first.
+    pub async fn models(&self) -> Result<Vec<(String, String)>, CheckError> {
+        let url = format!(
+            "{}/v1/models?limit=1000",
+            self.config.base_url.trim_end_matches('/')
+        );
+        let request = self
+            .client
+            .get(url)
+            .header("x-api-key", &self.config.api_key)
+            .header("anthropic-version", VERSION);
+        model_names(&http::fetch(request).await?).ok_or(CheckError::NoAnswer)
     }
 
     async fn call(&self, request: ModelRequest) -> Result<ModelReply, ModelError> {
@@ -257,6 +274,36 @@ struct Block {
     name: Option<String>,
     input: Option<Box<RawValue>>,
     text: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct Listed {
+    data: Vec<ListedModel>,
+}
+
+#[derive(Deserialize)]
+struct ListedModel {
+    id: String,
+    #[serde(default)]
+    display_name: Option<String>,
+}
+
+fn model_names(text: &str) -> Option<Vec<(String, String)>> {
+    let listed: Listed = serde_json::from_str(text).ok()?;
+    Some(
+        listed
+            .data
+            .into_iter()
+            .filter(|model| !model.id.trim().is_empty())
+            .map(|model| {
+                let name = model
+                    .display_name
+                    .filter(|name| !name.trim().is_empty())
+                    .unwrap_or_else(|| model.id.clone());
+                (model.id, name)
+            })
+            .collect(),
+    )
 }
 
 fn parse(text: &str) -> Result<ModelReply, ModelError> {

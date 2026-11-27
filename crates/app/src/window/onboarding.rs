@@ -10,7 +10,6 @@ use std::time::Duration;
 use dotori_connectors::peer::hub::JoinError;
 use gpui::AnimationElement;
 use gpui::AnimationExt;
-use gpui::AnyElement;
 use gpui::App;
 use gpui::Div;
 use gpui::Entity;
@@ -21,7 +20,6 @@ use gpui::SharedString;
 use gpui::Task;
 use gpui::Window;
 use gpui::div;
-use gpui::img;
 use gpui::prelude::*;
 use gpui::px;
 use gpui::relative;
@@ -30,6 +28,7 @@ use gpui::svg;
 use super::Note;
 use super::SettingsView;
 use super::Step;
+use super::picker::AVATAR_MENU;
 use super::switch;
 use crate::first_run;
 use crate::first_run::FirstRun;
@@ -39,7 +38,6 @@ use crate::settings::environment;
 use crate::vault;
 use crate::vault::Vault;
 use crate::window::chrome::Frame;
-use crate::window::identity;
 use crate::window::input::TextInput;
 use crate::window::motion::GREET;
 use crate::window::motion::MESSAGE_ENTER;
@@ -51,9 +49,9 @@ use crate::window::parts::CLOCK_ICON;
 use crate::window::parts::FOLDER_ICON;
 use crate::window::parts::GLOBE_ICON;
 use crate::window::parts::PENCIL_ICON;
-use crate::window::parts::logo;
-use crate::window::parts::picture;
+use crate::window::parts::picture_tile;
 use crate::window::parts::prose;
+use crate::window::parts::thinking;
 use crate::window::parts::typeface;
 use crate::window::pcs::Unjoinable;
 use crate::window::pcs::join_target;
@@ -64,10 +62,13 @@ use crate::window::surface::hairline;
 use crate::window::theme::Theme;
 use crate::window::tokens::AVATAR;
 use crate::window::tokens::FEATURE;
+use crate::window::tokens::GREET_TEXT;
+use crate::window::tokens::SIDEBAR;
 use crate::window::tokens::TILE;
+use crate::window::tokens::WALK;
 use crate::words::words;
 
-const FIELD: f32 = 12.;
+pub(super) const FIELD: f32 = 12.;
 const CARD: f32 = 14.;
 const KEYS_PAGE: &str = "https://console.anthropic.com/settings/keys";
 const LOOK_FOR_MODEL: Duration = Duration::from_secs(2);
@@ -130,16 +131,24 @@ impl SettingsView {
         cx: &mut gpui::Context<Self>,
     ) -> Div {
         self.name_the_fields(cx);
-        let frame = Frame::of(window).fixed();
+        if step == Step::Key {
+            self.ask_served_once(cx);
+        }
+        let frame = Frame::of(window);
         let body = match step {
             Step::Welcome if self.join.is_some() => self.join_step(theme, window, cx),
-            Step::Welcome => self.greeting(theme),
+            Step::Welcome => div(),
             Step::Key => self.key_step(theme, window, cx),
             Step::Look => self.look_step(theme, window, cx),
             Step::Elsewhere => self.elsewhere_step(theme, window, cx),
         };
         let from = if self.forward { SLIDE } else { -SLIDE };
-        div()
+        let moving = div().child(body).with_animation(
+            ("step", self.moves),
+            STEP.animation(),
+            move |step, shown| step.opacity(shown).relative().left(px(from * (1. - shown))),
+        );
+        let shell = div()
             .flex()
             .flex_col()
             .size_full()
@@ -148,44 +157,155 @@ impl SettingsView {
             .text_color(theme.text)
             .text_sm()
             .line_height(px(21.))
-            .child(frame.strip(theme, div(), div()))
-            .children(progress(step, self.moves, self.forward, theme))
-            .child(
-                div()
-                    .id(("onboarding", step.position()))
-                    .flex_1()
-                    .overflow_y_scroll()
-                    .px_6()
-                    .pt_5()
-                    .child(div().child(body).with_animation(
-                        ("step", self.moves),
-                        STEP.animation(),
-                        move |step, shown| {
-                            step.opacity(shown).relative().left(px(from * (1. - shown)))
-                        },
-                    )),
-            )
-            .child(self.walk_footer(step, theme, cx))
+            .child(frame.strip(theme, div(), div()));
+        if step == Step::Welcome && self.join.is_none() {
+            return shell.child(self.greeting(theme, cx));
+        }
+        if step == Step::Welcome {
+            return shell.child(
+                div().flex_1().min_h_0().flex().justify_center().child(
+                    div()
+                        .h_full()
+                        .w(px(WALK))
+                        .flex()
+                        .flex_col()
+                        .child(
+                            div()
+                                .id(("onboarding", step.position()))
+                                .flex_1()
+                                .overflow_y_scroll()
+                                .px_6()
+                                .pt_5()
+                                .child(moving),
+                        )
+                        .child(self.walk_footer(step, theme, cx)),
+                ),
+            );
+        }
+        shell.child(self.walk_beside(step, theme, moving, cx))
     }
 
-    fn name_the_fields(&mut self, cx: &mut gpui::Context<Self>) {
+    fn walk_beside(
+        &mut self,
+        step: Step,
+        theme: &Theme,
+        body: impl IntoElement,
+        cx: &mut gpui::Context<Self>,
+    ) -> Div {
+        let now = step.position();
+        let steps = Step::ALL
+            .iter()
+            .filter_map(|other| other.label().map(|label| (other.position(), label)))
+            .map(|(at, label)| {
+                let current = at == now;
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(10.))
+                    .h(px(38.))
+                    .px_3()
+                    .rounded_md()
+                    .when(current, |item| {
+                        item.bg(theme.bubble).font_weight(FontWeight::SEMIBOLD)
+                    })
+                    .when(!current, |item| item.text_color(theme.muted))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_none()
+                            .items_center()
+                            .justify_center()
+                            .size(px(20.))
+                            .rounded_full()
+                            .text_size(px(11.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .when(at < now, |mark| {
+                                mark.bg(theme.primary).text_color(theme.canvas).child("✓")
+                            })
+                            .when(at == now, |mark| {
+                                mark.main_button(theme).child(at.to_string())
+                            })
+                            .when(at > now, |mark| mark.bg(theme.bubble).child(at.to_string())),
+                    )
+                    .child(label)
+            });
+        div()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(SIDEBAR))
+                    .flex()
+                    .flex_col()
+                    .gap_0p5()
+                    .px_3()
+                    .pt_2()
+                    .children(steps),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .rounded_tl(px(16.))
+                    .bg(theme.surface)
+                    .child(
+                        div()
+                            .id(("onboarding", step.position()))
+                            .flex_1()
+                            .overflow_y_scroll()
+                            .px(px(40.))
+                            .pt(px(28.))
+                            .child(div().max_w(px(WALK)).child(body)),
+                    )
+                    .child(
+                        div().px(px(16.)).child(
+                            div()
+                                .max_w(px(WALK + 48.))
+                                .child(self.walk_footer(step, theme, cx)),
+                        ),
+                    ),
+            )
+    }
+
+    pub(super) fn name_the_fields(&mut self, cx: &mut gpui::Context<Self>) {
         let words = &words().onboarding;
         let key = if self.openai_compatible {
             words.key_optional
         } else {
             "sk-ant-…"
         };
+        let address = if self.openai_compatible {
+            "http://localhost:11434/v1"
+        } else {
+            "https://api.anthropic.com"
+        };
+        let walking = self.walk.is_some();
+        let named = |onboarding: &'static str, example: &'static str| {
+            if walking { onboarding } else { example }
+        };
         for (input, placeholder) in [
             (&self.api_key, key),
-            (&self.base_url, "http://localhost:11434/v1"),
-            (&self.model, "gemma4"),
-            (&self.slack_app_token, words.slack_app_token),
-            (&self.slack_bot_token, words.slack_bot_token),
-            (&self.slack_owner, words.slack_member),
-            (&self.telegram_token, words.bot_token),
-            (&self.telegram_owner, words.user_id),
-            (&self.discord_token, words.bot_token),
-            (&self.discord_owner, words.user_id),
+            (&self.base_url, address),
+            (
+                &self.slack_app_token,
+                named(words.slack_app_token, "xapp-…"),
+            ),
+            (
+                &self.slack_bot_token,
+                named(words.slack_bot_token, "xoxb-…"),
+            ),
+            (&self.slack_owner, named(words.slack_member, "U012AB3CD")),
+            (&self.telegram_token, named(words.bot_token, "")),
+            (&self.telegram_owner, named(words.user_id, "123456789")),
+            (&self.discord_token, named(words.bot_token, "")),
+            (
+                &self.discord_owner,
+                named(words.user_id, "123456789012345678"),
+            ),
         ] {
             input.update(cx, |input, cx| {
                 input.set_placeholder(SharedString::new_static(placeholder), cx)
@@ -193,102 +313,203 @@ impl SettingsView {
         }
     }
 
-    fn greeting(&self, theme: &Theme) -> Div {
+    fn greeting(&self, theme: &Theme, cx: &mut gpui::Context<Self>) -> Div {
         let words = &words().onboarding;
-        let features = [
-            (CLOCK_ICON, FEATURE.time, words.schedule, words.schedule_ask),
-            (GLOBE_ICON, FEATURE.web, words.web, words.web_ask),
-            (FOLDER_ICON, FEATURE.files, words.pc, words.pc_ask),
+        let talk = [
+            (
+                FEATURE.time,
+                CLOCK_ICON,
+                words.schedule_ask,
+                words.greet_replies[0],
+            ),
+            (
+                FEATURE.web,
+                GLOBE_ICON,
+                words.web_ask,
+                words.greet_replies[1],
+            ),
+            (
+                FEATURE.files,
+                FOLDER_ICON,
+                words.pc_ask,
+                words.greet_replies[2],
+            ),
         ];
-        div()
-            .flex()
-            .flex_col()
-            .items_center()
-            .child(picture_tile(theme, TILE, 24.).with_animation(
-                "greet-picture",
-                GREET.animation(),
-                |tile, shown| tile.opacity(shown).relative().top(px(-14. * (1. - shown))),
-            ))
-            .child(arriving(
-                "greet-hello",
-                140,
+        let mut said = Vec::new();
+        for (n, (color, icon, ask, reply)) in talk.into_iter().enumerate() {
+            let at = GREET_FIRST + GREET_EVERY * n as u64;
+            let thinks = at + GREET_HEARD;
+            let answers = thinks + GREET_THINKS;
+            said.push(
+                arriving(
+                    ("greet-ask", n),
+                    at,
+                    div().flex().justify_end().child(
+                        div()
+                            .max_w(relative(0.8))
+                            .px_3p5()
+                            .py_2()
+                            .rounded_2xl()
+                            .bg(theme.bubble)
+                            .child(prose(ask.trim_matches('"'))),
+                    ),
+                )
+                .into_any_element(),
+            );
+            let dots = thinking(theme, ("greet-breath", n));
+            let mark = div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .px_3p5()
+                .py_2()
+                .rounded_2xl()
+                .bg(theme.canvas)
+                .child(dots)
+                .with_animation(
+                    ("greet-think", n),
+                    MESSAGE_ENTER.between(
+                        Duration::from_millis(thinks),
+                        Duration::from_millis(answers),
+                    ),
+                    |thinking, shown| thinking.opacity(shown),
+                );
+            said.push(
                 div()
-                    .mt(px(22.))
-                    .text_size(px(24.))
-                    .line_height(px(32.))
-                    .font_weight(FontWeight::BOLD)
-                    .child((words.hello)()),
-            ))
-            .child(arriving(
-                "greet-what",
-                220,
-                div()
-                    .mt_2()
                     .flex()
-                    .flex_col()
-                    .items_center()
-                    .line_height(px(22.))
-                    .text_color(theme.muted)
-                    .child(words.ask_anything)
-                    .child(words.on_it),
-            ))
+                    .items_start()
+                    .gap(px(10.))
+                    .child(arriving(
+                        ("greet-face", n),
+                        thinks,
+                        div()
+                            .mt(px(4.5))
+                            .flex()
+                            .flex_none()
+                            .items_center()
+                            .justify_center()
+                            .size(px(28.))
+                            .rounded(px(8.))
+                            .bg(color)
+                            .child(svg().path(icon).size(px(15.)).text_color(FEATURE.icon)),
+                    ))
+                    .child(
+                        div()
+                            .relative()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .items_start()
+                            .child(arriving(
+                                ("greet-reply", n),
+                                answers,
+                                div()
+                                    .max_w(relative(0.85))
+                                    .px_3p5()
+                                    .py_2()
+                                    .rounded_2xl()
+                                    .bg(theme.canvas)
+                                    .child(prose(reply)),
+                            ))
+                            .child(mark),
+                    )
+                    .into_any_element(),
+            );
+        }
+        let start = div()
+            .id("next")
+            .debug_selector(|| "next".to_owned())
+            .flex()
+            .items_center()
+            .justify_center()
+            .w(px(220.))
+            .h(px(48.))
+            .rounded(px(CARD))
+            .main_button(theme)
+            .cursor_pointer()
+            .hover(|start| start.opacity(0.9))
+            .text_size(px(15.))
+            .font_weight(FontWeight::SEMIBOLD)
+            .child(Step::Welcome.action())
+            .on_click(cx.listener(Self::advance));
+        let join = div()
+            .id("join-pc")
+            .debug_selector(|| "join-pc".to_owned())
+            .text_size(px(13.))
+            .line_height(px(18.))
+            .text_color(theme.muted)
+            .cursor_pointer()
+            .child(words.join_existing)
+            .on_click(cx.listener(|view, _, window, cx| view.open_join(window, cx)));
+        div()
+            .flex_1()
+            .min_h_0()
+            .flex()
             .child(
                 div()
-                    .mt(px(30.))
-                    .w_full()
+                    .flex_none()
+                    .w(px(GREET_TEXT))
                     .flex()
                     .flex_col()
-                    .gap(px(18.))
-                    .children(
-                        features
-                            .iter()
-                            .enumerate()
-                            .map(|(n, (icon, color, title, ask))| {
-                                arriving(
-                                    ("greet-feature", n),
-                                    340 + 80 * n as u64,
-                                    div()
-                                        .flex()
-                                        .items_start()
-                                        .gap_3p5()
-                                        .child(
-                                            div()
-                                                .flex()
-                                                .flex_none()
-                                                .items_center()
-                                                .justify_center()
-                                                .size(px(36.))
-                                                .rounded(px(10.))
-                                                .bg(*color)
-                                                .child(
-                                                    svg()
-                                                        .path(*icon)
-                                                        .size(px(18.))
-                                                        .text_color(FEATURE.icon),
-                                                ),
-                                        )
-                                        .child(
-                                            div()
-                                                .flex()
-                                                .flex_col()
-                                                .flex_1()
-                                                .min_w_0()
-                                                .child(
-                                                    div()
-                                                        .font_weight(FontWeight::SEMIBOLD)
-                                                        .child(*title),
-                                                )
-                                                .child(
-                                                    div()
-                                                        .text_size(px(13.))
-                                                        .line_height(px(19.))
-                                                        .text_color(theme.muted)
-                                                        .child(prose(ask)),
-                                                ),
-                                        ),
-                                )
-                            }),
+                    .justify_center()
+                    .pl(px(64.))
+                    .pr(px(24.))
+                    .child(picture_tile(theme, TILE, 20.).with_animation(
+                        "greet-picture",
+                        GREET.animation(),
+                        |tile, shown| tile.opacity(shown).relative().top(px(-14. * (1. - shown))),
+                    ))
+                    .child(arriving(
+                        "greet-hello",
+                        140,
+                        div()
+                            .mt(px(28.))
+                            .text_size(px(32.))
+                            .line_height(px(42.))
+                            .font_weight(FontWeight::BOLD)
+                            .child(prose(&(words.hello)())),
+                    ))
+                    .child(arriving(
+                        "greet-what",
+                        220,
+                        div()
+                            .mt_3()
+                            .flex()
+                            .flex_col()
+                            .text_size(px(15.))
+                            .line_height(px(24.))
+                            .text_color(theme.muted)
+                            .child(words.ask_anything)
+                            .child(words.on_it),
+                    ))
+                    .child(
+                        div()
+                            .mt(px(36.))
+                            .flex()
+                            .flex_col()
+                            .items_start()
+                            .gap_4()
+                            .child(start)
+                            .child(join),
                     ),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .justify_center()
+                    .my(px(56.))
+                    .mr(px(40.))
+                    .ml(px(24.))
+                    .px_6()
+                    .py(px(28.))
+                    .gap(px(14.))
+                    .rounded(px(20.))
+                    .card(theme)
+                    .children(said),
             )
     }
 
@@ -304,6 +525,7 @@ impl SettingsView {
             _work: None,
         });
         self.moves += 1;
+        self.slides.clear();
         self.forward = true;
         self.note = None;
         cx.notify();
@@ -318,6 +540,7 @@ impl SettingsView {
         }
         self.join = None;
         self.moves += 1;
+        self.slides.clear();
         self.forward = false;
         cx.notify();
     }
@@ -601,7 +824,20 @@ impl SettingsView {
                 ))
                 .child(div().h_3p5())
                 .child(label(theme, words.model_label))
-                .child(field(theme, window, cx, "model", &self.model, no_model))
+                .child(self.model_picker(
+                    theme,
+                    window,
+                    cx,
+                    super::picker::Sits::Onboarding { alarm: no_model },
+                ))
+                .children(self.served_line(cx).map(|(line, warn)| {
+                    div()
+                        .mt_2()
+                        .text_size(px(13.))
+                        .line_height(px(20.))
+                        .text_color(if warn { theme.warn } else { theme.muted })
+                        .child(prose(line))
+                }))
                 .child(div().h_3p5())
                 .child(label(theme, words.key_label));
         } else {
@@ -666,9 +902,42 @@ impl SettingsView {
         }
     }
 
-    fn look_step(&self, theme: &Theme, window: &Window, cx: &mut gpui::Context<Self>) -> Div {
-        let words = &words().onboarding;
-        let avatar = div()
+    /// The assistant's picture with a pencil, which picks another when pressed. The settings
+    /// window and the onboarding window show the same one.
+    /// The picture with its pencil. Without a picture of the owner's it opens the file picker;
+    /// with one it opens a menu to choose another or go back to the default.
+    pub(super) fn avatar(
+        &self,
+        theme: &Theme,
+        window: &Window,
+        cx: &mut gpui::Context<Self>,
+    ) -> Div {
+        let custom = self
+            .earlier
+            .assistant
+            .as_ref()
+            .is_some_and(|assistant| assistant.icon.is_some());
+        let open = custom && self.open_picker == Some(AVATAR_MENU);
+        let said = &words().settings;
+        let menu = if open {
+            self.actions_menu(
+                theme,
+                window,
+                cx,
+                AVATAR_MENU,
+                vec![
+                    ("avatar-other", said.other_picture, |view, cx| {
+                        view.pick_icon(cx);
+                    }),
+                    ("avatar-default", said.default_picture, |view, cx| {
+                        view.drop_icon(cx);
+                    }),
+                ],
+            )
+        } else {
+            None
+        };
+        let tile = div()
             .id("avatar")
             .debug_selector(|| "avatar".to_owned())
             .relative()
@@ -694,7 +963,29 @@ impl SettingsView {
                             .text_color(theme.canvas),
                     ),
             )
-            .on_click(cx.listener(|view, _, _, cx| view.pick_icon(cx)));
+            .on_click(cx.listener(move |view, _, _, cx| {
+                if custom {
+                    view.open_picker = if view.open_picker == Some(AVATAR_MENU) {
+                        None
+                    } else {
+                        Some(AVATAR_MENU)
+                    };
+                    cx.notify();
+                } else {
+                    view.pick_icon(cx);
+                }
+            }));
+        div()
+            .relative()
+            .flex_none()
+            .child(tile)
+            .child(self.drawn.note(AVATAR_MENU))
+            .children(menu)
+    }
+
+    fn look_step(&self, theme: &Theme, window: &Window, cx: &mut gpui::Context<Self>) -> Div {
+        let words = &words().onboarding;
+        let avatar = self.avatar(theme, window, cx);
         div()
             .flex()
             .flex_col()
@@ -736,6 +1027,7 @@ impl SettingsView {
     fn elsewhere_step(&self, theme: &Theme, window: &Window, cx: &mut gpui::Context<Self>) -> Div {
         let words = &words().onboarding;
         let channel = |id: &'static str,
+                       part: &'static str,
                        name: &'static str,
                        on: bool,
                        inputs: Vec<(&'static str, &Entity<TextInput>)>,
@@ -764,11 +1056,17 @@ impl SettingsView {
                         ),
                 )
                 .when(on, |row| {
-                    let opened = div().flex().flex_col().gap_2().children(
-                        inputs
-                            .into_iter()
-                            .map(|(id, input)| field(theme, window, cx, id, input, false)),
-                    );
+                    let opened = div()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .children(inputs.into_iter().map(|(id, input)| {
+                            field(theme, window, cx, id, input, self.alarmed(input))
+                        }))
+                        .children(
+                            self.missing_line(theme, part)
+                                .map(|line| line.text_size(px(13.)).line_height(px(20.))),
+                        );
                     match self.flipped(id) {
                         Some(moved) => row.child(arriving((id, moved), 0, opened)),
                         None => row.child(opened),
@@ -781,6 +1079,7 @@ impl SettingsView {
             .card(theme)
             .child(channel(
                 "slack-switch",
+                "slack",
                 "Slack",
                 self.slack_on,
                 vec![
@@ -793,6 +1092,7 @@ impl SettingsView {
             ))
             .child(channel(
                 "telegram-switch",
+                "telegram",
                 "Telegram",
                 self.telegram_on,
                 vec![
@@ -804,6 +1104,7 @@ impl SettingsView {
             ))
             .child(channel(
                 "discord-switch",
+                "discord",
                 "Discord",
                 self.discord_on,
                 vec![
@@ -938,74 +1239,6 @@ impl SettingsView {
     }
 }
 
-fn picture_tile(theme: &Theme, size: f32, radius: f32) -> Div {
-    let picture: AnyElement = match identity::icon() {
-        Some(icon) => img(picture(&icon, size))
-            .size_full()
-            .rounded(px(radius))
-            .into_any_element(),
-        None => logo(theme, size * 0.62).into_any_element(),
-    };
-    div()
-        .flex()
-        .flex_none()
-        .items_center()
-        .justify_center()
-        .size(px(size))
-        .rounded(px(radius))
-        .bg(theme.tile())
-        .lifted(theme)
-        .child(picture)
-}
-
-fn progress(step: Step, moves: usize, forward: bool, theme: &Theme) -> Option<Div> {
-    step.label()?;
-    let now = step.position();
-    let filled = move |at: usize| -> AnyElement {
-        let fill = div().h_full().rounded_full().bg(theme.primary);
-        let (filling, emptying) = (forward && at == now, !forward && at == now + 1);
-        if filling || emptying {
-            return fill
-                .with_animation(("bar", moves * 8 + at), STEP.animation(), move |fill, t| {
-                    fill.w(relative(if filling { t } else { 1. - t }))
-                })
-                .into_any_element();
-        }
-        fill.w(relative(if at <= now { 1. } else { 0. }))
-            .into_any_element()
-    };
-    Some(
-        div().flex().flex_none().gap_1p5().px_6().children(
-            Step::ALL
-                .iter()
-                .filter_map(|other| other.label().map(|label| (other.position(), label)))
-                .map(|(at, label)| {
-                    let current = at == now;
-                    div()
-                        .flex()
-                        .flex_col()
-                        .flex_1()
-                        .gap(px(7.))
-                        .child(
-                            div()
-                                .h(px(3.))
-                                .rounded_full()
-                                .bg(theme.bubble)
-                                .child(filled(at)),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(11.))
-                                .line_height(px(14.))
-                                .text_color(if current { theme.text } else { theme.muted })
-                                .when(current, |label| label.font_weight(FontWeight::SEMIBOLD))
-                                .child(label),
-                        )
-                }),
-        ),
-    )
-}
-
 fn heading(words: &'static str) -> Div {
     div()
         .mb_1()
@@ -1014,6 +1247,11 @@ fn heading(words: &'static str) -> Div {
         .font_weight(FontWeight::BOLD)
         .child(words)
 }
+
+const GREET_FIRST: u64 = 400;
+const GREET_EVERY: u64 = 1200;
+const GREET_HEARD: u64 = 250;
+const GREET_THINKS: u64 = 600;
 
 fn arriving(id: impl Into<gpui::ElementId>, delay: u64, element: Div) -> AnimationElement<Div> {
     element.with_animation(

@@ -45,6 +45,7 @@ use dotori_mcp::relay::relay;
 use crate::accounts::LinkedSites;
 use crate::browser_route::BROWSER_JOB;
 use crate::browser_route::BrowserRoute;
+use crate::channel_slots::ChannelSlots;
 use crate::confirm;
 use crate::confirm::Asking;
 use crate::confirm::DecisionChannel;
@@ -69,6 +70,9 @@ use crate::home::Home;
 use crate::icons;
 use crate::idle::NoTools;
 use crate::language;
+use crate::live;
+use crate::live::Followed;
+use crate::live::LiveModel;
 use crate::lock::DaemonLock;
 use crate::logins;
 use crate::logins::LoginFiles;
@@ -91,7 +95,6 @@ use crate::room_cards::RoomCards;
 use crate::routines;
 use crate::routines::RoutineChannel;
 use crate::routines::Routines;
-use crate::settings::AssistantSettings;
 use crate::settings::ModelError;
 use crate::settings::RunnerChoice;
 use crate::settings::Settings;
@@ -118,6 +121,7 @@ const RELEASE_SENT: Duration = Duration::from_millis(300);
 const FLUSH_EVERY: Duration = Duration::from_secs(2);
 const WAIT_FOR_SETUP: Duration = Duration::from_secs(2);
 const FOLLOW_EVERY: Duration = Duration::from_millis(500);
+const PICTURE_EVERY: u32 = 4;
 
 /// Runs the agent without a tray, for the end-to-end test, until Ctrl-C or a terminate signal.
 #[cfg(debug_assertions)]
@@ -139,7 +143,7 @@ pub(crate) async fn serve(
     keep_to_itself();
     let _lock = DaemonLock::take(&home.lock())?;
     let seen = stamp(&home.settings());
-    take_settings(&home);
+    live::take_settings(&home);
     let _following = Following(tokio::spawn(follow_settings(home.clone(), seen)));
     let vault = Arc::new(Vault::new(&home.root));
     let settings_copies = Arc::new(SettingsCopies::new(home.settings(), home.settings_stamp()));
@@ -175,15 +179,18 @@ pub(crate) async fn serve(
         None => Arc::new(NoTools),
     };
     let handoff = Arc::new(Handoff::default());
+    let (sub_runner, sub_model) =
+        sub_session_runner(&home, &settings, &vault, &basic, &toolbox, shared.clone())?;
     let sub_sessions: Arc<dyn SubSessionRunner> = Arc::new(HandedOff {
         handoff: Arc::clone(&handoff),
-        inner: sub_session_runner(&home, &settings, &vault, &basic, &toolbox, shared.clone())?,
+        inner: sub_runner,
     });
     let records = open_record(&home).await?;
     let notes = Notes::new(home.notes());
     let routines = Routines::new(home.routines());
+    let live_model = LiveModel::new(model);
     let model: Arc<dyn Model> = Arc::new(Noted {
-        model,
+        model: Arc::clone(&live_model) as Arc<dyn Model>,
         notes: Arc::clone(&notes),
         routines: Arc::clone(&routines),
     });
@@ -201,6 +208,15 @@ pub(crate) async fn serve(
         Arc::clone(&rooms),
         screen_lines,
     ));
+    let slots = Arc::new(ChannelSlots::new()?);
+    rooms.connect(&slots.all());
+    let _live = Following(tokio::spawn(live::follow(Followed {
+        home: home.clone(),
+        vault: Arc::clone(&vault),
+        main: live_model,
+        sub: sub_model,
+        slots: Arc::clone(&slots),
+    })));
     let (guarded, wrong) = settings.relays(vault::lookup(&vault), true, &secrets);
     let (mut guarded, failed) = relay(guarded).await;
     for problem in wrong.iter().chain(&failed) {
@@ -508,12 +524,8 @@ pub(crate) async fn serve(
                 continue;
             }
         }
-        let (chats, off) = settings.channels(vault::lookup(&vault));
-        for problem in off {
-            eprintln!("dotori: {problem}");
-        }
-        rooms.connect(&chats);
-        let mut channels: Vec<Arc<dyn Channel>> = chats
+        let mut channels: Vec<Arc<dyn Channel>> = slots
+            .all()
             .into_iter()
             .map(|chat| chat as Arc<dyn Channel>)
             .collect();
@@ -523,9 +535,8 @@ pub(crate) async fn serve(
             .as_ref()
             .is_some_and(|linked| !linked.hub.approved().is_empty());
         if greeting::is_new(records.as_ref(), &notes, joined).await {
-            let name = AssistantSettings::name_of(settings.assistant.as_ref());
             let language = language::current().english_name();
-            channels.push(Arc::new(Greeting::new(&name, language)) as Arc<dyn Channel>);
+            channels.push(Arc::new(Greeting::new(&identity::name(), language)) as Arc<dyn Channel>);
         }
         let channels = channels
             .into_iter()
@@ -567,23 +578,24 @@ pub(crate) async fn serve(
         }
         route.hand_waiting(&app).await;
         let ended = tokio::select! {
-            () = lost(linked.as_ref()) => None,
-            stopped = &mut stop => Some(stopped),
-            () = &mut quit => Some(Ok(())),
+            () = lost(linked.as_ref()) => Ended::Lost,
+            stopped = &mut stop => Ended::Stopped(stopped),
+            () = &mut quit => Ended::Stopped(Ok(())),
         };
         route.elsewhere();
         handoff.serve(None);
-        if ended.is_some() {
-            handoff.quit();
-            agent.shutdown().await;
-            handoff.stop_all();
-        } else {
-            agent.hand_off().await;
+        match &ended {
+            Ended::Stopped(_) => {
+                handoff.quit();
+                agent.shutdown().await;
+                handoff.stop_all();
+            }
+            Ended::Lost => agent.hand_off().await,
         }
         asking.lapse_waiting();
         match ended {
-            Some(stopped) => break stopped,
-            None => eprintln!("dotori: another PC runs the assistant now"),
+            Ended::Stopped(stopped) => break stopped,
+            Ended::Lost => eprintln!("dotori: another PC runs the assistant now"),
         }
     };
     let _ = fs::remove_file(home.door());
@@ -595,19 +607,18 @@ pub(crate) async fn serve(
 }
 
 async fn follow_settings(home: Home, mut seen: Stamp) {
+    let mut ticks = 0_u32;
     loop {
         time::sleep(FOLLOW_EVERY).await;
+        ticks = ticks.wrapping_add(1);
         let now = stamp(&home.settings());
         if now != seen {
             seen = now;
-            take_settings(&home);
+            live::take_settings(&home);
+        } else if ticks.is_multiple_of(PICTURE_EVERY) {
+            identity::choose(Identity::read(&home.settings(), &home.icons()));
         }
     }
-}
-
-fn take_settings(home: &Home) {
-    language::choose(language::saved(&home.settings()));
-    identity::choose(Identity::read(&home.settings(), &home.icons()));
 }
 
 struct Following(tokio::task::JoinHandle<()>);
@@ -616,6 +627,13 @@ impl Drop for Following {
     fn drop(&mut self) {
         self.0.abort();
     }
+}
+
+type SubSessions = (Arc<dyn SubSessionRunner>, Option<Arc<LiveModel>>);
+
+enum Ended {
+    Lost,
+    Stopped(Result<(), String>),
 }
 
 enum Keyed {
@@ -822,24 +840,28 @@ fn sub_session_runner(
     basic: &BasicTools,
     toolbox: &Arc<dyn Toolbox>,
     shared: Option<Arc<tools::SharedTools>>,
-) -> Result<Arc<dyn SubSessionRunner>, String> {
+) -> Result<SubSessions, String> {
     let chosen = settings.sub_sessions.clone().unwrap_or_default();
     let agent = match chosen.runner.unwrap_or_default() {
         RunnerChoice::Llm => {
-            return Ok(Arc::new(LlmRunner {
-                model: settings
+            let model = LiveModel::new(
+                settings
                     .sub_session_model(vault::lookup(vault))
                     .map_err(|error| error.to_string())?,
+            );
+            let runner = Arc::new(LlmRunner {
+                model: Arc::clone(&model) as Arc<dyn Model>,
                 basic: basic.clone(),
                 rest: Arc::clone(toolbox),
                 max_turns: SUB_SESSION_TURNS,
                 tool_timeout: TOOL_TIMEOUT,
-            }));
+            });
+            return Ok((runner, Some(model)));
         }
         RunnerChoice::ClaudeCode => CodingAgent::ClaudeCode,
         RunnerChoice::Codex => CodingAgent::Codex,
     };
-    Ok(Arc::new(CliRunner {
+    let runner = Arc::new(CliRunner {
         agent,
         program: chosen
             .path
@@ -849,7 +871,8 @@ fn sub_session_runner(
         mcp: shared.map(|shared| shared as Arc<dyn McpServer>),
         limit: SUB_SESSION_LIMIT,
         hidden_env: settings.guarded_secrets(),
-    }))
+    });
+    Ok((runner, None))
 }
 
 #[cfg(unix)]

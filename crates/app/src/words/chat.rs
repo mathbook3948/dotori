@@ -5,6 +5,10 @@ use crate::window::identity::called;
 /// Strings of the chat window.
 #[derive(Debug)]
 pub(crate) struct Chat {
+    /// The side panel's line when there are no notes.
+    pub(crate) no_notes: &'static str,
+    /// The first item of the settings list, which goes back to the conversation.
+    pub(crate) back: &'static str,
     pub(crate) copy: &'static str,
     pub(crate) copied: &'static str,
     pub(crate) allowed: &'static str,
@@ -52,7 +56,6 @@ pub(crate) struct Chat {
     /// The line under the composer when the link failed some other way, naming the assistant.
     pub(crate) not_connected: fn() -> String,
     pub(crate) keys_hint: &'static str,
-    pub(crate) thinking: &'static str,
     /// The composer's placeholder, naming the assistant.
     pub(crate) say_to: fn() -> String,
     pub(crate) welcome: &'static str,
@@ -124,6 +127,8 @@ pub(crate) struct Chat {
 }
 
 pub(crate) const KOREAN: Chat = Chat {
+    no_notes: "아직 메모가 없어요",
+    back: "대화",
     copy: "복사",
     copied: "복사했어요",
     allowed: "허락했어요",
@@ -175,7 +180,6 @@ pub(crate) const KOREAN: Chat = Chat {
         )
     },
     keys_hint: "Enter로 보내고, Shift+Enter로 줄을 바꿔요",
-    thinking: "생각하는 중",
     say_to: || format!("{} 말하기", called(Particle::To)),
     welcome: "무엇을 도와드릴까요?",
     one_chat: &["여기서 말해도, Slack에서 말해도", "같은 대화로 이어져요."],
@@ -258,6 +262,8 @@ pub(crate) const KOREAN: Chat = Chat {
 };
 
 pub(crate) const ENGLISH: Chat = Chat {
+    no_notes: "No notes yet.",
+    back: "Chat",
     copy: "Copy",
     copied: "Copied",
     allowed: "Allowed",
@@ -298,7 +304,6 @@ pub(crate) const ENGLISH: Chat = Chat {
     unreachable: || format!("Can't reach {}. Reconnecting.", identity::name()),
     not_connected: || format!("Couldn't connect to {}. Trying again.", identity::name()),
     keys_hint: "Enter sends, Shift+Enter adds a line.",
-    thinking: "Thinking",
     say_to: || format!("Message {}", identity::name()),
     welcome: "What can I help with?",
     one_chat: &["Talk here or in Slack,", "it's the same conversation."],

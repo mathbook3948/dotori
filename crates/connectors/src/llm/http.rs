@@ -118,6 +118,25 @@ pub(crate) async fn check(request: RequestBuilder) -> Result<(), CheckError> {
     }
 }
 
+/// Sends `request` once and gives back the body of a successful answer. A refused key and an
+/// address that does not answer fail as in `check`; any other failure answers `NoAnswer`.
+pub(crate) async fn fetch(request: RequestBuilder) -> Result<String, CheckError> {
+    match request.timeout(CHECK_TIMEOUT).send().await {
+        Ok(response)
+            if matches!(
+                response.status(),
+                StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
+            ) =>
+        {
+            Err(CheckError::KeyRefused)
+        }
+        Ok(response) if response.status().is_success() => {
+            response.text().await.map_err(|_| CheckError::NoAnswer)
+        }
+        Ok(_) | Err(_) => Err(CheckError::NoAnswer),
+    }
+}
+
 fn passing(status: StatusCode) -> bool {
     matches!(status.as_u16(), 408 | 409 | 429 | 500..=599)
 }

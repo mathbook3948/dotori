@@ -495,9 +495,6 @@ impl Render for PcsView {
             .flex()
             .flex_col()
             .gap_4()
-            .p_5()
-            .rounded_2xl()
-            .card(&theme)
             .child(
                 div()
                     .flex()

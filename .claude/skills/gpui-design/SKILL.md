@@ -75,6 +75,7 @@ Take every theme that exists in both looks. Read each screenshot yourself.
 - A window's behavior is tested with GPUI's test platform in its `<name>.test.rs`: open the view with fake `Link` and `ScreenLink` channels, type with `simulate_input` and `simulate_keystrokes`, click an element found by its `debug_selector` with `simulate_click`, and assert what the window sent and what it holds. `crates/app/src/window/chat.test.rs` shows the pattern.
 - Give each control a test needs a `debug_selector`. It costs nothing outside tests.
 - GPUI 0.2.2 keeps every `debug_selector` it has ever drawn, so `debug_bounds` cannot show that something went away. Assert what the view holds instead, such as `browser_ask` in `chat.test.rs`.
+- Motion is tested too. Every motion token records, in tests only, each frame it draws short of its end, and `motion::seen::take()` returns the tokens that moved since the last call. `moved_while` in `settings.test.rs` lets what moved before settle, runs one action and returns what moved meanwhile. Assert that the action the owner took moves only what it should, such as `["switch"]` for a tab, and that opening a section, going back a step or anything else the owner did not move moves nothing. A movement that replays when its part is drawn again fails there, not in front of the owner.
 - `crates/app/tests/e2e.rs` runs the real daemon against the fake model in `crates/app/tests/support/model.rs`. When a change touches what the daemon sends the windows, extend it.
 
 ## 5. Critique, then fix

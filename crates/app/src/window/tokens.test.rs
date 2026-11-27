@@ -51,7 +51,13 @@ fn the_sizes_match_design_md() {
     let pair = |(wide, tall): (f32, f32)| format!("{wide}x{tall}");
     assert_eq!(token("size", "window"), pair(WINDOW));
     assert_eq!(token("size", "window-min"), pair(WINDOW_MIN));
-    for (key, size) in [("picture", PICTURE), ("tile", TILE), ("avatar", AVATAR)] {
+    assert!(DESIGN.contains(&format!("  greet-text: {}px\n", GREET_TEXT as u32)));
+    for (key, size) in [
+        ("picture", PICTURE),
+        ("tile", TILE),
+        ("avatar", AVATAR),
+        ("sidebar", SIDEBAR),
+    ] {
         assert_eq!(token("size", key), format!("{size}px"), "size.{key}");
     }
 }

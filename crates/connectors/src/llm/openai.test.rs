@@ -261,3 +261,20 @@ fn arguments_given_as_an_object_are_accepted() {
         other => panic!("unexpected actions {other:?}"),
     }
 }
+
+#[test]
+fn the_listed_models_come_back_sorted_by_name() {
+    let names = model_names(
+        r#"{"object":"list","data":[{"id":"qwen3","object":"model"},{"id":"gemma4","object":"model"},{"id":"gemma4"}]}"#,
+    );
+
+    assert_eq!(
+        names,
+        Some(vec![String::from("gemma4"), String::from("qwen3")])
+    );
+}
+
+#[test]
+fn a_list_that_does_not_read_gives_no_models() {
+    assert_eq!(model_names("<html>not found</html>"), None);
+}

@@ -49,10 +49,14 @@ use crate::asked;
 use crate::asked::asked_fields;
 use crate::asked::field_label;
 use crate::asked::own_tool;
+use crate::home::Home;
 use crate::link;
 use crate::link::Link;
 use crate::link::Update;
+use crate::notes::Notes;
+use crate::routines::Routines;
 use crate::screen_link::ScreenLink;
+use crate::settings::Settings;
 use crate::window::Title;
 use crate::window::browser;
 use crate::window::browser::BrowserWindow;
@@ -74,15 +78,21 @@ use crate::window::parts::MONO;
 use crate::window::parts::SETTINGS_ICON;
 use crate::window::parts::SHIELD_ON_ICON;
 use crate::window::parts::lock;
-use crate::window::parts::logo;
+use crate::window::parts::picture_tile;
 use crate::window::parts::prose;
+use crate::window::parts::thinking;
 use crate::window::parts::typeface;
 use crate::window::rich::rich;
 use crate::window::screen::CardShown;
 use crate::window::screen::ScreenView;
+use crate::window::settings::BackToChat;
+use crate::window::settings::Part;
+use crate::window::settings::SettingsView;
 use crate::window::surface::SurfaceExt;
 use crate::window::theme::Theme;
+use crate::window::tokens::COLUMN;
 use crate::window::tokens::PICTURE;
+use crate::window::tokens::SIDEBAR;
 use crate::window::when::Mark;
 use crate::window::when::marks;
 use crate::window::when::today;
@@ -93,7 +103,7 @@ const BOTTOM_SLACK: f32 = 8.;
 const TURN_SPACE: f32 = 18.;
 const PREVIEW_EVERY: Duration = Duration::from_millis(500);
 const EDGE: f32 = 20.;
-const WORKING_ROW: f32 = 20.;
+const WORKING_ROW: f32 = 40.;
 
 /// The chat window: the conversation with dotori and the traffic of every other channel.
 pub(crate) struct ChatView {
@@ -124,10 +134,43 @@ pub(crate) struct ChatView {
     dismissed: Option<SharedString>,
     preview: Option<Arc<RenderImage>>,
     focus_card: bool,
+    focus_composer: bool,
     _uncopy: Option<Task<()>>,
     title: Title,
     _pump: Task<()>,
+    home: Option<Home>,
+    glance: Glance,
+    _glance: Option<Task<()>>,
+    settings: Option<Entity<SettingsView>>,
+    in_settings: bool,
 }
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct Glance {
+    routines: Vec<(String, String)>,
+    notes: Vec<String>,
+}
+
+impl Glance {
+    fn read(home: &Home) -> Self {
+        Self {
+            routines: Routines::new(home.routines())
+                .list()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|routine| (routine.time, routine.name))
+                .collect(),
+            notes: Notes::new(home.notes())
+                .list()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(_, text)| text)
+                .collect(),
+        }
+    }
+}
+
+const GLANCE_EVERY: Duration = Duration::from_secs(5);
 
 #[derive(Debug, PartialEq, Eq)]
 enum LinkState {
@@ -155,7 +198,181 @@ impl LinkState {
 }
 
 impl ChatView {
-    pub(crate) fn new(link: Link, screen: ScreenLink, cx: &mut Context<Self>) -> Self {
+    /// The window with the conversation, its side panel read from `home`, and the settings
+    /// opening in it. With `settings_first` it opens on the settings.
+    pub(crate) fn new(
+        link: Link,
+        screen: ScreenLink,
+        home: Option<Home>,
+        settings_first: bool,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut view = Self::talking(link, screen, cx);
+        if let Some(home) = home {
+            view.glance = Glance::read(&home);
+            view._glance = Some(cx.spawn({
+                let home = home.clone();
+                async move |view, cx| {
+                    loop {
+                        cx.background_executor().timer(GLANCE_EVERY).await;
+                        let home = home.clone();
+                        let read = cx
+                            .background_spawn(async move { Glance::read(&home) })
+                            .await;
+                        let kept = view.update(cx, |view, cx| {
+                            if view.glance != read {
+                                view.glance = read;
+                                cx.notify();
+                            }
+                        });
+                        if kept.is_err() {
+                            return;
+                        }
+                    }
+                }
+            }));
+            view.home = Some(home);
+        }
+        if settings_first {
+            view.open_settings(None, cx);
+        }
+        view
+    }
+
+    /// Shows the settings in this window, at `part` when one is named.
+    pub(crate) fn open_settings(&mut self, part: Option<Part>, cx: &mut Context<Self>) {
+        if !self.in_settings {
+            self.settings = None;
+        }
+        if self.settings.is_none() {
+            let Some(home) = self.home.clone() else {
+                return;
+            };
+            let settings = match Settings::load(&home.settings()) {
+                Ok(settings) => settings,
+                Err(error) => {
+                    eprintln!("dotori: the settings cannot be read: {error}");
+                    return;
+                }
+            };
+            let view = cx.new(|cx| SettingsView::new(home, settings, cx));
+            cx.subscribe(&view, |chat, _, _: &BackToChat, cx| {
+                chat.keep_settings(cx);
+                chat.in_settings = false;
+                chat.focus_composer = true;
+                cx.notify();
+            })
+            .detach();
+            self.settings = Some(view);
+        }
+        if let (Some(settings), Some(part)) = (&self.settings, part) {
+            settings.update(cx, |settings, cx| settings.go_to(part, cx));
+        }
+        self.in_settings = true;
+        cx.notify();
+    }
+
+    fn keep_settings(&self, cx: &mut App) {
+        if let Some(settings) = &self.settings {
+            settings.update(cx, |settings, cx| settings.save_all(cx));
+        }
+    }
+
+    fn shows_buttons(&self) -> bool {
+        !matches!(self.link, LinkState::Opening | LinkState::Starting) || self.in_settings
+    }
+
+    fn settings_button(&self, theme: &Theme, cx: &mut Context<Self>) -> Div {
+        div().children((!self.in_settings).then(|| {
+            round_button("settings", theme)
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .child(
+                    svg()
+                        .path(SETTINGS_ICON)
+                        .size(px(18.))
+                        .text_color(theme.muted),
+                )
+                .on_click(cx.listener(|view, _, _, cx| view.open_settings(None, cx)))
+        }))
+    }
+
+    fn side_panel(&self, theme: &Theme, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
+        let heading =
+            |id: &'static str, words: &'static str, part: Part, cx: &mut Context<Self>| {
+                div()
+                    .id(id)
+                    .debug_selector(move || id.to_owned())
+                    .px_1()
+                    .text_xs()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme.muted)
+                    .cursor_pointer()
+                    .child(words)
+                    .on_click(cx.listener(move |view, _, _, cx| view.open_settings(Some(part), cx)))
+            };
+        let quiet =
+            |words: &'static str| div().px_1().text_xs().text_color(theme.muted).child(words);
+        let glance = &self.glance;
+        let all = words();
+        div()
+            .id("side")
+            .flex_none()
+            .w(px(SIDEBAR))
+            .flex()
+            .flex_col()
+            .gap_2()
+            .px_3()
+            .pt_2()
+            .pb_4()
+            .overflow_y_scroll()
+            .child(heading(
+                "side-routines",
+                all.routines.title,
+                Part::Routines,
+                cx,
+            ))
+            .when(glance.routines.is_empty(), |side| {
+                side.child(quiet(all.routines.empty))
+            })
+            .children(glance.routines.iter().map(|(time, name)| {
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .px_3()
+                    .py_2()
+                    .rounded_lg()
+                    .bg(theme.surface)
+                    .child(
+                        div()
+                            .flex_none()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(time.clone()),
+                    )
+                    .child(div().flex_1().min_w_0().truncate().child(name.clone()))
+            }))
+            .child(div().h_3())
+            .child(heading(
+                "side-notes",
+                all.settings.notes_title,
+                Part::Notes,
+                cx,
+            ))
+            .when(glance.notes.is_empty(), |side| {
+                side.child(quiet(all.chat.no_notes))
+            })
+            .children(glance.notes.iter().map(|text| {
+                div()
+                    .px_3()
+                    .py_2()
+                    .rounded_lg()
+                    .bg(theme.surface)
+                    .text_xs()
+                    .child(prose(text))
+            }))
+    }
+
+    fn talking(link: Link, screen: ScreenLink, cx: &mut Context<Self>) -> Self {
         let Link { mut updates, say } = link;
         let screen = cx.new(|cx| ScreenView::new(screen, cx));
         cx.observe(&screen, |view, _, cx| view.screen_changed(cx))
@@ -177,6 +394,12 @@ impl ChatView {
             }
         });
         let working = cx.new(|_| WorkingView);
+        cx.on_app_quit(|chat, cx| {
+            chat.keep_settings(cx);
+            async {}
+        })
+        .detach();
+        cx.on_release(|chat, cx| chat.keep_settings(cx)).detach();
         let pump = cx.spawn(async move |view, cx| {
             while let Some(update) = updates.recv().await {
                 if update == Update::Gone {
@@ -220,9 +443,15 @@ impl ChatView {
             dismissed: None,
             preview: None,
             focus_card: false,
+            focus_composer: false,
             _uncopy: None,
             title: Title::new(identity::name),
             _pump: pump,
+            home: None,
+            glance: Glance::default(),
+            _glance: None,
+            settings: None,
+            in_settings: false,
         }
     }
 
@@ -520,7 +749,7 @@ impl ChatView {
                         .px_3p5()
                         .py_2()
                         .rounded_2xl()
-                        .raised(theme)
+                        .bg(theme.bubble)
                         .text_color(theme.text)
                         .child(prose(text)),
                 )
@@ -529,16 +758,30 @@ impl ChatView {
                 .flex()
                 .items_start()
                 .gap(px(10.))
-                .child(div().flex_none().pt(px(2.)).child(logo(theme, 20.)))
+                .child(
+                    div()
+                        .flex_none()
+                        .pt(px(8.))
+                        .child(picture_tile(theme, 28., 8.)),
+                )
                 .child(
                     div()
                         .flex()
                         .flex_col()
+                        .items_start()
                         .flex_1()
                         .min_w_0()
-                        .text_size(px(15.))
-                        .line_height(px(24.))
-                        .child(rich(text, theme))
+                        .child(
+                            div()
+                                .max_w(relative(0.85))
+                                .px_4()
+                                .py_2p5()
+                                .rounded_2xl()
+                                .raised(theme)
+                                .text_size(px(15.))
+                                .line_height(px(24.))
+                                .child(rich(text, theme)),
+                        )
                         .child(self.under(theme, n, text, mark, cx)),
                 ),
             ToWindow::Traffic {
@@ -1748,7 +1991,7 @@ impl ChatView {
             return div().flex_1().into_any_element();
         }
         let failed = self.link == LinkState::CouldNotStart;
-        let picture = logo(theme, PICTURE);
+        let picture = picture_tile(theme, PICTURE, 16.);
         div()
             .id("splash")
             .debug_selector(|| String::from("splash"))
@@ -1875,6 +2118,19 @@ impl Focusable for ChatView {
 impl Render for ChatView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.title.keep(window);
+        if self.focus_composer && !self.in_settings {
+            self.focus_composer = false;
+            window.focus(&self.input.focus_handle(cx));
+        }
+        if let Some(settings) = &self.settings {
+            let waits = self.waits_on_the_owner() || self.card.kind.is_some();
+            if settings.read(cx).chat_waits != waits {
+                settings.update(cx, |settings, cx| {
+                    settings.chat_waits = waits;
+                    cx.notify();
+                });
+            }
+        }
         let theme = Theme::of(window);
         self.input
             .update(cx, |input, cx| input.set_placeholder(say_to(), cx));
@@ -1886,6 +2142,7 @@ impl Render for ChatView {
         }
         let frame = Frame::of(window);
         if self.link.splash() {
+            let starting = !self.shows_buttons();
             return frame
                 .resizable(div())
                 .flex()
@@ -1894,8 +2151,20 @@ impl Render for ChatView {
                 .font(typeface())
                 .bg(theme.canvas)
                 .text_color(theme.text)
-                .child(frame.strip(&theme, settings_button(&theme), div()))
-                .child(self.splash(&theme))
+                .when(starting, |root| {
+                    root.child(frame.bare().strip(&theme, div(), div()))
+                })
+                .when(!starting, |root| {
+                    root.child(frame.strip(&theme, self.settings_button(&theme, cx), div()))
+                })
+                .when(self.in_settings, |root| {
+                    root.children(
+                        self.settings
+                            .clone()
+                            .map(|settings| div().flex_1().min_h_0().child(settings)),
+                    )
+                })
+                .when(!self.in_settings, |root| root.child(self.splash(&theme)))
                 .into_any_element();
         }
         let working_at = if self.shows_working() {
@@ -1906,6 +2175,58 @@ impl Render for ChatView {
         } else {
             None
         };
+        let column = COLUMN;
+        let conversation = div()
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .on_action(cx.listener(Self::submit))
+            .child(
+                div().flex_1().min_h_0().flex().justify_center().child(
+                    div()
+                        .h_full()
+                        .w_full()
+                        .max_w(px(column))
+                        .relative()
+                        .child(
+                            AnyView::from(self.rows.clone())
+                                .cached(StyleRefinement::default().size_full()),
+                        )
+                        .children(working_at.map(|top| {
+                            div()
+                                .absolute()
+                                .left(px(EDGE))
+                                .top(top)
+                                .child(self.working.clone())
+                        })),
+                ),
+            )
+            .child(
+                div().flex().justify_center().child(
+                    div()
+                        .w_full()
+                        .max_w(px(column))
+                        .child(self.composer(&theme, cx)),
+                ),
+            );
+        let body = if self.in_settings {
+            self.settings
+                .clone()
+                .map(|settings| div().flex_1().min_h_0().child(settings))
+        } else {
+            None
+        };
+        let body = body.unwrap_or_else(|| {
+            div()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .when(self.home.is_some(), |row| {
+                    row.child(self.side_panel(&theme, cx))
+                })
+                .child(conversation)
+        });
         frame
             .resizable(div())
             .flex()
@@ -1916,40 +2237,10 @@ impl Render for ChatView {
             .text_color(theme.text)
             .text_sm()
             .line_height(px(21.))
-            .on_action(cx.listener(Self::submit))
-            .child(frame.strip(&theme, settings_button(&theme), div()))
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .relative()
-                    .child(
-                        AnyView::from(self.rows.clone())
-                            .cached(StyleRefinement::default().size_full()),
-                    )
-                    .children(working_at.map(|top| {
-                        div()
-                            .absolute()
-                            .left(px(EDGE))
-                            .top(top)
-                            .child(self.working.clone())
-                    })),
-            )
-            .child(self.composer(&theme, cx))
+            .child(frame.strip(&theme, self.settings_button(&theme, cx), div()))
+            .child(body)
             .into_any_element()
     }
-}
-
-fn settings_button(theme: &Theme) -> impl IntoElement {
-    round_button("settings", theme)
-        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .child(
-            svg()
-                .path(SETTINGS_ICON)
-                .size(px(18.))
-                .text_color(theme.muted),
-        )
-        .on_click(|_, _, _| crate::tray::open("settings"))
 }
 
 fn tick(theme: &Theme, on: bool) -> Div {
@@ -2064,17 +2355,14 @@ impl Render for WorkingView {
             .items_center()
             .h(px(WORKING_ROW))
             .gap(px(10.))
-            .child(logo(&theme, 20.).with_animation(
-                "working-logo",
-                WORKING.animation().repeat().with_easing(|t| t),
-                |logo, progress| logo.opacity(breath(progress)),
-            ))
+            .child(picture_tile(&theme, 28., 8.))
             .child(
                 div()
-                    .text_size(px(13.))
-                    .line_height(px(18.))
-                    .text_color(theme.muted)
-                    .child(words().chat.thinking),
+                    .px_4()
+                    .py_2()
+                    .rounded_2xl()
+                    .raised(&theme)
+                    .child(thinking(&theme, "working-dots")),
             )
             .with_animation("working", MESSAGE_ENTER.animation(), entering)
     }
@@ -2091,7 +2379,7 @@ fn empty(theme: &Theme) -> impl IntoElement {
         .items_center()
         .gap_3()
         .pt(px(96.))
-        .child(logo(theme, PICTURE))
+        .child(picture_tile(theme, PICTURE, 16.))
         .child(
             div()
                 .text_lg()

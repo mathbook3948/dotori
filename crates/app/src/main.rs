@@ -3,6 +3,7 @@
 mod accounts;
 mod asked;
 mod browser_route;
+mod channel_slots;
 mod confirm;
 mod daemon;
 mod device;
@@ -17,6 +18,7 @@ mod icons;
 mod idle;
 mod language;
 mod link;
+mod live;
 mod lock;
 mod logins;
 mod main_session;

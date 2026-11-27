@@ -10,15 +10,8 @@ pub(crate) struct Routines {
     pub(crate) title: &'static str,
     /// What a routine is, under the title, which names the assistant.
     pub(crate) caption: fn() -> String,
-    pub(crate) zone_label: &'static str,
-    pub(crate) zone_placeholder: &'static str,
-    pub(crate) zone_save: &'static str,
-    pub(crate) zone_saved_shared: &'static str,
-    pub(crate) zone_saved_each: &'static str,
-    pub(crate) zone_shared: &'static str,
-    pub(crate) zone_each: &'static str,
-    /// The time zone this PC is in, by its name.
-    pub(crate) zone_here: fn(&str) -> String,
+    /// Where the time zone is set, as the words before the link, the link and the words after.
+    pub(crate) zone_moved: [&'static str; 3],
     pub(crate) empty: &'static str,
     pub(crate) empty_ask: &'static str,
     pub(crate) remove: &'static str,
@@ -99,14 +92,7 @@ pub(crate) const KOREAN: Routines = Routines {
             called(Particle::Subject)
         )
     },
-    zone_label: "시간대",
-    zone_placeholder: "이 PC의 시간대",
-    zone_save: "바꾸기",
-    zone_saved_shared: "바꿨어요. 다음 루틴부터 모든 PC가 이 시간대로 읽어요.",
-    zone_saved_each: "바꿨어요. 다음 루틴부터 각 PC가 자기 시간대로 읽어요.",
-    zone_shared: "모든 PC가 이 시간대로 루틴을 읽어요. 비우면 각 PC의 시간대를 써요.",
-    zone_each: "지금은 각 PC의 시간대로 읽어요. Asia/Seoul처럼 적으면 모든 PC가 같은 시간대를 써요.",
-    zone_here: |zone| format!("이 PC의 시간대: {zone}"),
+    zone_moved: ["시간대는", "일반", "에서 바꿀 수 있어요."],
     empty: "아직 루틴이 없어요",
     empty_ask: "채팅창에서 \"평일 아침 8시에 오늘 일정 알려줘\"처럼 부탁하면 돼요",
     remove: "지우기",
@@ -147,14 +133,7 @@ pub(crate) const ENGLISH: Routines = Routines {
     caption: || {
         String::from("Things I do on my own at set times. You'll see the results in the chat.")
     },
-    zone_label: "Time zone",
-    zone_placeholder: "This PC's time zone",
-    zone_save: "Change",
-    zone_saved_shared: "Changed. From the next routine on, every PC reads times in this zone.",
-    zone_saved_each: "Changed. From the next routine on, each PC reads times in its own zone.",
-    zone_shared: "Every PC reads routine times in this zone. Clear it to use each PC's own.",
-    zone_each: "Each PC reads routine times in its own zone now. Type one like Asia/Seoul to use it on every PC.",
-    zone_here: |zone| format!("This PC is on {zone}."),
+    zone_moved: ["Change the time zone in", "General", "."],
     empty: "No routines yet.",
     empty_ask: "Ask me in the chat, like \"Every weekday at 8 AM, tell me what's on today.\"",
     remove: "Remove",

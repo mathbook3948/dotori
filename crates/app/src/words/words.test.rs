@@ -62,7 +62,6 @@ fn every_function(words: &Words) -> Vec<(&'static str, String)> {
             (chat.log_in_note)("Dotori", "example.com", "/login"),
         ),
         ("chat.log_in_as", (chat.log_in_as)("minji")),
-        ("common.settings_title", (common.settings_title)()),
         ("common.onboarding_title", (common.onboarding_title)()),
         ("common.browser_title", (common.browser_title)()),
         (
@@ -86,7 +85,6 @@ fn every_function(words: &Words) -> Vec<(&'static str, String)> {
         ("pcs.joined", (pcs.joined)("laptop")),
         ("pcs.dropped", (pcs.dropped)(2)),
         ("routines.caption", (routines.caption)()),
-        ("routines.zone_here", (routines.zone_here)("Asia/Seoul")),
         (
             "routines.weekday_short",
             [
@@ -123,25 +121,20 @@ fn every_function(words: &Words) -> Vec<(&'static str, String)> {
         ("screen.page_connecting", (screen.page_connecting)()),
         ("screen.page_empty", (screen.page_empty)()),
         ("screen.asks", (screen.asks)("a code")),
-        ("settings.saved", (settings.saved)()),
-        (
-            "settings.applies_on_restart",
-            (settings.applies_on_restart)(),
-        ),
         ("settings.model_about", (settings.model_about)()),
-        (
-            "settings.key_hint",
-            [Some("KEY"), None]
-                .map(|name| (settings.key_hint)(name))
-                .join(" "),
-        ),
         ("settings.name_too_long", (settings.name_too_long)(20)),
         ("settings.slack_about", (settings.slack_about)()),
+        ("settings.telegram_about", (settings.telegram_about)()),
+        ("settings.discord_about", (settings.discord_about)()),
         (
             "settings.not_a_key_name",
             (settings.not_a_key_name)("xoxb-1"),
         ),
         ("settings.notes_about", (settings.notes_about)(3, 20)),
+        (
+            "settings.channel_missing",
+            (settings.channel_missing)("Slack", &[settings.missing_bot_token]),
+        ),
         (
             "settings.name_is_an_account",
             (settings.name_is_an_account)("ACCOUNT_1"),
@@ -212,4 +205,29 @@ fn a_test_can_speak_either_language_whatever_the_locale() {
     assert_eq!(words().chat.allow, "Allow");
     assert_eq!(speak(Language::Korean).chat.allow, "허락");
     assert_eq!(words().chat.allow, "허락");
+}
+
+#[test]
+fn a_channel_names_every_missing_field_with_the_right_particles() {
+    let said = &crate::words::settings::KOREAN;
+    assert_eq!(
+        (said.channel_missing)("Slack", &[said.missing_app_token, said.missing_member_id]),
+        "Slack을 쓰려면 앱 토큰, 내 멤버 ID를 넣어 주세요."
+    );
+    assert_eq!(
+        (said.channel_missing)("Discord", &[said.missing_bot_token]),
+        "Discord를 쓰려면 봇 토큰을 넣어 주세요."
+    );
+    let said = &crate::words::settings::ENGLISH;
+    assert_eq!(
+        (said.channel_missing)(
+            "Slack",
+            &[
+                said.missing_app_token,
+                said.missing_bot_token,
+                said.missing_member_id
+            ]
+        ),
+        "To use Slack, enter the app token, the bot token and your member ID."
+    );
 }

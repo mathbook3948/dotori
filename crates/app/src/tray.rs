@@ -5,6 +5,7 @@ use std::cell::RefCell;
 use std::env;
 use std::fs;
 use std::panic;
+use std::path::PathBuf;
 use std::process;
 use std::process::Command;
 use std::rc::Rc;
@@ -30,12 +31,12 @@ use crate::daemon;
 use crate::home::Home;
 use crate::language;
 use crate::language::Language;
+use crate::window::app_icon;
 use crate::window::identity;
 use crate::words::words;
 
 const POLL: Duration = Duration::from_millis(100);
 const ICON_SIZE: u32 = 32;
-const ACORN: [u8; 3] = [0x8a, 0x5a, 0x1c];
 
 /// Runs the tray on this thread and the daemon on the runtime's workers. Either one ending ends
 /// both. Without a display it does not start.
@@ -91,10 +92,23 @@ struct Items {
     settings: MenuItem,
     quit: MenuItem,
     shown: (String, Language),
+    pictured: Option<PathBuf>,
 }
 
 impl Items {
     fn follow(&mut self, tray: &TrayIcon) {
+        let picture = identity::icon();
+        if picture != self.pictured {
+            match tray_picture() {
+                Ok(shown) => {
+                    if let Err(error) = tray.set_icon(Some(shown)) {
+                        eprintln!("dotori: the tray keeps its old picture: {error}");
+                    }
+                }
+                Err(error) => eprintln!("dotori: the tray keeps its old picture: {error}"),
+            }
+            self.pictured = picture;
+        }
         let now = (identity::name(), language::current());
         if now == self.shown {
             return;
@@ -173,7 +187,7 @@ fn tray() -> Result<(TrayIcon, Items), String> {
     let menu = Menu::new();
     menu.append_items(&[&chat, &settings, &quit])
         .map_err(|error| error.to_string())?;
-    let icon = Icon::from_rgba(acorn(), ICON_SIZE, ICON_SIZE).map_err(|error| error.to_string())?;
+    let icon = tray_picture()?;
     let name = identity::name();
     let tray = TrayIconBuilder::new()
         .with_menu(Box::new(menu))
@@ -186,6 +200,7 @@ fn tray() -> Result<(TrayIcon, Items), String> {
         settings,
         quit,
         shown: (name, language::current()),
+        pictured: identity::icon(),
     };
     Ok((tray, items))
 }
@@ -213,20 +228,11 @@ fn launch(arguments: &[&str]) {
     }
 }
 
-/// A filled circle in the acorn color, as RGBA rows.
-pub(crate) fn acorn() -> Vec<u8> {
-    let center = (ICON_SIZE as f32 - 1.0) / 2.0;
-    let radius = ICON_SIZE as f32 / 2.0 - 1.0;
-    let mut pixels = Vec::with_capacity((ICON_SIZE * ICON_SIZE * 4) as usize);
-    for y in 0..ICON_SIZE {
-        for x in 0..ICON_SIZE {
-            let distance = ((x as f32 - center).powi(2) + (y as f32 - center).powi(2)).sqrt();
-            let alpha = if distance <= radius { 0xff } else { 0 };
-            pixels.extend_from_slice(&ACORN);
-            pixels.push(alpha);
-        }
-    }
-    pixels
+/// The assistant's picture as the tray shows it: the owner's picture cut to a rounded square, or
+/// the acorn.
+pub(crate) fn tray_picture() -> Result<Icon, String> {
+    Icon::from_rgba(app_icon::rgba(ICON_SIZE), ICON_SIZE, ICON_SIZE)
+        .map_err(|error| error.to_string())
 }
 
 #[cfg(test)]

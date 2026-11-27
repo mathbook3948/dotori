@@ -165,7 +165,8 @@ impl SandboxView {
         cx.notify();
     }
 
-    fn shown(&self) -> bool {
+    /// Whether the sandbox has anything to say on this PC.
+    pub(crate) fn shown(&self) -> bool {
         !cfg!(windows)
     }
 }
@@ -190,34 +191,24 @@ impl Render for SandboxView {
         if !self.shown() {
             return div();
         }
-        let mut card = div()
-            .flex()
-            .flex_col()
-            .gap_4()
-            .p_5()
-            .rounded_2xl()
-            .bg(theme.surface)
-            .border_t_1()
-            .border_color(theme.rim)
-            .shadow_sm()
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(
-                        div()
-                            .text_base()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("안전하게 실행"),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(theme.muted)
-                            .child("AI가 실행하는 명령을 어디까지 볼 수 있게 할지예요."),
-                    ),
-            );
+        let mut card = div().flex().flex_col().gap_4().child(
+            div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(
+                    div()
+                        .text_base()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child("안전하게 실행"),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme.muted)
+                        .child("AI가 실행하는 명령을 어디까지 볼 수 있게 할지예요."),
+                ),
+        );
         match self.state {
             State::Checking => {
                 return div().pb_4().child(
