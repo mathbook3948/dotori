@@ -968,8 +968,7 @@ impl ChatView {
         let (icon, said, tone) = decided_heading(&came);
         let ink = match tone {
             Tone::Warn => theme.warn,
-            Tone::Danger => theme.danger,
-            Tone::Ok | Tone::Quiet => theme.muted,
+            Tone::Ok | Tone::Danger | Tone::Quiet => theme.muted,
         };
         let gave = came_outputs(theme, came, pen);
         div()
@@ -2568,11 +2567,9 @@ fn came(tool: &str, text: &str) -> Came {
 }
 
 fn decided_heading(came: &Came) -> (&'static str, SharedString, Tone) {
-    let nothing = came.body.trim().is_empty() && came.streams.is_empty();
     match &came.status {
         Some((said, Tone::Quiet)) => (DECLINED_ICON, said.clone(), Tone::Quiet),
         Some((said, Tone::Warn)) => (CLOCK_ICON, said.clone(), Tone::Warn),
-        Some((said, Tone::Danger)) if nothing => (RESULT_ICON, said.clone(), Tone::Danger),
         Some((_, Tone::Danger)) if came.streams.is_empty() => (
             RESULT_ICON,
             SharedString::new_static(words().chat.error),
@@ -2591,14 +2588,9 @@ fn came_view(theme: &Theme, came: Came, pen: &Pen) -> Vec<AnyElement> {
         .status
         .as_ref()
         .is_some_and(|(_, tone)| *tone == Tone::Danger);
-    let nothing = came.body.trim().is_empty() && came.streams.is_empty();
     let status = came
         .status
-        .filter(|(_, tone)| match tone {
-            Tone::Quiet | Tone::Warn => true,
-            Tone::Danger => nothing,
-            Tone::Ok => false,
-        })
+        .filter(|(_, tone)| matches!(tone, Tone::Quiet | Tone::Warn))
         .map(|(words, tone)| {
             div()
                 .debug_selector(|| String::from("came-status"))

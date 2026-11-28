@@ -751,10 +751,8 @@ fn a_failed_card_shows_why_without_a_line_saying_it_failed(cx: &mut TestAppConte
 }
 
 #[gpui::test]
-fn a_failed_card_names_the_reason_as_an_error_and_says_it_failed_when_there_is_none(
-    cx: &mut TestAppContext,
-) {
-    let (_view, cx, wired) = open(cx);
+fn a_failed_card_names_the_reason_as_an_error_and_never_says_it_failed(cx: &mut TestAppContext) {
+    let (view, cx, wired) = open(cx);
     wired.updates.send(Update::Connected).expect("sent");
     for (id, text) in [
         (
@@ -790,9 +788,10 @@ fn a_failed_card_names_the_reason_as_an_error_and_says_it_failed_when_there_is_n
         "the reason is an error"
     );
     assert!(
-        cx.debug_bounds("came-status").is_some(),
-        "a call that failed with no reason says it failed"
+        cx.debug_bounds("came-status").is_none(),
+        "dotori's answer says it failed"
     );
+    view.read_with(cx, |view, _| assert_eq!(view.ran.len(), 2));
 }
 
 #[gpui::test]
@@ -1473,7 +1472,7 @@ fn a_restored_line_names_a_failure_as_an_error_and_not_as_a_result() {
     );
     assert_eq!(
         heading("The owner allowed this call, but it did not finish in time."),
-        (RESULT_ICON, chat.failed.to_owned(), Tone::Danger)
+        (RESULT_ICON, chat.error.to_owned(), Tone::Danger)
     );
     assert_eq!(
         heading(
