@@ -228,6 +228,6 @@ fn resize_edge(at: Point<Pixels>, size: Size<Pixels>, tiling: Tiling) -> Option<
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "windows"))]
 #[path = "chrome.test.rs"]
 mod tests;

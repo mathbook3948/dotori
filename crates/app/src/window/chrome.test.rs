@@ -38,7 +38,6 @@ impl Render for Strip {
     }
 }
 
-#[cfg(target_os = "windows")]
 #[gpui::test]
 fn on_windows_every_press_on_the_strip_is_left_to_the_system(cx: &mut TestAppContext) {
     let heard = Rc::new(Cell::new(0));
