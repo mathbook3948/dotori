@@ -204,11 +204,6 @@ fn the_owner_allows_or_declines_a_call_from_its_card(cx: &mut TestAppContext) {
             .expect("sent");
     }
     cx.run_until_parked();
-    assert!(
-        cx.debug_bounds("sandboxed-7").is_some(),
-        "a sandboxed command says so"
-    );
-    assert!(cx.debug_bounds("sandboxed-8").is_none());
 
     click(cx, "allow-7");
     click(cx, "decline-8");

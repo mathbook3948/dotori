@@ -92,7 +92,6 @@ use crate::window::parts::ERROR_ICON;
 use crate::window::parts::MONO;
 use crate::window::parts::RESULT_ICON;
 use crate::window::parts::SETTINGS_ICON;
-use crate::window::parts::SHIELD_ON_ICON;
 use crate::window::parts::lock;
 use crate::window::parts::picture_tile;
 use crate::window::parts::prose;
@@ -814,15 +813,11 @@ impl ChatView {
                 return None;
             }
             ToWindow::Ask {
-                id,
-                tool,
-                input,
-                sandboxed,
-                ..
+                id, tool, input, ..
             } => div()
                 .flex()
                 .flex_col()
-                .child(self.ask_card(theme, (*id, tool, input, *sandboxed), &pen, cx))
+                .child(self.ask_card(theme, (*id, tool, input), &pen, cx))
                 .child({
                     let copied = match self.decided.get(id) {
                         Some(Some(true)) => self
@@ -1008,7 +1003,7 @@ impl ChatView {
     fn ask_card(
         &self,
         theme: &Theme,
-        (id, tool, input, sandboxed): (u64, &str, &str, bool),
+        (id, tool, input): (u64, &str, &str),
         pen: &Pen,
         cx: &mut Context<Self>,
     ) -> gpui::Div {
@@ -1193,25 +1188,6 @@ impl ChatView {
                             )
                         }),
                 )
-                .when(sandboxed, |card| {
-                    card.child(
-                        div()
-                            .debug_selector(|| format!("sandboxed-{id}"))
-                            .flex()
-                            .items_center()
-                            .gap_1p5()
-                            .text_xs()
-                            .text_color(theme.muted)
-                            .child(
-                                svg()
-                                    .path(SHIELD_ON_ICON)
-                                    .flex_none()
-                                    .size(px(14.))
-                                    .text_color(theme.muted),
-                            )
-                            .child(prose(&asked::sandboxed())),
-                    )
-                })
                 .child(footer),
         )
     }
