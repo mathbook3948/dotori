@@ -25,7 +25,7 @@ impl ThreadRef {
 }
 
 /// One line of the main session, in arrival order. The model reads this.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Entry {
     Heard {
         thread: ThreadRef,
@@ -63,7 +63,7 @@ pub enum Entry {
     },
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Action {
     /// `privately` sends the text to the room on the thread's channel that only the owner reads,
     /// instead of to the thread itself.
@@ -74,4 +74,31 @@ pub enum Action {
     },
     UseTool(ToolCall),
     Delegate(SubSessionSpec),
+}
+
+impl Entry {
+    /// Whether `other` is this same entry as a record loaded it. A heard message is told by its
+    /// channel and id, because the record may keep a different time for it. A reply is told by
+    /// what it did, because forgetting an earlier entry moves its `answered` here but not in the
+    /// record.
+    pub fn is_same(&self, other: &Entry) -> bool {
+        match (self, other) {
+            (Entry::Heard { message: a, .. }, Entry::Heard { message: b, .. }) => {
+                a.address.channel == b.address.channel && a.id == b.id
+            }
+            (
+                Entry::Acted {
+                    actions: a,
+                    trace: x,
+                    ..
+                },
+                Entry::Acted {
+                    actions: b,
+                    trace: y,
+                    ..
+                },
+            ) => a == b && x == y,
+            _ => self == other,
+        }
+    }
 }

@@ -86,6 +86,14 @@ pub struct Forgotten {
     pub device: String,
 }
 
+/// What `forget` removed. `entries` are the ones that could be read back, for whoever still
+/// holds them in memory.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Forgot {
+    pub list: Vec<Forgotten>,
+    pub entries: Vec<Entry>,
+}
+
 /// A record as the owner would recognize it, to show before it is forgotten.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Described {
@@ -335,7 +343,7 @@ impl SqliteStore {
         &self,
         ids: Vec<String>,
         carriers: Vec<String>,
-    ) -> Result<Vec<Forgotten>, RecordError> {
+    ) -> Result<Forgot, RecordError> {
         self.with(move |book, folder, _| {
             let mut found = Vec::new();
             for id in &ids {
@@ -357,11 +365,26 @@ impl SqliteStore {
                     found.push((year, Forgotten { id, device }));
                 }
             }
+            let mut entries = Vec::new();
             for (year, forgotten) in &found {
-                forget_in(book.year(folder, *year)?, forgotten, true)?;
+                let connection = book.year(folder, *year)?;
+                let line: String = connection
+                    .query_row(
+                        "SELECT line FROM records WHERE id = ?1",
+                        [&forgotten.id],
+                        |row| row.get(0),
+                    )
+                    .map_err(fail)?;
+                if let Ok(record) = parse(&line) {
+                    entries.push(record.entry);
+                }
+                forget_in(connection, forgotten, true)?;
             }
             settle(book, folder)?;
-            Ok(found.into_iter().map(|(_, forgotten)| forgotten).collect())
+            Ok(Forgot {
+                list: found.into_iter().map(|(_, forgotten)| forgotten).collect(),
+                entries,
+            })
         })
         .await
     }

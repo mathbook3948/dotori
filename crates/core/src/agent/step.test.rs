@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
+use std::time::Duration;
 use std::time::SystemTime;
 
 use super::*;
@@ -698,4 +699,143 @@ fn a_heard_message_keeps_the_time_it_came_in() {
         _ => None,
     });
     assert_eq!(at, Some(SystemTime::UNIX_EPOCH));
+}
+
+fn heard_at(h: &Harness, text: &str, at: Option<SystemTime>) -> Entry {
+    let mut entry = h
+        .state
+        .conversation
+        .iter()
+        .find(|entry| matches!(entry, Entry::Heard { message, .. } if message.content.as_str() == text))
+        .expect("message was heard")
+        .clone();
+    if let Entry::Heard { message, .. } = &mut entry {
+        message.at = at;
+    }
+    entry
+}
+
+#[test]
+fn a_forgotten_message_is_not_in_what_the_next_model_call_sees() {
+    let mut h = Harness::new();
+    h.owner_says("my card number is 1234");
+    h.model_answers(Vec::new());
+    let erased = heard_at(&h, "my card number is 1234", Some(SystemTime::UNIX_EPOCH));
+
+    h.feed(Event::Forgotten {
+        entries: vec![erased],
+    });
+    assert!(h.effects.is_empty(), "forgetting does nothing else");
+    h.owner_says("what is my name?");
+
+    assert_eq!(heard(h.the_model_call()), vec!["what is my name?"]);
+}
+
+#[test]
+fn a_heard_message_is_forgotten_by_its_channel_and_id_whatever_time_it_carries() {
+    let mut h = Harness::new();
+    h.owner_says("hi");
+    let later = SystemTime::UNIX_EPOCH + Duration::from_secs(60);
+    let erased = heard_at(&h, "hi", Some(later));
+
+    h.feed(Event::Forgotten {
+        entries: vec![erased],
+    });
+
+    assert!(h.state.conversation.is_empty());
+}
+
+#[test]
+fn a_reply_still_follows_the_message_it_answered_after_an_earlier_one_is_forgotten() {
+    let mut h = Harness::new();
+    h.owner_says("my card number is 1234");
+    h.model_answers(Vec::new());
+    h.owner_says("book a table");
+    let thread = h.thread_of("book a table");
+    h.model_answers(vec![say(thread, "booked")]);
+    let erased = heard_at(&h, "my card number is 1234", None);
+
+    h.feed(Event::Forgotten {
+        entries: vec![erased],
+    });
+
+    let answered: Vec<usize> = h
+        .state
+        .conversation
+        .iter()
+        .filter_map(|entry| match entry {
+            Entry::Acted { answered, .. } => Some(*answered),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(answered, vec![0, 2]);
+}
+
+#[test]
+fn a_reply_is_forgotten_as_the_record_keeps_it_after_an_earlier_forget_moved_it() {
+    let mut h = Harness::new();
+    h.owner_says("my card number is 1234");
+    h.model_answers(Vec::new());
+    h.owner_says("book a table");
+    let thread = h.thread_of("book a table");
+    h.model_answers(vec![say(thread, "booked")]);
+    let recorded = h
+        .state
+        .conversation
+        .iter()
+        .rfind(|entry| matches!(entry, Entry::Acted { .. }))
+        .expect("the reply was recorded")
+        .clone();
+    let erased = heard_at(&h, "my card number is 1234", None);
+    h.feed(Event::Forgotten {
+        entries: vec![erased],
+    });
+
+    h.feed(Event::Forgotten {
+        entries: vec![recorded],
+    });
+
+    assert!(
+        !h.state
+            .conversation
+            .iter()
+            .any(|entry| matches!(entry, Entry::Acted { actions, .. } if !actions.is_empty()))
+    );
+}
+
+#[test]
+fn a_model_call_in_flight_still_answers_the_right_entries_after_a_forget() {
+    let mut h = Harness::new();
+    h.owner_says("my card number is 1234");
+    h.model_answers(Vec::new());
+    h.owner_says("book a table");
+    let thread = h.thread_of("book a table");
+    let erased = heard_at(&h, "my card number is 1234", None);
+
+    h.feed(Event::Forgotten {
+        entries: vec![erased],
+    });
+    h.model_answers(vec![say(thread, "booked")]);
+
+    assert_eq!(h.deliveries().len(), 1);
+    assert!(matches!(
+        h.state.conversation.last(),
+        Some(Entry::Acted { answered: 2, .. })
+    ));
+}
+
+#[test]
+fn forgetting_an_entry_that_is_not_in_the_conversation_changes_nothing() {
+    let mut h = Harness::new();
+    h.owner_says("hi");
+    let before = h.state.conversation.clone();
+    let stranger = Entry::ModelFailed {
+        detail: String::from("never happened"),
+    };
+
+    h.feed(Event::Forgotten {
+        entries: vec![stranger],
+    });
+
+    assert_eq!(h.state.conversation, before);
 }

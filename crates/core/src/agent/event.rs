@@ -4,6 +4,7 @@ use crate::agent::ids::CallId;
 use crate::agent::ids::SubSessionId;
 use crate::agent::ids::ToolRunId;
 use crate::channel::ChannelError;
+use crate::conversation::Entry;
 use crate::conversation::ThreadRef;
 use crate::id::ChannelId;
 use crate::llm::ModelError;
@@ -50,6 +51,10 @@ pub(crate) enum Event {
         outcome: SubSessionOutcome,
         record: bool,
         ack: u64,
+    },
+    /// Records the owner erased, which must leave the conversation too.
+    Forgotten {
+        entries: Vec<Entry>,
     },
     Shutdown {
         handing_off: bool,

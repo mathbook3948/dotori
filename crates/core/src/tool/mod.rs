@@ -20,7 +20,7 @@ impl ToolCallId {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ToolCall {
     pub id: ToolCallId,
     pub name: String,
@@ -80,7 +80,7 @@ pub struct ToolSpec {
     pub input_schema: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ToolError {
     pub detail: String,
 }

@@ -124,7 +124,7 @@ impl Shell {
                 .len()
                 .saturating_sub(mem::take(&mut state.unrecorded))
                 .max(recorded);
-            self.record(&state.conversation[recorded..end]);
+            self.record(state.conversation.get(recorded..end).unwrap_or_default());
             self.tell_working(state.working());
             for effect in effects {
                 if matches!(effect, Effect::Stop) {
