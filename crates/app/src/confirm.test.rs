@@ -196,6 +196,7 @@ async fn guarded_tools_join_the_others_and_run_where_they_are() {
 fn what_came_of_a_call_arrives_as_data_not_as_the_owner() {
     let outcome = Outcome {
         id: 3,
+        call: None,
         tool: String::from("mail__send"),
         text: String::from("The owner declined this call, so it did not run."),
     };
@@ -306,4 +307,26 @@ async fn a_calls_status_says_whether_it_waits_and_what_came_of_it() {
     asking.run(call("mail__send")).await.expect("waits");
     asking.lapse_waiting();
     assert_eq!(asking.status(id + 1), Status::Lapsed);
+}
+
+#[test]
+fn a_decision_names_the_card_and_the_call_it_tells_about() {
+    let outcome = Outcome {
+        id: 3,
+        call: Some(ToolCallId::new("toolu-9")),
+        tool: String::from("mail__send"),
+        text: String::from("The owner declined this call, so it did not run."),
+    };
+
+    let incoming = incoming(&outcome).expect("a message");
+
+    assert_eq!(
+        told_about(&incoming.id),
+        Some((3, Some(ToolCallId::new("toolu-9"))))
+    );
+    assert_eq!(
+        told_about(&ExternalMessageId::new("decision-3")),
+        Some((3, None))
+    );
+    assert_eq!(told_about(&ExternalMessageId::new("3")), None);
 }
