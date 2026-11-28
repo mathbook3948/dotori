@@ -20,6 +20,7 @@ use dotori_core::llm::Model;
 use dotori_core::llm::ModelError;
 use dotori_core::llm::ModelReply;
 use dotori_core::llm::ModelRequest;
+use dotori_core::llm::SummaryRequest;
 use tokio::time;
 
 use crate::channel_slots::ChannelSlots;
@@ -66,6 +67,11 @@ impl Model for LiveModel {
         Box::pin(async move { model.complete(request).await })
     }
 
+    fn summarize(&self, request: SummaryRequest) -> BoxFuture<'_, Result<String, ModelError>> {
+        let model = self.now();
+        Box::pin(async move { model.summarize(request).await })
+    }
+
     fn check(&self) -> BoxFuture<'_, Result<(), CheckError>> {
         let model = self.now();
         Box::pin(async move { model.check().await })
@@ -76,6 +82,11 @@ struct Unbuilt(String);
 
 impl Model for Unbuilt {
     fn complete(&self, _: ModelRequest) -> BoxFuture<'_, Result<ModelReply, ModelError>> {
+        let detail = self.0.clone();
+        Box::pin(async move { Err(ModelError { detail }) })
+    }
+
+    fn summarize(&self, _: SummaryRequest) -> BoxFuture<'_, Result<String, ModelError>> {
         let detail = self.0.clone();
         Box::pin(async move { Err(ModelError { detail }) })
     }

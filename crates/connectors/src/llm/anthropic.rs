@@ -7,6 +7,7 @@ use dotori_core::llm::ModelError;
 use dotori_core::llm::ModelReply;
 use dotori_core::llm::ModelRequest;
 use dotori_core::llm::ModelTrace;
+use dotori_core::llm::SummaryRequest;
 use reqwest::Client;
 use serde::Deserialize;
 use serde_json::Value;
@@ -15,6 +16,7 @@ use serde_json::value::RawValue;
 
 use crate::llm::ConnectorError;
 use crate::llm::DEFAULT_SYSTEM;
+use crate::llm::SUMMARY_SYSTEM;
 use crate::llm::http;
 use crate::llm::http::Retry;
 use crate::llm::reply;
@@ -106,9 +108,16 @@ impl Anthropic {
     }
 
     async fn call(&self, request: ModelRequest) -> Result<ModelReply, ModelError> {
-        let body = body(&self.config, &request)?;
+        parse(&self.post(body(&self.config, &request)?).await?)
+    }
+
+    async fn summary(&self, request: SummaryRequest) -> Result<String, ModelError> {
+        parse_summary(&self.post(summary_body(&self.config, &request)).await?)
+    }
+
+    async fn post(&self, body: String) -> Result<String, ModelError> {
         let url = format!("{}/v1/messages", self.config.base_url.trim_end_matches('/'));
-        let text = http::send(PROVIDER, self.retry, || {
+        http::send(PROVIDER, self.retry, || {
             self.client
                 .post(&url)
                 .header("x-api-key", &self.config.api_key)
@@ -117,14 +126,17 @@ impl Anthropic {
                 .header("content-type", "application/json")
                 .body(body.clone())
         })
-        .await?;
-        parse(&text)
+        .await
     }
 }
 
 impl Model for Anthropic {
     fn complete(&self, request: ModelRequest) -> BoxFuture<'_, Result<ModelReply, ModelError>> {
         Box::pin(self.call(request))
+    }
+
+    fn summarize(&self, request: SummaryRequest) -> BoxFuture<'_, Result<String, ModelError>> {
+        Box::pin(self.summary(request))
     }
 
     fn check(&self) -> BoxFuture<'_, Result<(), CheckError>> {
@@ -183,6 +195,22 @@ fn body(config: &AnthropicConfig, request: &ModelRequest) -> Result<String, Mode
         body["output_config"] = json!({ "effort": effort });
     }
     Ok(body.to_string())
+}
+
+fn summary_body(config: &AnthropicConfig, request: &SummaryRequest) -> String {
+    let input = transcript::summary_input(
+        request.previous.as_deref(),
+        &request.conversation,
+        &reply::zone(request.time_zone.as_deref()),
+    );
+    json!({
+        "model": config.model,
+        "max_tokens": config.max_tokens,
+        "system": [{ "type": "text", "text": SUMMARY_SYSTEM }],
+        "messages": [{ "role": "user", "content": input }],
+        "fallbacks": "default",
+    })
+    .to_string()
 }
 
 fn mark_for_cache(messages: &mut [Value]) {
@@ -306,7 +334,7 @@ fn model_names(text: &str) -> Option<Vec<(String, String)>> {
     )
 }
 
-fn parse(text: &str) -> Result<ModelReply, ModelError> {
+fn read(text: &str) -> Result<Response<'_>, ModelError> {
     let response: Response = serde_json::from_str(text).map_err(|error| ModelError {
         detail: format!("{PROVIDER} reply unreadable: {error}"),
     })?;
@@ -332,10 +360,34 @@ fn parse(text: &str) -> Result<ModelReply, ModelError> {
         }
         _ => {}
     }
-    let blocks: Vec<Block> =
-        serde_json::from_str(response.content.get()).map_err(|error| ModelError {
-            detail: format!("{PROVIDER} reply content unreadable: {error}"),
-        })?;
+    Ok(response)
+}
+
+fn parse_summary(text: &str) -> Result<String, ModelError> {
+    let blocks = blocks(&read(text)?)?;
+    let summary: String = blocks
+        .iter()
+        .filter(|block| block.kind == "text")
+        .filter_map(|block| block.text.as_deref())
+        .collect();
+    let summary = summary.trim();
+    if summary.is_empty() {
+        return Err(ModelError {
+            detail: format!("{PROVIDER} wrote an empty summary"),
+        });
+    }
+    Ok(summary.to_owned())
+}
+
+fn blocks(response: &Response) -> Result<Vec<Block>, ModelError> {
+    serde_json::from_str(response.content.get()).map_err(|error| ModelError {
+        detail: format!("{PROVIDER} reply content unreadable: {error}"),
+    })
+}
+
+fn parse(text: &str) -> Result<ModelReply, ModelError> {
+    let response = read(text)?;
+    let blocks = blocks(&response)?;
     let blocks_empty = blocks.is_empty();
     let blank_text = blocks.iter().any(|block| {
         block.kind == "text"

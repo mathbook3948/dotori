@@ -110,6 +110,11 @@ async fn serve(mut stream: TcpStream, script: &Script) -> std::io::Result<()> {
     stream.write_all(response.as_bytes()).await
 }
 
+/// The summary of a conversation of `count` messages.
+pub fn summary(count: usize) -> String {
+    format!("Summary of {count} messages.")
+}
+
 /// The next message of the script, given the conversation so far.
 pub fn answer(asked: &Value, script: &Script) -> Value {
     let messages = asked["messages"].as_array().cloned().unwrap_or_default();
@@ -122,6 +127,10 @@ pub fn answer(asked: &Value, script: &Script) -> Value {
     let Some(last) = messages.last() else {
         return done();
     };
+    if asked["tools"].is_null() {
+        let count = text_of(last).matches("<message ").count();
+        return json!({ "role": "assistant", "content": summary(count) });
+    }
     let to_owner = |text: &str| match owner {
         Some(thread) => call("say", json!({ "thread": thread, "text": text })),
         None => done(),
