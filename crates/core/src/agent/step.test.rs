@@ -818,6 +818,38 @@ fn a_reply_still_follows_the_message_it_answered_after_an_earlier_one_is_forgott
 }
 
 #[test]
+fn a_reply_is_forgotten_as_the_record_keeps_it_after_an_earlier_forget_moved_it() {
+    let mut h = Harness::new();
+    h.owner_says("my card number is 1234");
+    h.model_answers(Vec::new());
+    h.owner_says("book a table");
+    let thread = h.thread_of("book a table");
+    h.model_answers(vec![say(thread, "booked")]);
+    let recorded = h
+        .state
+        .conversation
+        .iter()
+        .rfind(|entry| matches!(entry, Entry::Acted { .. }))
+        .expect("the reply was recorded")
+        .clone();
+    let erased = heard_at(&h, "my card number is 1234", None);
+    h.feed(Event::Forgotten {
+        entries: vec![erased],
+    });
+
+    h.feed(Event::Forgotten {
+        entries: vec![recorded],
+    });
+
+    assert!(
+        !h.state
+            .conversation
+            .iter()
+            .any(|entry| matches!(entry, Entry::Acted { actions, .. } if !actions.is_empty()))
+    );
+}
+
+#[test]
 fn a_model_call_in_flight_still_answers_the_right_entries_after_a_forget() {
     let mut h = Harness::new();
     h.owner_says("my card number is 1234");
