@@ -724,3 +724,26 @@ fn a_summary_input_clips_what_tools_and_sub_sessions_returned() {
 </tool_result>"
     )));
 }
+
+#[test]
+fn a_summary_input_clips_what_dotori_could_not_run_or_start() {
+    let long = "가".repeat(CLIPPED_AT + 5);
+    let conversation = vec![
+        Entry::Refused(Action::UseTool(ToolCall {
+            id: ToolCallId::new("t1"),
+            name: String::from("read_file"),
+            input: long.clone(),
+        })),
+        Entry::Refused(Action::Delegate(SubSessionSpec {
+            title: String::from("Check"),
+            brief: long,
+            folder: None,
+        })),
+    ];
+
+    let input = summary_input(None, &conversation, &TimeZone::UTC);
+
+    let clipped = format!("{}…", "가".repeat(CLIPPED_AT));
+    assert_eq!(input.matches(&clipped).count(), 2);
+    assert!(!input.contains(&"가".repeat(CLIPPED_AT + 1)));
+}
