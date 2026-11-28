@@ -49,6 +49,20 @@ bash .claude/skills/gpui-design/demo.sh stop "$home"
 
 `ask "$home" "<what dotori asks>"` stands in for dotori's browser and asks the owner for it, so the browser card shows; run it before `shot`. Given a JSON object instead, such as `'{"card": {...}}'`, it sends that as the browser's state, so a login card or an account card shows. What the windows send back, such as `{"kind":"take"}`, lands in `$home/screen.log`, and the browser window opens as `Dotori 브라우저`, or `Dotori browser` in English.
 
+On macOS, `mac.sh` next to this file does the same without touching the owner's screen. The window opens off every screen and never takes focus, `shot` saves only that window with `screencapture`, and the owner's messages and answers go over the daemon's window link through the `demo_owner` example, so nothing is typed or clicked. dotori runs with `<home>` as its HOME, so an allowed command stays inside it. The terminal needs the Screen Recording permission.
+
+```bash
+home=<scratchpad>/mac-home
+bash .claude/skills/gpui-design/mac.sh start "$home" 'printf "%s\n" src "    main.rs"' '폴더 구조를 보여 줘요'
+bash .claude/skills/gpui-design/mac.sh say "$home" "이거 실행해 줘"
+bash .claude/skills/gpui-design/mac.sh allow "$home"
+bash .claude/skills/gpui-design/mac.sh shot "$home" "$home/light.png" light ko
+bash .claude/skills/gpui-design/mac.sh shot "$home" "$home/dark.png" dark en
+bash .claude/skills/gpui-design/mac.sh stop "$home"
+```
+
+The second and third arguments of `start` replace the command the fake model asks to run and what it says that command does. Without them it asks for the default `mv` of `~/Downloads`, which stays inside `<home>`.
+
 On Windows, `win.ps1` next to this file does the same without touching the owner's screen, mouse or keyboard. Never drive dotori with the real cursor or bring its window forward: the owner is using the PC.
 
 ```powershell

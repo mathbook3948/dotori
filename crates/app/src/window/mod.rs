@@ -66,6 +66,8 @@ use crate::words::words;
 actions!(dotori, [Quit]);
 
 const LOOK_EVERY: Duration = Duration::from_millis(500);
+const UNSEEN_VARIABLE: &str = "DOTORI_WINDOW_UNSEEN";
+const UNSEEN_AT: f32 = -20_000.;
 const ICON_EVERY: u32 = 4;
 
 /// Which window the process opens. Each runs in a process of its own, so closing it frees
@@ -107,9 +109,16 @@ pub(crate) fn run(home: Home, which: Which) -> Result<(), String> {
                 Which::Onboarding => (words().common.onboarding_title)(),
             };
             let (opens_at, smallest) = (WINDOW, WINDOW_MIN);
-            let bounds = Bounds::centered(None, size(px(opens_at.0), px(opens_at.1)), cx);
+            let unseen = std::env::var_os(UNSEEN_VARIABLE).is_some();
+            let opens_as = size(px(opens_at.0), px(opens_at.1));
+            let bounds = if unseen {
+                Bounds::new(point(px(UNSEEN_AT), px(UNSEEN_AT)), opens_as)
+            } else {
+                Bounds::centered(None, opens_as, cx)
+            };
             let options = WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
+                focus: !unseen,
                 window_min_size: Some(size(px(smallest.0), px(smallest.1))),
                 is_resizable: true,
                 titlebar: Some(TitlebarOptions {
@@ -172,7 +181,9 @@ pub(crate) fn run(home: Home, which: Which) -> Result<(), String> {
                 }
             })
             .detach();
-            cx.activate(true);
+            if !unseen {
+                cx.activate(true);
+            }
         });
     match failed.take() {
         Some(error) => Err(format!("cannot open a window: {error}")),
