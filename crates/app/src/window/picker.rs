@@ -521,11 +521,10 @@ impl SettingsView {
             .items_center()
             .gap_2()
             .rounded(px(radius - width))
-            .when(sits == Sits::Settings, |trigger| {
-                trigger.px_3().py_2().bg(theme.canvas)
-            })
+            .bg(theme.canvas)
+            .when(sits == Sits::Settings, |trigger| trigger.px_3().py_2())
             .when(sits != Sits::Settings, |trigger| {
-                trigger.card(theme).h(px(42. - 2. * width)).px_3p5()
+                trigger.h(px(42. - 2. * width)).px_3p5()
             })
             .when(!empty, |trigger| trigger.cursor_pointer())
             .child(
@@ -685,10 +684,8 @@ impl SettingsView {
                         .flex()
                         .flex_col()
                         .rounded(px(radius))
-                        .when(sits == Sits::Settings, |list| {
-                            list.bg(theme.canvas).lifted(theme)
-                        })
-                        .when(sits != Sits::Settings, |list| list.card(theme))
+                        .bg(theme.canvas)
+                        .lifted(theme)
                         .text_color(theme.text)
                         .when(!searchable, |list| list.track_focus(&self.picker_focus))
                         .capture_action(cx.listener(|view, _: &Up, _, cx| {
@@ -806,7 +803,6 @@ impl SettingsView {
         } else {
             super::FIELD_RADIUS
         };
-        let walk = self.walk.is_some();
         let drawn = self.drawn.clone();
         let rows = actions.into_iter().map(|(name, label, act)| {
             div()
@@ -841,8 +837,8 @@ impl SettingsView {
                             .flex_col()
                             .p(px(MENU_EDGE))
                             .rounded(px(radius))
-                            .when(!walk, |list| list.bg(theme.canvas).lifted(theme))
-                            .when(walk, |list| list.card(theme))
+                            .bg(theme.canvas)
+                            .lifted(theme)
                             .text_color(theme.text)
                             .children(rows)
                             .on_mouse_down_out(cx.listener(

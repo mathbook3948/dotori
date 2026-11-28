@@ -356,7 +356,7 @@ impl SettingsView {
                 )
                 .into_any_element(),
             );
-            let dots = thinking(theme, ("greet-breath", n));
+            let dots = thinking(theme.muted, ("greet-breath", n));
             let mark = div()
                 .absolute()
                 .top_0()
@@ -1018,7 +1018,7 @@ impl SettingsView {
                 div()
                     .py_1()
                     .rounded(px(CARD))
-                    .card(theme)
+                    .bg(theme.canvas)
                     .child(self.theme_list(theme, cx)),
             )
             .child(div().mt_2p5().child(self.look_switch(theme, cx)))
@@ -1076,7 +1076,7 @@ impl SettingsView {
         let channels = div()
             .py_1()
             .rounded(px(CARD))
-            .card(theme)
+            .bg(theme.canvas)
             .child(channel(
                 "slack-switch",
                 "slack",
@@ -1141,12 +1141,12 @@ impl SettingsView {
             None => step.previous().is_some(),
         };
         let (action, moves_on) = match joining {
-            None if self.checking() => (words.checking, false),
-            None => (step.action(), true),
-            Some(Joining::Typing(_)) => (words.join, true),
-            Some(Joining::Waiting) => (words.joining, false),
-            Some(Joining::Joined { ready: false, .. }) => (words.receiving, false),
-            Some(Joining::Joined { ready: true, .. }) => (words.begin_chat, true),
+            None if self.checking() => (None, false),
+            None => (Some(step.action()), true),
+            Some(Joining::Typing(_)) => (Some(words.join), true),
+            Some(Joining::Waiting) => (Some(words.joining), false),
+            Some(Joining::Joined { ready: false, .. }) => (Some(words.receiving), false),
+            Some(Joining::Joined { ready: true, .. }) => (Some(words.begin_chat), true),
         };
         let under: Option<(&'static str, &'static str, bool)> = match joining {
             None if step == Step::Welcome => Some(("join-pc", words.join_existing, true)),
@@ -1212,7 +1212,10 @@ impl SettingsView {
                             })
                             .text_size(px(15.))
                             .font_weight(FontWeight::SEMIBOLD)
-                            .child(action)
+                            .child(match action {
+                                Some(action) => action.into_any_element(),
+                                None => thinking(theme.canvas, "checking").into_any_element(),
+                            })
                             .on_click(cx.listener(Self::advance)),
                     ),
             )
@@ -1306,7 +1309,7 @@ fn field(
         FIELD - width,
         width,
         div()
-            .card(theme)
+            .bg(theme.canvas)
             .id(id)
             .flex()
             .items_center()

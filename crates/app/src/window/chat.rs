@@ -1066,10 +1066,10 @@ impl ChatView {
                 .flex_col()
                 .gap_1p5()
                 .children(came_view(theme, came(tool, text), pen)),
-            (Some(Some(true)), None) => div().child(thinking(theme, ("card-working", id))),
+            (Some(Some(true)), None) => div().child(thinking(theme.muted, ("card-working", id))),
             (Some(Some(false)), _) => pill(theme.muted, theme.canvas, words().chat.declined),
             (Some(None), _) => pill(theme.warn, theme.warn_soft, asked::lapsed()),
-            (None, _) if clicked => div().child(thinking(theme, ("card-working", id))),
+            (None, _) if clicked => div().child(thinking(theme.muted, ("card-working", id))),
             (None, _) => div()
                 .flex()
                 .items_center()
@@ -2453,7 +2453,7 @@ impl Render for WorkingView {
                     .py_2()
                     .rounded_2xl()
                     .raised(&theme)
-                    .child(thinking(&theme, "working-dots")),
+                    .child(thinking(theme.muted, "working-dots")),
             )
             .with_animation("working", MESSAGE_ENTER.animation(), entering)
     }

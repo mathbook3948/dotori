@@ -27,9 +27,10 @@ use crate::window::surface::SurfaceExt;
 use crate::window::theme::Theme;
 
 const RESIZE_MARGIN: f32 = 6.;
-const TOP_LEFT: f32 = if cfg!(target_os = "macos") { 80. } else { 12. };
+const MAC: bool = cfg!(target_os = "macos");
+const TOP_LEFT: f32 = if MAC { 80. } else { 12. };
 /// The height of the strip at the top of a window.
-pub(crate) const TOP_HEIGHT: f32 = if cfg!(target_os = "macos") { 40. } else { 52. };
+pub(crate) const TOP_HEIGHT: f32 = if MAC { 40. } else { 52. };
 
 /// How the OS frames a window: whether dotori draws the frame itself, and which edges sit
 /// against the screen or another window.
@@ -84,23 +85,25 @@ impl Frame {
         })
     }
 
-    /// The strip at the top of a window: `left` after the system's buttons, `middle` taking the
-    /// rest, and the window buttons on the right. Dragging it moves the window, and a double click
-    /// fills the screen with it or brings it back. On Windows the system does both from the hit
-    /// test, and only while no one in the window takes the press, so the strip leaves its presses
-    /// alone there and nothing behind it takes them, which also keeps what scrolls under it out of
-    /// reach. Its edges stay open for resizing.
+    /// The strip at the top of a window: `button` after the system's buttons, `middle` taking the
+    /// rest, and the window buttons on the right. On macOS `button` sits on the right instead,
+    /// clear of the system's buttons on the left. Dragging the strip moves the window, and a
+    /// double click fills the screen with it or brings it back. On Windows the system does both
+    /// from the hit test, and only while no one in the window takes the press, so the strip leaves
+    /// its presses alone there and nothing behind it takes them, which also keeps what scrolls
+    /// under it out of reach. Its edges stay open for resizing.
     pub(crate) fn strip(
         self,
         theme: &Theme,
-        left: impl IntoElement,
+        button: impl IntoElement,
         middle: impl IntoElement,
     ) -> Div {
         let (drawn, tiling, maximized) = (self.drawn, self.tiling, self.maximized);
-        let edge = if cfg!(target_os = "macos") {
-            0.
+        let edge = if MAC { 0. } else { RESIZE_MARGIN };
+        let (before, after) = if MAC {
+            (None, Some(button))
         } else {
-            RESIZE_MARGIN
+            (Some(button), None)
         };
         div()
             .flex_none()
@@ -145,8 +148,9 @@ impl Frame {
                                     },
                                 )
                             })
-                            .child(left)
-                            .child(div().flex_1().min_w_0().child(middle)),
+                            .children(before)
+                            .child(div().flex_1().min_w_0().child(middle))
+                            .children(after),
                     )
                     .when(!self.bare, |strip| {
                         strip.children(window_buttons(theme, drawn, maximized))
