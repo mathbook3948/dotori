@@ -5,6 +5,7 @@ use std::time::SystemTime;
 use crate::agent::effect::Effect;
 use crate::agent::event::Event;
 use crate::agent::ids::CallId;
+use crate::agent::ids::GatherId;
 use crate::agent::ids::SubSessionId;
 use crate::agent::ids::ToolRunId;
 use crate::agent::state::AfterReply;
@@ -42,6 +43,7 @@ pub(crate) fn step(state: &mut AgentState, event: Event) -> Vec<Effect> {
             at,
         } => on_received(state, channel, incoming, at),
         Event::ModelDone { call, result } => on_model_done(state, call, result),
+        Event::Gathered(gather) => on_gathered(state, gather),
         Event::ToolDone { run, result } => on_tool_done(state, run, result),
         Event::SubSessionDone {
             sub_session,
@@ -157,6 +159,13 @@ fn on_model_done(
     effects
 }
 
+fn on_gathered(state: &mut AgentState, gather: GatherId) -> Vec<Effect> {
+    match state.phase {
+        Phase::Gathering { gather: current } if current == gather => vec![call_model(state)],
+        _ => Vec::new(),
+    }
+}
+
 fn on_tool_done(
     state: &mut AgentState,
     run: ToolRunId,
@@ -164,7 +173,7 @@ fn on_tool_done(
 ) -> Vec<Effect> {
     let waiting = match &mut state.phase {
         Phase::UsingTools { waiting } | Phase::Stopping { waiting } => waiting,
-        Phase::Idle | Phase::Thinking { .. } => return Vec::new(),
+        Phase::Idle | Phase::Gathering { .. } | Phase::Thinking { .. } => return Vec::new(),
     };
     let Some(call) = waiting.remove(&run) else {
         return Vec::new();
@@ -325,7 +334,7 @@ fn stop(state: &mut AgentState) -> Effect {
 fn on_shutdown(state: &mut AgentState) -> Vec<Effect> {
     let mut effects = Vec::new();
     let waiting = match mem::replace(&mut state.phase, Phase::Idle) {
-        Phase::Idle => HashMap::new(),
+        Phase::Idle | Phase::Gathering { .. } => HashMap::new(),
         Phase::Thinking { call, .. } => {
             effects.push(Effect::CancelModel(call));
             HashMap::new()
@@ -345,10 +354,12 @@ fn on_shutdown(state: &mut AgentState) -> Vec<Effect> {
 
 fn absorb(state: &mut AgentState, arrival: Arrival) -> Vec<Effect> {
     match (&mut state.phase, arrival) {
-        (Phase::Idle, _) => vec![call_model(state)],
+        (Phase::Idle, Arrival::Joins) => vec![call_model(state)],
+        (Phase::Idle | Phase::Gathering { .. }, Arrival::Interrupts) => vec![gather(state)],
+        (Phase::Gathering { .. }, Arrival::Joins) => Vec::new(),
         (Phase::Thinking { call, .. }, Arrival::Interrupts) => {
             let cancelled = *call;
-            vec![Effect::CancelModel(cancelled), call_model(state)]
+            vec![Effect::CancelModel(cancelled), gather(state)]
         }
         (Phase::Thinking { after, .. }, Arrival::Joins) => {
             *after = AfterReply::CallAgain;
@@ -426,6 +437,12 @@ fn origin(seen: &[Entry]) -> Option<Origin> {
         }
     }
     None
+}
+
+fn gather(state: &mut AgentState) -> Effect {
+    let gather = state.ids.next_gather();
+    state.phase = Phase::Gathering { gather };
+    Effect::Gather(gather)
 }
 
 fn call_model(state: &mut AgentState) -> Effect {

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::mem;
 use std::num::NonZeroUsize;
 use std::time::SystemTime;
 
@@ -38,6 +39,16 @@ impl Harness {
     }
 
     fn owner_says(&mut self, text: &str) {
+        self.owner_types(text);
+        self.gather_fires();
+    }
+
+    fn owner_says_on_slack(&mut self, place: &str, text: &str) {
+        self.owner_types_on_slack(place, text);
+        self.gather_fires();
+    }
+
+    fn owner_types(&mut self, text: &str) {
         let incoming = self.incoming("main", "owner", text);
         self.feed(Event::Received {
             channel: app(),
@@ -46,7 +57,7 @@ impl Harness {
         });
     }
 
-    fn owner_says_on_slack(&mut self, place: &str, text: &str) {
+    fn owner_types_on_slack(&mut self, place: &str, text: &str) {
         let mut incoming = self.incoming(place, "me", text);
         incoming.audience = Audience::People {
             some: vec![String::from("Mina")],
@@ -57,6 +68,22 @@ impl Harness {
             incoming,
             at: SystemTime::UNIX_EPOCH,
         });
+    }
+
+    fn gather_fires(&mut self) {
+        let Phase::Gathering { gather } = self.state.phase else {
+            return;
+        };
+        let before = mem::take(&mut self.effects);
+        self.feed(Event::Gathered(gather));
+        self.effects.splice(0..0, before);
+    }
+
+    fn pending_gather(&self) -> GatherId {
+        match self.state.phase {
+            Phase::Gathering { gather } => gather,
+            _ => panic!("not gathering"),
+        }
     }
 
     fn delegated(&mut self) -> SubSessionId {
@@ -250,19 +277,103 @@ fn tool_results(conversation: &[Entry]) -> Vec<&str> {
 }
 
 #[test]
-fn owner_message_cancels_the_call_in_flight_and_calls_again() {
+fn owner_message_does_not_call_the_model_until_the_wait_ends() {
+    let mut h = Harness::new();
+
+    h.owner_types("find my flight");
+
+    assert!(h.model_calls().is_empty());
+
+    h.gather_fires();
+
+    assert_eq!(heard(h.the_model_call()), vec!["find my flight"]);
+}
+
+#[test]
+fn messages_in_quick_succession_make_one_call_that_heard_both() {
+    let mut h = Harness::new();
+    h.owner_types("find my flight");
+    let first_wait = h.pending_gather();
+    h.owner_types("the one on friday");
+
+    h.feed(Event::Gathered(first_wait));
+
+    assert!(h.effects.is_empty());
+    assert!(matches!(h.state.phase, Phase::Gathering { .. }));
+
+    h.gather_fires();
+
+    assert_eq!(
+        heard(h.the_model_call()),
+        vec!["find my flight", "the one on friday"]
+    );
+}
+
+#[test]
+fn owner_message_cancels_the_call_in_flight_and_waits_before_calling_again() {
     let mut h = Harness::new();
     h.owner_says("find my flight");
     let first = h.call_in_flight();
 
-    h.owner_says("the one on friday");
+    h.owner_types("the one on friday");
 
     assert_eq!(h.cancelled(), vec![first]);
+    assert!(h.model_calls().is_empty());
+
+    h.gather_fires();
+
     assert_eq!(
         heard(h.the_model_call()),
         vec!["find my flight", "the one on friday"]
     );
     assert_ne!(h.call_in_flight(), first);
+}
+
+#[test]
+fn a_sub_session_result_while_gathering_waits_for_the_call_after_the_wait() {
+    let mut h = Harness::new();
+    let sub_session = h.delegated();
+    h.owner_types("any news?");
+
+    h.sub_session_finishes(sub_session);
+
+    assert!(h.effects.is_empty());
+
+    h.gather_fires();
+
+    let conversation = h.the_model_call();
+    assert_eq!(heard(conversation), vec!["book a table", "any news?"]);
+    assert!(
+        conversation
+            .iter()
+            .any(|entry| matches!(entry, Entry::SubSessionReturned { .. }))
+    );
+}
+
+#[test]
+fn shutdown_while_gathering_stops() {
+    let mut h = Harness::new();
+    h.owner_types("hello");
+    let wait = h.pending_gather();
+
+    h.shut_down();
+
+    assert!(h.stopped());
+    assert!(h.model_calls().is_empty());
+
+    h.feed(Event::Gathered(wait));
+
+    assert!(h.effects.is_empty());
+}
+
+#[test]
+fn the_agent_is_working_while_it_gathers() {
+    let mut h = Harness::new();
+    assert!(!h.state.working());
+
+    h.owner_types("hello");
+
+    assert!(h.state.working());
 }
 
 #[test]

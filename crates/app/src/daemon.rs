@@ -116,6 +116,7 @@ const TOOL_TIMEOUT: Duration = Duration::from_secs(120);
 const SHELL_LIMIT: Duration = Duration::from_secs(110);
 const SUB_SESSION_TURNS: usize = 50;
 const SUB_SESSION_LIMIT: Duration = Duration::from_secs(60 * 60);
+const GATHER_FOR: Duration = Duration::from_millis(1500);
 const SETTLE: Duration = Duration::from_secs(1);
 const RELEASE_SENT: Duration = Duration::from_millis(300);
 const FLUSH_EVERY: Duration = Duration::from_secs(2);
@@ -508,6 +509,7 @@ pub(crate) async fn serve(
         queue_capacity: QUEUE,
         seen_capacity: SEEN,
         tool_timeout: TOOL_TIMEOUT,
+        gather_for: GATHER_FOR,
     };
     door.write(&home.door())?;
     eprintln!("dotori: running; open the chat window from the tray");

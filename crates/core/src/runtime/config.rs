@@ -16,6 +16,8 @@ pub struct AgentConfig {
     pub queue_capacity: NonZeroUsize,
     pub seen_capacity: NonZeroUsize,
     pub tool_timeout: Duration,
+    /// How long the agent waits for more owner messages before it calls the model.
+    pub gather_for: Duration,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

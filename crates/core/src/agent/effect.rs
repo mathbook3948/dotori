@@ -1,4 +1,5 @@
 use crate::agent::ids::CallId;
+use crate::agent::ids::GatherId;
 use crate::agent::ids::SubSessionId;
 use crate::agent::ids::ToolRunId;
 use crate::channel::Traffic;
@@ -24,6 +25,8 @@ pub(crate) enum Effect {
         conversation: Vec<Entry>,
     },
     CancelModel(CallId),
+    /// The shell waits, then sends `Event::Gathered` with the same id.
+    Gather(GatherId),
     RunTool {
         run: ToolRunId,
         call: ToolCall,

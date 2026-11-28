@@ -1,6 +1,7 @@
 use std::time::SystemTime;
 
 use crate::agent::ids::CallId;
+use crate::agent::ids::GatherId;
 use crate::agent::ids::SubSessionId;
 use crate::agent::ids::ToolRunId;
 use crate::channel::ChannelError;
@@ -27,6 +28,7 @@ pub(crate) enum Event {
         call: CallId,
         result: Result<ModelReply, ModelError>,
     },
+    Gathered(GatherId),
     ToolDone {
         run: ToolRunId,
         result: Result<String, ToolError>,

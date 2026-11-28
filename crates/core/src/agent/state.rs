@@ -4,6 +4,7 @@ use std::collections::VecDeque;
 use std::num::NonZeroUsize;
 
 use crate::agent::ids::CallId;
+use crate::agent::ids::GatherId;
 use crate::agent::ids::Ids;
 use crate::agent::ids::SubSessionId;
 use crate::agent::ids::ToolRunId;
@@ -121,13 +122,17 @@ impl AgentState {
     pub(crate) fn working(&self) -> bool {
         matches!(
             self.phase,
-            Phase::Thinking { .. } | Phase::UsingTools { .. }
+            Phase::Gathering { .. } | Phase::Thinking { .. } | Phase::UsingTools { .. }
         )
     }
 }
 
 pub(crate) enum Phase {
     Idle,
+    /// Owner messages are gathered before a model call. Another one starts the wait over.
+    Gathering {
+        gather: GatherId,
+    },
     Thinking {
         call: CallId,
         after: AfterReply,
@@ -154,7 +159,8 @@ pub(crate) enum AfterReply {
 
 /// How a new input meets a model call in flight.
 pub(crate) enum Arrival {
-    /// An owner message. The call in flight is cancelled and the model is called again.
+    /// An owner message. The call in flight is cancelled, and the model is called after a wait
+    /// for more.
     Interrupts,
     /// Anything else. The reply in flight runs, then the model is called again.
     Joins,
