@@ -429,9 +429,10 @@ pub(crate) fn link_line(
 }
 
 /// The assistant thinking before its first word: three `muted` dots breathing with
-/// `motion.working`. It goes in the assistant's bubble wherever that bubble stands.
+/// `motion.working`. It goes in the assistant's bubble wherever that bubble stands. In the main
+/// button its dots take the button's colors and stand for the words while the button waits.
 pub(crate) fn thinking(
-    theme: &Theme,
+    color: impl Into<gpui::Hsla>,
     id: impl Into<gpui::ElementId>,
 ) -> gpui::AnimationElement<Div> {
     div()
@@ -443,7 +444,7 @@ pub(crate) fn thinking(
                 .path(THINKING_ICON)
                 .w(px(28.))
                 .h(px(6.))
-                .text_color(theme.muted),
+                .text_color(color.into()),
         )
         .with_animation(
             id,
