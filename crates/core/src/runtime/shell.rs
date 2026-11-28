@@ -197,6 +197,16 @@ impl Shell {
                 });
                 self.model_calls.insert(call, handle);
             }
+            Effect::Summarize { summary, request } => {
+                let model = Arc::clone(&self.model);
+                let tx = self.tx.clone();
+                self.tasks.spawn(async move {
+                    let result = caught(|| model.summarize(request))
+                        .await
+                        .unwrap_or_else(|detail| Err(ModelError { detail }));
+                    let _ = tx.send(Event::SummaryDone { summary, result }).await;
+                });
+            }
             Effect::CancelModel(call) => {
                 if let Some(handle) = self.model_calls.remove(&call) {
                     handle.abort();

@@ -21,6 +21,7 @@ use crate::llm::Model;
 use crate::llm::ModelError;
 use crate::llm::ModelReply;
 use crate::llm::ModelRequest;
+use crate::llm::SummaryRequest;
 use crate::message::Audience;
 use crate::message::Content;
 use crate::message::Incoming;
@@ -163,6 +164,23 @@ pub(crate) struct FnModel(
 impl Model for FnModel {
     fn complete(&self, request: ModelRequest) -> BoxFuture<'_, Result<ModelReply, ModelError>> {
         (self.0)(request)
+    }
+}
+
+/// A model that also answers each summary request with whatever the test's function returns.
+pub(crate) struct SummarizingModel {
+    pub(crate) complete: FnModel,
+    pub(crate) summarize:
+        Box<dyn Fn(SummaryRequest) -> Reply<Result<String, ModelError>> + Send + Sync>,
+}
+
+impl Model for SummarizingModel {
+    fn complete(&self, request: ModelRequest) -> BoxFuture<'_, Result<ModelReply, ModelError>> {
+        self.complete.complete(request)
+    }
+
+    fn summarize(&self, request: SummaryRequest) -> BoxFuture<'_, Result<String, ModelError>> {
+        (self.summarize)(request)
     }
 }
 

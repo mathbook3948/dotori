@@ -317,3 +317,57 @@ async fn a_model_changed_in_the_settings_answers_the_next_message_without_a_rest
         "the next message went to the model the settings name now"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_long_conversation_is_summarized_and_the_next_request_carries_the_summary() {
+    let model = model::start(Script {
+        command: String::from("echo e2e"),
+        think: Duration::from_millis(50),
+        tools: std::sync::Arc::default(),
+    })
+    .await;
+    let home = home("summary");
+    settings(&home, model);
+    let _running = Running {
+        daemon: daemon(&home),
+        home: home.clone(),
+    };
+    let mut window = Window::open(&home).await;
+    let (mut live, mut greeted) = (false, false);
+    window
+        .until("the backlog to end and the first greeting", |event| {
+            match event {
+                ToWindow::Live => live = true,
+                ToWindow::Traffic { channel, text, .. }
+                    if channel == "greeting" && text == model::GREETED =>
+                {
+                    greeted = true;
+                }
+                _ => {}
+            }
+            (live && greeted).then_some(())
+        })
+        .await;
+
+    for n in 0..3 {
+        window.say(&format!("{n}{}", "a".repeat(90_000))).await;
+        window.reply(model::OTHER).await;
+    }
+
+    let carried = format!("{}{}", model::CARRIED, model::summary(3));
+    for _ in 0..20 {
+        window.say("앞의 대화를 요약한 것이 있어?").await;
+        let carrying = window
+            .until("a reply to the question", |event| match event {
+                ToWindow::Reply { text, .. } if text == model::OTHER => Some(false),
+                ToWindow::Reply { text, .. } if *text == carried => Some(true),
+                _ => None,
+            })
+            .await;
+        if carrying {
+            return;
+        }
+        time::sleep(Duration::from_millis(500)).await;
+    }
+    panic!("no request carried the summary");
+}

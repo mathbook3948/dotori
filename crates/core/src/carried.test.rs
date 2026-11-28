@@ -211,3 +211,116 @@ fn a_message_heard_again_after_the_summary_does_not_move_its_start() {
 fn a_summary_weighs_nothing() {
     assert_eq!(weight(&summary("m", &"가".repeat(1_000))), 0);
 }
+
+fn kept_id(plan: &Plan) -> &str {
+    plan.kept.id.as_str()
+}
+
+#[test]
+fn a_conversation_under_the_threshold_needs_no_summary() {
+    assert_eq!(plan(&long(20)), None);
+}
+
+#[test]
+fn the_summary_names_the_first_message_that_leaves_at_most_the_tail_after_it() {
+    let conversation = long(40);
+
+    let plan = plan(&conversation).expect("a summary is due");
+
+    assert_eq!(plan.covered.start, 0);
+    assert!(matches!(
+        conversation[plan.covered.end],
+        Entry::Heard { .. }
+    ));
+    assert_eq!(kept_id(&plan), id_of(&conversation[plan.covered.end]));
+    let after: usize = conversation[plan.covered.end..].iter().map(weight).sum();
+    assert!(after <= TAIL);
+    let one_earlier: usize = conversation[plan.covered.end - 2..]
+        .iter()
+        .map(weight)
+        .sum();
+    assert!(one_earlier > TAIL);
+    assert_eq!(plan.weight, conversation.iter().map(weight).sum::<usize>());
+    assert_eq!(plan.previous, None);
+}
+
+#[test]
+fn what_one_summary_covers_is_capped_and_the_older_part_is_skipped() {
+    let conversation = long(80);
+
+    let plan = plan(&conversation).expect("a summary is due");
+
+    assert!(plan.covered.start > 0);
+    let covered: usize = conversation[plan.covered.clone()].iter().map(weight).sum();
+    assert!(covered <= MOST);
+    let one_more = covered + weight(&conversation[plan.covered.start - 1]);
+    assert!(one_more > MOST);
+}
+
+#[test]
+fn the_latest_summary_is_merged_and_only_what_follows_its_message_counts() {
+    let mut conversation = long(2);
+    let anchor = id_of(&conversation[0]).to_owned();
+    conversation.push(summary(&anchor, "earlier things"));
+    talk(&mut conversation, 36);
+
+    let plan = plan(&conversation).expect("a summary is due");
+
+    assert_eq!(plan.previous.as_deref(), Some("earlier things"));
+    assert_eq!(plan.covered.start, 0);
+    let after_anchor: usize = conversation[0..].iter().map(weight).sum();
+    assert_eq!(plan.weight, after_anchor);
+}
+
+#[test]
+fn the_weight_before_the_summarys_message_is_not_counted() {
+    let mut conversation = long(40);
+    let anchor = id_of(&conversation[60]).to_owned();
+    conversation.push(summary(&anchor, "earlier things"));
+
+    assert_eq!(plan(&conversation), None);
+}
+
+#[test]
+fn a_summary_whose_message_is_gone_starts_the_count_at_the_summary() {
+    let mut conversation = long(40);
+    conversation.push(summary("erased", "earlier things"));
+    let at = conversation.len() - 1;
+    talk(&mut conversation, 10);
+    assert_eq!(plan(&conversation), None);
+    talk(&mut conversation, 30);
+
+    let plan = plan(&conversation).expect("a summary is due");
+
+    assert_eq!(plan.covered.start, at);
+    assert_eq!(plan.previous.as_deref(), Some("earlier things"));
+}
+
+#[test]
+fn without_a_message_leaving_little_after_it_the_last_message_is_named() {
+    let mut conversation = long(30);
+    let last = conversation.len();
+    conversation.push(heard("마지막 말"));
+    conversation.push(Entry::ToolReturned {
+        call: ToolCallId::new("t1"),
+        result: Ok("다".repeat(TAIL + STEP)),
+    });
+
+    let plan = plan(&conversation).expect("a summary is due");
+
+    assert_eq!(plan.covered.end, last);
+    assert_eq!(kept_id(&plan), "마지막 말");
+}
+
+#[test]
+fn without_a_message_after_the_start_there_is_nothing_to_name() {
+    let conversation = vec![
+        heard("하나"),
+        Entry::ToolReturned {
+            call: ToolCallId::new("t1"),
+            result: Ok("다".repeat(SUMMARIZE_AT)),
+        },
+    ];
+
+    assert_eq!(plan(&conversation), None);
+}

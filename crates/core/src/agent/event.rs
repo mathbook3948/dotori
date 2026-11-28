@@ -2,6 +2,7 @@ use std::time::SystemTime;
 
 use crate::agent::ids::CallId;
 use crate::agent::ids::SubSessionId;
+use crate::agent::ids::SummaryId;
 use crate::agent::ids::ToolRunId;
 use crate::channel::ChannelError;
 use crate::conversation::Entry;
@@ -27,6 +28,10 @@ pub(crate) enum Event {
     ModelDone {
         call: CallId,
         result: Result<ModelReply, ModelError>,
+    },
+    SummaryDone {
+        summary: SummaryId,
+        result: Result<String, ModelError>,
     },
     ToolDone {
         run: ToolRunId,

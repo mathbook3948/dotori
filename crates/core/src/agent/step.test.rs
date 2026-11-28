@@ -199,11 +199,56 @@ impl Harness {
             .collect()
     }
 
+    fn long_talk(&mut self, count: usize) {
+        for n in 0..count {
+            self.owner_says(&long_text(n));
+            self.model_answers(Vec::new());
+        }
+    }
+
+    fn summaries(&self) -> Vec<(SummaryId, &SummaryRequest)> {
+        self.effects
+            .iter()
+            .filter_map(|effect| match effect {
+                Effect::Summarize { summary, request } => Some((*summary, request)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn the_summary(&self) -> (SummaryId, &SummaryRequest) {
+        let summaries = self.summaries();
+        assert_eq!(summaries.len(), 1, "exactly one summary");
+        summaries[0]
+    }
+
+    fn summary_done(&mut self, summary: SummaryId, text: &str) {
+        self.feed(Event::SummaryDone {
+            summary,
+            result: Ok(text.to_owned()),
+        });
+    }
+
+    fn summarized(&self) -> Vec<(&str, &str)> {
+        self.state
+            .conversation
+            .iter()
+            .filter_map(|entry| match entry {
+                Entry::Summarized { kept, text } => Some((kept.id.as_str(), text.as_str())),
+                _ => None,
+            })
+            .collect()
+    }
+
     fn stopped(&self) -> bool {
         self.effects
             .iter()
             .any(|effect| matches!(effect, Effect::Stop))
     }
+}
+
+fn long_text(n: usize) -> String {
+    format!("{n}{}", "가".repeat(90_000))
 }
 
 fn app() -> ChannelId {
@@ -806,4 +851,218 @@ fn forgetting_an_entry_that_is_not_in_the_conversation_changes_nothing() {
     });
 
     assert_eq!(h.state.conversation, before);
+}
+
+#[test]
+fn a_long_conversation_starts_a_summary_when_a_reply_finishes() {
+    let mut h = Harness::new();
+    h.long_talk(2);
+    assert!(h.summaries().is_empty());
+    h.owner_says(&long_text(2));
+    assert!(h.summaries().is_empty());
+
+    h.model_answers(Vec::new());
+
+    let (_, request) = h.the_summary();
+    assert_eq!(request.previous, None);
+    assert_eq!(request.conversation.len(), 4);
+    assert_eq!(request.time_zone, None);
+    match &h.state.summarizing {
+        Summarizing::Running { kept, .. } => assert_eq!(kept.id.as_str(), "m3"),
+        _ => panic!("a summary is running"),
+    }
+    assert!(!h.state.working());
+}
+
+#[test]
+fn a_failed_reply_that_ends_the_turn_starts_a_summary_too() {
+    let mut h = Harness::new();
+    h.long_talk(2);
+    h.owner_says(&long_text(2));
+    let call = h.call_in_flight();
+
+    h.answer(
+        call,
+        Err(ModelError {
+            detail: String::from("overloaded"),
+        }),
+    );
+
+    h.the_summary();
+}
+
+#[test]
+fn no_summary_starts_while_the_model_is_thinking() {
+    let mut h = Harness::new();
+    h.long_talk(2);
+
+    h.owner_says(&long_text(2));
+
+    assert!(h.summaries().is_empty());
+    assert!(matches!(h.state.summarizing, Summarizing::Idle));
+}
+
+#[test]
+fn no_summary_starts_while_tools_run_but_one_starts_when_the_turn_ends() {
+    let mut h = Harness::new();
+    h.long_talk(2);
+    h.owner_says(&long_text(2));
+
+    h.model_answers(vec![use_tool("t1")]);
+    assert!(h.summaries().is_empty());
+    h.tool_returns(Ok(String::from("done")));
+    assert!(h.summaries().is_empty());
+    h.model_answers(Vec::new());
+
+    h.the_summary();
+}
+
+#[test]
+fn the_result_is_recorded_and_the_next_call_carries_it() {
+    let mut h = Harness::new();
+    h.long_talk(3);
+    let (summary, _) = h.the_summary();
+
+    h.summary_done(summary, "earlier things");
+
+    assert!(h.effects.is_empty());
+    assert_eq!(h.summarized(), vec![("m3", "earlier things")]);
+    assert!(matches!(h.state.summarizing, Summarizing::Idle));
+    h.owner_says("hello");
+    let call = h.the_model_call();
+    assert!(
+        call.iter()
+            .any(|entry| matches!(entry, Entry::Summarized { .. }))
+    );
+}
+
+#[test]
+fn a_summary_done_twice_or_with_an_unknown_id_changes_nothing() {
+    let mut h = Harness::new();
+    h.long_talk(3);
+    let (summary, _) = h.the_summary();
+    let unknown = h.state.ids.next_summary();
+
+    h.summary_done(unknown, "from nowhere");
+    assert!(h.summarized().is_empty());
+    assert!(matches!(h.state.summarizing, Summarizing::Running { .. }));
+    h.summary_done(summary, "earlier things");
+    h.summary_done(summary, "again");
+
+    assert_eq!(h.summarized(), vec![("m3", "earlier things")]);
+}
+
+#[test]
+fn an_owner_message_during_a_summary_is_answered_as_usual() {
+    let mut h = Harness::new();
+    h.long_talk(3);
+    let (summary, _) = h.the_summary();
+
+    h.owner_says("what time is it?");
+
+    assert!(h.cancelled().is_empty());
+    h.the_model_call();
+    let thread = h.thread_of("what time is it?");
+    h.summary_done(summary, "earlier things");
+    h.model_answers(vec![say(thread, "noon")]);
+    assert_eq!(h.deliveries().len(), 1);
+    assert_eq!(h.summarized(), vec![("m3", "earlier things")]);
+    assert!(matches!(
+        h.state.conversation.last(),
+        Some(Entry::Acted { .. })
+    ));
+}
+
+#[test]
+fn a_failed_summary_records_nothing_and_waits_for_a_step_more_before_trying_again() {
+    let mut h = Harness::new();
+    h.long_talk(3);
+    let (summary, _) = h.the_summary();
+
+    h.feed(Event::SummaryDone {
+        summary,
+        result: Err(ModelError {
+            detail: String::from("overloaded"),
+        }),
+    });
+    assert!(h.summarized().is_empty());
+    assert!(matches!(h.state.summarizing, Summarizing::Failed { .. }));
+    h.owner_says(&"나".repeat(STEP / 2));
+    h.model_answers(Vec::new());
+    assert!(h.summaries().is_empty());
+    h.owner_says(&"다".repeat(STEP / 2));
+    h.model_answers(Vec::new());
+
+    h.the_summary();
+}
+
+#[test]
+fn erasing_during_a_summary_drops_its_result() {
+    let mut h = Harness::new();
+    h.long_talk(3);
+    let (summary, _) = h.the_summary();
+    let erased = heard_at(&h, &long_text(0), None);
+
+    h.feed(Event::Forgotten {
+        entries: vec![erased],
+    });
+    assert!(matches!(h.state.summarizing, Summarizing::Idle));
+    h.summary_done(summary, "earlier things");
+
+    assert!(h.summarized().is_empty());
+}
+
+#[test]
+fn erasing_removes_the_summaries_after_the_erased_record() {
+    let mut h = Harness::new();
+    h.long_talk(3);
+    let (summary, _) = h.the_summary();
+    h.summary_done(summary, "earlier things");
+    h.owner_says("hello");
+    h.model_answers(Vec::new());
+    let erased = heard_at(&h, &long_text(2), None);
+
+    h.feed(Event::Forgotten {
+        entries: vec![erased],
+    });
+
+    assert!(h.summarized().is_empty());
+}
+
+#[test]
+fn erasing_after_a_summary_keeps_it() {
+    let mut h = Harness::new();
+    h.long_talk(3);
+    let (summary, _) = h.the_summary();
+    h.summary_done(summary, "earlier things");
+    h.owner_says("hello");
+    h.model_answers(Vec::new());
+    let erased = heard_at(&h, "hello", None);
+
+    h.feed(Event::Forgotten {
+        entries: vec![erased],
+    });
+
+    assert_eq!(h.summarized(), vec![("m3", "earlier things")]);
+}
+
+#[test]
+fn no_summary_starts_while_stopping() {
+    let mut h = Harness::new();
+    h.long_talk(2);
+    h.owner_says(&long_text(2));
+    let call = h.call_in_flight();
+
+    h.shut_down();
+    assert!(h.summaries().is_empty());
+    h.answer(
+        call,
+        Ok(ModelReply {
+            actions: Vec::new(),
+            trace: None,
+        }),
+    );
+
+    assert!(h.summaries().is_empty());
+    assert!(matches!(h.state.summarizing, Summarizing::Idle));
 }

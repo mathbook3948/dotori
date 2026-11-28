@@ -1,5 +1,8 @@
+use std::ops::Range;
+
 use crate::conversation::Action;
 use crate::conversation::Entry;
+use crate::conversation::MessageRef;
 use crate::sub_session::SubSessionOutcome;
 
 /// About how many characters of the conversation a request carries at most.
@@ -7,6 +10,10 @@ pub const KEPT: usize = 300_000;
 /// How far the start of what is carried moves at a time, so the start of the conversation stays
 /// the same between most requests and the provider can reuse its cache.
 pub const STEP: usize = 100_000;
+/// How much of the conversation after the latest summary's message starts a new summary.
+pub(crate) const SUMMARIZE_AT: usize = 250_000;
+const TAIL: usize = 100_000;
+const MOST: usize = 300_000;
 const SMALL: usize = 200;
 
 /// What a request carries of a conversation: the latest summary, if any, and the entries from
@@ -24,28 +31,105 @@ pub struct Carried<'a> {
 /// gone, or not copied to this PC yet, leaves the whole conversation to cut. Past that start, a
 /// conversation over `KEPT` is cut the same way with or without a summary.
 pub fn carried(conversation: &[Entry]) -> Carried<'_> {
-    let summary = conversation
+    let summary = latest_summary(conversation);
+    let base = summary
+        .as_ref()
+        .and_then(|latest| anchor(conversation, latest))
+        .unwrap_or(0);
+    let start = start(&conversation[base..]) + base;
+    Carried {
+        summary: summary.map(|latest| latest.text),
+        start,
+        left_out: start > base,
+    }
+}
+
+struct Latest<'a> {
+    index: usize,
+    kept: &'a MessageRef,
+    text: &'a str,
+}
+
+fn latest_summary(conversation: &[Entry]) -> Option<Latest<'_>> {
+    conversation
         .iter()
         .enumerate()
         .rev()
         .find_map(|(index, entry)| match entry {
-            Entry::Summarized { kept, text } => Some((index, kept, text.as_str())),
+            Entry::Summarized { kept, text } => Some(Latest {
+                index,
+                kept,
+                text: text.as_str(),
+            }),
             _ => None,
-        });
-    let base = summary
-        .and_then(|(index, kept, _)| {
-            conversation[..index].iter().rposition(|entry| {
-                matches!(entry, Entry::Heard { message, .. }
-                    if message.address.channel == kept.channel && message.id == kept.id)
-            })
         })
-        .unwrap_or(0);
-    let start = start(&conversation[base..]) + base;
-    Carried {
-        summary: summary.map(|(_, _, text)| text),
-        start,
-        left_out: start > base,
+}
+
+fn anchor(conversation: &[Entry], latest: &Latest<'_>) -> Option<usize> {
+    conversation[..latest.index].iter().rposition(|entry| {
+        matches!(entry, Entry::Heard { message, .. }
+            if message.address.channel == latest.kept.channel && message.id == latest.kept.id)
+    })
+}
+
+/// What the next summary takes in.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Plan {
+    /// The summary so far, which the new one merges.
+    pub(crate) previous: Option<String>,
+    /// The entries to summarize.
+    pub(crate) covered: Range<usize>,
+    /// The message the new summary names, which stays word for word.
+    pub(crate) kept: MessageRef,
+    /// How much of the conversation after the latest summary's message there is.
+    pub(crate) weight: usize,
+}
+
+/// A summary is due when the conversation after the latest summary's message passes
+/// `SUMMARIZE_AT`. That message, or the summary itself when its message is gone, starts what is
+/// counted. The new summary names the first message that leaves at most `TAIL` after it, or the
+/// last message when none does.
+pub(crate) fn plan(conversation: &[Entry]) -> Option<Plan> {
+    let latest = latest_summary(conversation);
+    let base = match &latest {
+        Some(latest) => anchor(conversation, latest).unwrap_or(latest.index),
+        None => 0,
+    };
+    let total: usize = conversation[base..].iter().map(weight).sum();
+    if total <= SUMMARIZE_AT {
+        return None;
     }
+    let mut before = 0;
+    let mut cut = None;
+    let mut cut_before = 0;
+    for (index, entry) in conversation.iter().enumerate().skip(base) {
+        if index > base
+            && let Entry::Heard { message, .. } = entry
+        {
+            cut = Some((index, message));
+            cut_before = before;
+            if total - before <= TAIL {
+                break;
+            }
+        }
+        before += weight(entry);
+    }
+    let (cut, message) = cut?;
+    let mut start = base;
+    let mut covered = cut_before;
+    while covered > MOST && start < cut {
+        covered -= weight(&conversation[start]);
+        start += 1;
+    }
+    (start < cut).then(|| Plan {
+        previous: latest.map(|latest| latest.text.to_owned()),
+        covered: start..cut,
+        kept: MessageRef {
+            channel: message.address.channel.clone(),
+            id: message.id.clone(),
+        },
+        weight: total,
+    })
 }
 
 fn start(conversation: &[Entry]) -> usize {

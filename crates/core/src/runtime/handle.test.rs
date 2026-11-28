@@ -39,6 +39,7 @@ use crate::runtime::fakes::FnModel;
 use crate::runtime::fakes::FnSubSessions;
 use crate::runtime::fakes::FnToolbox;
 use crate::runtime::fakes::MemoryStore;
+use crate::runtime::fakes::SummarizingModel;
 use crate::runtime::fakes::channel_id;
 use crate::runtime::fakes::incoming;
 use crate::runtime::fakes::next;
@@ -1339,5 +1340,60 @@ fn an_erased_message_is_not_sent_to_the_model_again() {
                 .any(|entry| matches!(entry, Entry::Acted { .. })),
             "what was not erased stays"
         );
+    });
+}
+
+#[test]
+fn a_long_conversation_is_summarized_in_the_background_and_the_summary_is_recorded() {
+    block_on(async {
+        let store = Arc::new(MemoryStore::default());
+        let (app, mut probe) = FakeChannel::new("app");
+        let (asked_tx, mut asked) = mpsc::unbounded_channel();
+        let (summaries_tx, mut summaries) = mpsc::unbounded_channel();
+        let mut ports = ports(app, Vec::new());
+        ports.model = Arc::new(SummarizingModel {
+            complete: model(move |request| {
+                let thread = last_heard(&request);
+                let _ = asked_tx.send(request.conversation);
+                say(thread, "ok")
+            }),
+            summarize: Box::new(move |request| {
+                let _ = summaries_tx.send(request.conversation.len());
+                Box::pin(async { Ok(String::from("earlier things")) })
+            }),
+        });
+        ports.records = Arc::clone(&store) as _;
+        let agent = Agent::spawn(config(Duration::from_secs(1)), ports)
+            .await
+            .expect("valid");
+
+        for n in 0..3 {
+            owner_says(&probe, &format!("m{n}"), &"가".repeat(90_000));
+            next(&mut asked).await;
+            next(&mut probe.delivered).await;
+        }
+
+        assert_eq!(next(&mut summaries).await, 4);
+        let recorded = async {
+            loop {
+                if stored(&store)
+                    .iter()
+                    .any(|entry| matches!(entry, Entry::Summarized { .. }))
+                {
+                    return;
+                }
+                time::sleep(Duration::from_millis(10)).await;
+            }
+        };
+        time::timeout(Duration::from_secs(5), recorded)
+            .await
+            .expect("the summary was recorded");
+        owner_says(&probe, "m3", "hello");
+        let conversation = next(&mut asked).await;
+        next(&mut probe.delivered).await;
+        agent.shutdown().await;
+        assert!(conversation.iter().any(
+            |entry| matches!(entry, Entry::Summarized { kept, text } if kept.id.as_str() == "m2" && text == "earlier things")
+        ));
     });
 }
