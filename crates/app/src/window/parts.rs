@@ -246,7 +246,13 @@ pub(crate) const DECLINED_ICON: &str = "icons/declined.svg";
 pub(crate) const COPY_ICON: &str = "icons/copy.svg";
 /// A small screen with a prompt, for what a call the owner allowed gave.
 pub(crate) const RESULT_ICON: &str = "icons/result.svg";
-const ICONS: [(&str, &str); 26] = [
+/// An exclamation mark in a circle, for a call the owner allowed that failed.
+pub(crate) const ERROR_ICON: &str = "icons/error.svg";
+const ICONS: [(&str, &str); 27] = [
+    (
+        ERROR_ICON,
+        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5v5.5M12 16.3v.2"/></svg>"##,
+    ),
     (
         COPY_ICON,
         r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="8.5" y="8.5" width="11" height="11" rx="2"/><path d="M15.5 8.5V6.5a2 2 0 0 0-2-2h-7a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h2"/></svg>"##,

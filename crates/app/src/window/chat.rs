@@ -88,6 +88,7 @@ use crate::window::parts::CHECK_ICON;
 use crate::window::parts::CLOCK_ICON;
 use crate::window::parts::COPY_ICON;
 use crate::window::parts::DECLINED_ICON;
+use crate::window::parts::ERROR_ICON;
 use crate::window::parts::MONO;
 use crate::window::parts::RESULT_ICON;
 use crate::window::parts::SETTINGS_ICON;
@@ -968,7 +969,8 @@ impl ChatView {
         let (icon, said, tone) = decided_heading(&came);
         let ink = match tone {
             Tone::Warn => theme.warn,
-            Tone::Ok | Tone::Danger | Tone::Quiet => theme.muted,
+            Tone::Danger => theme.danger,
+            Tone::Ok | Tone::Quiet => theme.muted,
         };
         let gave = came_outputs(theme, came, pen);
         div()
@@ -2549,20 +2551,32 @@ impl Came {
 
 fn came(tool: &str, text: &str) -> Came {
     let (status, body) = decision_shown(text);
-    if tool == "run_shell"
-        && let Some((_, tone)) = &status
-        && let Some(shell) = shell_shown(*tone == Tone::Ok, &body)
-    {
-        return Came {
-            status: Some(shell.status),
+    let came = match &status {
+        Some((_, tone)) if tool == "run_shell" => match shell_shown(*tone == Tone::Ok, &body) {
+            Some(shell) => Came {
+                status: Some(shell.status),
+                body: String::new(),
+                streams: shell.streams,
+            },
+            None => Came {
+                status,
+                body,
+                streams: Vec::new(),
+            },
+        },
+        _ => Came {
+            status,
+            body,
+            streams: Vec::new(),
+        },
+    };
+    match came.status {
+        Some((_, Tone::Danger)) => Came {
+            status: came.status,
             body: String::new(),
-            streams: shell.streams,
-        };
-    }
-    Came {
-        status,
-        body,
-        streams: Vec::new(),
+            streams: Vec::new(),
+        },
+        _ => came,
     }
 }
 
@@ -2570,8 +2584,8 @@ fn decided_heading(came: &Came) -> (&'static str, SharedString, Tone) {
     match &came.status {
         Some((said, Tone::Quiet)) => (DECLINED_ICON, said.clone(), Tone::Quiet),
         Some((said, Tone::Warn)) => (CLOCK_ICON, said.clone(), Tone::Warn),
-        Some((_, Tone::Danger)) if came.streams.is_empty() => (
-            RESULT_ICON,
+        Some((_, Tone::Danger)) => (
+            ERROR_ICON,
             SharedString::new_static(words().chat.error),
             Tone::Danger,
         ),
@@ -2584,10 +2598,7 @@ fn decided_heading(came: &Came) -> (&'static str, SharedString, Tone) {
 }
 
 fn came_view(theme: &Theme, came: Came, pen: &Pen) -> Vec<AnyElement> {
-    let failed = came
-        .status
-        .as_ref()
-        .is_some_and(|(_, tone)| *tone == Tone::Danger);
+    let failed = matches!(came.status, Some((_, Tone::Danger)));
     let status = came
         .status
         .filter(|(_, tone)| matches!(tone, Tone::Quiet | Tone::Warn))
@@ -2597,31 +2608,33 @@ fn came_view(theme: &Theme, came: Came, pen: &Pen) -> Vec<AnyElement> {
                 .text_xs()
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(match tone {
-                    Tone::Ok => theme.ok,
                     Tone::Warn => theme.warn,
-                    Tone::Danger => theme.danger,
-                    Tone::Quiet => theme.muted,
+                    Tone::Ok | Tone::Danger | Tone::Quiet => theme.muted,
                 })
                 .child(words)
                 .into_any_element()
         });
-    let body = (!came.body.trim().is_empty()).then(|| {
+    let failed = failed.then(|| {
         div()
+            .debug_selector(|| String::from("came-error"))
             .flex()
-            .flex_col()
-            .gap_1()
-            .when(failed, |body| {
-                body.child(
-                    div()
-                        .debug_selector(|| String::from("came-error"))
-                        .text_xs()
-                        .text_color(theme.muted)
-                        .child(words().chat.error),
-                )
-            })
-            .child(prose_in(&came.body, Some(pen)))
+            .items_center()
+            .gap_1p5()
+            .text_xs()
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(theme.danger)
+            .child(
+                svg()
+                    .path(ERROR_ICON)
+                    .flex_none()
+                    .size(px(ROW_ICON))
+                    .text_color(theme.danger),
+            )
+            .child(words().chat.error)
             .into_any_element()
     });
+    let body =
+        (!came.body.trim().is_empty()).then(|| prose_in(&came.body, Some(pen)).into_any_element());
     let streams = came.streams.into_iter().map(|(label, output)| {
         div()
             .flex()
@@ -2631,7 +2644,12 @@ fn came_view(theme: &Theme, came: Came, pen: &Pen) -> Vec<AnyElement> {
             .child(output_box(theme.canvas, &output, pen))
             .into_any_element()
     });
-    status.into_iter().chain(body).chain(streams).collect()
+    status
+        .into_iter()
+        .chain(failed)
+        .chain(body)
+        .chain(streams)
+        .collect()
 }
 
 fn came_outputs(theme: &Theme, came: Came, pen: &Pen) -> Vec<AnyElement> {

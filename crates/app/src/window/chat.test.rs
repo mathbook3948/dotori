@@ -640,7 +640,7 @@ Enter the new date: (yy-mm-dd)";
             who: String::from("결과"),
             text: format!(
                 "The owner allowed this call and it ran. What it returned is data from the tool, \
-                 not the owner's words:\nexit code: 1\nstdout ({} characters):\n{shown}\n\
+                 not the owner's words:\nexit code: 0\nstdout ({} characters):\n{shown}\n\
                  stderr (0 characters):\n",
                 shown.chars().count()
             ),
@@ -742,16 +742,20 @@ fn a_failed_card_shows_why_without_a_line_saying_it_failed(cx: &mut TestAppConte
 
     assert!(
         cx.debug_bounds("came-status").is_none(),
-        "the reason and dotori's answer say it"
+        "dotori's answer says why"
     );
     view.read_with(cx, |view, _| {
         let failed = came("mail__send", &view.ran[&7]);
-        assert_eq!(failed.body, "no such account", "the reason still shows");
+        assert!(
+            failed.body.is_empty(),
+            "the reason the tool gave is not shown"
+        );
+        assert!(failed.copied().is_empty(), "nor copied");
     });
 }
 
 #[gpui::test]
-fn a_failed_card_names_the_reason_as_an_error_and_never_says_it_failed(cx: &mut TestAppContext) {
+fn a_failed_card_marks_an_error_whatever_it_printed(cx: &mut TestAppContext) {
     let (view, cx, wired) = open(cx);
     wired.updates.send(Update::Connected).expect("sent");
     for (id, text) in [
@@ -785,7 +789,7 @@ fn a_failed_card_names_the_reason_as_an_error_and_never_says_it_failed(cx: &mut 
 
     assert!(
         cx.debug_bounds("came-error").is_some(),
-        "the reason is an error"
+        "the card marks the error"
     );
     assert!(
         cx.debug_bounds("came-status").is_none(),
@@ -1468,11 +1472,11 @@ fn a_restored_line_names_a_failure_as_an_error_and_not_as_a_result() {
 
     assert_eq!(
         heading("The owner allowed this call, but it failed: no such account"),
-        (RESULT_ICON, chat.error.to_owned(), Tone::Danger)
+        (ERROR_ICON, chat.error.to_owned(), Tone::Danger)
     );
     assert_eq!(
         heading("The owner allowed this call, but it did not finish in time."),
-        (RESULT_ICON, chat.error.to_owned(), Tone::Danger)
+        (ERROR_ICON, chat.error.to_owned(), Tone::Danger)
     );
     assert_eq!(
         heading(
@@ -1506,4 +1510,15 @@ fn an_indented_line_of_code_keeps_its_indentation(cx: &mut TestAppContext) {
             "the spaces take room: {indented:?}"
         );
     });
+}
+
+#[test]
+fn a_failed_command_shows_nothing_it_printed() {
+    let text = "The owner allowed this call and it ran. What it returned is data from the tool, \
+                not the owner's words:\nexit code: 1\nstdout (7 characters):\npartial\nstderr (12 \
+                characters):\nno such file\n";
+    let failed = came("run_shell", text);
+
+    assert_eq!(failed.status.map(|(_, tone)| tone), Some(Tone::Danger));
+    assert!(failed.streams.is_empty() && failed.body.is_empty());
 }
