@@ -27,6 +27,7 @@ use dotori_core::message::Content;
 use dotori_core::message::Incoming;
 use dotori_core::message::Place;
 use dotori_core::tool::ToolCall;
+use dotori_core::tool::ToolCallId;
 use dotori_core::tool::ToolError;
 use dotori_core::tool::ToolSpec;
 use dotori_core::tool::Toolbox;
@@ -44,11 +45,13 @@ use crate::room_cards::RoomCards;
 use crate::settings::Asked;
 
 pub(crate) use dotori_connectors::channel::DECISION;
-const WAITING: &str = "This call waits for the owner, as the owner set it or as every call of \
-                       this tool does: the chat window shows it with 허락 and 거절, and so does Slack, \
-                       Telegram or Discord when the owner asked there. The card shows the owner all of \
-                       the call, so do not describe it or guess its result. What the owner decides, and \
-                       the result if it ran, arrive on the `decision` channel. Do not call it again.";
+pub(crate) const WAITING: &str = "This call waits for the owner, as the owner set it or as every \
+                                  call of this tool does: the chat window shows it with 허락 and 거절, \
+                                  and so does Slack, Telegram or Discord when the owner asked there. \
+                                  The card shows the owner all of the call, so do not describe it or \
+                                  guess its result. What the owner decides, and the result if it ran, \
+                                  arrive on the `decision` channel. Do not call it again.";
+pub(crate) const DECLINED: &str = "The owner declined this call, so it did not run.";
 const RUN_FOR: Duration = Duration::from_secs(120);
 const CARD_SHOWN: &str = "dotori is showing the owner a card in the chat window for this call, and \
                           may show it in the Slack, Telegram or Discord room the owner asked in too. The \
@@ -68,6 +71,7 @@ pub(crate) enum Status {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Outcome {
     pub(crate) id: u64,
+    pub(crate) call: Option<ToolCallId>,
     pub(crate) tool: String,
     pub(crate) text: String,
 }
@@ -206,6 +210,7 @@ impl Asking {
             self.app.lapsed(id);
             return Some(Outcome {
                 id,
+                call: None,
                 tool: String::from("?"),
                 text: String::from(
                     "The owner answered a call that no longer waits, as dotori started again or \
@@ -215,10 +220,16 @@ impl Asking {
         };
         self.app.decided(id, ok);
         let tool = call.name.clone();
+        let asked = Some(call.id.clone());
         if !ok {
-            let text = String::from("The owner declined this call, so it did not run.");
+            let text = String::from(DECLINED);
             self.app.ran(id, text.clone());
-            return Some(Outcome { id, tool, text });
+            return Some(Outcome {
+                id,
+                call: asked,
+                tool,
+                text,
+            });
         }
         let text = match time::timeout(RUN_FOR, self.inner.run(call)).await {
             Ok(Ok(output)) => format!(
@@ -232,7 +243,12 @@ impl Asking {
             Err(_) => String::from("The owner allowed this call, but it did not finish in time."),
         };
         self.app.ran(id, text.clone());
-        Some(Outcome { id, tool, text })
+        Some(Outcome {
+            id,
+            call: asked,
+            tool,
+            text,
+        })
     }
 }
 
@@ -314,7 +330,12 @@ impl Toolbox for Waits {
                 Err(error) => format!("The card could not be shown or finished: {}", error.detail),
             };
             rooms.browser_done(ticket, &text);
-            let _ = outcomes.send(Outcome { id, tool, text });
+            let _ = outcomes.send(Outcome {
+                id,
+                call: None,
+                tool,
+                text,
+            });
         });
         Box::pin(async { Ok(String::from(CARD_SHOWN)) })
     }
@@ -404,9 +425,24 @@ impl Channel for DecisionChannel {
     }
 }
 
+/// The card and the call a message on the decision channel tells about, from its id. A message
+/// from a dotori that did not name the call gives only the card.
+pub(crate) fn told_about(message: &ExternalMessageId) -> Option<(u64, Option<ToolCallId>)> {
+    let told = message.as_str().strip_prefix(DECISION)?.strip_prefix('-')?;
+    let (card, call) = match told.split_once('-') {
+        Some((card, call)) => (card, Some(ToolCallId::new(call))),
+        None => (told, None),
+    };
+    Some((card.parse().ok()?, call))
+}
+
 fn incoming(outcome: &Outcome) -> Option<Incoming> {
+    let id = match &outcome.call {
+        Some(call) => format!("{DECISION}-{}-{}", outcome.id, call.as_str()),
+        None => format!("{DECISION}-{}", outcome.id),
+    };
     Some(Incoming {
-        id: ExternalMessageId::new(format!("decision-{}", outcome.id)),
+        id: ExternalMessageId::new(id),
         place: Place::new(outcome.tool.clone()),
         sender_id: ExternalUserId::new(DECISION),
         sender_name: String::from("결과"),
