@@ -2,6 +2,7 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use dotori_core::conversation::MessageRef;
 use dotori_core::conversation::ThreadRef;
 use dotori_core::id::ChannelId;
 use dotori_core::id::ExternalMessageId;
@@ -537,6 +538,121 @@ async fn forgetting_returns_the_entries_it_removed() {
             detail: String::from("card number 1234")
         }]
     );
+}
+
+fn summarized_at(ms: u64, text: &str) -> Record {
+    Record {
+        at: UNIX_EPOCH + Duration::from_millis(ms),
+        entry: Entry::Summarized {
+            kept: MessageRef {
+                channel: ChannelId::parse("app").expect("valid"),
+                id: ExternalMessageId::new("m1"),
+            },
+            text: text.to_owned(),
+        },
+    }
+}
+
+#[tokio::test]
+async fn forgetting_a_record_forgets_every_summary_made_after_it_even_in_a_later_year() {
+    let there = SqliteStore::new(scratch(), "there");
+    let here = SqliteStore::new(scratch(), "here");
+    there
+        .append(vec![
+            summarized_at(DEC_31_2025 - 2_000, "before the secret"),
+            failed_at(DEC_31_2025 - 1_000, "card number 1234"),
+            summarized_at(DEC_31_2025, "mentions card number 1234"),
+            summarized_at(JAN_1_2026, "still mentions card number 1234"),
+            failed_at(JAN_1_2026 + 1, "later"),
+        ])
+        .await
+        .expect("appended");
+    let sent = there.after("there", "", 100, 1 << 20).await.expect("after");
+    here.copy_in(sent.clone()).await.expect("copied");
+
+    let forgot = here
+        .forget(vec![sent[1].id.clone()], Vec::new())
+        .await
+        .expect("forgot");
+
+    let ids: Vec<&str> = forgot.list.iter().map(|f| f.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        [
+            sent[1].id.as_str(),
+            sent[2].id.as_str(),
+            sent[3].id.as_str()
+        ]
+    );
+    assert_eq!(
+        forgot.entries,
+        [
+            Entry::ModelFailed {
+                detail: String::from("card number 1234")
+            },
+            summarized_at(0, "mentions card number 1234").entry,
+            summarized_at(0, "still mentions card number 1234").entry,
+        ]
+    );
+    let left: Vec<Entry> = here
+        .load()
+        .await
+        .expect("loaded")
+        .into_iter()
+        .map(|record| record.entry)
+        .collect();
+    assert_eq!(
+        left,
+        [
+            summarized_at(0, "before the secret").entry,
+            Entry::ModelFailed {
+                detail: String::from("later")
+            },
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_summary_forgotten_here_is_forgotten_on_another_pc_from_the_list() {
+    let there = SqliteStore::new(scratch(), "there");
+    let here = SqliteStore::new(scratch(), "here");
+    there
+        .append(vec![
+            failed_at(JAN_1_2026, "secret"),
+            summarized_at(JAN_1_2026 + 1, "mentions the secret"),
+        ])
+        .await
+        .expect("appended");
+    let sent = there.after("there", "", 100, 1 << 20).await.expect("after");
+    here.copy_in(sent.clone()).await.expect("copied");
+    let list = there
+        .forget(vec![sent[0].id.clone()], Vec::new())
+        .await
+        .expect("forgot")
+        .list;
+
+    assert_eq!(here.take_forgotten(list).await.expect("taken"), 2);
+    assert!(here.load().await.expect("loaded").is_empty());
+}
+
+#[tokio::test]
+async fn a_summary_is_kept_with_no_text_for_search() {
+    let folder = scratch();
+    let store = SqliteStore::new(folder.clone(), "here");
+    store
+        .append(vec![summarized_at(JAN_1_2026, "what was said")])
+        .await
+        .expect("appended");
+
+    let connection = Connection::open(folder.join("2026.sqlite3")).expect("opened");
+    let (kind, text): (String, Option<String>) = connection
+        .query_row("SELECT kind, text FROM records", [], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .expect("read");
+
+    assert_eq!(kind, "summarized");
+    assert_eq!(text, None);
 }
 
 #[tokio::test]

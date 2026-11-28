@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::time::SystemTime;
 
+use dotori_core::carried::carried;
 use dotori_core::conversation::Action;
 use dotori_core::conversation::Entry;
 use dotori_core::llm::ModelTrace;
@@ -24,12 +25,14 @@ const NOTHING_NEW: &str = "Nothing new has happened.";
 const LEFT_OUT: &str = "<earlier_conversation_left_out>The start of this conversation is not \
                         shown, to keep it short. Search memory for what was said \
                         before.</earlier_conversation_left_out>";
-/// About how many characters of the conversation a request carries at most.
-pub(crate) const KEPT: usize = 300_000;
-/// How far the start of what is carried moves at a time, so the start of the conversation stays
-/// the same between most requests and the provider can reuse its cache.
-pub(crate) const STEP: usize = 100_000;
-const SMALL: usize = 200;
+const SUMMARY_INTRO: &str = "The start of this conversation is not shown, to keep it short. \
+                             This is a summary of it. It is past context, not new requests, and \
+                             newer messages win when they disagree. Search memory for the exact \
+                             words. Do not say that you read a summary. Carry on as if you \
+                             remembered it.";
+const LEFT_OUT_AFTER_SUMMARY: &str = "<conversation_left_out>Some of the conversation after \
+                                      this summary is not shown either, to keep it short. \
+                                      Search memory for it.</conversation_left_out>";
 
 /// The conversation as alternating turns, each reply placed right after what it answered.
 #[derive(Debug, PartialEq)]
@@ -68,66 +71,26 @@ impl PartialEq for Said {
 }
 
 pub(crate) fn build(conversation: &[Entry], provider: &str, zone: &TimeZone) -> Vec<Turn> {
-    let start = start(conversation);
+    let carried = carried(conversation);
     let mut builder = Builder::default();
-    if start > 0 {
-        builder.notes.push(String::from(LEFT_OUT));
+    match carried.summary {
+        Some(summary) => {
+            builder.notes.push(tagged(
+                "earlier_conversation_summary",
+                &[],
+                &format!("{SUMMARY_INTRO}\n\n{summary}"),
+            ));
+            if carried.left_out {
+                builder.notes.push(String::from(LEFT_OUT_AFTER_SUMMARY));
+            }
+        }
+        None if carried.left_out => builder.notes.push(String::from(LEFT_OUT)),
+        None => {}
     }
-    for index in order(conversation, start) {
+    for index in order(conversation, carried.start) {
         builder.add(index, &conversation[index], provider, zone);
     }
     builder.finish()
-}
-
-fn start(conversation: &[Entry]) -> usize {
-    let total: usize = conversation.iter().map(weight).sum();
-    if total <= KEPT {
-        return 0;
-    }
-    let cut = (total - KEPT).div_ceil(STEP) * STEP;
-    let mut before = 0;
-    let mut last_heard = 0;
-    for (index, entry) in conversation.iter().enumerate() {
-        if matches!(entry, Entry::Heard { .. }) {
-            if before >= cut {
-                return index;
-            }
-            last_heard = index;
-        }
-        before += weight(entry);
-    }
-    last_heard
-}
-
-fn weight(entry: &Entry) -> usize {
-    SMALL
-        + match entry {
-            Entry::Heard { message, .. } => chars(message.content.as_str()),
-            Entry::Acted { actions, trace, .. } => match trace {
-                Some(trace) => chars(&trace.data),
-                None => actions
-                    .iter()
-                    .map(|action| match action {
-                        Action::Say { text, .. } => chars(text),
-                        Action::UseTool(call) => chars(&call.input),
-                        Action::Delegate(spec) => chars(&spec.brief),
-                    })
-                    .sum(),
-            },
-            Entry::ToolReturned { result, .. } => match result {
-                Ok(output) => chars(output),
-                Err(error) => chars(&error.detail),
-            },
-            Entry::SubSessionReturned { outcome, .. } => match outcome {
-                SubSessionOutcome::Finished(text) | SubSessionOutcome::Failed(text) => chars(text),
-            },
-            Entry::DeliveryFailed { text, .. } => chars(text),
-            _ => 0,
-        }
-}
-
-fn chars(text: &str) -> usize {
-    text.chars().count()
 }
 
 fn order(conversation: &[Entry], start: usize) -> Vec<usize> {
@@ -191,6 +154,7 @@ impl Builder {
                         .push(tagged("late_tool_result", &[("id", id)], &text));
                 }
             }
+            Entry::Summarized { .. } => {}
             other => self.notes.push(note(other, zone)),
         }
     }
@@ -387,7 +351,9 @@ fn note(entry: &Entry, zone: &TimeZone) -> String {
             &[("channel", channel.as_str())],
             detail.as_deref().unwrap_or("It stopped without an error."),
         ),
-        Entry::Acted { .. } | Entry::ToolReturned { .. } => String::new(),
+        Entry::Acted { .. } | Entry::ToolReturned { .. } | Entry::Summarized { .. } => {
+            String::new()
+        }
     }
 }
 

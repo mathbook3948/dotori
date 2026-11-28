@@ -1,5 +1,9 @@
+use dotori_core::carried::KEPT;
+use dotori_core::carried::STEP;
+use dotori_core::carried::carried;
 use dotori_core::conversation::Action;
 use dotori_core::conversation::Entry;
+use dotori_core::conversation::MessageRef;
 use dotori_core::conversation::ThreadRef;
 use dotori_core::id::ChannelId;
 use dotori_core::id::ExternalMessageId;
@@ -369,50 +373,63 @@ fn talk(conversation: &mut Vec<Entry>, count: u32) {
     }
 }
 
+fn summarized(kept: &str, text: &str) -> Entry {
+    Entry::Summarized {
+        kept: MessageRef {
+            channel: ChannelId::parse("app").expect("valid"),
+            id: ExternalMessageId::new(kept),
+        },
+        text: text.to_owned(),
+    }
+}
+
+fn first_word(entry: &Entry) -> String {
+    match entry {
+        Entry::Heard { message, .. } => message.content.as_str().to_owned(),
+        _ => panic!("expected a heard message"),
+    }
+}
+
+fn all_notes(turns: &[Turn]) -> Vec<&str> {
+    turns
+        .iter()
+        .filter_map(|turn| match turn {
+            Turn::User(_) => Some(notes(turn)),
+            Turn::Assistant(_) => None,
+        })
+        .flatten()
+        .collect()
+}
+
 #[test]
 fn a_short_conversation_is_carried_whole() {
     let conversation = long(10);
 
-    assert_eq!(start(&conversation), 0);
     let turns = build(&conversation, "anthropic", &TimeZone::UTC);
+
     assert!(notes(&turns[0])[0].starts_with("<message"));
 }
 
 #[test]
 fn a_long_conversation_leaves_out_its_start_and_says_so() {
     let conversation = long(60);
+    let from = carried(&conversation).start;
 
-    let from = start(&conversation);
-    let carried: usize = conversation[from..].iter().map(weight).sum();
+    let turns = build(&conversation, "anthropic", &TimeZone::UTC);
 
     assert!(from > 0);
-    assert!(matches!(conversation[from], Entry::Heard { .. }));
-    assert!(carried <= KEPT);
-    let turns = build(&conversation, "anthropic", &TimeZone::UTC);
     assert!(notes(&turns[0])[0].starts_with("<earlier_conversation_left_out>"));
     assert!(notes(&turns[0])[1].starts_with(&format!(
-        "<message thread=\"0\" channel=\"app\" place=\"main\" from=\"Me\" role=\"owner\">\n{} ",
+        "<message thread=\"0\" channel=\"app\" place=\"main\" from=\"Me\" role=\"owner\">
+{} ",
         from / 2
     )));
 }
 
 #[test]
-fn the_start_moves_in_steps_so_most_requests_share_their_beginning() {
-    let mut conversation = long(60);
-    let first = start(&conversation);
-
-    conversation.push(heard(0, "짧은 말"));
-    conversation.push(acted(conversation.len(), vec![say(0, "ok")], None));
-    assert_eq!(start(&conversation), first);
-
-    talk(&mut conversation, 12);
-    assert!(start(&conversation) > first);
-}
-
-#[test]
 fn a_reply_to_something_left_out_comes_first() {
     let mut conversation = long(60);
-    let from = start(&conversation);
+    let from = carried(&conversation).start;
     conversation.insert(from + 1, acted(from - 2, vec![say(0, "late")], None));
 
     let turns = build(&conversation, "anthropic", &TimeZone::UTC);
@@ -427,22 +444,114 @@ fn the_newest_message_is_carried_however_long_it_is() {
     let huge = "나".repeat(KEPT + STEP);
     conversation.push(heard(0, &huge));
 
-    let from = start(&conversation);
-
-    assert_eq!(from, conversation.len() - 1);
     let turns = build(&conversation, "anthropic", &TimeZone::UTC);
+
     assert!(notes(&turns[0])[1].contains(&huge));
 }
 
 #[test]
-fn without_a_message_after_the_cut_the_last_message_starts_it() {
-    let mut conversation = long(40);
-    let last = conversation.len();
-    conversation.push(heard(0, "마지막 말"));
-    conversation.push(acted(last + 1, vec![tool("t1")], None));
-    conversation.push(returned("t1", Ok(&"다".repeat(KEPT + STEP))));
+fn a_summary_comes_first_and_the_request_starts_at_the_message_it_names() {
+    let mut conversation = long(6);
+    let anchor = first_word(&conversation[6]);
+    conversation.push(summarized(&anchor, "they planned a trip"));
 
-    assert_eq!(start(&conversation), last);
+    let turns = build(&conversation, "anthropic", &TimeZone::UTC);
+
+    let first = notes(&turns[0]);
+    assert_eq!(first.len(), 2);
+    assert!(first[0].starts_with(
+        "<earlier_conversation_summary>
+The start of this conversation"
+    ));
+    assert!(first[0].contains("Do not say that you read a summary."));
+    assert!(first[0].ends_with(
+        "
+
+they planned a trip
+</earlier_conversation_summary>"
+    ));
+    assert!(first[1].contains(&anchor));
+    assert!(
+        !all_notes(&turns)
+            .iter()
+            .any(|note| note.contains(&first_word(&conversation[4])))
+    );
+}
+
+#[test]
+fn a_summary_never_appears_as_a_block_of_its_own() {
+    let mut conversation = long(2);
+    let anchor = first_word(&conversation[0]);
+    conversation.push(summarized(&anchor, "they planned a trip"));
+    conversation.push(heard(0, "and then"));
+
+    let turns = build(&conversation, "anthropic", &TimeZone::UTC);
+
+    let summaries = all_notes(&turns)
+        .into_iter()
+        .filter(|note| note.contains("they planned a trip"))
+        .count();
+    assert_eq!(summaries, 1);
+    assert!(all_notes(&turns).iter().all(|note| !note.is_empty()));
+}
+
+#[test]
+fn a_summary_whose_message_is_missing_is_carried_with_the_cut_over_the_whole_conversation() {
+    let mut conversation = long(60);
+    conversation.push(summarized("erased", "they planned a trip"));
+
+    let turns = build(&conversation, "anthropic", &TimeZone::UTC);
+
+    let first = notes(&turns[0]);
+    assert!(first[0].starts_with("<earlier_conversation_summary>"));
+    assert!(first[1].starts_with("<conversation_left_out>"));
+    assert!(first[2].starts_with("<message"));
+    assert!(!first[2].contains(&first_word(&conversation[0])));
+}
+
+#[test]
+fn a_long_stretch_after_the_summarys_message_adds_a_note_that_some_of_it_is_left_out() {
+    let mut conversation = long(2);
+    let anchor = first_word(&conversation[0]);
+    conversation.push(summarized(&anchor, "they planned a trip"));
+    talk(&mut conversation, 60);
+
+    let turns = build(&conversation, "anthropic", &TimeZone::UTC);
+
+    let first = notes(&turns[0]);
+    assert!(first[0].starts_with("<earlier_conversation_summary>"));
+    assert_eq!(
+        first[1],
+        "<conversation_left_out>Some of the conversation after this summary is not shown either, to keep it short. Search memory for it.</conversation_left_out>"
+    );
+    assert!(!first[2].contains(&format!(
+        ">
+{anchor}"
+    )));
+}
+
+#[test]
+fn a_reply_still_follows_what_it_answered_after_a_summary() {
+    let mut conversation = long(2);
+    let anchor = first_word(&conversation[0]);
+    conversation.push(summarized(&anchor, "they planned a trip"));
+    conversation.push(heard(0, "first"));
+    conversation.push(heard(0, "second"));
+    conversation.push(acted(6, vec![say(0, "to first")], None));
+
+    let turns = build(&conversation, "anthropic", &TimeZone::UTC);
+
+    let at_first = turns
+        .iter()
+        .rposition(|turn| matches!(turn, Turn::Assistant(_)))
+        .expect("a reply");
+    assert!(
+        notes(&turns[at_first - 1])
+            .last()
+            .expect("a note")
+            .contains("first")
+    );
+    assert!(notes(&turns[at_first + 1])[0].contains("second"));
 }
 
 #[test]

@@ -25,7 +25,7 @@ use uuid::Uuid;
 
 use crate::record::form::Line;
 
-const VERSION: i64 = 4;
+const VERSION: i64 = 5;
 const BEFORE_ARRIVALS: i64 = 2;
 const LEGACY_VERSION: i64 = 1;
 const SETTLE_TRIES: usize = 20;
@@ -339,6 +339,7 @@ impl SqliteStore {
     /// records the owner was shown that carry their numbers, such as the search result that found
     /// them. Each is removed from the raw record and its number kept as forgotten. Fails,
     /// forgetting nothing, if any of `ids` is not here; a carrier already gone is passed over.
+    /// Every summary made after the earliest of them goes too, since it may hold what they said.
     pub async fn forget(
         &self,
         ids: Vec<String>,
@@ -363,6 +364,23 @@ impl SqliteStore {
                 }
                 if let Some((year, device)) = held(book, folder, &id)? {
                     found.push((year, Forgotten { id, device }));
+                }
+            }
+            let earliest = found
+                .iter()
+                .min_by(|(_, a), (_, b)| a.id.cmp(&b.id))
+                .map(|(year, forgotten)| (*year, forgotten.id.clone()));
+            if let Some((year, id)) = earliest {
+                for (year, summary, device) in summaries_after(book, folder, year, &id)? {
+                    if !found.iter().any(|(_, known)| known.id == summary) {
+                        found.push((
+                            year,
+                            Forgotten {
+                                id: summary,
+                                device,
+                            },
+                        ));
+                    }
                 }
             }
             let mut entries = Vec::new();
@@ -857,6 +875,31 @@ fn carrying(
     Ok(found)
 }
 
+fn summaries_after(
+    book: &mut Book,
+    folder: &Path,
+    year: i64,
+    id: &str,
+) -> Result<Vec<(i64, String, String)>, RecordError> {
+    let mut found = Vec::new();
+    for later in years(folder)?.into_iter().filter(|later| *later >= year) {
+        let mut query = book
+            .year(folder, later)?
+            .prepare("SELECT id, device FROM records WHERE kind = 'summarized' AND id > ?1")
+            .map_err(fail)?;
+        let rows = query
+            .query_map([id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(fail)?;
+        for row in rows {
+            let (summary, device) = row.map_err(fail)?;
+            found.push((later, summary, device));
+        }
+    }
+    Ok(found)
+}
+
 fn forget_in(
     connection: &mut Connection,
     forgotten: &Forgotten,
@@ -1017,6 +1060,10 @@ impl Columns {
             Entry::ChannelEnded { channel, .. } => Self {
                 kind: "channel_ended",
                 channel: Some(channel.as_str().to_owned()),
+                ..Self::default()
+            },
+            Entry::Summarized { .. } => Self {
+                kind: "summarized",
                 ..Self::default()
             },
         }

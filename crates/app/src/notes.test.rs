@@ -1,6 +1,7 @@
 use std::sync::atomic::AtomicUsize;
 
 use dotori_core::conversation::Action;
+use dotori_core::conversation::MessageRef;
 use dotori_core::conversation::ThreadRef;
 use dotori_core::id::ChannelId;
 use dotori_core::id::ExternalMessageId;
@@ -314,6 +315,21 @@ async fn the_owner_asks_and_the_model_reads_before_it_changes() {
         "{}",
         refused.detail
     );
+}
+
+#[test]
+fn a_summary_is_not_the_owners_message_and_closes_nothing() {
+    let summary = Entry::Summarized {
+        kept: MessageRef {
+            channel: ChannelId::parse("app").expect("valid"),
+            id: ExternalMessageId::new("m"),
+        },
+        text: String::from("remember this"),
+    };
+
+    assert!(!owner_asked(std::slice::from_ref(&summary)));
+    assert!(owner_asked(&[heard(Role::Owner), summary.clone()]));
+    assert!(!owner_asked(&[heard(Role::Other), summary]));
 }
 
 #[test]

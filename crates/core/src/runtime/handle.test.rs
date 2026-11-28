@@ -17,6 +17,7 @@ use crate::BoxFuture;
 use crate::channel::Channel;
 use crate::conversation::Action;
 use crate::conversation::Entry;
+use crate::conversation::MessageRef;
 use crate::conversation::ThreadRef;
 use crate::id::ExternalMessageId;
 use crate::id::ExternalUserId;
@@ -762,6 +763,62 @@ fn record(entry: Entry) -> Record {
         at: SystemTime::now(),
         entry,
     }
+}
+
+#[test]
+fn a_summary_in_the_record_comes_back_with_the_conversation_and_closes_nothing() {
+    block_on(async {
+        let store = Arc::new(MemoryStore::default());
+        store.records.lock().expect("unpoisoned").extend([
+            record(Entry::Heard {
+                thread: ThreadRef::new(0),
+                message: Message {
+                    id: ExternalMessageId::new("m1"),
+                    address: Address {
+                        channel: channel_id("app"),
+                        place: Place::new("main"),
+                    },
+                    sender: Sender {
+                        id: ExternalUserId::new("me"),
+                        name: String::from("me"),
+                        role: Role::Owner,
+                    },
+                    content: Content::parse("the blue door").expect("non-empty"),
+                    audience: Some(Audience::Owner),
+                    at: None,
+                },
+            }),
+            record(Entry::Summarized {
+                kept: MessageRef {
+                    channel: channel_id("app"),
+                    id: ExternalMessageId::new("m1"),
+                },
+                text: String::from("a door"),
+            }),
+        ]);
+        let (app, probe) = FakeChannel::new("app");
+        let (asked_tx, mut asked) = mpsc::unbounded_channel();
+        let mut ports = ports(app, Vec::new());
+        ports.model = Arc::new(model(move |request| {
+            let _ = asked_tx.send(request.conversation);
+            silence()
+        }));
+        ports.records = Arc::clone(&store) as _;
+        let agent = Agent::spawn(config(Duration::from_secs(1)), ports)
+            .await
+            .expect("valid");
+
+        owner_says(&probe, "m2", "which door?");
+
+        let conversation = next(&mut asked).await;
+        assert_eq!(conversation.len(), 3);
+        assert!(matches!(conversation[1], Entry::Summarized { .. }));
+        agent.shutdown().await;
+        assert!(stored(&store).iter().all(|entry| !matches!(
+            entry,
+            Entry::ToolReturned { .. } | Entry::SubSessionReturned { .. }
+        )));
+    });
 }
 
 #[test]
