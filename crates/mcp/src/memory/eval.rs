@@ -9,6 +9,7 @@ use super::Memory;
 use super::NO_WORDS;
 use super::QUERY_WAIT;
 use super::Ranked;
+use super::Use;
 use super::vectors;
 
 /// A question from the owner's evaluation set, with words that only the records it should find
@@ -58,10 +59,10 @@ pub const HITS: usize = DEFAULT_LIMIT as usize;
 impl Memory {
     /// Ranks every question the way memory search does, by words, by meaning, and by both, and
     /// scores each way against the records that hold the expected words. Questions go to the
-    /// embedding API only while search by meaning can still be scored.
+    /// embedding only while search by meaning can still be scored.
     pub async fn evaluate(self: &Arc<Self>, cases: Vec<Case>) -> Result<Report, String> {
         let mut no_meaning = match &self.embedder {
-            None => Some(String::from("no embedding API is set up")),
+            None => Some(String::from("no embedding is set up")),
             Some(embedder) => {
                 let (vectored, _) = coverage(self, embedder.name()).await?;
                 (vectored == 0).then(|| String::from("no record has a vector yet"))
@@ -74,10 +75,15 @@ impl Memory {
                 Some(embedder) if no_meaning.is_none() => {
                     let wanted = case.question.chars().take(vectors::LONGEST).collect();
                     Some(
-                        match tokio::time::timeout(QUERY_WAIT, embedder.embed(&[wanted])).await {
+                        match tokio::time::timeout(
+                            QUERY_WAIT,
+                            embedder.embed(&[wanted], Use::Query),
+                        )
+                        .await
+                        {
                             Ok(Ok(mut made)) => made.pop().ok_or_else(|| String::from("no vector")),
                             Ok(Err(refused)) => Err(refused.detail),
-                            Err(_) => Err(String::from("the embedding API took too long")),
+                            Err(_) => Err(String::from("the embedding took too long")),
                         },
                     )
                 }

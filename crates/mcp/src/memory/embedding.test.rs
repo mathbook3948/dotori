@@ -42,8 +42,12 @@ fn the_name_changes_with_the_model_and_its_size() {
         api_key: None,
         dimensions,
     };
-    let plain = Embedder::new(config(None)).expect("made").name();
-    let sized = Embedder::new(config(Some(256))).expect("made").name();
+    let plain = Embedder::new(Embedding::Api(config(None)))
+        .expect("made")
+        .name();
+    let sized = Embedder::new(Embedding::Api(config(Some(256))))
+        .expect("made")
+        .name();
     assert_eq!(plain, "https://api.example.com/v1 small");
     assert_eq!(sized, "https://api.example.com/v1 small 256");
 }

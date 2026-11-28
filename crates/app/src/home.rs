@@ -116,6 +116,11 @@ impl Home {
         self.root.join("search.sqlite3")
     }
 
+    /// The embedding models memory search runs on this PC, fetched on first use.
+    pub(crate) fn models(&self) -> PathBuf {
+        self.root.join("models")
+    }
+
     /// Dictionaries for splitting words, fetched on first use.
     pub(crate) fn dictionaries(&self) -> PathBuf {
         self.root.join("dictionaries")

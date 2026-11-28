@@ -245,7 +245,9 @@ pub(super) fn embedded(config: MemoryConfig, base_url: String) -> Arc<Memory> {
     };
     Arc::new(Memory {
         config,
-        embedder: Some(Arc::new(Embedder::new(embedding).expect("made"))),
+        embedder: Some(Arc::new(
+            Embedder::new(Embedding::Api(embedding)).expect("made"),
+        )),
         meaning_ready: AtomicBool::new(false),
         state: Mutex::new(State::default()),
     })
@@ -335,12 +337,12 @@ async fn another_model_makes_every_vector_again() {
     let second = Arc::new(Memory {
         config,
         embedder: Some(Arc::new(
-            Embedder::new(EmbeddingConfig {
+            Embedder::new(Embedding::Api(EmbeddingConfig {
                 base_url,
                 model: String::from("other"),
                 api_key: None,
                 dimensions: None,
-            })
+            }))
             .expect("made"),
         )),
         meaning_ready: AtomicBool::new(false),

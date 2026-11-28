@@ -45,6 +45,9 @@ use std::process::ExitCode;
 
 use crate::home::Home;
 
+#[global_allocator]
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 const USAGE: &str =
     "usage: dotori [window | settings | onboarding | search-eval <file> | sandbox install]";
 
