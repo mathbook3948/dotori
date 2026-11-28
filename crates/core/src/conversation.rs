@@ -1,4 +1,5 @@
 use crate::id::ChannelId;
+use crate::id::ExternalMessageId;
 use crate::llm::ModelTrace;
 use crate::message::Message;
 use crate::sub_session::SubSessionOutcome;
@@ -22,6 +23,14 @@ impl ThreadRef {
     pub fn get(self) -> u32 {
         self.0
     }
+}
+
+/// A heard message, named by what is the same on every PC. Conversation positions and record
+/// numbers are not.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MessageRef {
+    pub channel: ChannelId,
+    pub id: ExternalMessageId,
 }
 
 /// One line of the main session, in arrival order. The model reads this.
@@ -60,6 +69,12 @@ pub enum Entry {
     ChannelEnded {
         channel: ChannelId,
         detail: Option<String>,
+    },
+    /// A summary of everything before the heard message `kept`, which is the first one kept word
+    /// for word. It is appended when made, so it always sits after `kept`.
+    Summarized {
+        kept: MessageRef,
+        text: String,
     },
 }
 

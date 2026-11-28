@@ -22,6 +22,7 @@ use crate::peer::hub::Hub;
 use crate::record::sqlite::Copied;
 use crate::record::sqlite::Forgotten;
 use crate::record::sqlite::SqliteStore;
+use crate::record::sqlite::Taken;
 
 const BATCH_COUNT: usize = 500;
 const BATCH_BYTES: usize = 4 * 1024 * 1024;
@@ -82,10 +83,11 @@ impl Copies {
                     .get("list")
                     .and_then(|list| serde_json::from_value::<Vec<Forgotten>>(list.clone()).ok());
                 match list {
-                    Some(list) => match self.store.take_forgotten(list.clone()).await {
-                        Ok(0) => {}
-                        Ok(_) => {
+                    Some(mut list) => match self.store.take_forgotten(list.clone()).await {
+                        Ok(Taken { taken: 0, .. }) => {}
+                        Ok(Taken { summaries, .. }) => {
                             self.forgot.notify_one();
+                            list.extend(summaries);
                             self.hub
                                 .broadcast(&json!({ "kind": "forgotten", "list": list }));
                             self.tell_marks(&heard.key, false).await;

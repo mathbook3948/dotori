@@ -2,6 +2,7 @@
 
 use std::pin::Pin;
 
+pub mod carried;
 pub mod channel;
 pub mod conversation;
 pub mod id;
