@@ -1,9 +1,11 @@
 use crate::agent::ids::CallId;
 use crate::agent::ids::SubSessionId;
+use crate::agent::ids::SummaryId;
 use crate::agent::ids::ToolRunId;
 use crate::channel::Traffic;
 use crate::conversation::Entry;
 use crate::conversation::ThreadRef;
+use crate::llm::SummaryRequest;
 use crate::message::Address;
 use crate::sub_session::SubSessionSpec;
 use crate::tool::Origin;
@@ -24,6 +26,11 @@ pub(crate) enum Effect {
         conversation: Vec<Entry>,
     },
     CancelModel(CallId),
+    /// Never cancelled. A result nobody waits for any more is ignored.
+    Summarize {
+        summary: SummaryId,
+        request: SummaryRequest,
+    },
     RunTool {
         run: ToolRunId,
         call: ToolCall,
