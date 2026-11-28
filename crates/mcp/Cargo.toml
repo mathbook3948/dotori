@@ -12,6 +12,7 @@ categories.workspace = true
 publish = false
 
 [dependencies]
+dotori-native = { path = "../native" }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 htmd = "0.6.0"
 http-body-util = "0.1.5"
@@ -24,6 +25,8 @@ rusqlite = { version = "0.43.0", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 sha2 = "0.11.1"
+tract-onnx = { version = "0.23.10", default-features = false }
+tokenizers = { version = "0.23.2", default-features = false, features = ["fancy-regex"] }
 tokio = { version = "1.54.1", default-features = false, features = ["rt", "net", "time", "macros", "sync", "process", "io-util"] }
 tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["connect"] }
 zip = { version = "9.8.1", default-features = false, features = ["deflate-flate2-zlib-rs"] }

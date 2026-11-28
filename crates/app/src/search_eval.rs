@@ -11,6 +11,7 @@ use dotori_mcp::memory::Method;
 use dotori_mcp::memory::Report;
 
 use crate::home::Home;
+use crate::language;
 use crate::settings::Settings;
 use crate::vault;
 use crate::vault::Vault;
@@ -27,13 +28,18 @@ pub(crate) async fn run(home: Home, file: Option<String>) -> Result<(), String> 
     if cases.is_empty() {
         return Err(format!("{file} holds no questions. {USAGE}"));
     }
-    let embedding =
-        Settings::load(&home.settings())?.embedding(vault::lookup(&Vault::new(&home.root)))?;
+    let settings = Settings::load(&home.settings())?;
+    language::choose(language::Choice::named(settings.language.as_deref()));
+    let embedding = settings.search_embedding(
+        vault::lookup(&Vault::new(&home.root)),
+        language::current(),
+        home.models(),
+    )?;
     let memory = Memory::new(MemoryConfig {
         record: home.record(),
         index: home.search_index(),
         dictionaries: home.dictionaries(),
-        embedding,
+        embedding: Some(embedding),
         jobs: Some(home.jobs()),
     });
     let report = memory.evaluate(cases).await?;

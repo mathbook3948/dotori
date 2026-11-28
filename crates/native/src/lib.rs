@@ -4,6 +4,15 @@
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
+/// Hands the memory mimalloc holds but no longer uses back to the operating system, such as what
+/// a large unloaded model leaves behind. Where mimalloc is not the allocator, it has nothing to
+/// hand back.
+pub fn return_unused_memory() {
+    // ast-grep-ignore
+    // SAFETY: mi_collect takes no pointers and only frees pages that hold no live allocation.
+    unsafe { libmimalloc_sys::mi_collect(true) }
+}
+
 /// Shows `small` and `big`, whole PNG images of their side in pixels, as the icon of the window
 /// with the Win32 handle `window`: in its corner and on its taskbar button. Elsewhere than on
 /// Windows it does nothing, since the desktop finds the app's own icon.

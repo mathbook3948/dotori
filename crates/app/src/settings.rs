@@ -23,12 +23,15 @@ use dotori_connectors::llm::openai::OpenAiConfig;
 use dotori_connectors::sub_session::SUB_SESSION_SYSTEM;
 use dotori_connectors::sub_session::llm::LLM_SUB_SESSION_SYSTEM;
 use dotori_core::llm::Model;
+use dotori_mcp::memory::Embedding;
 use dotori_mcp::memory::EmbeddingConfig;
+use dotori_mcp::memory::LocalModel;
 use dotori_mcp::relay::Reach;
 use dotori_mcp::relay::RelayConfig;
 use serde::Deserialize;
 use serde::Serialize;
 
+use crate::language::Language;
 use crate::replace::replace;
 use crate::words::words;
 
@@ -800,6 +803,26 @@ impl Settings {
             api_key,
             dimensions: chosen.dimensions,
         }))
+    }
+
+    /// What memory search embeds with: the embedding API the settings name, or else the model
+    /// for `language` on this PC, kept in `models`.
+    pub(crate) fn search_embedding(
+        &self,
+        key: impl Fn(&str) -> Option<String>,
+        language: Language,
+        models: PathBuf,
+    ) -> Result<Embedding, String> {
+        Ok(match self.embedding(key)? {
+            Some(config) => Embedding::Api(config),
+            None => Embedding::Local {
+                model: match language {
+                    Language::Korean => LocalModel::Korean,
+                    Language::English => LocalModel::English,
+                },
+                models,
+            },
+        })
     }
 
     /// The MCP servers to relay, reading tokens through `key`. A server set up wrong is named

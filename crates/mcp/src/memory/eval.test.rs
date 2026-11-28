@@ -54,7 +54,7 @@ async fn words_are_scored_and_a_question_that_cannot_be_scored_is_left_out_with_
                 shown: 1,
                 reciprocal: 0.5,
             }],
-            no_meaning: Some(String::from("no embedding API is set up")),
+            no_meaning: Some(String::from("no embedding is set up")),
             vectored: None,
         }
     );

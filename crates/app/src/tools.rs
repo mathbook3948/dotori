@@ -42,6 +42,7 @@ use crate::accounts::VaultAccounts;
 use crate::door;
 use crate::door::Door;
 use crate::home::Home;
+use crate::language;
 use crate::settings::Settings;
 use crate::vault;
 use crate::vault::Vault;
@@ -114,8 +115,10 @@ pub(crate) async fn serve(home: Home) -> Result<(), String> {
     tokio::spawn(screen.serve(shown, screen_door.token));
     let mut tools: Vec<Box<dyn Tool>> = vec![Box::new(WebFetch::new()?)];
     tools.extend(browser.tools());
+    language::choose(language::Choice::named(settings.language.as_deref()));
     let embedding = settings
-        .embedding(vault::lookup(&vault))
+        .search_embedding(vault::lookup(&vault), language::current(), home.models())
+        .map(Some)
         .unwrap_or_else(|error| {
             eprintln!("dotori: memory search matches words only: {error}");
             None
@@ -284,6 +287,7 @@ async fn launch() -> Result<Running, String> {
     let exe = env::current_exe().map_err(|error| error.to_string())?;
     let mut child = Command::new(exe)
         .arg("mcp")
+        .env("MIMALLOC_PURGE_DELAY", "0")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()

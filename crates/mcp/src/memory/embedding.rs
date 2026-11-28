@@ -1,10 +1,28 @@
+use std::path::PathBuf;
 use std::time::Duration;
 
 use reqwest::Client;
 use serde_json::Value;
 use serde_json::json;
 
+use super::local::Local;
+use super::local::LocalModel;
+
 const TIMEOUT: Duration = Duration::from_secs(60);
+
+/// What makes vectors: an embedding API, or a model on this PC kept in `models`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Embedding {
+    Api(EmbeddingConfig),
+    Local { model: LocalModel, models: PathBuf },
+}
+
+/// What a text is embedded for. Some models want a question worded apart from what it finds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Use {
+    Query,
+    Record,
+}
 
 /// An embedding API in the OpenAI `/embeddings` shape. Turning it on sends recorded text there.
 #[derive(Clone, PartialEq, Eq)]
@@ -55,22 +73,61 @@ impl From<Refused> for String {
     }
 }
 
-pub(crate) struct Embedder {
+pub(crate) enum Embedder {
+    Api(Api),
+    Local(Local),
+}
+
+pub(crate) struct Api {
     config: EmbeddingConfig,
     client: Client,
 }
 
 impl Embedder {
-    pub(crate) fn new(config: EmbeddingConfig) -> Result<Self, String> {
-        let client = Client::builder()
-            .timeout(TIMEOUT)
-            .build()
-            .map_err(|error| error.to_string())?;
-        Ok(Self { config, client })
+    pub(crate) fn new(embedding: Embedding) -> Result<Self, String> {
+        match embedding {
+            Embedding::Api(config) => {
+                let client = Client::builder()
+                    .timeout(TIMEOUT)
+                    .build()
+                    .map_err(|error| error.to_string())?;
+                Ok(Self::Api(Api { config, client }))
+            }
+            Embedding::Local { model, models } => Ok(Self::Local(Local::new(model, &models))),
+        }
     }
 
     /// What each vector records as the model that made it. A change here makes every vector again.
     pub(crate) fn name(&self) -> String {
+        match self {
+            Self::Api(api) => api.name(),
+            Self::Local(local) => local.name(),
+        }
+    }
+
+    /// Gets ready to embed: a model on this PC is downloaded unless it is here.
+    pub(crate) async fn prepare(&self) -> Result<(), String> {
+        match self {
+            Self::Api(_) => Ok(()),
+            Self::Local(local) => local.prepare().await,
+        }
+    }
+
+    /// One unit-length vector per text, in the same order.
+    pub(crate) async fn embed(
+        &self,
+        texts: &[String],
+        wanted: Use,
+    ) -> Result<Vec<Vec<f32>>, Refused> {
+        match self {
+            Self::Api(api) => api.embed(texts).await,
+            Self::Local(local) => local.embed(texts, wanted).await,
+        }
+    }
+}
+
+impl Api {
+    fn name(&self) -> String {
         let base = self.config.base_url.trim_end_matches('/');
         match self.config.dimensions {
             Some(dimensions) => format!("{base} {} {dimensions}", self.config.model),
@@ -78,8 +135,7 @@ impl Embedder {
         }
     }
 
-    /// One unit-length vector per text, in the same order.
-    pub(crate) async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, Refused> {
+    async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, Refused> {
         let mut body = json!({
             "model": self.config.model,
             "input": texts,
@@ -158,14 +214,14 @@ fn vectors(answer: &Value, expected: usize) -> Result<Vec<Vec<f32>>, String> {
     Ok(vectors)
 }
 
-fn unit(mut vector: Vec<f32>) -> Result<Vec<f32>, String> {
+pub(crate) fn unit(mut vector: Vec<f32>) -> Result<Vec<f32>, String> {
     let length = vector
         .iter()
         .map(|value| f64::from(*value) * f64::from(*value))
         .sum::<f64>()
         .sqrt();
     if vector.is_empty() || !length.is_finite() || length == 0.0 {
-        return Err(String::from("the embedding API answered an empty vector"));
+        return Err(String::from("the embedding is an empty vector"));
     }
     for value in &mut vector {
         *value = (f64::from(*value) / length) as f32;

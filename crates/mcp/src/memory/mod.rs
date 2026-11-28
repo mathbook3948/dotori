@@ -1,10 +1,11 @@
-//! The memory search tool: keyword search over the raw record, joined with search by meaning when
-//! an embedding API is set, from an index that can always be made again from the record.
+//! The memory search tool: keyword search over the raw record, joined with search by meaning, from
+//! an index that can always be made again from the record.
 
 mod analyzer;
 mod dictionary;
 mod embedding;
 mod eval;
+mod local;
 mod vectors;
 
 use std::path::Path;
@@ -28,12 +29,15 @@ use crate::Tool;
 use crate::ToolFuture;
 use analyzer::Analyzer;
 use embedding::Embedder;
+pub use embedding::Embedding;
 pub use embedding::EmbeddingConfig;
+use embedding::Use;
 pub use eval::Case;
 pub use eval::HITS;
 pub use eval::Method;
 pub use eval::Report;
 pub use eval::Score;
+pub use local::LocalModel;
 use vectors::Vectors;
 
 const BATCH: i64 = 1000;
@@ -92,7 +96,8 @@ pub struct MemoryConfig {
     pub record: PathBuf,
     pub index: PathBuf,
     pub dictionaries: PathBuf,
-    pub embedding: Option<EmbeddingConfig>,
+    /// What makes vectors. Without it, memory search matches words only.
+    pub embedding: Option<Embedding>,
     /// A file that says whether this PC makes vectors, when the owner's PCs share that job.
     /// Without it, this PC makes them.
     pub jobs: Option<PathBuf>,
@@ -124,7 +129,8 @@ impl std::fmt::Debug for Memory {
 
 impl Memory {
     /// Starts fetching the Korean dictionary in the background. Until it arrives, words are
-    /// split by a simpler rule. With an embedding API, records get vectors in the background too.
+    /// split by a simpler rule. With an embedding, records get vectors in the background too, and
+    /// a model on this PC is downloaded first.
     pub fn new(config: MemoryConfig) -> Arc<Self> {
         let embedder =
             config
@@ -150,7 +156,12 @@ impl Memory {
                     eprintln!("dotori: memory search uses a simpler word split: {error}");
                 }
             });
-            if memory.embedder.is_some() {
+            if let Some(embedder) = memory.embedder.clone() {
+                tokio::spawn(async move {
+                    if let Err(error) = embedder.prepare().await {
+                        eprintln!("dotori: memory search waits for its embedding model: {error}");
+                    }
+                });
                 tokio::spawn(fill(Arc::downgrade(&memory)));
             }
         }
@@ -199,6 +210,7 @@ impl Memory {
         let Some(last) = last else {
             return Ok(false);
         };
+        embedder.prepare().await?;
         let made = made(&embedder, texts).await?;
         let memory = Arc::clone(self);
         tokio::task::spawn_blocking(move || {
@@ -392,12 +404,15 @@ async fn made(
         return Ok(Vec::new());
     }
     let wording: Vec<String> = texts.iter().map(|(_, text)| text.clone()).collect();
-    match embedder.embed(&wording).await {
+    match embedder.embed(&wording, Use::Record).await {
         Ok(vectors) => Ok(texts.iter().map(|(seq, _)| *seq).zip(vectors).collect()),
         Err(refused) if refused.by_text => {
             let mut made = Vec::new();
             for (seq, text) in texts {
-                match embedder.embed(std::slice::from_ref(&text)).await {
+                match embedder
+                    .embed(std::slice::from_ref(&text), Use::Record)
+                    .await
+                {
                     Ok(mut vectors) => made.extend(vectors.pop().map(|vector| (seq, vector))),
                     Err(refused) if refused.by_text => {
                         eprintln!("dotori: record {seq} gets no vector: {}", refused.detail);
@@ -879,7 +894,10 @@ impl Tool for MemorySearch {
                 Some(embedder) if memory.meaning_ready.load(Ordering::SeqCst) => Some(
                     match tokio::time::timeout(
                         QUERY_WAIT,
-                        embedder.embed(&[query.chars().take(vectors::LONGEST).collect()]),
+                        embedder.embed(
+                            &[query.chars().take(vectors::LONGEST).collect()],
+                            Use::Query,
+                        ),
                     )
                     .await
                     {
@@ -887,7 +905,7 @@ impl Tool for MemorySearch {
                             vectors.pop().ok_or_else(|| String::from("no vector"))
                         }
                         Ok(Err(refused)) => Err(refused.detail),
-                        Err(_) => Err(String::from("the embedding API took too long")),
+                        Err(_) => Err(String::from("the embedding took too long")),
                     },
                 ),
                 _ => None,

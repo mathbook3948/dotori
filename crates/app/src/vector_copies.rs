@@ -1,4 +1,4 @@
-//! Copies search vectors from the PC that makes them to the others, so the embedding API is
+//! Copies search vectors from the PC that makes them to the others, so the embedding is
 //! paid once. Each PC asks the maker for the vectors made since the last ones it got, by the
 //! order the maker made them in, and keeps them until their records reach its own index.
 

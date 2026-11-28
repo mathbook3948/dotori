@@ -179,7 +179,7 @@ pub(crate) fn store(
         .any(|(_, vector)| i64::try_from(vector.len() * 4).ok() != width)
     {
         return Err(String::from(
-            "the embedding API answered vectors of another length than before",
+            "the embedding made vectors of another length than before",
         ));
     }
     for (seq, vector) in made {
