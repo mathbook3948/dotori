@@ -58,6 +58,8 @@ pub(crate) struct Chat {
     pub(crate) already_settled: &'static str,
     /// The line over what a call the owner allowed gave, when its card is not shown.
     pub(crate) result: &'static str,
+    /// The line over why a call the owner allowed failed.
+    pub(crate) error: &'static str,
     pub(crate) stdout: &'static str,
     pub(crate) stderr: &'static str,
     pub(crate) only_the_end: &'static str,
@@ -163,6 +165,7 @@ pub(crate) const KOREAN: Chat = Chat {
     declined_not_run: "거절해서 실행하지 않았어요",
     already_settled: "이미 끝난 요청이라 실행하지 않았어요",
     result: "결과",
+    error: "오류",
     stdout: "결과",
     stderr: "오류",
     only_the_end: "(끝부분만 보여요)",
@@ -266,6 +269,7 @@ pub(crate) const ENGLISH: Chat = Chat {
     declined_not_run: "Declined, so I didn't run it",
     already_settled: "Already settled, so I didn't run it",
     result: "Result",
+    error: "Error",
     stdout: "Result",
     stderr: "Errors",
     only_the_end: "(showing only the end)",

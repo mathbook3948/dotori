@@ -41,22 +41,22 @@ pub fn console_text(bytes: &[u8]) -> Option<String> {
 #[cfg(target_os = "windows")]
 mod windows_text {
     use windows::Win32::Globalization::CP_OEMCP;
-    use windows::Win32::Globalization::MULTI_BYTE_TO_WIDE_CHAR_FLAGS;
+    use windows::Win32::Globalization::MB_ERR_INVALID_CHARS;
     use windows::Win32::Globalization::MultiByteToWideChar;
 
     pub(super) fn read(bytes: &[u8]) -> Option<String> {
         if bytes.is_empty() || i32::try_from(bytes.len()).is_err() {
             return None;
         }
-        let none = MULTI_BYTE_TO_WIDE_CHAR_FLAGS(0);
         // ast-grep-ignore
         // SAFETY: `bytes` fits an i32, checked above, and with no buffer the call only counts.
-        let wide = unsafe { MultiByteToWideChar(CP_OEMCP, none, bytes, None) };
+        let wide = unsafe { MultiByteToWideChar(CP_OEMCP, MB_ERR_INVALID_CHARS, bytes, None) };
         let wide = usize::try_from(wide).ok().filter(|wide| *wide > 0)?;
         let mut text = vec![0u16; wide];
         // ast-grep-ignore
         // SAFETY: `text` holds as many units as the call counted for the same `bytes`.
-        let written = unsafe { MultiByteToWideChar(CP_OEMCP, none, bytes, Some(&mut text)) };
+        let written =
+            unsafe { MultiByteToWideChar(CP_OEMCP, MB_ERR_INVALID_CHARS, bytes, Some(&mut text)) };
         let written = usize::try_from(written)
             .ok()
             .filter(|written| *written > 0)?;

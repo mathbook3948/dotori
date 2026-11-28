@@ -641,11 +641,26 @@ pub fn outputs(stdout: &str, stderr: &str) -> String {
     )
 }
 
-fn console_text(bytes: &[u8]) -> String {
+fn console_text(bytes: &[u8], cut: bool) -> String {
+    let bytes = if cut {
+        from_a_whole_character(bytes)
+    } else {
+        bytes
+    };
     match std::str::from_utf8(bytes) {
         Ok(text) => text.to_owned(),
+        Err(error) if error.error_len().is_none() => String::from_utf8_lossy(bytes).into_owned(),
         Err(_) => local_text(bytes).unwrap_or_else(|| String::from_utf8_lossy(bytes).into_owned()),
     }
+}
+
+fn from_a_whole_character(bytes: &[u8]) -> &[u8] {
+    let inside = bytes
+        .iter()
+        .take(3)
+        .take_while(|byte| (0x80..0xC0).contains(*byte))
+        .count();
+    &bytes[inside..]
 }
 
 #[cfg(windows)]
@@ -707,7 +722,7 @@ async fn drained(reading: Option<(Kept, JoinHandle<()>)>) -> String {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .clone();
-    let text = console_text(&bytes);
+    let text = console_text(&bytes, cut);
     let mut shown = tail(&text);
     if cut && !shown.starts_with("(only the last part)") {
         shown = format!("(only the last part)\n{shown}");

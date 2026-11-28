@@ -523,6 +523,53 @@ fn a_reply_with_a_result_to_act_on_calls_the_model_even_if_another_call_asked() 
 }
 
 #[test]
+fn a_result_that_came_while_the_model_thought_is_answered_even_if_the_reply_only_asked() {
+    let mut h = Harness::new();
+    let sub_session = h.delegated();
+    h.owner_says("what time is it");
+    h.sub_session_finishes(sub_session);
+
+    h.model_answers(vec![use_tool("t1")]);
+    h.tool_asks_the_owner();
+
+    let conversation = h.the_model_call();
+    assert!(conversation.iter().any(|entry| matches!(
+        entry,
+        Entry::SubSessionReturned { outcome: SubSessionOutcome::Finished(text), .. } if text == "booked"
+    )));
+}
+
+#[test]
+fn a_stale_tool_result_does_not_make_an_asking_reply_call_the_model() {
+    let mut h = Harness::new();
+    h.owner_says("what time is it");
+    h.model_answers(vec![use_tool("t1")]);
+    let stale = h.state.ids.next_tool_run();
+
+    h.feed(Event::ToolDone {
+        run: stale,
+        result: Ok(String::from("from an earlier turn")),
+        asked_owner: false,
+    });
+    h.tool_asks_the_owner();
+
+    assert!(h.model_calls().is_empty());
+    assert!(matches!(h.state.phase, Phase::Idle));
+}
+
+#[test]
+fn a_long_turn_that_ends_by_asking_the_owner_starts_a_summary() {
+    let mut h = Harness::new();
+    h.long_talk(2);
+    h.owner_says(&long_text(2));
+    h.model_answers(vec![use_tool("t1")]);
+
+    h.tool_asks_the_owner();
+
+    h.the_summary();
+}
+
+#[test]
 fn result_of_a_cancelled_call_is_ignored() {
     let mut h = Harness::new();
     h.owner_says("first");

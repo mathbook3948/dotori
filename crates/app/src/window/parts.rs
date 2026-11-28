@@ -460,11 +460,7 @@ pub(crate) fn prose_in(text: &str, pen: Option<&Pen>) -> Div {
             if paragraph.trim().is_empty() {
                 return div().h(px(10.));
             }
-            let words: Vec<&str> = paragraph
-                .trim_end()
-                .split(' ')
-                .filter(|word| !word.is_empty())
-                .collect();
+            let words = words_keeping_spaces(&paragraph);
             let last = words.len().saturating_sub(1);
             div()
                 .flex()
@@ -473,11 +469,25 @@ pub(crate) fn prose_in(text: &str, pen: Option<&Pen>) -> Div {
                 .children(words.into_iter().enumerate().map(|(n, word)| match pen {
                     Some(pen) => {
                         let joint = if n == 0 { Joint::Newline } else { Joint::Space };
-                        pen.word(word.to_owned(), joint, n < last)
+                        pen.word(word, joint, n < last)
                     }
-                    None => div().min_w_0().child(SharedString::from(word.to_owned())),
+                    None => div().min_w_0().child(SharedString::from(word)),
                 }))
         }))
+}
+
+fn words_keeping_spaces(paragraph: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut spaces = 0;
+    for piece in paragraph.trim_end().split(' ') {
+        if piece.is_empty() {
+            spaces += 1;
+        } else {
+            words.push(format!("{}{piece}", " ".repeat(spaces)));
+            spaces = 0;
+        }
+    }
+    words
 }
 
 /// The gap drawn for a space between words.

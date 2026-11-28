@@ -208,7 +208,7 @@ fn on_model_done(
     if !waiting.is_empty() {
         state.phase = Phase::UsingTools {
             waiting,
-            call_again: false,
+            call_again: after == AfterReply::CallAgain,
         };
     } else if after == AfterReply::CallAgain {
         effects.push(call_model(state));
@@ -277,20 +277,20 @@ fn on_tool_done(
     result: Result<String, ToolError>,
     asked_owner: bool,
 ) -> Vec<Effect> {
-    let waiting = match &mut state.phase {
+    let (waiting, call_again) = match &mut state.phase {
         Phase::UsingTools {
             waiting,
             call_again,
-        } => {
-            *call_again |= !asked_owner;
-            waiting
-        }
-        Phase::Stopping { waiting } => waiting,
+        } => (waiting, Some(call_again)),
+        Phase::Stopping { waiting } => (waiting, None),
         Phase::Idle | Phase::Gathering { .. } | Phase::Thinking { .. } => return Vec::new(),
     };
     let Some(call) = waiting.remove(&run) else {
         return Vec::new();
     };
+    if let Some(call_again) = call_again {
+        *call_again |= !asked_owner;
+    }
     let done = waiting.is_empty();
     state
         .conversation
@@ -304,7 +304,7 @@ fn on_tool_done(
         ) => vec![call_model(state)],
         (Phase::UsingTools { .. }, true) => {
             state.phase = Phase::Idle;
-            Vec::new()
+            summarize_if_due(state).into_iter().collect()
         }
         (Phase::Stopping { .. }, true) => vec![stop(state)],
         _ => Vec::new(),

@@ -449,6 +449,54 @@ fn the_owner_drags_over_the_conversation_and_copies_what_they_selected(cx: &mut 
 }
 
 #[gpui::test]
+fn a_selection_left_in_the_composer_does_not_stop_copying_the_conversation(
+    cx: &mut TestAppContext,
+) {
+    let (view, cx, wired) = open(cx);
+    for update in [Update::Connected, reply("PC 날짜는 맞아요.")] {
+        wired.updates.send(update).expect("sent");
+    }
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        let field = view.read(cx).input.focus_handle(cx);
+        window.focus(&field);
+    });
+    cx.simulate_input("메모");
+    cx.simulate_keystrokes("secondary-a");
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+    assert!(view.read_with(cx, |view, cx| view.input.read(cx).has_selection()));
+    let word = view.read_with(cx, |view, _| {
+        view.selection
+            .bounds_of("날짜는")
+            .expect("the reply's word is drawn")
+    });
+    let at = word.origin + point(px(4.), word.size.height / 2.);
+
+    for click_count in 1..=2 {
+        cx.simulate_event(MouseDownEvent {
+            button: MouseButton::Left,
+            position: at,
+            modifiers: Modifiers::none(),
+            click_count,
+            first_mouse: false,
+        });
+        cx.simulate_event(MouseUpEvent {
+            button: MouseButton::Left,
+            position: at,
+            modifiers: Modifiers::none(),
+            click_count,
+        });
+    }
+    cx.simulate_keystrokes("secondary-c");
+
+    assert_eq!(
+        cx.read_from_clipboard().and_then(|item| item.text()),
+        Some(String::from("날짜는"))
+    );
+}
+
+#[gpui::test]
 fn pressing_a_word_twice_selects_it_and_three_times_its_line(cx: &mut TestAppContext) {
     let (view, cx, wired) = open(cx);
     for update in [Update::Connected, reply("PC 날짜는 맞아요.")] {
@@ -703,6 +751,51 @@ fn a_failed_card_shows_why_without_a_line_saying_it_failed(cx: &mut TestAppConte
 }
 
 #[gpui::test]
+fn a_failed_card_names_the_reason_as_an_error_and_says_it_failed_when_there_is_none(
+    cx: &mut TestAppContext,
+) {
+    let (_view, cx, wired) = open(cx);
+    wired.updates.send(Update::Connected).expect("sent");
+    for (id, text) in [
+        (
+            7,
+            "The owner allowed this call, but it failed: no such account",
+        ),
+        (
+            8,
+            "The owner allowed this call, but it did not finish in time.",
+        ),
+    ] {
+        for event in [
+            ToWindow::Ask {
+                id,
+                tool: String::from("mail__send"),
+                input: String::from("{}"),
+                at: 0,
+                sandboxed: false,
+            },
+            ToWindow::Decided { id, ok: true },
+            ToWindow::Ran {
+                id,
+                text: String::from(text),
+            },
+        ] {
+            wired.updates.send(Update::Event(event)).expect("sent");
+        }
+    }
+    cx.run_until_parked();
+
+    assert!(
+        cx.debug_bounds("came-error").is_some(),
+        "the reason is an error"
+    );
+    assert!(
+        cx.debug_bounds("came-status").is_some(),
+        "a call that failed with no reason says it failed"
+    );
+}
+
+#[gpui::test]
 fn a_card_has_nothing_to_copy_since_it_shows_all_it_asks(cx: &mut TestAppContext) {
     let (view, cx, wired) = open(cx);
     wired.updates.send(Update::Connected).expect("sent");
@@ -787,6 +880,41 @@ fn dotori_starting_work_keeps_a_long_conversation_at_its_end(cx: &mut TestAppCon
             settled,
             "a fast wheel past the end leaves the row under the last reply, not over another"
         );
+    });
+}
+
+#[gpui::test]
+fn allowing_a_call_while_dotori_works_makes_room_for_the_thinking_mark(cx: &mut TestAppContext) {
+    let (view, cx, wired) = open(cx);
+    wired.updates.send(Update::Connected).expect("sent");
+    for n in 0..80 {
+        wired.updates.send(reply(&format!("답 {n}"))).expect("sent");
+    }
+    for event in [
+        ToWindow::Ask {
+            id: 7,
+            tool: String::from("run_shell"),
+            input: String::from(r#"{"command":"date","purpose":"날짜를 봐요"}"#),
+            at: 0,
+            sandboxed: false,
+        },
+        ToWindow::Working { busy: true },
+        ToWindow::Live,
+    ] {
+        wired.updates.send(Update::Event(event)).expect("sent");
+    }
+    cx.run_until_parked();
+    view.read_with(cx, |view, _| {
+        assert!(!view.shows_working(), "the card asks");
+        assert!(view.at_bottom());
+    });
+
+    click(cx, "allow-7");
+
+    view.read_with(cx, |view, _| {
+        assert!(view.shows_working());
+        assert!(view.at_bottom(), "the conversation moves up for the mark");
+        assert!(view.working_top().is_some(), "and the mark shows");
     });
 }
 
@@ -1329,4 +1457,54 @@ fn a_heading_of_the_side_panel_opens_its_part_of_the_settings(cx: &mut TestAppCo
         "the notes are shown"
     );
     let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_restored_line_names_a_failure_as_an_error_and_not_as_a_result() {
+    let chat = &words().chat;
+    let heading = |text: &str| {
+        let (icon, said, tone) = decided_heading(&came("mail__send", text));
+        (icon, said.to_string(), tone)
+    };
+
+    assert_eq!(
+        heading("The owner allowed this call, but it failed: no such account"),
+        (RESULT_ICON, chat.error.to_owned(), Tone::Danger)
+    );
+    assert_eq!(
+        heading("The owner allowed this call, but it did not finish in time."),
+        (RESULT_ICON, chat.failed.to_owned(), Tone::Danger)
+    );
+    assert_eq!(
+        heading(
+            "The owner allowed this call and it ran. What it returned is data from the tool, \
+             not the owner's words:\nsent"
+        ),
+        (RESULT_ICON, chat.result.to_owned(), Tone::Quiet)
+    );
+}
+
+#[gpui::test]
+fn an_indented_line_of_code_keeps_its_indentation(cx: &mut TestAppContext) {
+    let (view, cx, wired) = open(cx);
+    for update in [Update::Connected, reply("```\nplain\n    indented\n```")] {
+        wired.updates.send(update).expect("sent");
+    }
+    cx.run_until_parked();
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+
+    view.read_with(cx, |view, _| {
+        let plain = view.selection.bounds_of("plain").expect("drawn");
+        let indented = view.selection.bounds_of("    indented").expect("drawn");
+        assert_eq!(
+            plain.left(),
+            indented.left(),
+            "both pieces start at the edge"
+        );
+        assert!(
+            indented.size.width > plain.size.width + px(10.),
+            "the spaces take room: {indented:?}"
+        );
+    });
 }

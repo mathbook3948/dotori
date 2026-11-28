@@ -160,6 +160,7 @@ pub(crate) struct ChatView {
     entered: HashMap<usize, Instant>,
     follow: Option<(Instant, f32)>,
     busy: bool,
+    working_shown: bool,
     rows: Entity<Rows>,
     working: Entity<WorkingView>,
     browser: Option<WindowHandle<BrowserWindow>>,
@@ -472,6 +473,7 @@ impl ChatView {
             entered: HashMap::new(),
             follow: None,
             busy: false,
+            working_shown: false,
             rows,
             working,
             browser: None,
@@ -535,13 +537,7 @@ impl ChatView {
                 self.live = true;
                 self.scroll.scroll_to_bottom();
             }
-            ToWindow::Working { busy } => {
-                let started = busy && !self.busy;
-                if started && self.follow.is_none() && self.at_bottom() {
-                    self.scroll.scroll_to_bottom();
-                }
-                self.busy = busy;
-            }
+            ToWindow::Working { busy } => self.busy = busy,
             event => self.show(event),
         }
     }
@@ -626,8 +622,8 @@ impl ChatView {
         })
     }
 
-    fn copy_selection(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
-        if self.input.read(cx).has_selection() {
+    fn copy_selection(&mut self, _: &Copy, window: &mut Window, cx: &mut Context<Self>) {
+        if self.input.read(cx).has_selection() && self.input.focus_handle(cx).is_focused(window) {
             return;
         }
         if let Some(text) = self.selection.copied() {
@@ -969,14 +965,11 @@ impl ChatView {
     ) -> Div {
         let came = came(tool, text);
         let copied = came.copied();
-        let (icon, said, ink) = match &came.status {
-            Some((said, Tone::Quiet)) => (DECLINED_ICON, said.clone(), theme.muted),
-            Some((said, Tone::Warn)) => (CLOCK_ICON, said.clone(), theme.warn),
-            _ => (
-                RESULT_ICON,
-                SharedString::new_static(words().chat.result),
-                theme.muted,
-            ),
+        let (icon, said, tone) = decided_heading(&came);
+        let ink = match tone {
+            Tone::Warn => theme.warn,
+            Tone::Danger => theme.danger,
+            Tone::Ok | Tone::Quiet => theme.muted,
         };
         let gave = came_outputs(theme, came, pen);
         div()
@@ -2245,7 +2238,15 @@ impl Render for ChatView {
                 .when(!self.in_settings, |root| root.child(self.splash(&theme)))
                 .into_any_element();
         }
-        let working_at = if self.shows_working() {
+        let working = self.shows_working();
+        if working && !self.working_shown {
+            if self.follow.is_none() && self.at_bottom() {
+                self.scroll.scroll_to_bottom();
+            }
+            window.request_animation_frame();
+        }
+        self.working_shown = working;
+        let working_at = if working {
             if self.scroll.bounds_for_item(0).is_none() {
                 window.request_animation_frame();
             }
@@ -2566,10 +2567,38 @@ fn came(tool: &str, text: &str) -> Came {
     }
 }
 
+fn decided_heading(came: &Came) -> (&'static str, SharedString, Tone) {
+    let nothing = came.body.trim().is_empty() && came.streams.is_empty();
+    match &came.status {
+        Some((said, Tone::Quiet)) => (DECLINED_ICON, said.clone(), Tone::Quiet),
+        Some((said, Tone::Warn)) => (CLOCK_ICON, said.clone(), Tone::Warn),
+        Some((said, Tone::Danger)) if nothing => (RESULT_ICON, said.clone(), Tone::Danger),
+        Some((_, Tone::Danger)) if came.streams.is_empty() => (
+            RESULT_ICON,
+            SharedString::new_static(words().chat.error),
+            Tone::Danger,
+        ),
+        _ => (
+            RESULT_ICON,
+            SharedString::new_static(words().chat.result),
+            Tone::Quiet,
+        ),
+    }
+}
+
 fn came_view(theme: &Theme, came: Came, pen: &Pen) -> Vec<AnyElement> {
+    let failed = came
+        .status
+        .as_ref()
+        .is_some_and(|(_, tone)| *tone == Tone::Danger);
+    let nothing = came.body.trim().is_empty() && came.streams.is_empty();
     let status = came
         .status
-        .filter(|(_, tone)| matches!(tone, Tone::Quiet | Tone::Warn))
+        .filter(|(_, tone)| match tone {
+            Tone::Quiet | Tone::Warn => true,
+            Tone::Danger => nothing,
+            Tone::Ok => false,
+        })
         .map(|(words, tone)| {
             div()
                 .debug_selector(|| String::from("came-status"))
@@ -2584,8 +2613,23 @@ fn came_view(theme: &Theme, came: Came, pen: &Pen) -> Vec<AnyElement> {
                 .child(words)
                 .into_any_element()
         });
-    let body =
-        (!came.body.trim().is_empty()).then(|| prose_in(&came.body, Some(pen)).into_any_element());
+    let body = (!came.body.trim().is_empty()).then(|| {
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .when(failed, |body| {
+                body.child(
+                    div()
+                        .debug_selector(|| String::from("came-error"))
+                        .text_xs()
+                        .text_color(theme.muted)
+                        .child(words().chat.error),
+                )
+            })
+            .child(prose_in(&came.body, Some(pen)))
+            .into_any_element()
+    });
     let streams = came.streams.into_iter().map(|(label, output)| {
         div()
             .flex()
