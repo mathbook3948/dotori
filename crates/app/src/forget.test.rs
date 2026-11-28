@@ -164,6 +164,7 @@ async fn forgetting_removes_the_record_and_its_place_in_search() {
         memory,
         copies: Arc::default(),
         notes: Notes::new(folder.join("notes.sqlite3")),
+        agent: Arc::default(),
     };
 
     let said = forget
@@ -243,6 +244,7 @@ async fn only_the_carriers_the_owner_saw_go_with_the_record() {
         },
         copies: Arc::default(),
         notes: Notes::new(folder.join("notes.sqlite3")),
+        agent: Arc::default(),
     };
 
     let said = forget.call(shown).await.expect("forgot");
@@ -294,6 +296,7 @@ async fn a_note_is_shown_on_the_card_and_erased_with_the_owners_ok() {
         },
         copies: Arc::default(),
         notes: Arc::clone(&notes),
+        agent: Arc::default(),
     };
 
     let said = forget.call(shown).await.expect("erased");

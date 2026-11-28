@@ -1242,3 +1242,45 @@ fn a_running_tool_knows_where_the_owner_asked_for_it() {
         agent.shutdown().await;
     });
 }
+
+#[test]
+fn an_erased_message_is_not_sent_to_the_model_again() {
+    block_on(async {
+        let store = Arc::new(MemoryStore::default());
+        let (app, mut probe) = FakeChannel::new("app");
+        let (asked_tx, mut asked) = mpsc::unbounded_channel();
+        let mut ports = ports(app, Vec::new());
+        ports.model = Arc::new(model(move |request| {
+            let thread = last_heard(&request);
+            let _ = asked_tx.send(request.conversation);
+            say(thread, "ok")
+        }));
+        ports.records = Arc::clone(&store) as _;
+        let agent = Agent::spawn(config(Duration::from_secs(1)), ports)
+            .await
+            .expect("valid");
+        owner_says(&probe, "m1", "my card number is 1234");
+        next(&mut asked).await;
+        next(&mut probe.delivered).await;
+        let mut erased = stored(&store)
+            .into_iter()
+            .find(|entry| matches!(entry, Entry::Heard { .. }))
+            .expect("the message was recorded");
+        if let Entry::Heard { message, .. } = &mut erased {
+            message.at = None;
+        }
+
+        agent.forgets().forget(vec![erased]).await;
+        owner_says(&probe, "m2", "what is my name?");
+
+        let conversation = next(&mut asked).await;
+        agent.shutdown().await;
+        assert_eq!(heard_texts(&conversation), vec!["what is my name?"]);
+        assert!(
+            conversation
+                .iter()
+                .any(|entry| matches!(entry, Entry::Acted { .. })),
+            "what was not erased stays"
+        );
+    });
+}

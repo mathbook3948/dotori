@@ -470,7 +470,8 @@ async fn a_forgotten_record_leaves_only_its_number_and_never_comes_back() {
     let forgotten = here
         .forget(vec![secret.clone()], Vec::new())
         .await
-        .expect("forgot");
+        .expect("forgot")
+        .list;
     assert_eq!(
         forgotten,
         [Forgotten {
@@ -507,9 +508,34 @@ async fn a_forgotten_record_leaves_only_its_number_and_never_comes_back() {
     assert_eq!(
         here.forget(vec![secret.clone()], Vec::new())
             .await
-            .map(|f| f.len())
+            .map(|f| f.list.len())
             .ok(),
         None
+    );
+}
+
+#[tokio::test]
+async fn forgetting_returns_the_entries_it_removed() {
+    let store = SqliteStore::new(scratch(), "here");
+    store
+        .append(vec![
+            failed_at(JAN_1_2026, "keep"),
+            failed_at(JAN_1_2026 + 1, "card number 1234"),
+        ])
+        .await
+        .expect("appended");
+    let sent = store.after("here", "", 100, 1 << 20).await.expect("after");
+
+    let forgot = store
+        .forget(vec![sent[1].id.clone()], Vec::new())
+        .await
+        .expect("forgot");
+
+    assert_eq!(
+        forgot.entries,
+        [Entry::ModelFailed {
+            detail: String::from("card number 1234")
+        }]
     );
 }
 
@@ -528,7 +554,8 @@ async fn what_another_pc_forgot_is_taken_whether_or_not_the_record_came_yet() {
     let forgotten = there
         .forget(vec![sent[0].id.clone()], Vec::new())
         .await
-        .expect("forgot");
+        .expect("forgot")
+        .list;
 
     assert_eq!(
         early
@@ -570,7 +597,8 @@ async fn a_forget_for_a_record_not_here_yet_never_moves_how_far_this_pc_holds() 
     let forgotten = there
         .forget(vec![sent[1].id.clone()], Vec::new())
         .await
-        .expect("forgot");
+        .expect("forgot")
+        .list;
 
     late.take_forgotten(forgotten).await.expect("taken");
     assert!(
@@ -651,7 +679,7 @@ async fn what_carries_a_forgotten_number_goes_with_it_and_a_wrong_maker_is_refus
         .await
         .expect("forgot");
 
-    assert_eq!(forgotten.len(), 2);
+    assert_eq!(forgotten.list.len(), 2);
     assert_eq!(
         details(&store.load().await.expect("loaded")),
         [format!("I said {id} once")]

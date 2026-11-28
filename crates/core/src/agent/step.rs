@@ -60,6 +60,10 @@ pub(crate) fn step(state: &mut AgentState, event: Event) -> Vec<Effect> {
             record,
             ack,
         } => on_returned(state, spec, outcome, record, ack),
+        Event::Forgotten { entries } => {
+            on_forgotten(state, &entries);
+            Vec::new()
+        }
         Event::Shutdown { handing_off } => {
             state.handing_off |= handing_off;
             on_shutdown(state)
@@ -113,6 +117,31 @@ fn on_received(
     });
     effects.extend(absorb(state, Arrival::Interrupts));
     effects
+}
+
+fn on_forgotten(state: &mut AgentState, entries: &[Entry]) {
+    for forgotten in entries {
+        let Some(index) = state
+            .conversation
+            .iter()
+            .position(|entry| entry.is_same(forgotten))
+        else {
+            continue;
+        };
+        state.conversation.remove(index);
+        for entry in &mut state.conversation[index..] {
+            if let Entry::Acted { answered, .. } = entry
+                && *answered > index
+            {
+                *answered -= 1;
+            }
+        }
+        if let Phase::Thinking { answered, .. } = &mut state.phase
+            && *answered > index
+        {
+            *answered -= 1;
+        }
+    }
 }
 
 fn on_model_done(
