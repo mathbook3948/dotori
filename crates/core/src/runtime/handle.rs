@@ -65,6 +65,7 @@ impl Agent {
             tx.clone(),
             ports,
             config.tool_timeout,
+            config.gather_for,
             Arc::clone(&acks),
         );
         shell.record(&state.conversation[loaded..]);

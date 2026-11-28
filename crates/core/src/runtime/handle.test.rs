@@ -66,6 +66,7 @@ fn config(tool_timeout: Duration) -> AgentConfig {
         queue_capacity: NonZeroUsize::new(8).expect("non-zero"),
         seen_capacity: NonZeroUsize::new(8).expect("non-zero"),
         tool_timeout,
+        gather_for: Duration::ZERO,
     }
 }
 
@@ -417,6 +418,34 @@ fn interrupted_model_call_is_dropped() {
             .expect("cancelled in time")
             .expect("first call was dropped");
         agent.shutdown().await;
+    });
+}
+
+#[test]
+fn owner_messages_sent_back_to_back_make_one_model_call() {
+    block_on(async {
+        let (app, probe) = FakeChannel::new("app");
+        let (requests_tx, mut requests) = mpsc::unbounded_channel();
+        let mut ports = ports(app, Vec::new());
+        ports.model = Arc::new(model(move |request| {
+            let _ = requests_tx.send(heard_texts(&request.conversation));
+            silence()
+        }));
+        let config = AgentConfig {
+            gather_for: Duration::from_millis(200),
+            ..config(Duration::from_secs(1))
+        };
+        let agent = Agent::spawn(config, ports).await.expect("valid");
+
+        owner_says(&probe, "m1", "find my flight");
+        owner_says(&probe, "m2", "the one on friday");
+
+        assert_eq!(
+            next(&mut requests).await,
+            vec!["find my flight", "the one on friday"]
+        );
+        agent.shutdown().await;
+        assert!(requests.try_recv().is_err(), "no second call");
     });
 }
 

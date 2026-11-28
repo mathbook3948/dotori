@@ -1,4 +1,5 @@
 use crate::agent::ids::CallId;
+use crate::agent::ids::GatherId;
 use crate::agent::ids::SubSessionId;
 use crate::agent::ids::SummaryId;
 use crate::agent::ids::ToolRunId;
@@ -26,6 +27,8 @@ pub(crate) enum Effect {
         conversation: Vec<Entry>,
     },
     CancelModel(CallId),
+    /// The shell waits, then sends `Event::Gathered` with the same id.
+    Gather(GatherId),
     /// Never cancelled. A result nobody waits for any more is ignored.
     Summarize {
         summary: SummaryId,

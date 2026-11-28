@@ -56,6 +56,7 @@ pub(crate) struct Shell {
     sub_sessions: Arc<dyn SubSessionRunner>,
     acks: Acks,
     tool_timeout: Duration,
+    gather_for: Duration,
     tasks: JoinSet<()>,
     senders: JoinSet<()>,
     model_calls: HashMap<CallId, AbortHandle>,
@@ -79,6 +80,7 @@ impl Shell {
         tx: mpsc::Sender<Event>,
         ports: Ports,
         tool_timeout: Duration,
+        gather_for: Duration,
         acks: Acks,
     ) -> Self {
         let mut tasks = JoinSet::new();
@@ -106,6 +108,7 @@ impl Shell {
             sub_sessions: ports.sub_sessions,
             acks,
             tool_timeout,
+            gather_for,
             tasks,
             senders,
             model_calls: HashMap::new(),
@@ -212,6 +215,14 @@ impl Shell {
                 if let Some(handle) = self.model_calls.remove(&call) {
                     handle.abort();
                 }
+            }
+            Effect::Gather(gather) => {
+                let tx = self.tx.clone();
+                let wait = self.gather_for;
+                self.tasks.spawn(async move {
+                    time::sleep(wait).await;
+                    let _ = tx.send(Event::Gathered(gather)).await;
+                });
             }
             Effect::RunTool { run, call, origin } => {
                 let toolbox = Arc::clone(&self.toolbox);
