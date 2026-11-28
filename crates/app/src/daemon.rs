@@ -168,6 +168,11 @@ pub(crate) async fn serve(
             Keyed::Ready(settings, model) => (*settings, model),
             Keyed::Stopped(stopped) => return stopped,
         };
+    match language::settle(&home.settings()) {
+        Ok(Some(_)) => live::take_settings(&home),
+        Ok(None) => {}
+        Err(error) => eprintln!("dotori: the language was not saved: {error}"),
+    }
     let secrets = vault::secret_names(&settings, &vault);
     let basic = basic(&home, &secrets);
     let shared = match tools::SharedTools::start().await {

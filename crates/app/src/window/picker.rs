@@ -36,7 +36,7 @@ use gpui::svg;
 use tokio::sync::oneshot;
 
 use super::SettingsView;
-use crate::language::Choice;
+use crate::language::Language;
 use crate::window::input::Down;
 use crate::window::input::Submit;
 use crate::window::input::TextInput;
@@ -364,25 +364,15 @@ impl SettingsView {
     }
 
     fn language_picks(&self) -> Picker {
-        let chosen = crate::language::chosen();
-        let picks: Vec<Pick> = Choice::ALL
+        let picks: Vec<Pick> = Language::ALL
             .iter()
-            .map(|choice| Pick {
-                value: match choice {
-                    Choice::System => String::new(),
-                    Choice::Only(_) => choice.code().to_owned(),
-                },
-                label: SharedString::new_static(match choice {
-                    Choice::System => words().common.follow_system,
-                    Choice::Only(language) => language.name(),
-                }),
-                default: *choice == Choice::System,
+            .map(|language| Pick {
+                value: language.code().to_owned(),
+                label: SharedString::new_static(language.name()),
+                default: false,
             })
             .collect();
-        let chosen = match chosen {
-            Choice::System => String::new(),
-            Choice::Only(_) => chosen.code().to_owned(),
-        };
+        let chosen = crate::language::chosen().code().to_owned();
         let shown = picks
             .iter()
             .find(|pick| pick.value == chosen)
@@ -922,14 +912,12 @@ impl SettingsView {
         self.open_picker = None;
         match id {
             LANGUAGE_PICKER => {
-                let choice = Choice::ALL
+                if let Some(language) = Language::ALL
                     .into_iter()
-                    .find(|choice| match choice {
-                        Choice::System => value.is_empty(),
-                        Choice::Only(_) => choice.code() == value,
-                    })
-                    .unwrap_or(Choice::System);
-                self.set_language(choice, cx);
+                    .find(|language| language.code() == value)
+                {
+                    self.set_language(language, cx);
+                }
             }
             ZONE_PICKER => self.set_zone((!value.is_empty()).then_some(value), cx),
             _ => {

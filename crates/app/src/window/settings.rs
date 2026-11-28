@@ -40,7 +40,7 @@ use crate::first_run::Step;
 use crate::home::Home;
 use crate::icons;
 use crate::language;
-use crate::language::Choice;
+use crate::language::Language;
 use crate::routines::Routines;
 use crate::settings::ANTHROPIC_KEY;
 use crate::settings::ASSISTANT_NAME;
@@ -2345,8 +2345,8 @@ impl SettingsView {
         cx.notify();
     }
 
-    fn set_language(&mut self, choice: Choice, cx: &mut Context<Self>) {
-        language::choose(choice);
+    fn set_language(&mut self, language: Language, cx: &mut Context<Self>) {
+        language::choose(language);
         let path = self.home.settings();
         let earlier = self.look_saving.take();
         self.look_saving = Some(cx.spawn(async move |view, cx| {
@@ -2356,7 +2356,7 @@ impl SettingsView {
             let saved = cx
                 .background_spawn(async move {
                     Settings::load(&path).and_then(|mut settings| {
-                        settings.language = Some(choice.code().to_owned());
+                        settings.language = Some(language);
                         settings.save_parts(&path, &["language"])
                     })
                 })
