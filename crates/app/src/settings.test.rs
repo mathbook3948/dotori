@@ -81,6 +81,16 @@ fn settings_written_back_read_the_same() {
 }
 
 #[test]
+fn a_language_written_back_reads_the_same() {
+    let settings = parse("language = \"ko\"").expect("parsed");
+
+    let text = toml::to_string(&settings).expect("written");
+
+    assert!(text.contains("language = \"ko\""), "{text}");
+    assert_eq!(parse(&text).expect("parsed"), settings);
+}
+
+#[test]
 fn a_form_round_trips_and_keeps_what_it_does_not_show() {
     let earlier = ModelSettings::Anthropic {
         api_key_env: Some(String::from("KEY")),

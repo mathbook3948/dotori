@@ -199,3 +199,66 @@ fn a_pc_joining_keeps_what_its_owner_set_here_since_even_against_an_older_time()
         model("http://edited")
     );
 }
+
+#[test]
+fn a_language_changed_on_one_pc_is_taken_by_another() {
+    let here = pc("language-here");
+    let there = pc("language-there");
+    for copies in [&here, &there] {
+        save(
+            copies,
+            &Settings {
+                language: Some(Language::Korean),
+                ..Settings::default()
+            },
+        );
+    }
+    here.current().expect("read");
+    let before = there.current().expect("read");
+    save(
+        &here,
+        &Settings {
+            language: Some(Language::English),
+            ..Settings::default()
+        },
+    );
+    let changed = here.current().expect("read");
+    assert!(changed.times.language > before.times.language);
+
+    assert!(
+        there
+            .take(changed.times, changed.shared, false)
+            .expect("taken")
+    );
+
+    assert_eq!(
+        Settings::load(&there.settings).expect("loaded").language,
+        Some(Language::English)
+    );
+}
+
+#[test]
+fn a_pc_joining_in_first_run_with_no_language_takes_the_other_pcs() {
+    let running = pc("language-running");
+    let joining = pc("language-joining");
+    save(
+        &running,
+        &Settings {
+            language: Some(Language::Korean),
+            ..Settings::default()
+        },
+    );
+    save(&joining, &Settings::default());
+    let theirs = running.current().expect("read");
+
+    assert!(
+        joining
+            .take(theirs.times, theirs.shared, true)
+            .expect("taken")
+    );
+
+    assert_eq!(
+        Settings::load(&joining.settings).expect("loaded").language,
+        Some(Language::Korean)
+    );
+}

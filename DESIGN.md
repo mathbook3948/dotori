@@ -378,7 +378,7 @@ This file is the design the windows are moving to. Until a window has moved, `do
 
 ## Voice & Content Strategy
 
-- The windows speak Korean or English: the language the owner chose in the settings, or else the system's. Every string is written in both, each to its own rules below, not translated word for word.
+- The windows speak Korean or English: the language saved in the settings, which dotori first picks from the system's. Every string is written in both, each to its own rules below, not translated word for word.
 - dotori sounds like one calm, capable person: short, warm, and plain. It never pleads, gushes, apologizes for nothing or uses exclamation marks.
 
 ### Both languages

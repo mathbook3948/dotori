@@ -1,7 +1,7 @@
 //! Keeps the settings that mean the same on every PC the same on all of them: the model, Slack,
-//! Telegram, Discord, memory search, and the assistant's name and icon. What belongs to one
-//! machine, such as how other PCs reach it, its browser, its coding agent and its MCP servers,
-//! stays with it. Each of the parts goes by its own time, and the one changed last wins. The daemon
+//! Telegram, Discord, memory search, the assistant's name and icon, and the language. What
+//! belongs to one machine, such as how other PCs reach it, its browser, its coding agent and its
+//! MCP servers, stays with it. Each of the parts goes by its own time, and the one changed last wins. The daemon
 //! follows the settings file, so a part taken from another PC applies as a change made here does.
 
 use std::path::Path;
@@ -18,6 +18,7 @@ use serde_json::Value;
 use serde_json::json;
 use tokio::time;
 
+use crate::language::Language;
 use crate::main_session::Linked;
 use crate::settings::AssistantSettings;
 use crate::settings::DiscordSettings;
@@ -46,6 +47,8 @@ pub(crate) struct Shared {
     pub(crate) discord: Option<DiscordSettings>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) assistant: Option<AssistantSettings>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) language: Option<Language>,
 }
 
 /// When each shared part last changed, in milliseconds since the Unix epoch.
@@ -63,6 +66,8 @@ pub(crate) struct Times {
     pub(crate) discord: i64,
     #[serde(default)]
     pub(crate) assistant: i64,
+    #[serde(default)]
+    pub(crate) language: i64,
 }
 
 impl Times {
@@ -75,6 +80,7 @@ impl Times {
             telegram: changed(self.telegram),
             discord: changed(self.discord),
             assistant: changed(self.assistant),
+            language: changed(self.language),
         }
     }
 }
@@ -94,6 +100,7 @@ impl Shared {
             telegram: settings.telegram.clone(),
             discord: settings.discord.clone(),
             assistant: settings.assistant.clone(),
+            language: settings.language,
         }
     }
 
@@ -105,6 +112,7 @@ impl Shared {
             telegram: self.telegram,
             discord: self.discord,
             assistant: self.assistant,
+            language: self.language,
             ..settings
         }
     }
@@ -161,6 +169,11 @@ impl SettingsCopies {
                         before.shared.assistant != shared.assistant,
                         now,
                     ),
+                    language: next(
+                        before.times.language,
+                        before.shared.language != shared.language,
+                        now,
+                    ),
                 },
                 shared,
             },
@@ -172,6 +185,7 @@ impl SettingsCopies {
                     telegram: i64::from(shared.telegram.is_some()),
                     discord: i64::from(shared.discord.is_some()),
                     assistant: i64::from(shared.assistant.is_some()),
+                    language: i64::from(shared.language.is_some()),
                 },
                 shared,
             },
@@ -226,6 +240,10 @@ impl SettingsCopies {
             taken.times.assistant = times.assistant;
             taken.shared.assistant = shared.assistant;
         }
+        if times.language > mine.language && shared.language != here.shared.language {
+            taken.times.language = times.language;
+            taken.shared.language = shared.language;
+        }
         if taken == here {
             return Ok(false);
         }
@@ -239,6 +257,7 @@ impl SettingsCopies {
                 "telegram",
                 "discord",
                 "assistant",
+                "language",
             ],
         )?;
         write_stamp(&self.stamp, &taken);
@@ -293,6 +312,7 @@ impl SettingsCopies {
             times.telegram,
             times.discord,
             times.assistant,
+            times.language,
         ]
         .iter()
         .any(|time| *time > latest)

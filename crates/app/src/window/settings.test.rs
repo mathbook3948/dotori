@@ -1498,10 +1498,14 @@ fn the_language_is_picked_from_a_list(cx: &mut TestAppContext) {
         view.read_with(cx, |view, _| view.open_picker),
         Some(picker::LANGUAGE_PICKER)
     );
-    for option in ["default", "ko", "en"] {
+    for option in ["ko", "en"] {
         let selector = format!("language-picker-{option}").leak();
         assert!(cx.debug_bounds(selector).is_some(), "{selector} is offered");
     }
+    assert!(
+        cx.debug_bounds("language-picker-default").is_none(),
+        "there is no choice to follow the system"
+    );
     let _ = std::fs::remove_dir_all(&root);
 }
 

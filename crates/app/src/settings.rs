@@ -74,9 +74,13 @@ impl fmt::Display for ModelError {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Settings {
-    /// The language the windows speak: `ko`, `en`, or `system` to follow the system.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) language: Option<String>,
+    /// The language dotori speaks, shared by every PC: `ko` or `en`.
+    #[serde(
+        default,
+        deserialize_with = "crate::language::lenient",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub(crate) language: Option<crate::language::Language>,
     #[serde(default)]
     pub(crate) model: ModelSettings,
     #[serde(default, skip_serializing_if = "Option::is_none")]

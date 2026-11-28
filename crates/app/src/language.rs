@@ -1,9 +1,14 @@
-//! The language dotori speaks to its owner in: the one the settings name, or else the system's.
-//! Every window and the tray read the same choice, worked out once when it is made.
+//! The language dotori speaks to its owner in: the one the settings keep, which every PC shares.
+//! Until one is saved, the system's. Every window and the tray read the same one.
 
 use std::path::Path;
 use std::sync::OnceLock;
 use std::sync::RwLock;
+
+use serde::Deserialize;
+use serde::Deserializer;
+use serde::Serialize;
+use serde::Serializer;
 
 use crate::settings::Settings;
 
@@ -14,19 +19,39 @@ pub(crate) enum Language {
     English,
 }
 
-/// What the settings ask for: a language, or the system's.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Choice {
-    System,
-    Only(Language),
+impl Serialize for Language {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.code())
+    }
+}
+
+impl<'de> Deserialize<'de> for Language {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let code = String::deserialize(deserializer)?;
+        Self::ALL
+            .into_iter()
+            .find(|language| language.code() == code)
+            .ok_or_else(|| serde::de::Error::custom(format!("no language `{code}`")))
+    }
+}
+
+/// Reads the language a settings file keeps. A value an older dotori wrote, such as `system` or
+/// `ko-KR`, reads as the language its tag names, or as none, and the next start saves one.
+pub(crate) fn lenient<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Language>, D::Error> {
+    let value = Option::<String>::deserialize(deserializer)?;
+    Ok(value.and_then(|value| Language::of_tag(value.trim())))
 }
 
 const VARIABLE: &str = "DOTORI_LANGUAGE";
-const SYSTEM: &str = "system";
 
-static CHOSEN: RwLock<Option<(Choice, Language)>> = RwLock::new(None);
+static CHOSEN: RwLock<Option<(Language, Language)>> = RwLock::new(None);
 
 impl Language {
+    /// Every language, in the order the settings window shows them.
+    pub(crate) const ALL: [Self; 2] = [Self::Korean, Self::English];
+
     /// The language's name in English, as the model is told it.
     pub(crate) fn english_name(self) -> &'static str {
         match self {
@@ -70,94 +95,71 @@ impl Language {
     }
 }
 
-impl Choice {
-    /// Every choice, in the order the settings window shows them.
-    pub(crate) const ALL: [Self; 3] = [
-        Self::System,
-        Self::Only(Language::Korean),
-        Self::Only(Language::English),
-    ];
-
-    /// The choice the settings value names. A missing value follows the system, and so does an
-    /// unknown one, with a warning.
-    pub(crate) fn named(value: Option<&str>) -> Self {
-        let Some(value) = value.map(str::trim) else {
-            return Self::System;
-        };
-        if value.eq_ignore_ascii_case(SYSTEM) {
-            return Self::System;
-        }
-        match Language::of_tag(value) {
-            Some(language) => Self::Only(language),
-            None => {
-                eprintln!("dotori: no language `{value}`, so it follows the system's");
-                Self::System
-            }
-        }
-    }
-
-    /// The value the settings file keeps for this choice.
-    pub(crate) fn code(self) -> &'static str {
-        match self {
-            Self::System => SYSTEM,
-            Self::Only(language) => language.code(),
-        }
-    }
-
-    fn language(self) -> Language {
-        match self {
-            Self::Only(language) => language,
-            Self::System => sys_locale::get_locale()
-                .map(|tag| Language::of_locale(&tag))
-                .unwrap_or(Language::English),
-        }
-    }
+fn of_system() -> Language {
+    sys_locale::get_locale()
+        .map(|tag| Language::of_locale(&tag))
+        .unwrap_or(Language::English)
 }
 
-/// What the settings at `path` ask for. Settings that cannot be read follow the system.
-pub(crate) fn saved(path: &Path) -> Choice {
-    let settings = Settings::load(path).ok();
-    Choice::named(
-        settings
-            .as_ref()
-            .and_then(|settings| settings.language.as_deref()),
-    )
+/// The language the settings at `path` keep, or else the system's. Settings that cannot be read
+/// have none.
+pub(crate) fn saved(path: &Path) -> Language {
+    Settings::load(path)
+        .ok()
+        .and_then(|settings| settings.language)
+        .unwrap_or_else(of_system)
 }
 
-fn overridden() -> Option<Choice> {
-    static OVERRIDDEN: OnceLock<Option<Choice>> = OnceLock::new();
+/// Saves the system's language into the settings at `path` when they keep none, and says which.
+/// Settings that keep a language are left as they are.
+pub(crate) fn settle(path: &Path) -> Result<Option<Language>, String> {
+    let mut settings = Settings::load(path)?;
+    if settings.language.is_some() {
+        return Ok(None);
+    }
+    let language = of_system();
+    settings.language = Some(language);
+    settings.save_parts(path, &["language"])?;
+    Ok(Some(language))
+}
+
+fn overridden() -> Option<Language> {
+    static OVERRIDDEN: OnceLock<Option<Language>> = OnceLock::new();
     *OVERRIDDEN.get_or_init(|| {
-        std::env::var(VARIABLE)
-            .ok()
-            .map(|value| Choice::named(Some(&value)))
+        let value = std::env::var(VARIABLE).ok()?;
+        let language = Language::of_tag(value.trim());
+        if language.is_none() {
+            eprintln!("dotori: no language `{value}` in {VARIABLE}, so it is ignored");
+        }
+        language
     })
 }
 
-/// Makes `choice` the one this process speaks from now on, and works out its language once.
-/// `DOTORI_LANGUAGE`, set to `ko` or `en`, overrides the settings.
-pub(crate) fn choose(choice: Choice) {
-    let language = overridden().unwrap_or(choice).language();
+/// Makes `language` the one saved for this process, and the one it speaks from now on.
+/// `DOTORI_LANGUAGE`, set to `ko` or `en`, changes only what this process speaks.
+pub(crate) fn choose(language: Language) {
+    let speaking = overridden().unwrap_or(language);
     *CHOSEN
         .write()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some((choice, language));
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some((language, speaking));
 }
 
-fn stored() -> (Choice, Language) {
+fn stored() -> (Language, Language) {
     let chosen = *CHOSEN
         .read()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     chosen.unwrap_or_else(|| {
-        choose(Choice::System);
+        choose(of_system());
         stored()
     })
 }
 
-/// What the owner chose in the settings, which the settings window shows.
-pub(crate) fn chosen() -> Choice {
+/// The language the settings keep, which the settings window shows.
+pub(crate) fn chosen() -> Language {
     stored().0
 }
 
-/// The language in use, as the last choice worked it out.
+/// The language in use.
 pub(crate) fn current() -> Language {
     stored().1
 }
