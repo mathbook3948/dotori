@@ -631,8 +631,51 @@ async fn a_summary_forgotten_here_is_forgotten_on_another_pc_from_the_list() {
         .expect("forgot")
         .list;
 
-    assert_eq!(here.take_forgotten(list).await.expect("taken"), 2);
+    assert_eq!(here.take_forgotten(list).await.expect("taken").taken, 2);
     assert!(here.load().await.expect("loaded").is_empty());
+}
+
+#[tokio::test]
+async fn a_summary_the_forgetting_pc_never_had_is_forgotten_where_it_was_made() {
+    let there = SqliteStore::new(scratch(), "there");
+    let here = SqliteStore::new(scratch(), "here");
+    here.append(vec![summarized_at(
+        JAN_1_2026 - 1,
+        "made before the secret",
+    )])
+    .await
+    .expect("appended");
+    there
+        .append(vec![failed_at(JAN_1_2026, "secret")])
+        .await
+        .expect("appended");
+    let sent = there.after("there", "", 100, 1 << 20).await.expect("after");
+    here.copy_in(sent.clone()).await.expect("copied");
+    here.append(vec![summarized_at(JAN_1_2026 + 1, "mentions the secret")])
+        .await
+        .expect("appended");
+    let list = there
+        .forget(vec![sent[0].id.clone()], Vec::new())
+        .await
+        .expect("forgot")
+        .list;
+
+    let taken = here.take_forgotten(list.clone()).await.expect("taken");
+
+    assert_eq!(taken.taken, 2);
+    assert_eq!(taken.summaries.len(), 1);
+    let left = here.load().await.expect("loaded");
+    assert!(matches!(
+        left.as_slice(),
+        [Record { entry: Entry::Summarized { text, .. }, .. }] if text == "made before the secret"
+    ));
+    assert_eq!(
+        here.take_forgotten(list).await.expect("again"),
+        Taken {
+            taken: 0,
+            summaries: Vec::new(),
+        }
+    );
 }
 
 #[tokio::test]
@@ -677,20 +720,25 @@ async fn what_another_pc_forgot_is_taken_whether_or_not_the_record_came_yet() {
         early
             .take_forgotten(forgotten.clone())
             .await
-            .expect("taken"),
+            .expect("taken")
+            .taken,
         1
     );
     assert_eq!(
         early
             .take_forgotten(forgotten.clone())
             .await
-            .expect("again"),
+            .expect("again")
+            .taken,
         0
     );
     assert!(early.load().await.expect("loaded").is_empty());
 
     assert_eq!(
-        late.take_forgotten(forgotten.clone()).await.expect("taken"),
+        late.take_forgotten(forgotten.clone())
+            .await
+            .expect("taken")
+            .taken,
         1
     );
     assert_eq!(late.copy_in(sent).await.expect("copied"), 0);
@@ -815,7 +863,8 @@ async fn what_carries_a_forgotten_number_goes_with_it_and_a_wrong_maker_is_refus
             device: String::from("someone else"),
         }])
         .await
-        .expect("taken");
+        .expect("taken")
+        .taken;
     assert_eq!(forged, 0);
     assert_eq!(details(&other.load().await.expect("loaded")), ["mine"]);
 }
