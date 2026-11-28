@@ -94,6 +94,14 @@ pub struct Forgot {
     pub entries: Vec<Entry>,
 }
 
+/// What `take_forgotten` did. `taken` says how many records were new here, and `summaries` are
+/// the summaries it forgot on its own, for the other PCs to forget too.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Taken {
+    pub taken: usize,
+    pub summaries: Vec<Forgotten>,
+}
+
 /// A record as the owner would recognize it, to show before it is forgotten.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Described {
@@ -368,10 +376,10 @@ impl SqliteStore {
             }
             let earliest = found
                 .iter()
-                .min_by(|(_, a), (_, b)| a.id.cmp(&b.id))
-                .map(|(year, forgotten)| (*year, forgotten.id.clone()));
-            if let Some((year, id)) = earliest {
-                for (year, summary, device) in summaries_after(book, folder, year, &id)? {
+                .map(|(_, forgotten)| forgotten.id.clone())
+                .min();
+            if let Some(id) = earliest {
+                for (year, summary, device) in summaries_after(book, folder, &id)? {
                     if !found.iter().any(|(_, known)| known.id == summary) {
                         found.push((
                             year,
@@ -408,12 +416,14 @@ impl SqliteStore {
     }
 
     /// Takes in what another PC forgot. A record here is removed, unless the PC named as its maker
-    /// is not the one that made it; one not here yet is refused when it arrives. Says how many
-    /// were new.
-    pub async fn take_forgotten(&self, list: Vec<Forgotten>) -> Result<usize, RecordError> {
+    /// is not the one that made it; one not here yet is refused when it arrives. A summary here
+    /// made after the earliest newly forgotten record goes too, since the PC that sent the list
+    /// may not have had it yet.
+    pub async fn take_forgotten(&self, list: Vec<Forgotten>) -> Result<Taken, RecordError> {
         self.with(move |book, folder, _| {
             let mut taken = 0;
             let mut ids = Vec::new();
+            let mut earliest: Option<String> = None;
             for forgotten in &list {
                 let Ok(number) = Uuid::parse_str(&forgotten.id) else {
                     continue;
@@ -439,8 +449,12 @@ impl SqliteStore {
                         )
                     }
                 };
-                if forget_in(book.year(folder, year)?, forgotten, here)? || here {
+                let new = forget_in(book.year(folder, year)?, forgotten, here)?;
+                if new || here {
                     taken += 1;
+                }
+                if new && earliest.as_ref().is_none_or(|known| forgotten.id < *known) {
+                    earliest = Some(forgotten.id.clone());
                 }
                 ids.push(forgotten.id.clone());
             }
@@ -449,10 +463,23 @@ impl SqliteStore {
                     taken += 1;
                 }
             }
+            let mut summaries = Vec::new();
+            if let Some(id) = earliest {
+                for (year, id, device) in summaries_after(book, folder, &id)? {
+                    if ids.contains(&id) {
+                        continue;
+                    }
+                    let summary = Forgotten { id, device };
+                    if forget_in(book.year(folder, year)?, &summary, true)? {
+                        taken += 1;
+                        summaries.push(summary);
+                    }
+                }
+            }
             if taken > 0 {
                 settle(book, folder)?;
             }
-            Ok(taken)
+            Ok(Taken { taken, summaries })
         })
         .await
     }
@@ -878,11 +905,10 @@ fn carrying(
 fn summaries_after(
     book: &mut Book,
     folder: &Path,
-    year: i64,
     id: &str,
 ) -> Result<Vec<(i64, String, String)>, RecordError> {
     let mut found = Vec::new();
-    for later in years(folder)?.into_iter().filter(|later| *later >= year) {
+    for later in years(folder)? {
         let mut query = book
             .year(folder, later)?
             .prepare("SELECT id, device FROM records WHERE kind = 'summarized' AND id > ?1")

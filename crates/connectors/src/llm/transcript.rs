@@ -155,6 +155,18 @@ fn summary_blocks(conversation: &[Entry], entry: &Entry, zone: &TimeZone) -> Vec
                 &clip(text),
             )]
         }
+        Entry::Refused(Action::UseTool(call)) => {
+            vec![tagged(
+                "not_run",
+                &[("tool", &call.name)],
+                &clip(&call.input),
+            )]
+        }
+        Entry::Refused(Action::Delegate(spec)) => vec![tagged(
+            "not_started",
+            &[("title", &spec.title)],
+            &clip(&spec.brief),
+        )],
         Entry::Summarized { .. } => Vec::new(),
         other => vec![note(other, zone)],
     }
