@@ -517,3 +517,40 @@ async fn summarize_posts_the_summary_request_to_the_messages_api() {
     let body: Value = serde_json::from_str(&captured.body).expect("json body");
     assert_eq!(body["system"][0]["text"], SUMMARY_SYSTEM);
 }
+
+fn twelve_long_messages() -> Vec<Entry> {
+    (0..12)
+        .map(|n| heard(&format!("m{n:02}{}", "가".repeat(20_000))))
+        .collect()
+}
+
+#[test]
+fn a_context_window_makes_the_request_carry_less() {
+    let conversation = twelve_long_messages();
+    let mut small = AnthropicConfig::new("key");
+    small.context_window = Some(130_000);
+
+    let whole = sent(&AnthropicConfig::new("key"), &request(conversation.clone())).to_string();
+    let cut = sent(&small, &request(conversation)).to_string();
+
+    assert!(whole.contains("m00"));
+    assert!(!cut.contains("m00"));
+    assert!(cut.contains("m11"));
+}
+
+#[test]
+fn the_model_reports_the_room_its_context_window_leaves() {
+    let mut config = AnthropicConfig::new("key");
+    assert_eq!(
+        Anthropic::new(config.clone()).expect("client").room(),
+        Room::DEFAULT
+    );
+
+    config.context_window = Some(400_000);
+    config.max_tokens = 20_000;
+
+    assert_eq!(
+        Anthropic::new(config).expect("client").room(),
+        Room::for_window(400_000, 20_000)
+    );
+}

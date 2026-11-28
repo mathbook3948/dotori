@@ -9,6 +9,7 @@ use crate::agent::ids::SubSessionId;
 use crate::agent::ids::SummaryId;
 use crate::agent::ids::ToolRunId;
 use crate::agent::threads::Threads;
+use crate::carried::Room;
 use crate::conversation::Action;
 use crate::conversation::Entry;
 use crate::conversation::MessageRef;
@@ -25,6 +26,8 @@ pub(crate) struct AgentState {
     pub(crate) conversation: Vec<Entry>,
     pub(crate) phase: Phase,
     pub(crate) summarizing: Summarizing,
+    /// The room of the model that answers next, set before each event.
+    pub(crate) room: Room,
     pub(crate) wiring: Wiring,
     pub(crate) threads: Threads,
     pub(crate) sub_sessions: HashMap<SubSessionId, SubSessionSpec>,
@@ -110,6 +113,7 @@ impl AgentState {
             conversation: Vec::new(),
             phase: Phase::Idle,
             summarizing: Summarizing::Idle,
+            room: Room::DEFAULT,
             wiring,
             threads: Threads::default(),
             sub_sessions: HashMap::new(),
@@ -138,7 +142,7 @@ pub(crate) enum Summarizing {
         summary: SummaryId,
         kept: MessageRef,
     },
-    /// The last try failed. Another waits for `STEP` more than `weight`.
+    /// The last try failed. Another waits for a step more than `weight`.
     Failed {
         weight: usize,
     },

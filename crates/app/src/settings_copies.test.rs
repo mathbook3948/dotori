@@ -62,6 +62,7 @@ fn a_new_pc_takes_a_configured_pcs_settings_and_one_part_changed_leaves_the_othe
         model: String::from("m"),
         api_key_env: None,
         max_tokens: None,
+        context_window: None,
     };
     save(&fresh, &changed);
     let edited = fresh.current().expect("read");
@@ -100,6 +101,7 @@ fn a_pc_joining_in_first_run_takes_settings_as_old_as_its_own_and_a_set_up_pc_do
         model: String::from("m"),
         api_key_env: None,
         max_tokens: None,
+        context_window: None,
     };
     let running = pc("running");
     let joining = pc("joining");
@@ -158,6 +160,7 @@ fn a_pc_joining_keeps_what_its_owner_set_here_since_even_against_an_older_time()
         model: String::from("m"),
         api_key_env: None,
         max_tokens: None,
+        context_window: None,
     };
     let running = pc("running-older");
     let joining = pc("joining-edited");

@@ -2,6 +2,7 @@ use std::error::Error;
 use std::fmt;
 
 use crate::BoxFuture;
+use crate::carried::Room;
 use crate::conversation::Action;
 use crate::conversation::Entry;
 use crate::tool::ToolSpec;
@@ -76,6 +77,11 @@ pub trait Model: Send + Sync + 'static {
                 detail: String::from("this model cannot summarize"),
             })
         })
+    }
+
+    /// How much of the conversation a request to this model carries.
+    fn room(&self) -> Room {
+        Room::DEFAULT
     }
 
     /// Whether the model answers with its address and key, asked in a way that costs nothing,

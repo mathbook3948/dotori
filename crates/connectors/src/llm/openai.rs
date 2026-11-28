@@ -1,6 +1,7 @@
 use std::fmt;
 
 use dotori_core::BoxFuture;
+use dotori_core::carried::Room;
 use dotori_core::llm::CheckError;
 use dotori_core::llm::Model;
 use dotori_core::llm::ModelError;
@@ -27,6 +28,7 @@ use crate::llm::transcript::Part;
 use crate::llm::transcript::Turn;
 
 const PROVIDER: &str = "openai-compatible";
+const ASSUMED_MAX_TOKENS: u32 = 16_000;
 
 /// Settings for any server that speaks the OpenAI chat completions API.
 /// The user always picks the address and the model.
@@ -39,6 +41,8 @@ pub struct OpenAiConfig {
     pub api_key: Option<String>,
     /// `None` leaves the reply length to the server.
     pub max_tokens: Option<u32>,
+    /// The model's context window in tokens. `None` carries the default amount of conversation.
+    pub context_window: Option<u32>,
     pub system: String,
     /// Whether the model may hand work to a sub-session with `delegate`. A sub-session's own
     /// model may not.
@@ -52,8 +56,18 @@ impl OpenAiConfig {
             model: model.into(),
             api_key: None,
             max_tokens: None,
+            context_window: None,
             system: String::from(DEFAULT_SYSTEM),
             delegates: true,
+        }
+    }
+}
+
+impl OpenAiConfig {
+    fn room(&self) -> Room {
+        match self.context_window {
+            Some(window) => Room::for_window(window, self.max_tokens.unwrap_or(ASSUMED_MAX_TOKENS)),
+            None => Room::DEFAULT,
         }
     }
 }
@@ -65,6 +79,7 @@ impl fmt::Debug for OpenAiConfig {
             .field("model", &self.model)
             .field("api_key", &self.api_key.as_ref().map(|_| "<hidden>"))
             .field("max_tokens", &self.max_tokens)
+            .field("context_window", &self.context_window)
             .finish_non_exhaustive()
     }
 }
@@ -135,6 +150,10 @@ impl Model for OpenAi {
         Box::pin(self.summary(request))
     }
 
+    fn room(&self) -> Room {
+        self.config.room()
+    }
+
     fn check(&self) -> BoxFuture<'_, Result<(), CheckError>> {
         let url = format!("{}/models", self.config.base_url.trim_end_matches('/'));
         let request = self.client.get(url);
@@ -168,6 +187,7 @@ fn body(config: &OpenAiConfig, request: &ModelRequest) -> Result<String, ModelEr
         &request.conversation,
         PROVIDER,
         &reply::zone(request.time_zone.as_deref()),
+        config.room(),
     ) {
         messages.extend(turn_messages(turn));
     }

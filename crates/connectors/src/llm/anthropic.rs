@@ -1,6 +1,7 @@
 use std::fmt;
 
 use dotori_core::BoxFuture;
+use dotori_core::carried::Room;
 use dotori_core::llm::CheckError;
 use dotori_core::llm::Model;
 use dotori_core::llm::ModelError;
@@ -40,6 +41,8 @@ pub struct AnthropicConfig {
     pub model: String,
     pub base_url: String,
     pub max_tokens: u32,
+    /// The model's context window in tokens. `None` carries the default amount of conversation.
+    pub context_window: Option<u32>,
     /// How hard the model thinks, such as `low` or `high`. `None` leaves the API default.
     pub effort: Option<String>,
     pub system: String,
@@ -55,9 +58,19 @@ impl AnthropicConfig {
             model: String::from(DEFAULT_MODEL),
             base_url: String::from("https://api.anthropic.com"),
             max_tokens: 16000,
+            context_window: None,
             effort: None,
             system: String::from(DEFAULT_SYSTEM),
             delegates: true,
+        }
+    }
+}
+
+impl AnthropicConfig {
+    fn room(&self) -> Room {
+        match self.context_window {
+            Some(window) => Room::for_window(window, self.max_tokens),
+            None => Room::DEFAULT,
         }
     }
 }
@@ -69,6 +82,7 @@ impl fmt::Debug for AnthropicConfig {
             .field("model", &self.model)
             .field("base_url", &self.base_url)
             .field("max_tokens", &self.max_tokens)
+            .field("context_window", &self.context_window)
             .field("effort", &self.effort)
             .finish_non_exhaustive()
     }
@@ -139,6 +153,10 @@ impl Model for Anthropic {
         Box::pin(self.summary(request))
     }
 
+    fn room(&self) -> Room {
+        self.config.room()
+    }
+
     fn check(&self) -> BoxFuture<'_, Result<(), CheckError>> {
         let url = format!(
             "{}/v1/models?limit=1",
@@ -169,6 +187,7 @@ fn body(config: &AnthropicConfig, request: &ModelRequest) -> Result<String, Mode
         &request.conversation,
         PROVIDER,
         &reply::zone(request.time_zone.as_deref()),
+        config.room(),
     )
     .into_iter()
     .map(message)

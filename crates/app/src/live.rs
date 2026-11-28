@@ -15,6 +15,7 @@ use dotori_connectors::channel::discord::DISCORD;
 use dotori_connectors::channel::slack::SLACK;
 use dotori_connectors::channel::telegram::TELEGRAM;
 use dotori_core::BoxFuture;
+use dotori_core::carried::Room;
 use dotori_core::llm::CheckError;
 use dotori_core::llm::Model;
 use dotori_core::llm::ModelError;
@@ -70,6 +71,10 @@ impl Model for LiveModel {
     fn summarize(&self, request: SummaryRequest) -> BoxFuture<'_, Result<String, ModelError>> {
         let model = self.now();
         Box::pin(async move { model.summarize(request).await })
+    }
+
+    fn room(&self) -> Room {
+        self.now().room()
     }
 
     fn check(&self) -> BoxFuture<'_, Result<(), CheckError>> {

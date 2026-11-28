@@ -2,6 +2,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::time::SystemTime;
 
+use dotori_core::carried::Room;
 use dotori_core::carried::carried;
 use dotori_core::conversation::Action;
 use dotori_core::conversation::Entry;
@@ -74,8 +75,13 @@ impl PartialEq for Said {
     }
 }
 
-pub(crate) fn build(conversation: &[Entry], provider: &str, zone: &TimeZone) -> Vec<Turn> {
-    let carried = carried(conversation);
+pub(crate) fn build(
+    conversation: &[Entry],
+    provider: &str,
+    zone: &TimeZone,
+    room: Room,
+) -> Vec<Turn> {
+    let carried = carried(conversation, room);
     let mut builder = Builder::default();
     match carried.summary {
         Some(summary) => {

@@ -118,6 +118,7 @@ impl Shell {
                 self.model_calls.remove(call);
             }
             let recorded = state.conversation.len();
+            state.room = self.model.room();
             let effects = step(&mut state, event);
             let end = state
                 .conversation

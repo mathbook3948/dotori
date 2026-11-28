@@ -5,15 +5,56 @@ use crate::conversation::Entry;
 use crate::conversation::MessageRef;
 use crate::sub_session::SubSessionOutcome;
 
-/// About how many characters of the conversation a request carries at most.
-pub const KEPT: usize = 300_000;
-/// How far the start of what is carried moves at a time, so the start of the conversation stays
-/// the same between most requests and the provider can reuse its cache.
-pub const STEP: usize = 100_000;
-/// How much of the conversation after the latest summary's message starts a new summary.
-pub(crate) const SUMMARIZE_AT: usize = 250_000;
-const TAIL: usize = 100_000;
-const MOST: usize = 300_000;
+const PROMPT_AND_TOOLS_TOKENS: u32 = 30_000;
+const LEAST_CHARS: usize = 20_000;
+
+/// How much of the conversation a request carries, and when a summary starts, all counted in
+/// characters and derived from the most a request carries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Room {
+    kept: usize,
+}
+
+impl Room {
+    pub const DEFAULT: Room = Room { kept: 300_000 };
+
+    /// The room a model's context window leaves after its reply and the reserve. One token is
+    /// counted as one character, which is a cautious estimate: text takes fewer tokens than that
+    /// in most languages.
+    pub fn for_window(context_tokens: u32, output_tokens: u32) -> Room {
+        let free = context_tokens
+            .saturating_sub(output_tokens)
+            .saturating_sub(PROMPT_AND_TOOLS_TOKENS);
+        Room {
+            kept: (free as usize).max(LEAST_CHARS),
+        }
+    }
+
+    /// About how many characters of the conversation a request carries at most.
+    pub fn kept(self) -> usize {
+        self.kept
+    }
+
+    /// How far the start of what is carried moves at a time, so the start of the conversation
+    /// stays the same between most requests and the provider can reuse its cache.
+    pub fn step(self) -> usize {
+        self.kept / 3
+    }
+
+    /// How much of the conversation after the latest summary's message starts a new summary.
+    pub(crate) fn summarize_at(self) -> usize {
+        self.kept * 5 / 6
+    }
+
+    fn tail(self) -> usize {
+        self.kept / 3
+    }
+
+    fn most(self) -> usize {
+        self.kept
+    }
+}
+
 const SMALL: usize = 200;
 
 /// What a request carries of a conversation: the latest summary, if any, and the entries from
@@ -29,14 +70,14 @@ pub struct Carried<'a> {
 
 /// The latest summary starts what is carried at the message it names. A summary whose message is
 /// gone, or not copied to this PC yet, leaves the whole conversation to cut. Past that start, a
-/// conversation over `KEPT` is cut the same way with or without a summary.
-pub fn carried(conversation: &[Entry]) -> Carried<'_> {
+/// conversation over `room.kept()` is cut the same way with or without a summary.
+pub fn carried(conversation: &[Entry], room: Room) -> Carried<'_> {
     let summary = latest_summary(conversation);
     let base = summary
         .as_ref()
         .and_then(|latest| anchor(conversation, latest))
         .unwrap_or(0);
-    let start = start(&conversation[base..]) + base;
+    let start = start(&conversation[base..], room) + base;
     Carried {
         summary: summary.map(|latest| latest.text),
         start,
@@ -86,17 +127,17 @@ pub(crate) struct Plan {
 }
 
 /// A summary is due when the conversation after the latest summary's message passes
-/// `SUMMARIZE_AT`. That message, or the summary itself when its message is gone, starts what is
-/// counted. The new summary names the first message that leaves at most `TAIL` after it, or the
+/// `room.summarize_at()`. That message, or the summary itself when its message is gone, starts what is
+/// counted. The new summary names the first message that leaves at most `room.tail()` after it, or the
 /// last message when none does.
-pub(crate) fn plan(conversation: &[Entry]) -> Option<Plan> {
+pub(crate) fn plan(conversation: &[Entry], room: Room) -> Option<Plan> {
     let latest = latest_summary(conversation);
     let base = match &latest {
         Some(latest) => anchor(conversation, latest).unwrap_or(latest.index),
         None => 0,
     };
     let total: usize = conversation[base..].iter().map(weight).sum();
-    if total <= SUMMARIZE_AT {
+    if total <= room.summarize_at() {
         return None;
     }
     let mut before = 0;
@@ -108,7 +149,7 @@ pub(crate) fn plan(conversation: &[Entry]) -> Option<Plan> {
         {
             cut = Some((index, message));
             cut_before = before;
-            if total - before <= TAIL {
+            if total - before <= room.tail() {
                 break;
             }
         }
@@ -117,7 +158,7 @@ pub(crate) fn plan(conversation: &[Entry]) -> Option<Plan> {
     let (cut, message) = cut?;
     let mut start = base;
     let mut covered = cut_before;
-    while covered > MOST && start < cut {
+    while covered > room.most() && start < cut {
         covered -= weight(&conversation[start]);
         start += 1;
     }
@@ -132,12 +173,12 @@ pub(crate) fn plan(conversation: &[Entry]) -> Option<Plan> {
     })
 }
 
-fn start(conversation: &[Entry]) -> usize {
+fn start(conversation: &[Entry], room: Room) -> usize {
     let total: usize = conversation.iter().map(weight).sum();
-    if total <= KEPT {
+    if total <= room.kept {
         return 0;
     }
-    let cut = (total - KEPT).div_ceil(STEP) * STEP;
+    let cut = (total - room.kept).div_ceil(room.step()) * room.step();
     let mut before = 0;
     let mut last_heard = 0;
     for (index, entry) in conversation.iter().enumerate() {
