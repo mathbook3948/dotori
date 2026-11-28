@@ -4,12 +4,14 @@
 //! and its vectors, the kept notes, and the owner's other PCs.
 
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::OnceLock;
 
 use dotori_connectors::peer::copies::Copies;
 use dotori_connectors::record::sqlite::Described;
 use dotori_connectors::record::sqlite::SqliteStore;
 use dotori_core::BoxFuture;
+use dotori_core::runtime::Forgets;
 use dotori_core::tool::ToolCall;
 use dotori_core::tool::ToolError;
 use dotori_core::tool::ToolSpec;
@@ -40,6 +42,8 @@ pub(crate) struct Forget {
     pub(crate) memory: MemoryConfig,
     pub(crate) copies: Arc<OnceLock<Arc<Copies>>>,
     pub(crate) notes: Arc<Notes>,
+    /// The agent running the main session here, if any, which drops what was erased.
+    pub(crate) agent: Arc<Mutex<Option<Forgets>>>,
 }
 
 impl Tool for Forget {
@@ -109,19 +113,23 @@ impl Tool for Forget {
                 .forget(ids, carriers)
                 .await
                 .map_err(|error| error.to_string())?;
+            let running = self.agent.lock().expect("unpoisoned").clone();
+            if let Some(agent) = running {
+                agent.forget(forgotten.entries).await;
+            }
             let memory = self.memory.clone();
             let dropped = tokio::task::spawn_blocking(move || Memory::drop_forgotten(&memory))
                 .await
                 .map_err(|error| error.to_string())
                 .and_then(|dropped| dropped);
             if let Some(copies) = self.copies.get() {
-                copies.forget(&forgotten);
+                copies.forget(&forgotten.list);
             }
             said.push(format!(
                 "Erased {} record(s). They are gone from the record and from memory search, and \
                  the owner's other PCs forget them when they are linked. Do not repeat what they \
                  held.",
-                forgotten.len()
+                forgotten.list.len()
             ));
             if let Err(error) = dropped {
                 said.push(format!(

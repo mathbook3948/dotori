@@ -15,6 +15,27 @@ impl Model for Named {
             })
         })
     }
+
+    fn summarize(&self, _: SummaryRequest) -> BoxFuture<'_, Result<String, ModelError>> {
+        let name = self.0;
+        Box::pin(async move { Ok(String::from(name)) })
+    }
+}
+
+struct Roomy(Room);
+
+impl Model for Roomy {
+    fn complete(&self, _: ModelRequest) -> BoxFuture<'_, Result<ModelReply, ModelError>> {
+        Box::pin(async {
+            Err(ModelError {
+                detail: String::from("unused"),
+            })
+        })
+    }
+
+    fn room(&self) -> Room {
+        self.0
+    }
 }
 
 fn request() -> ModelRequest {
@@ -22,6 +43,14 @@ fn request() -> ModelRequest {
         conversation: Vec::new(),
         tools: Vec::new(),
         context: None,
+        time_zone: None,
+    }
+}
+
+fn summary_request() -> SummaryRequest {
+    SummaryRequest {
+        previous: None,
+        conversation: Vec::new(),
         time_zone: None,
     }
 }
@@ -36,6 +65,31 @@ async fn a_model_the_settings_cannot_build_fails_each_request_with_why() {
 }
 
 #[tokio::test]
+async fn a_model_the_settings_cannot_build_fails_a_summary_with_why_too() {
+    let model = Unbuilt(String::from("set ANTHROPIC_API_KEY"));
+
+    let failed = model
+        .summarize(summary_request())
+        .await
+        .expect_err("no model");
+
+    assert_eq!(failed.detail, "set ANTHROPIC_API_KEY");
+}
+
+#[tokio::test]
+async fn the_next_summary_is_asked_of_the_model_swapped_in() {
+    let first = Arc::new(Named("first", Mutex::new(Vec::new())));
+    let second = Arc::new(Named("second", Mutex::new(Vec::new())));
+    let live = LiveModel::new(Arc::clone(&first) as Arc<dyn Model>);
+
+    let before = live.summarize(summary_request()).await.expect("summary");
+    live.swap(Arc::clone(&second) as Arc<dyn Model>);
+    let after = live.summarize(summary_request()).await.expect("summary");
+
+    assert_eq!((before.as_str(), after.as_str()), ("first", "second"));
+}
+
+#[tokio::test]
 async fn the_next_request_goes_to_the_model_swapped_in() {
     let first = Arc::new(Named("first", Mutex::new(Vec::new())));
     let second = Arc::new(Named("second", Mutex::new(Vec::new())));
@@ -47,6 +101,17 @@ async fn the_next_request_goes_to_the_model_swapped_in() {
 
     assert_eq!(*first.1.lock().expect("unpoisoned"), ["first"]);
     assert_eq!(*second.1.lock().expect("unpoisoned"), ["second"]);
+}
+
+#[test]
+fn the_room_follows_the_model_swapped_in() {
+    let wide = Room::for_window(400_000, 16_000);
+    let live = LiveModel::new(Arc::new(Roomy(Room::DEFAULT)));
+    assert_eq!(live.room(), Room::DEFAULT);
+
+    live.swap(Arc::new(Roomy(wide)));
+
+    assert_eq!(live.room(), wide);
 }
 
 #[test]

@@ -1,3 +1,5 @@
+use dotori_core::carried::Room;
+
 use super::*;
 
 fn parse(text: &str) -> Result<Settings, toml::de::Error> {
@@ -35,6 +37,7 @@ model = "qwen3"
             model: String::from("qwen3"),
             api_key_env: None,
             max_tokens: None,
+            context_window: None,
         }
     );
     assert!(parse("[model]\nprovider = \"openai-compatible\"\nmodel = \"x\"").is_err());
@@ -84,6 +87,7 @@ fn a_form_round_trips_and_keeps_what_it_does_not_show() {
         model: None,
         base_url: None,
         max_tokens: Some(8000),
+        context_window: Some(400_000),
         effort: Some(String::from("low")),
     };
 
@@ -103,6 +107,7 @@ fn a_form_round_trips_and_keeps_what_it_does_not_show() {
             model: String::from("qwen3"),
             api_key_env: Some(String::from("KEY")),
             max_tokens: Some(8000),
+            context_window: Some(400_000),
         }
     );
 }
@@ -331,6 +336,7 @@ fn saving_some_sections_keeps_the_owners_comments_and_the_rest_of_the_file() {
         model: String::from("m"),
         api_key_env: None,
         max_tokens: None,
+        context_window: None,
     };
     settings.memory = None;
 
@@ -667,4 +673,39 @@ fn a_system_variable_is_never_a_token_nor_kept_from_commands() {
     let names = settings.secret_names();
     assert!(!names.iter().any(|name| reserved(name)), "{names:?}");
     assert!(reserved("LC_ALL") && reserved("XDG_RUNTIME_DIR") && !reserved("NOTES_TOKEN"));
+}
+
+#[test]
+fn a_context_window_is_read_from_the_file_and_reaches_the_model() {
+    let anthropic = parse(
+        "[model]
+provider = \"anthropic\"
+context_window = 400000",
+    )
+    .expect("parsed");
+    let local = parse(
+        r#"
+[model]
+provider = "openai-compatible"
+base_url = "http://localhost:11434/v1"
+model = "qwen3"
+max_tokens = 8000
+context_window = 400000
+"#,
+    )
+    .expect("parsed");
+
+    let key = |_: &str| Some(String::from("k"));
+    assert_eq!(
+        anthropic.model(key).expect("built").room(),
+        Room::for_window(400_000, 16_000)
+    );
+    assert_eq!(
+        local.model(key).expect("built").room(),
+        Room::for_window(400_000, 8_000)
+    );
+    assert_eq!(
+        Settings::default().model(key).expect("built").room(),
+        Room::DEFAULT
+    );
 }

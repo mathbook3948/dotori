@@ -5,6 +5,9 @@ pub(crate) struct CallId(u64);
 pub(crate) struct GatherId(u64);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct SummaryId(u64);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct ToolRunId(u64);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -23,6 +26,10 @@ impl Ids {
 
     pub(crate) fn next_gather(&mut self) -> GatherId {
         GatherId(self.bump())
+    }
+
+    pub(crate) fn next_summary(&mut self) -> SummaryId {
+        SummaryId(self.bump())
     }
 
     pub(crate) fn next_tool_run(&mut self) -> ToolRunId {

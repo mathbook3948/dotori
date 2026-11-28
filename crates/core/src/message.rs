@@ -92,7 +92,7 @@ pub enum Role {
     Other,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Sender {
     pub id: ExternalUserId,
     pub name: String,
@@ -100,7 +100,7 @@ pub struct Sender {
 }
 
 /// An inbound message after core stamped its channel and resolved its sender.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Message {
     pub id: ExternalMessageId,
     pub address: Address,

@@ -3,6 +3,7 @@ use std::time::UNIX_EPOCH;
 
 use dotori_core::conversation::Action;
 use dotori_core::conversation::Entry;
+use dotori_core::conversation::MessageRef;
 use dotori_core::conversation::ThreadRef;
 use dotori_core::id::ChannelId;
 use dotori_core::id::ExternalMessageId;
@@ -66,6 +67,11 @@ enum EntryForm {
     ChannelEnded {
         channel: String,
         detail: Option<String>,
+    },
+    Summarized {
+        channel: String,
+        message: String,
+        text: String,
     },
 }
 
@@ -226,6 +232,11 @@ fn entry_form(entry: &Entry) -> EntryForm {
             channel: channel.as_str().to_owned(),
             detail: detail.clone(),
         },
+        Entry::Summarized { kept, text } => EntryForm::Summarized {
+            channel: kept.channel.as_str().to_owned(),
+            message: kept.id.as_str().to_owned(),
+            text: text.clone(),
+        },
     }
 }
 
@@ -328,6 +339,17 @@ fn entry(form: EntryForm) -> Result<Entry, String> {
         } => Entry::ChannelEnded {
             channel: channel(&id)?,
             detail,
+        },
+        EntryForm::Summarized {
+            channel: id,
+            message,
+            text,
+        } => Entry::Summarized {
+            kept: MessageRef {
+                channel: channel(&id)?,
+                id: ExternalMessageId::new(message),
+            },
+            text,
         },
     })
 }

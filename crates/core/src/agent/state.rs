@@ -7,10 +7,13 @@ use crate::agent::ids::CallId;
 use crate::agent::ids::GatherId;
 use crate::agent::ids::Ids;
 use crate::agent::ids::SubSessionId;
+use crate::agent::ids::SummaryId;
 use crate::agent::ids::ToolRunId;
 use crate::agent::threads::Threads;
+use crate::carried::Room;
 use crate::conversation::Action;
 use crate::conversation::Entry;
+use crate::conversation::MessageRef;
 use crate::id::ChannelId;
 use crate::id::ExternalMessageId;
 use crate::runtime::Wiring;
@@ -23,6 +26,9 @@ use crate::tool::ToolError;
 pub(crate) struct AgentState {
     pub(crate) conversation: Vec<Entry>,
     pub(crate) phase: Phase,
+    pub(crate) summarizing: Summarizing,
+    /// The room of the model that answers next, set before each event.
+    pub(crate) room: Room,
     pub(crate) wiring: Wiring,
     pub(crate) threads: Threads,
     pub(crate) sub_sessions: HashMap<SubSessionId, SubSessionSpec>,
@@ -107,6 +113,8 @@ impl AgentState {
         Self {
             conversation: Vec::new(),
             phase: Phase::Idle,
+            summarizing: Summarizing::Idle,
+            room: Room::DEFAULT,
             wiring,
             threads: Threads::default(),
             sub_sessions: HashMap::new(),
@@ -125,6 +133,20 @@ impl AgentState {
             Phase::Gathering { .. } | Phase::Thinking { .. } | Phase::UsingTools { .. }
         )
     }
+}
+
+/// Whether the conversation is being summarized in the background. A restart starts `Idle`.
+pub(crate) enum Summarizing {
+    Idle,
+    /// `kept` is the message the summary will name.
+    Running {
+        summary: SummaryId,
+        kept: MessageRef,
+    },
+    /// The last try failed. Another waits for a step more than `weight`.
+    Failed {
+        weight: usize,
+    },
 }
 
 pub(crate) enum Phase {

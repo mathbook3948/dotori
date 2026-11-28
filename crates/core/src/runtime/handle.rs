@@ -11,6 +11,7 @@ use tokio::task::JoinHandle;
 
 use crate::agent::AgentState;
 use crate::agent::Event;
+use crate::conversation::Entry;
 use crate::record::RecordError;
 use crate::runtime::AgentConfig;
 use crate::runtime::ConfigError;
@@ -94,6 +95,13 @@ impl Agent {
         }
     }
 
+    /// Where records the owner erased come in, so the running conversation drops them too.
+    pub fn forgets(&self) -> Forgets {
+        Forgets {
+            tx: self.tx.clone(),
+        }
+    }
+
     async fn stop(mut self, handing_off: bool) {
         let _ = self.tx.send(Event::Shutdown { handing_off }).await;
         if let Err(error) = (&mut self.done).await
@@ -148,6 +156,18 @@ impl Returns {
             Ok(false) => Delivered::NotOpen,
             Err(_) => Delivered::Gone,
         }
+    }
+}
+
+/// Takes erased records into a running agent, which drops them from its conversation.
+#[derive(Clone, Debug)]
+pub struct Forgets {
+    tx: mpsc::Sender<Event>,
+}
+
+impl Forgets {
+    pub async fn forget(&self, entries: Vec<Entry>) {
+        let _ = self.tx.send(Event::Forgotten { entries }).await;
     }
 }
 

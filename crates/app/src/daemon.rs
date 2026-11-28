@@ -2,6 +2,7 @@ use std::fs;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -35,6 +36,7 @@ use dotori_core::record::RecordError;
 use dotori_core::record::RecordStore;
 use dotori_core::runtime::Agent;
 use dotori_core::runtime::AgentConfig;
+use dotori_core::runtime::Forgets;
 use dotori_core::runtime::Ports;
 use dotori_core::sub_session::SubSessionRunner;
 use dotori_core::tool::Toolbox;
@@ -231,6 +233,7 @@ pub(crate) async fn serve(
         asked.close_server_of(&name);
     }
     let forget_copies: Arc<OnceLock<Arc<Copies>>> = Arc::default();
+    let forget_agent: Arc<Mutex<Option<Forgets>>> = Arc::default();
     let forgetting = MemoryConfig {
         record: home.record(),
         index: home.search_index(),
@@ -243,6 +246,7 @@ pub(crate) async fn serve(
         memory: forgetting.clone(),
         copies: Arc::clone(&forget_copies),
         notes: Arc::clone(&notes),
+        agent: Arc::clone(&forget_agent),
     }));
     for tool in [FORGET, RUN_SHELL, WRITE_FILE, EDIT_FILE] {
         asked.always(tool);
@@ -569,6 +573,7 @@ pub(crate) async fn serve(
             .await
             .map_err(|error| error.to_string())?;
         handoff.serve(Some(agent.returns()));
+        *forget_agent.lock().expect("unpoisoned") = Some(agent.forgets());
         if linked.is_some() {
             eprintln!("dotori: this PC runs the assistant now");
         }
@@ -586,6 +591,7 @@ pub(crate) async fn serve(
         };
         route.elsewhere();
         handoff.serve(None);
+        *forget_agent.lock().expect("unpoisoned") = None;
         match &ended {
             Ended::Stopped(_) => {
                 handoff.quit();

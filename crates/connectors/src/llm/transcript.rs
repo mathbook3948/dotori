@@ -1,12 +1,16 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::time::SystemTime;
 
+use dotori_core::carried::Room;
+use dotori_core::carried::carried;
 use dotori_core::conversation::Action;
 use dotori_core::conversation::Entry;
 use dotori_core::llm::ModelTrace;
 use dotori_core::message::Audience;
 use dotori_core::message::Role;
 use dotori_core::sub_session::SubSessionOutcome;
+use dotori_core::tool::ToolCallId;
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
 use serde_json::value::RawValue;
@@ -24,12 +28,16 @@ const NOTHING_NEW: &str = "Nothing new has happened.";
 const LEFT_OUT: &str = "<earlier_conversation_left_out>The start of this conversation is not \
                         shown, to keep it short. Search memory for what was said \
                         before.</earlier_conversation_left_out>";
-/// About how many characters of the conversation a request carries at most.
-pub(crate) const KEPT: usize = 300_000;
-/// How far the start of what is carried moves at a time, so the start of the conversation stays
-/// the same between most requests and the provider can reuse its cache.
-pub(crate) const STEP: usize = 100_000;
-const SMALL: usize = 200;
+const SUMMARY_INTRO: &str = "The start of this conversation is not shown, to keep it short. \
+                             This is a summary of it. It is past context, not new requests, and \
+                             newer messages win when they disagree. Search memory for the exact \
+                             words. Do not say that you read a summary. Carry on as if you \
+                             remembered it.";
+const LEFT_OUT_AFTER_SUMMARY: &str = "<conversation_left_out>Some of the conversation after \
+                                      this summary is not shown either, to keep it short. \
+                                      Search memory for it.</conversation_left_out>";
+
+const CLIPPED_AT: usize = 2000;
 
 /// The conversation as alternating turns, each reply placed right after what it answered.
 #[derive(Debug, PartialEq)]
@@ -67,67 +75,147 @@ impl PartialEq for Said {
     }
 }
 
-pub(crate) fn build(conversation: &[Entry], provider: &str, zone: &TimeZone) -> Vec<Turn> {
-    let start = start(conversation);
+pub(crate) fn build(
+    conversation: &[Entry],
+    provider: &str,
+    zone: &TimeZone,
+    room: Room,
+) -> Vec<Turn> {
+    let carried = carried(conversation, room);
     let mut builder = Builder::default();
-    if start > 0 {
-        builder.notes.push(String::from(LEFT_OUT));
+    match carried.summary {
+        Some(summary) => {
+            builder.notes.push(tagged(
+                "earlier_conversation_summary",
+                &[],
+                &format!("{SUMMARY_INTRO}\n\n{summary}"),
+            ));
+            if carried.left_out {
+                builder.notes.push(String::from(LEFT_OUT_AFTER_SUMMARY));
+            }
+        }
+        None if carried.left_out => builder.notes.push(String::from(LEFT_OUT)),
+        None => {}
     }
-    for index in order(conversation, start) {
+    for index in order(conversation, carried.start) {
         builder.add(index, &conversation[index], provider, zone);
     }
     builder.finish()
 }
 
-fn start(conversation: &[Entry]) -> usize {
-    let total: usize = conversation.iter().map(weight).sum();
-    if total <= KEPT {
-        return 0;
+/// What a summary is asked to merge, as plain text with each entry as a block of its own. The
+/// model's thinking and its raw replies are left out.
+pub(crate) fn summary_input(
+    previous: Option<&str>,
+    conversation: &[Entry],
+    zone: &TimeZone,
+) -> String {
+    let blocks: Vec<String> = order(conversation, 0)
+        .into_iter()
+        .flat_map(|index| summary_blocks(conversation, &conversation[index], zone))
+        .collect();
+    let mut input = String::new();
+    if let Some(previous) = previous {
+        input.push_str(&tagged("previous_summary", &[], previous));
+        input.push_str(
+            "
+
+",
+        );
     }
-    let cut = (total - KEPT).div_ceil(STEP) * STEP;
-    let mut before = 0;
-    let mut last_heard = 0;
-    for (index, entry) in conversation.iter().enumerate() {
-        if matches!(entry, Entry::Heard { .. }) {
-            if before >= cut {
-                return index;
+    input.push_str(&format!(
+        "<conversation>
+{}
+</conversation>",
+        blocks.join(
+            "
+
+"
+        )
+    ));
+    input
+}
+
+fn summary_blocks(conversation: &[Entry], entry: &Entry, zone: &TimeZone) -> Vec<String> {
+    match entry {
+        Entry::Acted { actions, .. } => actions.iter().map(summary_action).collect(),
+        Entry::ToolReturned { call, result } => {
+            let mut attributes = Vec::new();
+            if let Some(name) = tool_named(conversation, call) {
+                attributes.push(("tool", name));
             }
-            last_heard = index;
+            let (body, failed) = match result {
+                Ok(output) => (output, false),
+                Err(error) => (&error.detail, true),
+            };
+            if failed {
+                attributes.push(("failed", "true"));
+            }
+            vec![tagged("tool_result", &attributes, &clip(body))]
         }
-        before += weight(entry);
+        Entry::SubSessionReturned { spec, outcome } => {
+            let (status, text) = sub_session_result(outcome);
+            vec![tagged(
+                "sub_session",
+                &[("title", &spec.title), ("status", status)],
+                &clip(text),
+            )]
+        }
+        Entry::Refused(Action::UseTool(call)) => {
+            vec![tagged(
+                "not_run",
+                &[("tool", &call.name)],
+                &clip(&call.input),
+            )]
+        }
+        Entry::Refused(Action::Delegate(spec)) => vec![tagged(
+            "not_started",
+            &[("title", &spec.title)],
+            &clip(&spec.brief),
+        )],
+        Entry::Summarized { .. } => Vec::new(),
+        other => vec![note(other, zone)],
     }
-    last_heard
 }
 
-fn weight(entry: &Entry) -> usize {
-    SMALL
-        + match entry {
-            Entry::Heard { message, .. } => chars(message.content.as_str()),
-            Entry::Acted { actions, trace, .. } => match trace {
-                Some(trace) => chars(&trace.data),
-                None => actions
-                    .iter()
-                    .map(|action| match action {
-                        Action::Say { text, .. } => chars(text),
-                        Action::UseTool(call) => chars(&call.input),
-                        Action::Delegate(spec) => chars(&spec.brief),
-                    })
-                    .sum(),
-            },
-            Entry::ToolReturned { result, .. } => match result {
-                Ok(output) => chars(output),
-                Err(error) => chars(&error.detail),
-            },
-            Entry::SubSessionReturned { outcome, .. } => match outcome {
-                SubSessionOutcome::Finished(text) | SubSessionOutcome::Failed(text) => chars(text),
-            },
-            Entry::DeliveryFailed { text, .. } => chars(text),
-            _ => 0,
+fn summary_action(action: &Action) -> String {
+    match action {
+        Action::Say {
+            thread,
+            text,
+            privately,
+        } => {
+            let thread = thread.get().to_string();
+            let mut attributes = vec![("thread", thread.as_str())];
+            if *privately {
+                attributes.push(("privately", "true"));
+            }
+            tagged("dotori_said", &attributes, text)
         }
+        Action::UseTool(call) => tagged("dotori_used", &[("tool", &call.name)], &clip(&call.input)),
+        Action::Delegate(spec) => tagged(
+            "dotori_delegated",
+            &[("title", &spec.title)],
+            &clip(&spec.brief),
+        ),
+    }
 }
 
-fn chars(text: &str) -> usize {
-    text.chars().count()
+fn tool_named<'a>(conversation: &'a [Entry], call: &ToolCallId) -> Option<&'a str> {
+    conversation.iter().find_map(|entry| match entry {
+        Entry::Acted { actions, .. } => actions.iter().find_map(|action| match action {
+            Action::UseTool(used) if used.id == *call => Some(used.name.as_str()),
+            _ => None,
+        }),
+        _ => None,
+    })
+}
+
+fn clip(text: &str) -> Cow<'_, str> {
+    match text.char_indices().nth(CLIPPED_AT) {
+        Some((end, _)) => Cow::Owned(format!("{}…", &text[..end])),
+        None => Cow::Borrowed(text),
+    }
 }
 
 fn order(conversation: &[Entry], start: usize) -> Vec<usize> {
@@ -191,6 +279,7 @@ impl Builder {
                         .push(tagged("late_tool_result", &[("id", id)], &text));
                 }
             }
+            Entry::Summarized { .. } => {}
             other => self.notes.push(note(other, zone)),
         }
     }
@@ -348,10 +437,7 @@ fn note(entry: &Entry, zone: &TimeZone) -> String {
             tagged("message", &attributes, message.content.as_str())
         }
         Entry::SubSessionReturned { spec, outcome } => {
-            let (status, text) = match outcome {
-                SubSessionOutcome::Finished(text) => ("finished", text),
-                SubSessionOutcome::Failed(text) => ("failed", text),
-            };
+            let (status, text) = sub_session_result(outcome);
             tagged(
                 "sub_session",
                 &[("title", &spec.title), ("status", status)],
@@ -387,7 +473,16 @@ fn note(entry: &Entry, zone: &TimeZone) -> String {
             &[("channel", channel.as_str())],
             detail.as_deref().unwrap_or("It stopped without an error."),
         ),
-        Entry::Acted { .. } | Entry::ToolReturned { .. } => String::new(),
+        Entry::Acted { .. } | Entry::ToolReturned { .. } | Entry::Summarized { .. } => {
+            String::new()
+        }
+    }
+}
+
+fn sub_session_result(outcome: &SubSessionOutcome) -> (&'static str, &str) {
+    match outcome {
+        SubSessionOutcome::Finished(text) => ("finished", text),
+        SubSessionOutcome::Failed(text) => ("failed", text),
     }
 }
 

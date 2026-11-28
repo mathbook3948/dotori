@@ -32,6 +32,8 @@ pub const RAN: &str = "실행했어요.";
 pub const SKIPPED: &str = "알겠어요, 실행하지 않을게요.";
 /// The reply to anything else.
 pub const OTHER: &str = "알겠어요. 바로 확인해 볼게요.";
+/// What the reply to a question about the summary starts with, when the request carries one.
+pub const CARRIED: &str = "이어 온 요약: ";
 /// The greeting the first conversation starts with.
 pub const GREETED: &str = "안녕하세요. 개인 비서 Dotori예요.";
 
@@ -110,6 +112,11 @@ async fn serve(mut stream: TcpStream, script: &Script) -> std::io::Result<()> {
     stream.write_all(response.as_bytes()).await
 }
 
+/// The summary of a conversation of `count` messages.
+pub fn summary(count: usize) -> String {
+    format!("Summary of {count} messages.")
+}
+
 /// The next message of the script, given the conversation so far.
 pub fn answer(asked: &Value, script: &Script) -> Value {
     let messages = asked["messages"].as_array().cloned().unwrap_or_default();
@@ -122,6 +129,10 @@ pub fn answer(asked: &Value, script: &Script) -> Value {
     let Some(last) = messages.last() else {
         return done();
     };
+    if asked["tools"].is_null() {
+        let count = text_of(last).matches("<message ").count();
+        return json!({ "role": "assistant", "content": summary(count) });
+    }
     let to_owner = |text: &str| match owner {
         Some(thread) => call("say", json!({ "thread": thread, "text": text })),
         None => done(),
@@ -153,6 +164,11 @@ pub fn answer(asked: &Value, script: &Script) -> Value {
             if said.channel == "greeting" {
                 return call("say", json!({ "thread": said.thread, "text": GREETED }));
             }
+            if said.text.contains("요약")
+                && let Some(carried) = carried_summary(&messages)
+            {
+                return to_owner(&format!("{CARRIED}{carried}"));
+            }
             if said.text.contains("치과") {
                 return call(
                     "add_routine",
@@ -174,6 +190,18 @@ pub fn answer(asked: &Value, script: &Script) -> Value {
         }
         _ => done(),
     }
+}
+
+/// The last line of the summary a request carries before the conversation.
+fn carried_summary(messages: &[Value]) -> Option<String> {
+    messages.iter().find_map(|message| {
+        let text = text_of(message);
+        let from = text.find("<earlier_conversation_summary>")?;
+        let body = text[from..]
+            .split("</earlier_conversation_summary>")
+            .next()?;
+        body.lines().last().map(str::to_owned)
+    })
 }
 
 fn done() -> Value {

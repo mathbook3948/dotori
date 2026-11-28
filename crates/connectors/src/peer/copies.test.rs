@@ -179,7 +179,12 @@ async fn what_one_pc_forgets_the_other_forgets_too_and_never_takes_back() {
         .expect("listed")[0]
         .id
         .clone();
-    let forgotten = a.store.forget(vec![id], Vec::new()).await.expect("forgot");
+    let forgotten = a
+        .store
+        .forget(vec![id], Vec::new())
+        .await
+        .expect("forgot")
+        .list;
     a_copies.forget(&forgotten);
 
     until_holds(&b.store, &["kept"]).await;

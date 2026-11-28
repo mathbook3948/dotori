@@ -7,12 +7,15 @@ use crate::agent::event::Event;
 use crate::agent::ids::CallId;
 use crate::agent::ids::GatherId;
 use crate::agent::ids::SubSessionId;
+use crate::agent::ids::SummaryId;
 use crate::agent::ids::ToolRunId;
 use crate::agent::state::AfterReply;
 use crate::agent::state::AgentState;
 use crate::agent::state::Arrival;
 use crate::agent::state::MessageKey;
 use crate::agent::state::Phase;
+use crate::agent::state::Summarizing;
+use crate::carried::plan;
 use crate::channel::ChannelError;
 use crate::channel::Traffic;
 use crate::conversation::Action;
@@ -21,6 +24,7 @@ use crate::conversation::ThreadRef;
 use crate::id::ChannelId;
 use crate::llm::ModelError;
 use crate::llm::ModelReply;
+use crate::llm::SummaryRequest;
 use crate::message::Address;
 use crate::message::Incoming;
 use crate::message::Message;
@@ -44,6 +48,10 @@ pub(crate) fn step(state: &mut AgentState, event: Event) -> Vec<Effect> {
         } => on_received(state, channel, incoming, at),
         Event::ModelDone { call, result } => on_model_done(state, call, result),
         Event::Gathered(gather) => on_gathered(state, gather),
+        Event::SummaryDone { summary, result } => {
+            on_summary_done(state, summary, result);
+            Vec::new()
+        }
         Event::ToolDone { run, result } => on_tool_done(state, run, result),
         Event::SubSessionDone {
             sub_session,
@@ -62,6 +70,10 @@ pub(crate) fn step(state: &mut AgentState, event: Event) -> Vec<Effect> {
             record,
             ack,
         } => on_returned(state, spec, outcome, record, ack),
+        Event::Forgotten { entries } => {
+            on_forgotten(state, &entries);
+            Vec::new()
+        }
         Event::Shutdown { handing_off } => {
             state.handing_off |= handing_off;
             on_shutdown(state)
@@ -117,6 +129,46 @@ fn on_received(
     effects
 }
 
+fn on_forgotten(state: &mut AgentState, entries: &[Entry]) {
+    let mut first: Option<usize> = None;
+    for forgotten in entries {
+        let Some(index) = state
+            .conversation
+            .iter()
+            .position(|entry| entry.is_same(forgotten))
+        else {
+            continue;
+        };
+        remove(state, index);
+        first = Some(first.map_or(index, |first| first.min(index)));
+    }
+    let Some(first) = first else {
+        return;
+    };
+    state.summarizing = Summarizing::Idle;
+    for index in (first..state.conversation.len()).rev() {
+        if matches!(state.conversation[index], Entry::Summarized { .. }) {
+            remove(state, index);
+        }
+    }
+}
+
+fn remove(state: &mut AgentState, index: usize) {
+    state.conversation.remove(index);
+    for entry in &mut state.conversation[index..] {
+        if let Entry::Acted { answered, .. } = entry
+            && *answered > index
+        {
+            *answered -= 1;
+        }
+    }
+    if let Phase::Thinking { answered, .. } = &mut state.phase
+        && *answered > index
+    {
+        *answered -= 1;
+    }
+}
+
 fn on_model_done(
     state: &mut AgentState,
     call: CallId,
@@ -140,7 +192,7 @@ fn on_model_done(
                 return vec![call_model(state)];
             }
             state.phase = Phase::Idle;
-            return Vec::new();
+            return summarize_if_due(state).into_iter().collect();
         }
     };
     state.conversation.push(Entry::Acted {
@@ -155,6 +207,7 @@ fn on_model_done(
         effects.push(call_model(state));
     } else {
         state.phase = Phase::Idle;
+        effects.extend(summarize_if_due(state));
     }
     effects
 }
@@ -163,6 +216,51 @@ fn on_gathered(state: &mut AgentState, gather: GatherId) -> Vec<Effect> {
     match state.phase {
         Phase::Gathering { gather: current } if current == gather => vec![call_model(state)],
         _ => Vec::new(),
+    }
+}
+
+fn summarize_if_due(state: &mut AgentState) -> Option<Effect> {
+    let plan = plan(&state.conversation, state.room)?;
+    match state.summarizing {
+        Summarizing::Idle => {}
+        Summarizing::Failed { weight } if plan.weight >= weight + state.room.step() => {}
+        Summarizing::Running { .. } | Summarizing::Failed { .. } => return None,
+    }
+    let summary = state.ids.next_summary();
+    state.summarizing = Summarizing::Running {
+        summary,
+        kept: plan.kept,
+    };
+    Some(Effect::Summarize {
+        summary,
+        request: SummaryRequest {
+            previous: plan.previous,
+            conversation: state.conversation[plan.covered].to_vec(),
+            time_zone: None,
+        },
+    })
+}
+
+fn on_summary_done(state: &mut AgentState, summary: SummaryId, result: Result<String, ModelError>) {
+    match &state.summarizing {
+        Summarizing::Running {
+            summary: current, ..
+        } if *current == summary => {}
+        _ => return,
+    }
+    let Summarizing::Running { kept, .. } = mem::replace(&mut state.summarizing, Summarizing::Idle)
+    else {
+        return;
+    };
+    match result {
+        Ok(text) => state.conversation.push(Entry::Summarized { kept, text }),
+        Err(_) => {
+            if let Some(plan) = plan(&state.conversation, state.room) {
+                state.summarizing = Summarizing::Failed {
+                    weight: plan.weight,
+                };
+            }
+        }
     }
 }
 

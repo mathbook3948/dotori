@@ -121,13 +121,14 @@ impl Shell {
                 self.model_calls.remove(call);
             }
             let recorded = state.conversation.len();
+            state.room = self.model.room();
             let effects = step(&mut state, event);
             let end = state
                 .conversation
                 .len()
                 .saturating_sub(mem::take(&mut state.unrecorded))
                 .max(recorded);
-            self.record(&state.conversation[recorded..end]);
+            self.record(state.conversation.get(recorded..end).unwrap_or_default());
             self.tell_working(state.working());
             for effect in effects {
                 if matches!(effect, Effect::Stop) {
@@ -199,6 +200,16 @@ impl Shell {
                     let _ = tx.send(Event::ModelDone { call, result }).await;
                 });
                 self.model_calls.insert(call, handle);
+            }
+            Effect::Summarize { summary, request } => {
+                let model = Arc::clone(&self.model);
+                let tx = self.tx.clone();
+                self.tasks.spawn(async move {
+                    let result = caught(|| model.summarize(request))
+                        .await
+                        .unwrap_or_else(|detail| Err(ModelError { detail }));
+                    let _ = tx.send(Event::SummaryDone { summary, result }).await;
+                });
             }
             Effect::CancelModel(call) => {
                 if let Some(handle) = self.model_calls.remove(&call) {

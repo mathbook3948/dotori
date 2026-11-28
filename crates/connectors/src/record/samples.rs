@@ -3,6 +3,7 @@ use std::time::UNIX_EPOCH;
 
 use dotori_core::conversation::Action;
 use dotori_core::conversation::Entry;
+use dotori_core::conversation::MessageRef;
 use dotori_core::conversation::ThreadRef;
 use dotori_core::id::ChannelId;
 use dotori_core::id::ExternalMessageId;
@@ -120,6 +121,13 @@ pub(crate) fn every_entry() -> Vec<Entry> {
         Entry::ChannelEnded {
             channel: ChannelId::parse("slack").expect("valid"),
             detail: None,
+        },
+        Entry::Summarized {
+            kept: MessageRef {
+                channel: ChannelId::parse("slack").expect("valid"),
+                id: ExternalMessageId::new("m1"),
+            },
+            text: String::from("요약 \"글\"\n둘째 줄"),
         },
     ]
 }

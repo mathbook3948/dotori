@@ -413,3 +413,144 @@ fn the_listed_models_keep_their_order_and_names() {
         ])
     );
 }
+
+const SUMMARY_REPLY: &str = r#"{"id":"msg_1","type":"message","role":"assistant","model":"claude-sonnet-5-5","content":[{"type":"thinking","thinking":"hm","signature":"sig"},{"type":"text","text":"  Open requests\n- none"},{"type":"text","text":"\n- more  "}],"stop_reason":"end_turn","stop_details":null,"usage":{"input_tokens":10,"output_tokens":5}}"#;
+
+fn summary_request() -> SummaryRequest {
+    SummaryRequest {
+        previous: Some(String::from("before")),
+        conversation: vec![heard("hi")],
+        time_zone: Some(String::from("UTC")),
+    }
+}
+
+#[test]
+fn the_summary_request_has_the_prompt_the_input_and_nothing_else() {
+    let body: Value = serde_json::from_str(&summary_body(
+        &AnthropicConfig::new("key"),
+        &summary_request(),
+    ))
+    .expect("json");
+
+    assert_eq!(body["model"], "claude-sonnet-5-5");
+    assert_eq!(body["max_tokens"], 16000);
+    assert_eq!(body["fallbacks"], "default");
+    assert_eq!(body["system"].as_array().expect("system").len(), 1);
+    assert_eq!(body["system"][0]["text"], SUMMARY_SYSTEM);
+    assert_eq!(body["messages"].as_array().expect("messages").len(), 1);
+    assert_eq!(body["messages"][0]["role"], "user");
+    let input = body["messages"][0]["content"].as_str().expect("text");
+    assert!(input.starts_with(
+        "<previous_summary>
+before
+"
+    ));
+    assert!(input.contains("<conversation>"));
+    for absent in ["tools", "tool_choice", "thinking", "output_config"] {
+        assert!(body.get(absent).is_none(), "{absent}");
+    }
+    assert!(!body.to_string().contains("cache_control"));
+}
+
+#[test]
+fn a_summary_is_the_text_blocks_joined_and_trimmed() {
+    assert_eq!(
+        parse_summary(SUMMARY_REPLY).expect("summary"),
+        "Open requests
+- none
+- more"
+    );
+}
+
+#[test]
+fn a_cut_off_refused_or_empty_summary_is_a_failure() {
+    let cut = r#"{"content":[{"type":"text","text":"Open"}],"stop_reason":"max_tokens"}"#;
+    let refused = r#"{"content":[],"stop_reason":"refusal","stop_details":{"category":"cyber"}}"#;
+    let blank = r#"{"content":[{"type":"text","text":"  "}],"stop_reason":"end_turn"}"#;
+    let thought = r#"{"content":[{"type":"thinking","thinking":"hm","signature":"s"}],"stop_reason":"end_turn"}"#;
+
+    assert!(
+        parse_summary(cut)
+            .expect_err("cut")
+            .detail
+            .contains("token limit")
+    );
+    assert!(
+        parse_summary(refused)
+            .expect_err("refused")
+            .detail
+            .contains("cyber")
+    );
+    assert!(
+        parse_summary(blank)
+            .expect_err("blank")
+            .detail
+            .contains("empty summary")
+    );
+    assert!(
+        parse_summary(thought)
+            .expect_err("thought")
+            .detail
+            .contains("empty summary")
+    );
+}
+
+#[tokio::test]
+async fn summarize_posts_the_summary_request_to_the_messages_api() {
+    let (base_url, mut requests) = mock::serve(vec![(200, SUMMARY_REPLY)]).await;
+
+    let summary = connector(base_url)
+        .summarize(summary_request())
+        .await
+        .expect("summary");
+
+    assert_eq!(
+        summary,
+        "Open requests
+- none
+- more"
+    );
+    let captured = requests.recv().await.expect("request");
+    let head = captured.head.to_ascii_lowercase();
+    assert!(head.starts_with("post /v1/messages http/1.1"));
+    assert!(head.contains("x-api-key: sk-test"));
+    let body: Value = serde_json::from_str(&captured.body).expect("json body");
+    assert_eq!(body["system"][0]["text"], SUMMARY_SYSTEM);
+}
+
+fn twelve_long_messages() -> Vec<Entry> {
+    (0..12)
+        .map(|n| heard(&format!("m{n:02}{}", "가".repeat(20_000))))
+        .collect()
+}
+
+#[test]
+fn a_context_window_makes_the_request_carry_less() {
+    let conversation = twelve_long_messages();
+    let mut small = AnthropicConfig::new("key");
+    small.context_window = Some(130_000);
+
+    let whole = sent(&AnthropicConfig::new("key"), &request(conversation.clone())).to_string();
+    let cut = sent(&small, &request(conversation)).to_string();
+
+    assert!(whole.contains("m00"));
+    assert!(!cut.contains("m00"));
+    assert!(cut.contains("m11"));
+}
+
+#[test]
+fn the_model_reports_the_room_its_context_window_leaves() {
+    let mut config = AnthropicConfig::new("key");
+    assert_eq!(
+        Anthropic::new(config.clone()).expect("client").room(),
+        Room::DEFAULT
+    );
+
+    config.context_window = Some(400_000);
+    config.max_tokens = 20_000;
+
+    assert_eq!(
+        Anthropic::new(config).expect("client").room(),
+        Room::for_window(400_000, 20_000)
+    );
+}

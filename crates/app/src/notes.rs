@@ -13,12 +13,14 @@ use std::time::UNIX_EPOCH;
 use dotori_connectors::peer::hub::Heard;
 use dotori_connectors::peer::hub::Hub;
 use dotori_core::BoxFuture;
+use dotori_core::carried::Room;
 use dotori_core::conversation::Action;
 use dotori_core::conversation::Entry;
 use dotori_core::llm::Model;
 use dotori_core::llm::ModelError;
 use dotori_core::llm::ModelReply;
 use dotori_core::llm::ModelRequest;
+use dotori_core::llm::SummaryRequest;
 use dotori_core::message::Role;
 use dotori_core::tool::ToolCall;
 use dotori_core::tool::ToolError;
@@ -411,6 +413,24 @@ impl Model for Noted {
         request.context = self.notes.context();
         request.time_zone = self.routines.zone().iana_name().map(str::to_owned);
         self.model.complete(request)
+    }
+
+    fn summarize(&self, mut request: SummaryRequest) -> BoxFuture<'_, Result<String, ModelError>> {
+        request.time_zone = self.routines.zone().iana_name().map(str::to_owned);
+        Box::pin(async move {
+            let summary = self.model.summarize(request).await;
+            if let Err(error) = &summary {
+                eprintln!(
+                    "dotori: the conversation could not be summarized: {}",
+                    error.detail
+                );
+            }
+            summary
+        })
+    }
+
+    fn room(&self) -> Room {
+        self.model.room()
     }
 }
 

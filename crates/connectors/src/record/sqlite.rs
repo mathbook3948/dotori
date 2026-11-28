@@ -25,7 +25,7 @@ use uuid::Uuid;
 
 use crate::record::form::Line;
 
-const VERSION: i64 = 4;
+const VERSION: i64 = 5;
 const BEFORE_ARRIVALS: i64 = 2;
 const LEGACY_VERSION: i64 = 1;
 const SETTLE_TRIES: usize = 20;
@@ -84,6 +84,22 @@ pub struct SqliteStore {
 pub struct Forgotten {
     pub id: String,
     pub device: String,
+}
+
+/// What `forget` removed. `entries` are the ones that could be read back, for whoever still
+/// holds them in memory.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Forgot {
+    pub list: Vec<Forgotten>,
+    pub entries: Vec<Entry>,
+}
+
+/// What `take_forgotten` did. `taken` says how many records were new here, and `summaries` are
+/// the summaries it forgot on its own, for the other PCs to forget too.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Taken {
+    pub taken: usize,
+    pub summaries: Vec<Forgotten>,
 }
 
 /// A record as the owner would recognize it, to show before it is forgotten.
@@ -331,11 +347,12 @@ impl SqliteStore {
     /// records the owner was shown that carry their numbers, such as the search result that found
     /// them. Each is removed from the raw record and its number kept as forgotten. Fails,
     /// forgetting nothing, if any of `ids` is not here; a carrier already gone is passed over.
+    /// Every summary made after the earliest of them goes too, since it may hold what they said.
     pub async fn forget(
         &self,
         ids: Vec<String>,
         carriers: Vec<String>,
-    ) -> Result<Vec<Forgotten>, RecordError> {
+    ) -> Result<Forgot, RecordError> {
         self.with(move |book, folder, _| {
             let mut found = Vec::new();
             for id in &ids {
@@ -357,22 +374,56 @@ impl SqliteStore {
                     found.push((year, Forgotten { id, device }));
                 }
             }
+            let earliest = found
+                .iter()
+                .map(|(_, forgotten)| forgotten.id.clone())
+                .min();
+            if let Some(id) = earliest {
+                for (year, summary, device) in summaries_after(book, folder, &id)? {
+                    if !found.iter().any(|(_, known)| known.id == summary) {
+                        found.push((
+                            year,
+                            Forgotten {
+                                id: summary,
+                                device,
+                            },
+                        ));
+                    }
+                }
+            }
+            let mut entries = Vec::new();
             for (year, forgotten) in &found {
-                forget_in(book.year(folder, *year)?, forgotten, true)?;
+                let connection = book.year(folder, *year)?;
+                let line: String = connection
+                    .query_row(
+                        "SELECT line FROM records WHERE id = ?1",
+                        [&forgotten.id],
+                        |row| row.get(0),
+                    )
+                    .map_err(fail)?;
+                if let Ok(record) = parse(&line) {
+                    entries.push(record.entry);
+                }
+                forget_in(connection, forgotten, true)?;
             }
             settle(book, folder)?;
-            Ok(found.into_iter().map(|(_, forgotten)| forgotten).collect())
+            Ok(Forgot {
+                list: found.into_iter().map(|(_, forgotten)| forgotten).collect(),
+                entries,
+            })
         })
         .await
     }
 
     /// Takes in what another PC forgot. A record here is removed, unless the PC named as its maker
-    /// is not the one that made it; one not here yet is refused when it arrives. Says how many
-    /// were new.
-    pub async fn take_forgotten(&self, list: Vec<Forgotten>) -> Result<usize, RecordError> {
+    /// is not the one that made it; one not here yet is refused when it arrives. A summary here
+    /// made after the earliest newly forgotten record goes too, since the PC that sent the list
+    /// may not have had it yet.
+    pub async fn take_forgotten(&self, list: Vec<Forgotten>) -> Result<Taken, RecordError> {
         self.with(move |book, folder, _| {
             let mut taken = 0;
             let mut ids = Vec::new();
+            let mut earliest: Option<String> = None;
             for forgotten in &list {
                 let Ok(number) = Uuid::parse_str(&forgotten.id) else {
                     continue;
@@ -398,8 +449,12 @@ impl SqliteStore {
                         )
                     }
                 };
-                if forget_in(book.year(folder, year)?, forgotten, here)? || here {
+                let new = forget_in(book.year(folder, year)?, forgotten, here)?;
+                if new || here {
                     taken += 1;
+                }
+                if new && earliest.as_ref().is_none_or(|known| forgotten.id < *known) {
+                    earliest = Some(forgotten.id.clone());
                 }
                 ids.push(forgotten.id.clone());
             }
@@ -408,10 +463,23 @@ impl SqliteStore {
                     taken += 1;
                 }
             }
+            let mut summaries = Vec::new();
+            if let Some(id) = earliest {
+                for (year, id, device) in summaries_after(book, folder, &id)? {
+                    if ids.contains(&id) {
+                        continue;
+                    }
+                    let summary = Forgotten { id, device };
+                    if forget_in(book.year(folder, year)?, &summary, true)? {
+                        taken += 1;
+                        summaries.push(summary);
+                    }
+                }
+            }
             if taken > 0 {
                 settle(book, folder)?;
             }
-            Ok(taken)
+            Ok(Taken { taken, summaries })
         })
         .await
     }
@@ -834,6 +902,30 @@ fn carrying(
     Ok(found)
 }
 
+fn summaries_after(
+    book: &mut Book,
+    folder: &Path,
+    id: &str,
+) -> Result<Vec<(i64, String, String)>, RecordError> {
+    let mut found = Vec::new();
+    for later in years(folder)? {
+        let mut query = book
+            .year(folder, later)?
+            .prepare("SELECT id, device FROM records WHERE kind = 'summarized' AND id > ?1")
+            .map_err(fail)?;
+        let rows = query
+            .query_map([id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(fail)?;
+        for row in rows {
+            let (summary, device) = row.map_err(fail)?;
+            found.push((later, summary, device));
+        }
+    }
+    Ok(found)
+}
+
 fn forget_in(
     connection: &mut Connection,
     forgotten: &Forgotten,
@@ -994,6 +1086,10 @@ impl Columns {
             Entry::ChannelEnded { channel, .. } => Self {
                 kind: "channel_ended",
                 channel: Some(channel.as_str().to_owned()),
+                ..Self::default()
+            },
+            Entry::Summarized { .. } => Self {
+                kind: "summarized",
                 ..Self::default()
             },
         }

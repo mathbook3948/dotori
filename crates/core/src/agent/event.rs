@@ -3,8 +3,10 @@ use std::time::SystemTime;
 use crate::agent::ids::CallId;
 use crate::agent::ids::GatherId;
 use crate::agent::ids::SubSessionId;
+use crate::agent::ids::SummaryId;
 use crate::agent::ids::ToolRunId;
 use crate::channel::ChannelError;
+use crate::conversation::Entry;
 use crate::conversation::ThreadRef;
 use crate::id::ChannelId;
 use crate::llm::ModelError;
@@ -29,6 +31,10 @@ pub(crate) enum Event {
         result: Result<ModelReply, ModelError>,
     },
     Gathered(GatherId),
+    SummaryDone {
+        summary: SummaryId,
+        result: Result<String, ModelError>,
+    },
     ToolDone {
         run: ToolRunId,
         result: Result<String, ToolError>,
@@ -52,6 +58,10 @@ pub(crate) enum Event {
         outcome: SubSessionOutcome,
         record: bool,
         ack: u64,
+    },
+    /// Records the owner erased, which must leave the conversation too.
+    Forgotten {
+        entries: Vec<Entry>,
     },
     Shutdown {
         handing_off: bool,
