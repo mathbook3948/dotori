@@ -16,6 +16,8 @@ use dotori_core::message::Message;
 use dotori_core::message::Place;
 use dotori_core::message::Role;
 use dotori_core::message::Sender;
+use dotori_core::sub_session::SubSessionOutcome;
+use dotori_core::sub_session::SubSessionSpec;
 use dotori_core::tool::ToolCall;
 use dotori_core::tool::ToolCallId;
 use dotori_core::tool::ToolError;
@@ -590,4 +592,135 @@ fn a_message_names_when_it_was_heard_in_the_zone_given() {
         notes[0]
     );
     assert!(!notes[1].contains("time="), "{}", notes[1]);
+}
+
+const EXAMPLE: &str = r#"<previous_summary>
+Open requests
+- Mina: &quot;book the dentist&quot;
+</previous_summary>
+
+<conversation>
+<message thread="1" channel="app" place="main" from="Me" role="owner">
+move it to 3pm &amp; tell Mina
+</message>
+
+<dotori_used tool="read_file">
+{}
+</dotori_used>
+
+<dotori_said thread="1" privately="true">
+Done.
+</dotori_said>
+
+<tool_result tool="read_file" failed="true">
+no such file
+</tool_result>
+
+<sub_session title="Check" status="finished">
+All good.
+</sub_session>
+</conversation>"#;
+
+#[test]
+fn a_summary_input_writes_each_entry_as_plain_text_and_leaves_the_trace_out() {
+    let conversation = vec![
+        heard(1, "move it to 3pm & tell Mina"),
+        acted(
+            1,
+            vec![
+                tool("t1"),
+                Action::Say {
+                    thread: ThreadRef::new(1),
+                    text: String::from("Done."),
+                    privately: true,
+                },
+            ],
+            Some(trace(
+                "anthropic",
+                r#"[{"type":"thinking","thinking":"secret"}]"#,
+                &[],
+                &[],
+            )),
+        ),
+        returned("t1", Err("no such file")),
+        Entry::SubSessionReturned {
+            spec: SubSessionSpec {
+                title: String::from("Check"),
+                brief: String::from("look"),
+                folder: None,
+            },
+            outcome: SubSessionOutcome::Finished(String::from("All good.")),
+        },
+        summarized("move it to 3pm & tell Mina", "old"),
+    ];
+
+    let input = summary_input(
+        Some(
+            "Open requests
+- Mina: \"book the dentist\"",
+        ),
+        &conversation,
+        &TimeZone::UTC,
+    );
+
+    assert_eq!(input, EXAMPLE);
+}
+
+#[test]
+fn a_summary_input_without_a_previous_summary_starts_at_the_conversation() {
+    let input = summary_input(None, &[heard(1, "hi")], &TimeZone::UTC);
+
+    assert!(
+        input.starts_with(
+            "<conversation>
+<message "
+        ),
+        "{input}"
+    );
+    assert!(!input.contains("previous_summary"));
+}
+
+#[test]
+fn a_summary_input_places_a_reply_after_what_it_answered() {
+    let conversation = vec![
+        heard(1, "first"),
+        heard(1, "second"),
+        acted(1, vec![say(1, "to first")], None),
+    ];
+
+    let input = summary_input(None, &conversation, &TimeZone::UTC);
+
+    let at = |needle: &str| input.find(needle).expect(needle);
+    assert!(at("first") < at("to first"));
+    assert!(at("to first") < at("second"));
+}
+
+#[test]
+fn a_summary_input_clips_what_tools_and_sub_sessions_returned() {
+    let long = "가".repeat(CLIPPED_AT + 5);
+    let exact = "나".repeat(CLIPPED_AT);
+    let conversation = vec![
+        acted(0, vec![tool("t1")], None),
+        returned("t1", Ok(&long)),
+        returned("t2", Ok(&exact)),
+        Entry::SubSessionReturned {
+            spec: SubSessionSpec {
+                title: String::from("Check"),
+                brief: String::new(),
+                folder: None,
+            },
+            outcome: SubSessionOutcome::Failed(long.clone()),
+        },
+    ];
+
+    let input = summary_input(None, &conversation, &TimeZone::UTC);
+
+    let clipped = format!("{}…", "가".repeat(CLIPPED_AT));
+    assert_eq!(input.matches(&clipped).count(), 2);
+    assert!(!input.contains(&"가".repeat(CLIPPED_AT + 1)));
+    assert!(input.contains(&format!(
+        "<tool_result>
+{exact}
+</tool_result>"
+    )));
 }

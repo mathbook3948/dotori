@@ -7,6 +7,7 @@ use dotori_core::llm::ModelError;
 use dotori_core::llm::ModelReply;
 use dotori_core::llm::ModelRequest;
 use dotori_core::llm::ModelTrace;
+use dotori_core::llm::SummaryRequest;
 use reqwest::Client;
 use serde::Deserialize;
 use serde_json::Value;
@@ -15,6 +16,7 @@ use serde_json::value::RawValue;
 
 use crate::llm::ConnectorError;
 use crate::llm::DEFAULT_SYSTEM;
+use crate::llm::SUMMARY_SYSTEM;
 use crate::llm::http;
 use crate::llm::http::Retry;
 use crate::llm::reply;
@@ -97,12 +99,19 @@ impl OpenAi {
     }
 
     async fn call(&self, request: ModelRequest) -> Result<ModelReply, ModelError> {
-        let body = body(&self.config, &request)?;
+        parse(&self.post(body(&self.config, &request)?).await?)
+    }
+
+    async fn summary(&self, request: SummaryRequest) -> Result<String, ModelError> {
+        parse_summary(&self.post(summary_body(&self.config, &request)).await?)
+    }
+
+    async fn post(&self, body: String) -> Result<String, ModelError> {
         let url = format!(
             "{}/chat/completions",
             self.config.base_url.trim_end_matches('/')
         );
-        let text = http::send(PROVIDER, self.retry, || {
+        http::send(PROVIDER, self.retry, || {
             let builder = self
                 .client
                 .post(&url)
@@ -113,14 +122,17 @@ impl OpenAi {
                 None => builder,
             }
         })
-        .await?;
-        parse(&text)
+        .await
     }
 }
 
 impl Model for OpenAi {
     fn complete(&self, request: ModelRequest) -> BoxFuture<'_, Result<ModelReply, ModelError>> {
         Box::pin(self.call(request))
+    }
+
+    fn summarize(&self, request: SummaryRequest) -> BoxFuture<'_, Result<String, ModelError>> {
+        Box::pin(self.summary(request))
     }
 
     fn check(&self) -> BoxFuture<'_, Result<(), CheckError>> {
@@ -168,6 +180,25 @@ fn body(config: &OpenAiConfig, request: &ModelRequest) -> Result<String, ModelEr
         body["max_tokens"] = json!(max_tokens);
     }
     Ok(body.to_string())
+}
+
+fn summary_body(config: &OpenAiConfig, request: &SummaryRequest) -> String {
+    let input = transcript::summary_input(
+        request.previous.as_deref(),
+        &request.conversation,
+        &reply::zone(request.time_zone.as_deref()),
+    );
+    let mut body = json!({
+        "model": config.model,
+        "messages": [
+            { "role": "system", "content": SUMMARY_SYSTEM },
+            { "role": "user", "content": input },
+        ],
+    });
+    if let Some(max_tokens) = config.max_tokens {
+        body["max_tokens"] = json!(max_tokens);
+    }
+    body.to_string()
 }
 
 #[derive(Deserialize)]
@@ -261,6 +292,11 @@ struct Message {
 }
 
 #[derive(Deserialize)]
+struct Written {
+    content: Option<String>,
+}
+
+#[derive(Deserialize)]
 struct Call {
     id: String,
     function: Function,
@@ -295,10 +331,13 @@ fn model_names(text: &str) -> Option<Vec<String>> {
     Some(names)
 }
 
-fn parse(text: &str) -> Result<ModelReply, ModelError> {
-    let unreadable = |error: serde_json::Error| ModelError {
+fn unreadable(error: serde_json::Error) -> ModelError {
+    ModelError {
         detail: format!("{PROVIDER} reply unreadable: {error}"),
-    };
+    }
+}
+
+fn choice(text: &str) -> Result<Choice, ModelError> {
     let response: Response = serde_json::from_str(text).map_err(unreadable)?;
     let Some(choice) = response.choices.into_iter().next() else {
         return Err(ModelError {
@@ -318,6 +357,23 @@ fn parse(text: &str) -> Result<ModelReply, ModelError> {
         }
         _ => {}
     }
+    Ok(choice)
+}
+
+fn parse_summary(text: &str) -> Result<String, ModelError> {
+    let written: Written = serde_json::from_str(choice(text)?.message.get()).map_err(unreadable)?;
+    let summary = written.content.unwrap_or_default();
+    let summary = summary.trim();
+    if summary.is_empty() {
+        return Err(ModelError {
+            detail: format!("{PROVIDER} wrote an empty summary"),
+        });
+    }
+    Ok(summary.to_owned())
+}
+
+fn parse(text: &str) -> Result<ModelReply, ModelError> {
+    let choice = choice(text)?;
     let message: Message = serde_json::from_str(choice.message.get()).map_err(unreadable)?;
     let uses: Vec<Use> = message
         .tool_calls

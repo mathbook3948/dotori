@@ -15,6 +15,11 @@ impl Model for Named {
             })
         })
     }
+
+    fn summarize(&self, _: SummaryRequest) -> BoxFuture<'_, Result<String, ModelError>> {
+        let name = self.0;
+        Box::pin(async move { Ok(String::from(name)) })
+    }
 }
 
 fn request() -> ModelRequest {
@@ -26,6 +31,14 @@ fn request() -> ModelRequest {
     }
 }
 
+fn summary_request() -> SummaryRequest {
+    SummaryRequest {
+        previous: None,
+        conversation: Vec::new(),
+        time_zone: None,
+    }
+}
+
 #[tokio::test]
 async fn a_model_the_settings_cannot_build_fails_each_request_with_why() {
     let model = Unbuilt(String::from("set ANTHROPIC_API_KEY"));
@@ -33,6 +46,31 @@ async fn a_model_the_settings_cannot_build_fails_each_request_with_why() {
     let failed = model.complete(request()).await.expect_err("no model");
 
     assert_eq!(failed.detail, "set ANTHROPIC_API_KEY");
+}
+
+#[tokio::test]
+async fn a_model_the_settings_cannot_build_fails_a_summary_with_why_too() {
+    let model = Unbuilt(String::from("set ANTHROPIC_API_KEY"));
+
+    let failed = model
+        .summarize(summary_request())
+        .await
+        .expect_err("no model");
+
+    assert_eq!(failed.detail, "set ANTHROPIC_API_KEY");
+}
+
+#[tokio::test]
+async fn the_next_summary_is_asked_of_the_model_swapped_in() {
+    let first = Arc::new(Named("first", Mutex::new(Vec::new())));
+    let second = Arc::new(Named("second", Mutex::new(Vec::new())));
+    let live = LiveModel::new(Arc::clone(&first) as Arc<dyn Model>);
+
+    let before = live.summarize(summary_request()).await.expect("summary");
+    live.swap(Arc::clone(&second) as Arc<dyn Model>);
+    let after = live.summarize(summary_request()).await.expect("summary");
+
+    assert_eq!((before.as_str(), after.as_str()), ("first", "second"));
 }
 
 #[tokio::test]

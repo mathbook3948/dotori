@@ -278,3 +278,108 @@ fn the_listed_models_come_back_sorted_by_name() {
 fn a_list_that_does_not_read_gives_no_models() {
     assert_eq!(model_names("<html>not found</html>"), None);
 }
+
+const SUMMARY_REPLY: &str = r#"{"id":"chatcmpl-1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"  Open requests\n- none  "},"finish_reason":"stop"}]}"#;
+
+fn summary_request() -> SummaryRequest {
+    SummaryRequest {
+        previous: None,
+        conversation: vec![heard("hi")],
+        time_zone: None,
+    }
+}
+
+#[test]
+fn the_summary_request_is_a_system_prompt_and_one_user_message_without_tools() {
+    let mut config = config();
+    config.max_tokens = Some(900);
+
+    let body: Value =
+        serde_json::from_str(&summary_body(&config, &summary_request())).expect("json");
+
+    let messages = body["messages"].as_array().expect("messages");
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[0]["role"], "system");
+    assert_eq!(messages[0]["content"], SUMMARY_SYSTEM);
+    assert_eq!(messages[1]["role"], "user");
+    assert!(messages[1]["content"].as_str().expect("text").starts_with(
+        "<conversation>
+"
+    ));
+    assert_eq!(body["max_tokens"], 900);
+    assert!(body.get("tools").is_none());
+}
+
+#[test]
+fn a_summary_is_the_message_content_trimmed() {
+    assert_eq!(
+        parse_summary(SUMMARY_REPLY).expect("summary"),
+        "Open requests
+- none"
+    );
+}
+
+#[test]
+fn a_cut_off_filtered_or_empty_summary_is_a_failure() {
+    let cut = r#"{"choices":[{"message":{"role":"assistant","content":"Open"},"finish_reason":"length"}]}"#;
+    let filtered = r#"{"choices":[{"message":{"role":"assistant","content":null},"finish_reason":"content_filter"}]}"#;
+    let blank =
+        r#"{"choices":[{"message":{"role":"assistant","content":" "},"finish_reason":"stop"}]}"#;
+    let none =
+        r#"{"choices":[{"message":{"role":"assistant","content":null},"finish_reason":"stop"}]}"#;
+
+    assert!(
+        parse_summary(cut)
+            .expect_err("cut")
+            .detail
+            .contains("token limit")
+    );
+    assert!(
+        parse_summary(filtered)
+            .expect_err("filtered")
+            .detail
+            .contains("declined")
+    );
+    assert!(
+        parse_summary(blank)
+            .expect_err("blank")
+            .detail
+            .contains("empty summary")
+    );
+    assert!(
+        parse_summary(none)
+            .expect_err("none")
+            .detail
+            .contains("empty summary")
+    );
+}
+
+#[tokio::test]
+async fn summarize_posts_the_summary_request_to_chat_completions() {
+    let (base_url, mut requests) = mock::serve(vec![(200, SUMMARY_REPLY)]).await;
+    let mut connector =
+        OpenAi::new(OpenAiConfig::new(format!("{base_url}/v1"), "gpt")).expect("client");
+    connector.retry = Retry {
+        attempts: 1,
+        first_wait: Duration::from_millis(10),
+        max_wait: Duration::from_millis(10),
+    };
+
+    let summary = connector
+        .summarize(summary_request())
+        .await
+        .expect("summary");
+
+    assert_eq!(
+        summary,
+        "Open requests
+- none"
+    );
+    let captured = requests.recv().await.expect("request");
+    assert!(
+        captured
+            .head
+            .to_ascii_lowercase()
+            .starts_with("post /v1/chat/completions http/1.1")
+    );
+}

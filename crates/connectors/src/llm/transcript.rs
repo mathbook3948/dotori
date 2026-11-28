@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::time::SystemTime;
 
@@ -8,6 +9,7 @@ use dotori_core::llm::ModelTrace;
 use dotori_core::message::Audience;
 use dotori_core::message::Role;
 use dotori_core::sub_session::SubSessionOutcome;
+use dotori_core::tool::ToolCallId;
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
 use serde_json::value::RawValue;
@@ -33,6 +35,8 @@ const SUMMARY_INTRO: &str = "The start of this conversation is not shown, to kee
 const LEFT_OUT_AFTER_SUMMARY: &str = "<conversation_left_out>Some of the conversation after \
                                       this summary is not shown either, to keep it short. \
                                       Search memory for it.</conversation_left_out>";
+
+const CLIPPED_AT: usize = 2000;
 
 /// The conversation as alternating turns, each reply placed right after what it answered.
 #[derive(Debug, PartialEq)]
@@ -91,6 +95,109 @@ pub(crate) fn build(conversation: &[Entry], provider: &str, zone: &TimeZone) -> 
         builder.add(index, &conversation[index], provider, zone);
     }
     builder.finish()
+}
+
+/// What a summary is asked to merge, as plain text with each entry as a block of its own. The
+/// model's thinking and its raw replies are left out.
+pub(crate) fn summary_input(
+    previous: Option<&str>,
+    conversation: &[Entry],
+    zone: &TimeZone,
+) -> String {
+    let blocks: Vec<String> = order(conversation, 0)
+        .into_iter()
+        .flat_map(|index| summary_blocks(conversation, &conversation[index], zone))
+        .collect();
+    let mut input = String::new();
+    if let Some(previous) = previous {
+        input.push_str(&tagged("previous_summary", &[], previous));
+        input.push_str(
+            "
+
+",
+        );
+    }
+    input.push_str(&format!(
+        "<conversation>
+{}
+</conversation>",
+        blocks.join(
+            "
+
+"
+        )
+    ));
+    input
+}
+
+fn summary_blocks(conversation: &[Entry], entry: &Entry, zone: &TimeZone) -> Vec<String> {
+    match entry {
+        Entry::Acted { actions, .. } => actions.iter().map(summary_action).collect(),
+        Entry::ToolReturned { call, result } => {
+            let mut attributes = Vec::new();
+            if let Some(name) = tool_named(conversation, call) {
+                attributes.push(("tool", name));
+            }
+            let (body, failed) = match result {
+                Ok(output) => (output, false),
+                Err(error) => (&error.detail, true),
+            };
+            if failed {
+                attributes.push(("failed", "true"));
+            }
+            vec![tagged("tool_result", &attributes, &clip(body))]
+        }
+        Entry::SubSessionReturned { spec, outcome } => {
+            let (status, text) = sub_session_result(outcome);
+            vec![tagged(
+                "sub_session",
+                &[("title", &spec.title), ("status", status)],
+                &clip(text),
+            )]
+        }
+        Entry::Summarized { .. } => Vec::new(),
+        other => vec![note(other, zone)],
+    }
+}
+
+fn summary_action(action: &Action) -> String {
+    match action {
+        Action::Say {
+            thread,
+            text,
+            privately,
+        } => {
+            let thread = thread.get().to_string();
+            let mut attributes = vec![("thread", thread.as_str())];
+            if *privately {
+                attributes.push(("privately", "true"));
+            }
+            tagged("dotori_said", &attributes, text)
+        }
+        Action::UseTool(call) => tagged("dotori_used", &[("tool", &call.name)], &clip(&call.input)),
+        Action::Delegate(spec) => tagged(
+            "dotori_delegated",
+            &[("title", &spec.title)],
+            &clip(&spec.brief),
+        ),
+    }
+}
+
+fn tool_named<'a>(conversation: &'a [Entry], call: &ToolCallId) -> Option<&'a str> {
+    conversation.iter().find_map(|entry| match entry {
+        Entry::Acted { actions, .. } => actions.iter().find_map(|action| match action {
+            Action::UseTool(used) if used.id == *call => Some(used.name.as_str()),
+            _ => None,
+        }),
+        _ => None,
+    })
+}
+
+fn clip(text: &str) -> Cow<'_, str> {
+    match text.char_indices().nth(CLIPPED_AT) {
+        Some((end, _)) => Cow::Owned(format!("{}…", &text[..end])),
+        None => Cow::Borrowed(text),
+    }
 }
 
 fn order(conversation: &[Entry], start: usize) -> Vec<usize> {
@@ -312,10 +419,7 @@ fn note(entry: &Entry, zone: &TimeZone) -> String {
             tagged("message", &attributes, message.content.as_str())
         }
         Entry::SubSessionReturned { spec, outcome } => {
-            let (status, text) = match outcome {
-                SubSessionOutcome::Finished(text) => ("finished", text),
-                SubSessionOutcome::Failed(text) => ("failed", text),
-            };
+            let (status, text) = sub_session_result(outcome);
             tagged(
                 "sub_session",
                 &[("title", &spec.title), ("status", status)],
@@ -354,6 +458,13 @@ fn note(entry: &Entry, zone: &TimeZone) -> String {
         Entry::Acted { .. } | Entry::ToolReturned { .. } | Entry::Summarized { .. } => {
             String::new()
         }
+    }
+}
+
+fn sub_session_result(outcome: &SubSessionOutcome) -> (&'static str, &str) {
+    match outcome {
+        SubSessionOutcome::Finished(text) => ("finished", text),
+        SubSessionOutcome::Failed(text) => ("failed", text),
     }
 }
 
