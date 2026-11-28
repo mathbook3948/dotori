@@ -202,7 +202,6 @@ async fn a_call_asked_in_a_chat_room_goes_there_as_the_window_shows_it() {
         7,
         "run_shell",
         &json!({ "command": "ls -la", "purpose": "폴더의 파일을 모두 보여 줘요" }).to_string(),
-        true,
     );
 
     let (place, card) = desk.posted().await;
@@ -219,12 +218,7 @@ async fn a_call_asked_in_a_chat_room_goes_there_as_the_window_shows_it() {
         ]
     );
     assert!(!card.cut);
-    assert_eq!(
-        card.notes,
-        [String::from(
-            "샌드박스 안에서 실행해요. Dotori의 금고와 기록은 보이지 않아요."
-        )]
-    );
+    assert!(card.notes.is_empty(), "no note about the sandbox");
     assert_eq!(labels(&card), ["거절", "허락"]);
     assert!(card.buttons[1].primary);
 }
@@ -242,17 +236,10 @@ async fn a_card_names_the_assistant_as_the_settings_call_it_now() {
         7,
         "run_shell",
         &json!({ "command": "ls -la" }).to_string(),
-        true,
     );
 
     let (_, card) = desk.posted().await;
     assert_eq!(card.title, "별이 이 일을 해도 될지 물어요");
-    assert_eq!(
-        card.notes,
-        [String::from(
-            "샌드박스 안에서 실행해요. 별의 금고와 기록은 보이지 않아요."
-        )]
-    );
 }
 
 #[tokio::test]
@@ -265,7 +252,6 @@ async fn a_card_in_a_chat_room_speaks_english_when_dotori_does() {
         7,
         "run_shell",
         &json!({ "command": "ls -la" }).to_string(),
-        true,
     );
 
     let (_, card) = desk.posted().await;
@@ -274,11 +260,11 @@ async fn a_card_in_a_chat_room_speaks_english_when_dotori_does() {
         card.rows,
         [(String::from("Command"), String::from("ls -la")),]
     );
-    assert_eq!(card.notes, [(english.chat.sandboxed)()]);
+    assert!(card.notes.is_empty(), "no note about the sandbox");
     assert_eq!(labels(&card), ["Decline", "Allow"]);
     desk.cards.decided(7, Some(true));
     assert_eq!(desk.settled().await.2, "김민지 allowed it");
-    desk.cards.ask(from("slack"), 8, "mail__send", "{}", false);
+    desk.cards.ask(from("slack"), 8, "mail__send", "{}");
     desk.posted().await;
     desk.cards.decided(8, None);
     assert_eq!(desk.settled().await.2, english.chat.expired);
@@ -288,11 +274,10 @@ async fn a_card_in_a_chat_room_speaks_english_when_dotori_does() {
 async fn a_call_from_the_window_or_a_routine_stays_in_the_window() {
     let mut desk = Desk::new();
 
-    desk.cards.ask(from("app"), 1, "mail__send", "{}", false);
-    desk.cards
-        .ask(from("routine"), 2, "mail__send", "{}", false);
-    desk.cards.ask(None, 3, "mail__send", "{}", false);
-    desk.cards.ask(from("slack"), 4, "mail__send", "{}", false);
+    desk.cards.ask(from("app"), 1, "mail__send", "{}");
+    desk.cards.ask(from("routine"), 2, "mail__send", "{}");
+    desk.cards.ask(None, 3, "mail__send", "{}");
+    desk.cards.ask(from("slack"), 4, "mail__send", "{}");
 
     let (_, card) = desk.posted().await;
     assert_eq!(
@@ -312,7 +297,6 @@ async fn a_long_value_is_shortened_and_the_card_says_the_window_shows_it_whole()
         7,
         "write_file",
         &json!({ "content": long }).to_string(),
-        false,
     );
 
     let (_, card) = desk.posted().await;
@@ -329,7 +313,7 @@ async fn the_owners_press_decides_as_a_window_would_and_the_card_says_who() {
         desk.app.published(),
         |_| Status::Waiting,
     ));
-    desk.cards.ask(from("slack"), 7, "mail__send", "{}", false);
+    desk.cards.ask(from("slack"), 7, "mail__send", "{}");
     let (_, card) = desk.posted().await;
 
     desk.press(&card, 1, "1");
@@ -354,8 +338,8 @@ async fn the_first_answer_wins_and_a_second_press_is_ignored() {
         desk.app.published(),
         |_| Status::Waiting,
     ));
-    desk.cards.ask(from("slack"), 7, "mail__send", "{}", false);
-    desk.cards.ask(from("slack"), 8, "mail__send", "{}", false);
+    desk.cards.ask(from("slack"), 7, "mail__send", "{}");
+    desk.cards.ask(from("slack"), 8, "mail__send", "{}");
     let (_, first) = desk.posted().await;
     let (_, second) = desk.posted().await;
 
@@ -395,8 +379,8 @@ async fn a_call_that_no_longer_waits_says_it_can_no_longer_be_done() {
         desk.app.published(),
         |_| Status::Waiting,
     ));
-    desk.cards.ask(from("slack"), 7, "mail__send", "{}", false);
-    desk.cards.ask(from("slack"), 8, "mail__send", "{}", false);
+    desk.cards.ask(from("slack"), 7, "mail__send", "{}");
+    desk.cards.ask(from("slack"), 8, "mail__send", "{}");
     desk.posted().await;
     desk.posted().await;
 
@@ -417,7 +401,7 @@ async fn a_call_that_no_longer_waits_says_it_can_no_longer_be_done() {
 async fn a_call_decided_before_its_card_was_posted_is_settled_once_it_is() {
     let mut desk = Desk::new();
 
-    desk.cards.ask(from("slack"), 7, "mail__send", "{}", false);
+    desk.cards.ask(from("slack"), 7, "mail__send", "{}");
     desk.cards.decided(7, Some(true));
 
     desk.posted().await;
@@ -463,7 +447,6 @@ async fn a_window_answer_first_closes_the_rooms_card_and_a_later_press_changes_n
     asked.always("mail__send");
     let asking = crate::confirm::Asking::new(
         asked,
-        None,
         Arc::new(Ran),
         Arc::clone(&desk.app),
         Arc::clone(&desk.cards),
@@ -703,7 +686,6 @@ async fn a_shared_room_gets_only_a_pointer_and_the_card_goes_to_the_owners_direc
         7,
         "run_shell",
         &json!({ "command": "cat ~/secret" }).to_string(),
-        false,
     );
 
     let (direct, card) = desk.posted().await;
@@ -737,9 +719,8 @@ async fn a_shared_room_gets_only_a_pointer_and_the_card_goes_to_the_owners_direc
 async fn a_shared_room_in_a_chat_with_no_direct_place_gets_nothing() {
     let mut desk = Desk::with(None);
 
-    desk.cards
-        .ask(shared("slack"), 7, "mail__send", "{}", false);
-    desk.cards.ask(from("slack"), 8, "mail__send", "{}", false);
+    desk.cards.ask(shared("slack"), 7, "mail__send", "{}");
+    desk.cards.ask(from("slack"), 8, "mail__send", "{}");
 
     let (place, card) = desk.posted().await;
     assert_eq!(place, Place::new("C1/10.5"));
@@ -807,9 +788,9 @@ async fn thirty_accounts_show_a_few_and_leave_the_rest_to_the_window() {
 async fn missed_lines_settle_the_cards_by_what_became_of_each_call() {
     let mut desk = Desk::new();
     let (published, heard) = broadcast::channel(1);
-    desk.cards.ask(from("slack"), 7, "mail__send", "{}", false);
-    desk.cards.ask(from("slack"), 8, "mail__send", "{}", false);
-    desk.cards.ask(from("slack"), 9, "mail__send", "{}", false);
+    desk.cards.ask(from("slack"), 7, "mail__send", "{}");
+    desk.cards.ask(from("slack"), 8, "mail__send", "{}");
+    desk.cards.ask(from("slack"), 9, "mail__send", "{}");
     for _ in 0..3 {
         desk.posted().await;
     }

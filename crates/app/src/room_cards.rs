@@ -149,14 +149,7 @@ impl RoomCards {
     /// Posts the call `id` that waits for the owner where `origin` says they asked, if it was a
     /// chat. A room only the owner reads gets the card. Any other room gets only a pointer, and
     /// the card goes to the place in that chat only the owner reads, or nowhere if it has none.
-    pub(crate) fn ask(
-        self: &Arc<Self>,
-        origin: Option<Origin>,
-        id: u64,
-        tool: &str,
-        input: &str,
-        sandboxed: bool,
-    ) {
+    pub(crate) fn ask(self: &Arc<Self>, origin: Option<Origin>, id: u64, tool: &str, input: &str) {
         let Some(origin) = origin else {
             return;
         };
@@ -178,11 +171,7 @@ impl RoomCards {
                     .map(|(key, value)| (asked::field_label(&key).to_owned(), value)),
             )
             .collect();
-        let notes = sandboxed
-            .then(asked::sandboxed)
-            .into_iter()
-            .chain(asked::warning(tool).map(String::from))
-            .collect();
+        let notes = asked::warning(tool).map(String::from).into_iter().collect();
         let choices = [(words().chat.decline, false), (words().chat.allow, true)]
             .into_iter()
             .map(|(label, ok)| (button(label, ok), Answer::Call { id, ok }))

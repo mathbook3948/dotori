@@ -199,7 +199,6 @@ fn the_owner_allows_or_declines_a_call_from_its_card(cx: &mut TestAppContext) {
                 tool: String::from("run_shell"),
                 input: String::from(r#"{"command":"ls"}"#),
                 at: 0,
-                sandboxed: id == 7,
             }))
             .expect("sent");
     }
@@ -281,7 +280,6 @@ fn dotori_shows_it_works_while_the_daemon_says_so_and_not_while_it_waits_on_the_
             tool: String::from("run_shell"),
             input: String::from(r#"{"command":"ls"}"#),
             at: 0,
-            sandboxed: false,
         }))
         .expect("sent");
     cx.run_until_parked();
@@ -674,7 +672,6 @@ fn an_allowed_card_shows_what_came_of_it_and_the_result_is_not_repeated(cx: &mut
             tool: String::from("run_shell"),
             input: String::from(r#"{"command":"echo dotori","purpose":"인사를 출력해요"}"#),
             at: 0,
-            sandboxed: false,
         },
         ToWindow::Decided { id: 7, ok: true },
         ToWindow::Ran {
@@ -723,7 +720,6 @@ fn a_failed_card_shows_why_without_a_line_saying_it_failed(cx: &mut TestAppConte
             tool: String::from("mail__send"),
             input: String::from("{}"),
             at: 0,
-            sandboxed: false,
         },
         ToWindow::Decided { id: 7, ok: true },
         ToWindow::Ran {
@@ -769,7 +765,6 @@ fn a_failed_card_marks_an_error_whatever_it_printed(cx: &mut TestAppContext) {
                 tool: String::from("mail__send"),
                 input: String::from("{}"),
                 at: 0,
-                sandboxed: false,
             },
             ToWindow::Decided { id, ok: true },
             ToWindow::Ran {
@@ -804,7 +799,6 @@ fn a_card_has_nothing_to_copy_since_it_shows_all_it_asks(cx: &mut TestAppContext
             tool: String::from("run_shell"),
             input: String::from(r#"{"command":"date"}"#),
             at: 0,
-            sandboxed: false,
         }))
         .expect("sent");
     cx.run_until_parked();
@@ -894,7 +888,6 @@ fn allowing_a_call_while_dotori_works_makes_room_for_the_thinking_mark(cx: &mut 
             tool: String::from("run_shell"),
             input: String::from(r#"{"command":"date","purpose":"날짜를 봐요"}"#),
             at: 0,
-            sandboxed: false,
         },
         ToWindow::Working { busy: true },
         ToWindow::Live,
@@ -1418,7 +1411,6 @@ fn a_card_that_waits_behind_the_settings_marks_the_way_back(cx: &mut TestAppCont
             tool: String::from("run_shell"),
             input: String::from(r#"{"command":"ls"}"#),
             at: 0,
-            sandboxed: false,
         }))
         .expect("sent");
     cx.run_until_parked();

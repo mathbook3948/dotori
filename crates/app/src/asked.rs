@@ -107,11 +107,6 @@ pub(crate) fn lapsed() -> &'static str {
     words().chat.expired
 }
 
-/// What a card says under a command that would run in the sandbox.
-pub(crate) fn sandboxed() -> String {
-    (words().chat.sandboxed)()
-}
-
 /// The title of a card that asks to log in with a kept account.
 pub(crate) fn log_in_title(host: &str, site: &str) -> String {
     (words().chat.log_in_with_kept)(host, site)

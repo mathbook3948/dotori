@@ -91,8 +91,6 @@ pub(crate) struct Chat {
     pub(crate) card_on_pc: fn(&str, bool) -> String,
     /// What a chat room hears when the window shows a card of typed values with no host.
     pub(crate) input_card_on_pc: fn() -> String,
-    /// The note on a sandboxed command, naming the assistant whose files it cannot see.
-    pub(crate) sandboxed: fn() -> String,
     /// The title of a card that asks to log in with a kept account, given the host and the site.
     pub(crate) log_in_with_kept: fn(&str, &str) -> String,
     /// Where a log-in card's account goes, given the assistant with its particle, the host and
@@ -203,12 +201,6 @@ pub(crate) const KOREAN: Chat = Chat {
         )
     },
     input_card_on_pc: || format!("PC의 {} 창에 입력 카드를 띄웠어요.", identity::name()),
-    sandboxed: || {
-        format!(
-            "샌드박스 안에서 실행해요. {} 금고와 기록은 보이지 않아요.",
-            called(Particle::Of)
-        )
-    },
     log_in_with_kept: |host, site| format!("금고의 {host} ({site}) 계정으로 로그인해도 될까요?"),
     log_in_note: |subject, host, path| {
         format!(
@@ -311,9 +303,6 @@ pub(crate) const ENGLISH: Chat = Chat {
             "I opened an input card in the {} window on your PC.",
             identity::name()
         )
-    },
-    sandboxed: || {
-        String::from("It runs in a sandbox, where my vault and records stay out of sight.")
     },
     log_in_with_kept: |host, site| {
         format!("Can I log in with the {host} ({site}) account from your vault?")

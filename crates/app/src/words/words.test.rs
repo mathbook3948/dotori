@@ -31,7 +31,6 @@ fn every_function(words: &Words) -> Vec<(&'static str, String)> {
         ("chat.unreachable", (chat.unreachable)()),
         ("chat.not_connected", (chat.not_connected)()),
         ("chat.input_card_on_pc", (chat.input_card_on_pc)()),
-        ("chat.sandboxed", (chat.sandboxed)()),
         ("chat.rest_on_pc", (chat.rest_on_pc)()),
         ("chat.log_in_to", (chat.log_in_to)("example.com")),
         ("chat.say_to", (chat.say_to)()),

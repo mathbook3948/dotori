@@ -101,15 +101,12 @@ pub enum ToWindow {
         at: i64,
     },
     /// dotori wants to call a tool that acts toward other people, and waits for the owner.
-    /// `sandboxed` says the command it asks to run would run in the sandbox.
     Ask {
         id: u64,
         tool: String,
         input: String,
         #[serde(default)]
         at: i64,
-        #[serde(default)]
-        sandboxed: bool,
     },
     /// The owner allowed or declined what dotori asked about.
     Decided { id: u64, ok: bool },
@@ -226,15 +223,13 @@ impl AppChannel {
         }
     }
 
-    /// Shows every window a call dotori wants the owner to allow first, and whether a command it
-    /// runs would be sandboxed.
-    pub fn ask(&self, id: u64, tool: String, input: String, sandboxed: bool) {
+    /// Shows every window a call dotori wants the owner to allow first.
+    pub fn ask(&self, id: u64, tool: String, input: String) {
         self.hub.publish(&ToWindow::Ask {
             id,
             tool,
             input,
             at: now_ms(),
-            sandboxed,
         });
     }
 

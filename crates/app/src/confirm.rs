@@ -15,8 +15,6 @@ use std::time::UNIX_EPOCH;
 
 use dotori_connectors::channel::app::AppChannel;
 use dotori_connectors::peer::hub::Heard;
-use dotori_connectors::sandbox::Sandbox;
-use dotori_connectors::tool::basic::RUN_SHELL;
 use dotori_core::BoxFuture;
 use dotori_core::channel::Channel;
 use dotori_core::channel::ChannelError;
@@ -116,7 +114,6 @@ impl Toolbox for Guarded {
 /// The tools the main session uses, where the owner must allow each call the settings name.
 pub(crate) struct Asking {
     asked: Asked,
-    sandbox: Option<Arc<Sandbox>>,
     inner: Arc<dyn Toolbox>,
     app: Arc<AppChannel>,
     rooms: Arc<RoomCards>,
@@ -126,12 +123,10 @@ pub(crate) struct Asking {
 }
 
 impl Asking {
-    /// `sandbox` is where the commands `inner` runs are confined, so a card can say so. Each
-    /// card shows in the windows of `app`, and in the chat room the owner asked in through
+    /// Each card shows in the windows of `app`, and in the chat room the owner asked in through
     /// `rooms`.
     pub(crate) fn new(
         asked: Asked,
-        sandbox: Option<Arc<Sandbox>>,
         inner: Arc<dyn Toolbox>,
         app: Arc<AppChannel>,
         rooms: Arc<RoomCards>,
@@ -143,7 +138,6 @@ impl Asking {
             .saturating_mul(1000);
         Self {
             asked,
-            sandbox,
             inner,
             app,
             rooms,
@@ -263,12 +257,8 @@ impl Toolbox for Asking {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(id, call);
         Box::pin(async move {
-            let sandboxed = match &self.sandbox {
-                Some(sandbox) if tool == RUN_SHELL => matches!(sandbox.ready().await, Ok(Some(_))),
-                _ => false,
-            };
-            self.rooms.ask(origin, id, &tool, &input, sandboxed);
-            self.app.ask(id, tool, input, sandboxed);
+            self.rooms.ask(origin, id, &tool, &input);
+            self.app.ask(id, tool, input);
             Ok(String::from(WAITING))
         })
     }

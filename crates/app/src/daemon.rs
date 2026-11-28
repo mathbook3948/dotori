@@ -253,7 +253,6 @@ pub(crate) async fn serve(
     }
     let asking = Arc::new(Asking::new(
         asked,
-        basic.sandbox.clone(),
         Arc::new(WithBasic {
             basic,
             rest: Arc::new(Guarded {
