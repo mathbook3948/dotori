@@ -13,6 +13,7 @@ use std::time::UNIX_EPOCH;
 use dotori_connectors::peer::hub::Heard;
 use dotori_connectors::peer::hub::Hub;
 use dotori_core::BoxFuture;
+use dotori_core::carried::Room;
 use dotori_core::conversation::Action;
 use dotori_core::conversation::Entry;
 use dotori_core::llm::Model;
@@ -426,6 +427,10 @@ impl Model for Noted {
             }
             summary
         })
+    }
+
+    fn room(&self) -> Room {
+        self.model.room()
     }
 }
 

@@ -14,7 +14,6 @@ use crate::agent::state::Arrival;
 use crate::agent::state::MessageKey;
 use crate::agent::state::Phase;
 use crate::agent::state::Summarizing;
-use crate::carried::STEP;
 use crate::carried::plan;
 use crate::channel::ChannelError;
 use crate::channel::Traffic;
@@ -212,10 +211,10 @@ fn on_model_done(
 }
 
 fn summarize_if_due(state: &mut AgentState) -> Option<Effect> {
-    let plan = plan(&state.conversation)?;
+    let plan = plan(&state.conversation, state.room)?;
     match state.summarizing {
         Summarizing::Idle => {}
-        Summarizing::Failed { weight } if plan.weight >= weight + STEP => {}
+        Summarizing::Failed { weight } if plan.weight >= weight + state.room.step() => {}
         Summarizing::Running { .. } | Summarizing::Failed { .. } => return None,
     }
     let summary = state.ids.next_summary();
@@ -247,7 +246,7 @@ fn on_summary_done(state: &mut AgentState, summary: SummaryId, result: Result<St
     match result {
         Ok(text) => state.conversation.push(Entry::Summarized { kept, text }),
         Err(_) => {
-            if let Some(plan) = plan(&state.conversation) {
+            if let Some(plan) = plan(&state.conversation, state.room) {
                 state.summarizing = Summarizing::Failed {
                     weight: plan.weight,
                 };

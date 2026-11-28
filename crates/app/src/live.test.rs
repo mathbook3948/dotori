@@ -22,6 +22,22 @@ impl Model for Named {
     }
 }
 
+struct Roomy(Room);
+
+impl Model for Roomy {
+    fn complete(&self, _: ModelRequest) -> BoxFuture<'_, Result<ModelReply, ModelError>> {
+        Box::pin(async {
+            Err(ModelError {
+                detail: String::from("unused"),
+            })
+        })
+    }
+
+    fn room(&self) -> Room {
+        self.0
+    }
+}
+
 fn request() -> ModelRequest {
     ModelRequest {
         conversation: Vec::new(),
@@ -85,6 +101,17 @@ async fn the_next_request_goes_to_the_model_swapped_in() {
 
     assert_eq!(*first.1.lock().expect("unpoisoned"), ["first"]);
     assert_eq!(*second.1.lock().expect("unpoisoned"), ["second"]);
+}
+
+#[test]
+fn the_room_follows_the_model_swapped_in() {
+    let wide = Room::for_window(400_000, 16_000);
+    let live = LiveModel::new(Arc::new(Roomy(Room::DEFAULT)));
+    assert_eq!(live.room(), Room::DEFAULT);
+
+    live.swap(Arc::new(Roomy(wide)));
+
+    assert_eq!(live.room(), wide);
 }
 
 #[test]

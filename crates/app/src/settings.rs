@@ -342,6 +342,8 @@ pub(crate) enum ModelSettings {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         max_tokens: Option<u32>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        context_window: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         effort: Option<String>,
     },
     OpenaiCompatible {
@@ -351,6 +353,8 @@ pub(crate) enum ModelSettings {
         api_key_env: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         max_tokens: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context_window: Option<u32>,
     },
 }
 
@@ -361,6 +365,7 @@ impl Default for ModelSettings {
             model: None,
             base_url: None,
             max_tokens: None,
+            context_window: None,
             effort: None,
         }
     }
@@ -573,9 +578,17 @@ impl Form {
 
     /// The settings this form describes. `earlier` keeps what the form does not show.
     pub(crate) fn settings(self, earlier: &ModelSettings) -> Result<ModelSettings, String> {
-        let kept_max_tokens = match earlier {
-            ModelSettings::Anthropic { max_tokens, .. }
-            | ModelSettings::OpenaiCompatible { max_tokens, .. } => *max_tokens,
+        let (kept_max_tokens, kept_context_window) = match earlier {
+            ModelSettings::Anthropic {
+                max_tokens,
+                context_window,
+                ..
+            }
+            | ModelSettings::OpenaiCompatible {
+                max_tokens,
+                context_window,
+                ..
+            } => (*max_tokens, *context_window),
         };
         if !self.openai_compatible {
             return Ok(ModelSettings::Anthropic {
@@ -583,6 +596,7 @@ impl Form {
                 model: self.model,
                 base_url: self.base_url,
                 max_tokens: kept_max_tokens,
+                context_window: kept_context_window,
                 effort: self.effort,
             });
         }
@@ -592,6 +606,7 @@ impl Form {
                 model,
                 api_key_env: self.api_key_env,
                 max_tokens: kept_max_tokens,
+                context_window: kept_context_window,
             }),
             _ => Err(String::from(words().settings.openai_needs_address)),
         }
@@ -704,6 +719,7 @@ impl Settings {
                 model,
                 base_url,
                 max_tokens,
+                context_window,
                 effort,
             } => {
                 let variable = api_key_env.as_deref().unwrap_or(ANTHROPIC_KEY);
@@ -721,6 +737,7 @@ impl Settings {
                 if let Some(max_tokens) = max_tokens {
                     config.max_tokens = *max_tokens;
                 }
+                config.context_window = *context_window;
                 config.effort.clone_from(effort);
                 config.delegates = delegates;
                 if let Some(system) = system {
@@ -735,6 +752,7 @@ impl Settings {
                 model,
                 api_key_env,
                 max_tokens,
+                context_window,
             } => {
                 let mut config = OpenAiConfig::new(base_url.clone(), model.clone());
                 if let Some(variable) = api_key_env {
@@ -744,6 +762,7 @@ impl Settings {
                     })?);
                 }
                 config.max_tokens = *max_tokens;
+                config.context_window = *context_window;
                 config.delegates = delegates;
                 if let Some(system) = system {
                     config.system = system;

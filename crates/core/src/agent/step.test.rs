@@ -4,6 +4,7 @@ use std::time::Duration;
 use std::time::SystemTime;
 
 use super::*;
+use crate::carried::Room;
 use crate::id::ExternalMessageId;
 use crate::id::ExternalUserId;
 use crate::message::Audience;
@@ -974,6 +975,21 @@ fn an_owner_message_during_a_summary_is_answered_as_usual() {
 }
 
 #[test]
+fn a_smaller_room_starts_a_summary_sooner() {
+    let mut h = Harness::new();
+    h.state.room = Room::for_window(80_000, 10_000);
+    h.owner_says(&"가".repeat(20_000));
+    h.model_answers(Vec::new());
+    assert!(h.summaries().is_empty());
+
+    h.owner_says(&"나".repeat(20_000));
+    h.model_answers(Vec::new());
+
+    let (_, request) = h.the_summary();
+    assert_eq!(heard(&request.conversation), vec!["가".repeat(20_000)]);
+}
+
+#[test]
 fn a_failed_summary_records_nothing_and_waits_for_a_step_more_before_trying_again() {
     let mut h = Harness::new();
     h.long_talk(3);
@@ -987,10 +1003,10 @@ fn a_failed_summary_records_nothing_and_waits_for_a_step_more_before_trying_agai
     });
     assert!(h.summarized().is_empty());
     assert!(matches!(h.state.summarizing, Summarizing::Failed { .. }));
-    h.owner_says(&"나".repeat(STEP / 2));
+    h.owner_says(&"나".repeat(Room::DEFAULT.step() / 2));
     h.model_answers(Vec::new());
     assert!(h.summaries().is_empty());
-    h.owner_says(&"다".repeat(STEP / 2));
+    h.owner_says(&"다".repeat(Room::DEFAULT.step() / 2));
     h.model_answers(Vec::new());
 
     h.the_summary();
