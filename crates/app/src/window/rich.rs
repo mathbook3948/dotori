@@ -3,14 +3,15 @@
 
 use gpui::Div;
 use gpui::FontWeight;
-use gpui::SharedString;
 use gpui::div;
 use gpui::prelude::*;
 use gpui::px;
 
 use crate::window::parts::MONO;
 use crate::window::parts::SPACE;
-use crate::window::parts::prose;
+use crate::window::parts::prose_in;
+use crate::window::select::Joint;
+use crate::window::select::Pen;
 use crate::window::theme::Theme;
 
 /// A stretch of a word drawn one way.
@@ -168,8 +169,8 @@ fn outside_code(line: &str, marks_code: bool) -> String {
     line.split('`').step_by(2).collect::<Vec<_>>().join(" ")
 }
 
-/// A reply drawn block by block.
-pub(crate) fn rich(text: &str, theme: &Theme) -> Div {
+/// A reply drawn block by block, its words drawn by `pen` so the owner can select them.
+pub(crate) fn rich(text: &str, theme: &Theme, pen: &Pen) -> Div {
     div()
         .flex()
         .flex_col()
@@ -177,8 +178,8 @@ pub(crate) fn rich(text: &str, theme: &Theme) -> Div {
         .children(blocks(text).into_iter().map(|block| {
             match block {
                 Block::Gap => div().h(px(6.)),
-                Block::Line(words) => line(&words, theme),
-                Block::Heading(words) => line(&words, theme)
+                Block::Line(words) => line(&words, theme, pen),
+                Block::Heading(words) => line(&words, theme, pen)
                     .pt(px(2.))
                     .text_base()
                     .font_weight(FontWeight::SEMIBOLD),
@@ -194,7 +195,7 @@ pub(crate) fn rich(text: &str, theme: &Theme) -> Div {
                             .font_weight(FontWeight::SEMIBOLD)
                             .child(mark),
                     )
-                    .child(div().flex_1().min_w_0().child(line(&words, theme))),
+                    .child(div().flex_1().min_w_0().child(line(&words, theme, pen))),
                 Block::Code(lines) => div()
                     .my(px(2.))
                     .px_3()
@@ -204,49 +205,52 @@ pub(crate) fn rich(text: &str, theme: &Theme) -> Div {
                     .font_family(MONO)
                     .text_size(px(12.5))
                     .line_height(px(19.))
-                    .child(prose(&lines.join("\n"))),
+                    .child(prose_in(&lines.join("\n"), Some(pen))),
             }
         }))
 }
 
-fn line(words: &[Word], theme: &Theme) -> Div {
+fn line(words: &[Word], theme: &Theme, pen: &Pen) -> Div {
+    let last = words.len().saturating_sub(1);
     div()
         .flex()
         .flex_wrap()
-        .gap_x(px(SPACE))
-        .children(words.iter().map(|word| {
+        .children(words.iter().enumerate().map(|(n, word)| {
+            let first = if n == 0 { Joint::Newline } else { Joint::Space };
+            let spaced = n < last;
             match word.as_slice() {
                 [] => div().w(px(0.)),
-                [run] => drawn(run, theme),
+                [run] => drawn(run, theme, pen, first, spaced),
                 runs => div()
                     .flex()
                     .items_start()
                     .min_w_0()
-                    .children(runs.iter().map(|run| {
-                        if run.code {
-                            drawn(run, theme)
-                        } else {
-                            drawn(run, theme).flex_none()
-                        }
+                    .children(runs.iter().enumerate().map(|(k, run)| {
+                        let joint = if k == 0 { first } else { Joint::Joined };
+                        let drawn = drawn(run, theme, pen, joint, spaced && k + 1 == runs.len());
+                        if run.code { drawn } else { drawn.flex_none() }
                     })),
             }
         }))
 }
 
-fn drawn(run: &Run, theme: &Theme) -> Div {
-    let drawn = div().min_w_0().child(SharedString::from(run.text.clone()));
-    let drawn = if run.bold {
-        drawn.font_weight(FontWeight::BOLD)
-    } else {
-        drawn
-    };
+fn drawn(run: &Run, theme: &Theme, pen: &Pen, joint: Joint, spaced: bool) -> Div {
     if run.code {
-        drawn
+        let code = pen
+            .word(run.text.clone(), joint, false)
             .px(px(3.))
             .rounded_sm()
             .bg(theme.surface)
             .font_family(MONO)
-            .text_size(px(12.5))
+            .text_size(px(12.5));
+        return div()
+            .min_w_0()
+            .when(spaced, |gap| gap.pr(px(SPACE)))
+            .child(code);
+    }
+    let drawn = pen.word(run.text.clone(), joint, spaced);
+    if run.bold {
+        drawn.font_weight(FontWeight::BOLD)
     } else {
         drawn
     }

@@ -5,6 +5,7 @@
 #   win.ps1 start <home> [which] [look] [ko|en]   open `dotori <which>` (window by default) with DOTORI_HOME=<home>
 #   win.ps1 move <home> <x> <y>             put the pointer at x, y in window pixels before scaling
 #   win.ps1 click <home> <x> <y> [frames <out.png>]   click there; with frames, save that many pictures right after, out-1.png on
+#   win.ps1 drag <home> <x1> <y1> <x2> <y2>  hold the left button at x1, y1, move to x2, y2 and let go
 #   win.ps1 scroll <home> <x> <y> <ticks>   turn the wheel there, down for a positive count
 #   win.ps1 type <home> <text>              type text
 #   win.ps1 key <home> <enter|tab|escape|backspace>
@@ -217,6 +218,20 @@ switch ($Command) {
         Start-Sleep -Milliseconds 200
         [Unseen]::Post($window, 0x0200, 0, $p[0], $p[1])
         Start-Sleep -Milliseconds 400
+    }
+    'drag' {
+        $window = Window; $from = At $window $Rest[0] $Rest[1]; $to = At $window $Rest[2] $Rest[3]
+        [Unseen]::Post($window, 0x0200, 0, $from[0], $from[1])
+        [Unseen]::Post($window, 0x0201, 1, $from[0], $from[1])
+        Start-Sleep -Milliseconds 100
+        for ($n = 1; $n -le 8; $n++) {
+            $x = [int]($from[0] + ($to[0] - $from[0]) * $n / 8)
+            $y = [int]($from[1] + ($to[1] - $from[1]) * $n / 8)
+            [Unseen]::Post($window, 0x0200, 1, $x, $y)
+            Start-Sleep -Milliseconds 40
+        }
+        [Unseen]::Post($window, 0x0202, 0, $to[0], $to[1])
+        Start-Sleep -Milliseconds 300
     }
     'click' {
         $window = Window; $p = At $window $Rest[0] $Rest[1]

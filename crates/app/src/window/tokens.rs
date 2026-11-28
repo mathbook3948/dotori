@@ -25,6 +25,9 @@ pub(crate) const PICTURE: f32 = 56.;
 pub(crate) const TILE: f32 = 72.;
 /// `size.avatar`: the picture tile of the name and theme step.
 pub(crate) const AVATAR: f32 = 60.;
+/// `rounded.composer`: the corners of the chat window's composer, which keep their shape however
+/// many lines it grows to.
+pub(crate) const COMPOSER_RADIUS: f32 = 18.;
 
 /// `tile`: the fill of the picture tile in the light look and in the dark one.
 pub(crate) const TILE_FILL: (Rgba, Rgba) = (hex(0xFCE8CCFF), hex(0x30241AFF));

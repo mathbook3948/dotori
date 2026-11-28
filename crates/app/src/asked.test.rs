@@ -4,18 +4,16 @@ use crate::words::of;
 use crate::words::speak;
 
 #[test]
-fn dotori_s_own_tools_are_named_as_the_owner_would_say() {
+fn fields_are_named_as_the_owner_would_say() {
     speak(Language::Korean);
-    assert_eq!(own_tool("run_shell"), Some("명령 실행"));
-    assert_eq!(own_tool("erase_memory"), Some("기억 지우기"));
-    assert_eq!(own_tool("mail__send"), None);
+    assert!(is_own("run_shell") && is_own("erase_memory"));
+    assert!(!is_own("mail__send"));
     assert_eq!(field_label("command"), "명령");
     assert_eq!(field_label("records_shown"), "지울 기록");
     assert_eq!(field_label("notes_shown"), "지울 메모");
     assert_eq!(field_label("to"), "to");
 
-    let english = speak(Language::English);
-    assert_eq!(own_tool("run_shell"), Some(english.chat.run_shell));
+    speak(Language::English);
     assert_eq!(field_label("command"), "Command");
     assert_eq!(field_label("records_shown"), "Records to erase");
     assert_eq!(field_label("notes_shown"), "Notes to erase");
@@ -53,30 +51,38 @@ fn a_long_value_is_cut_until_the_whole_is_asked_for() {
 }
 
 #[test]
-fn a_card_says_what_allowing_does() {
+fn a_card_warns_only_when_allowing_cannot_be_undone() {
     speak(Language::Korean);
     assert_eq!(
-        hint("run_shell", "별이"),
-        "허락하면 별이 이 명령을 바로 실행해요"
+        warning("erase_memory"),
+        Some(of(Language::Korean).chat.erase_hint)
     );
-    assert_eq!(
-        hint("write_file", "dotori가"),
-        "허락하면 dotori가 파일을 바로 바꿔요"
-    );
-    assert_eq!(
-        hint("erase_memory", "dotori가"),
-        of(Language::Korean).chat.erase_hint
-    );
-    assert_eq!(hint("mail__send", "dotori가"), "허락하면 바로 실행해요");
+    for tool in ["run_shell", "write_file", "mail__send"] {
+        assert_eq!(warning(tool), None, "{tool} says nothing the card shows");
+    }
     assert_eq!(title("별이"), "별이 이 일을 해도 될지 물어요");
 
-    let english = speak(Language::English);
-    assert_eq!(
-        hint("run_shell", "별이"),
-        "Allow and I'll run this command right away."
-    );
-    assert_eq!(hint("mail__send", "별이"), english.chat.allow_hint);
+    speak(Language::English);
     assert_eq!(title("별이"), "Can I do this?");
+}
+
+#[test]
+fn what_a_command_does_comes_first_on_its_card() {
+    speak(Language::Korean);
+    let (fields, _) = asked_fields(
+        "run_shell",
+        r#"{"command":"date","purpose":"지금 날짜와 시각을 확인해요","seconds":5}"#,
+        false,
+    );
+
+    assert_eq!(
+        fields
+            .iter()
+            .map(|(key, _)| field_label(key))
+            .collect::<Vec<_>>(),
+        ["하는 일", "명령"],
+        "how long it may run is for dotori, not the owner"
+    );
 }
 
 #[test]

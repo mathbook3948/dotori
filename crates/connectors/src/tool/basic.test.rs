@@ -168,6 +168,43 @@ async fn a_command_gives_its_code_and_output_and_a_slow_one_is_stopped_with_its_
     let _ = std::fs::remove_dir_all(folder);
 }
 
+#[test]
+fn output_cut_inside_a_character_still_reads_as_utf8() {
+    let text = "도토리가 읽은 출력";
+    let cut = &text.as_bytes()[1..];
+
+    assert_eq!(console_text(cut, true), "토리가 읽은 출력");
+}
+
+#[test]
+fn output_that_ends_inside_a_character_keeps_what_came_before() {
+    let text = "도토리";
+    let unfinished = &text.as_bytes()[..text.len() - 1];
+
+    assert_eq!(console_text(unfinished, false), "도토\u{FFFD}");
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn what_cmd_writes_in_the_code_page_of_windows_reads_as_text() {
+    let (tools, folder) = tools();
+
+    let ran = run(
+        &tools,
+        RUN_SHELL,
+        json!({ "command": "dir C:\no-such-dotori-folder" }),
+    )
+    .await
+    .expect("ran");
+
+    assert!(
+        ran.contains("no-such-dotori-folder") || ran.contains("C:\\"),
+        "{ran}"
+    );
+    assert!(!ran.contains('\u{FFFD}'), "nothing is left unread: {ran}");
+    let _ = std::fs::remove_dir_all(folder);
+}
+
 #[tokio::test]
 async fn a_command_does_not_inherit_the_hidden_variables() {
     let (mut tools, folder) = tools();

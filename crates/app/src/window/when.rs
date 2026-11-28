@@ -33,7 +33,8 @@ pub(crate) fn marks(lines: &[ToWindow], zone: &TimeZone, today: Date) -> Vec<Mar
                 | ToWindow::Live
                 | ToWindow::Working { .. }
                 | ToWindow::Decided { .. }
-                | ToWindow::Lapsed { .. } => return Mark::default(),
+                | ToWindow::Lapsed { .. }
+                | ToWindow::Ran { .. } => return Mark::default(),
             };
             let Some(at) = local(at, zone) else {
                 return Mark::default();

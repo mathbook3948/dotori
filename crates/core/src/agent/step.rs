@@ -52,7 +52,11 @@ pub(crate) fn step(state: &mut AgentState, event: Event) -> Vec<Effect> {
             on_summary_done(state, summary, result);
             Vec::new()
         }
-        Event::ToolDone { run, result } => on_tool_done(state, run, result),
+        Event::ToolDone {
+            run,
+            result,
+            asked_owner,
+        } => on_tool_done(state, run, result, asked_owner),
         Event::SubSessionDone {
             sub_session,
             outcome,
@@ -202,7 +206,10 @@ fn on_model_done(
     });
     let (mut effects, waiting) = run_actions(state, reply.actions, answered);
     if !waiting.is_empty() {
-        state.phase = Phase::UsingTools { waiting };
+        state.phase = Phase::UsingTools {
+            waiting,
+            call_again: after == AfterReply::CallAgain,
+        };
     } else if after == AfterReply::CallAgain {
         effects.push(call_model(state));
     } else {
@@ -268,20 +275,37 @@ fn on_tool_done(
     state: &mut AgentState,
     run: ToolRunId,
     result: Result<String, ToolError>,
+    asked_owner: bool,
 ) -> Vec<Effect> {
-    let waiting = match &mut state.phase {
-        Phase::UsingTools { waiting } | Phase::Stopping { waiting } => waiting,
+    let (waiting, call_again) = match &mut state.phase {
+        Phase::UsingTools {
+            waiting,
+            call_again,
+        } => (waiting, Some(call_again)),
+        Phase::Stopping { waiting } => (waiting, None),
         Phase::Idle | Phase::Gathering { .. } | Phase::Thinking { .. } => return Vec::new(),
     };
     let Some(call) = waiting.remove(&run) else {
         return Vec::new();
     };
+    if let Some(call_again) = call_again {
+        *call_again |= !asked_owner;
+    }
     let done = waiting.is_empty();
     state
         .conversation
         .push(Entry::ToolReturned { call, result });
     match (&state.phase, done) {
-        (Phase::UsingTools { .. }, true) => vec![call_model(state)],
+        (
+            Phase::UsingTools {
+                call_again: true, ..
+            },
+            true,
+        ) => vec![call_model(state)],
+        (Phase::UsingTools { .. }, true) => {
+            state.phase = Phase::Idle;
+            summarize_if_due(state).into_iter().collect()
+        }
         (Phase::Stopping { .. }, true) => vec![stop(state)],
         _ => Vec::new(),
     }
@@ -437,7 +461,7 @@ fn on_shutdown(state: &mut AgentState) -> Vec<Effect> {
             effects.push(Effect::CancelModel(call));
             HashMap::new()
         }
-        Phase::UsingTools { waiting } => waiting,
+        Phase::UsingTools { waiting, .. } => waiting,
         stopping @ Phase::Stopping { .. } => {
             state.phase = stopping;
             return Vec::new();
@@ -463,7 +487,11 @@ fn absorb(state: &mut AgentState, arrival: Arrival) -> Vec<Effect> {
             *after = AfterReply::CallAgain;
             Vec::new()
         }
-        (Phase::UsingTools { .. } | Phase::Stopping { .. }, _) => Vec::new(),
+        (Phase::UsingTools { call_again, .. }, _) => {
+            *call_again = true;
+            Vec::new()
+        }
+        (Phase::Stopping { .. }, _) => Vec::new(),
     }
 }
 

@@ -25,6 +25,8 @@ use image::imageops::FilterType;
 use crate::window::identity;
 use crate::window::motion::WORKING;
 use crate::window::motion::breath;
+use crate::window::select::Joint;
+use crate::window::select::Pen;
 use crate::window::surface::SurfaceExt;
 use crate::window::theme::Logo;
 use crate::window::theme::Theme;
@@ -238,7 +240,31 @@ pub(crate) const MAXIMIZE_ICON: &str = "icons/maximize.svg";
 pub(crate) const RESTORE_ICON: &str = "icons/restore.svg";
 /// Three dots in a row, the assistant thinking.
 pub(crate) const THINKING_ICON: &str = "icons/thinking.svg";
-const ICONS: [(&str, &str); 23] = [
+/// A cross in a circle, for a call the owner declined.
+pub(crate) const DECLINED_ICON: &str = "icons/declined.svg";
+/// Two sheets, one over the other, for copying what a message says.
+pub(crate) const COPY_ICON: &str = "icons/copy.svg";
+/// A small screen with a prompt, for what a call the owner allowed gave.
+pub(crate) const RESULT_ICON: &str = "icons/result.svg";
+/// An exclamation mark in a circle, for a call the owner allowed that failed.
+pub(crate) const ERROR_ICON: &str = "icons/error.svg";
+const ICONS: [(&str, &str); 27] = [
+    (
+        ERROR_ICON,
+        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5v5.5M12 16.3v.2"/></svg>"##,
+    ),
+    (
+        COPY_ICON,
+        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="8.5" y="8.5" width="11" height="11" rx="2"/><path d="M15.5 8.5V6.5a2 2 0 0 0-2-2h-7a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h2"/></svg>"##,
+    ),
+    (
+        DECLINED_ICON,
+        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="8.5"/><path d="M9 9l6 6M15 9l-6 6"/></svg>"##,
+    ),
+    (
+        RESULT_ICON,
+        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><path d="M7.5 10l3 2-3 2M13 15h3.5"/></svg>"##,
+    ),
     (
         THINKING_ICON,
         r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 28 6" fill="black"><circle cx="3" cy="3" r="3"/><circle cx="14" cy="3" r="3"/><circle cx="25" cy="3" r="3"/></svg>"#,
@@ -427,6 +453,11 @@ pub(crate) fn thinking(
 }
 
 pub(crate) fn prose(text: &str) -> Div {
+    prose_in(text, None)
+}
+
+/// [`prose`] whose words `pen` draws, so the owner can select them, when there is one.
+pub(crate) fn prose_in(text: &str, pen: Option<&Pen>) -> Div {
     div()
         .flex()
         .flex_col()
@@ -435,18 +466,34 @@ pub(crate) fn prose(text: &str) -> Div {
             if paragraph.trim().is_empty() {
                 return div().h(px(10.));
             }
+            let words = words_keeping_spaces(&paragraph);
+            let last = words.len().saturating_sub(1);
             div()
                 .flex()
                 .flex_wrap()
-                .gap_x(px(SPACE))
-                .children(paragraph.trim_end().split(' ').map(|word| {
-                    if word.is_empty() {
-                        div().w(px(0.))
-                    } else {
-                        div().min_w_0().child(SharedString::from(word.to_owned()))
+                .when(pen.is_none(), |row| row.gap_x(px(SPACE)))
+                .children(words.into_iter().enumerate().map(|(n, word)| match pen {
+                    Some(pen) => {
+                        let joint = if n == 0 { Joint::Newline } else { Joint::Space };
+                        pen.word(word, joint, n < last)
                     }
+                    None => div().min_w_0().child(SharedString::from(word)),
                 }))
         }))
+}
+
+fn words_keeping_spaces(paragraph: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut spaces = 0;
+    for piece in paragraph.trim_end().split(' ') {
+        if piece.is_empty() {
+            spaces += 1;
+        } else {
+            words.push(format!("{}{piece}", " ".repeat(spaces)));
+            spaces = 0;
+        }
+    }
+    words
 }
 
 /// The gap drawn for a space between words.

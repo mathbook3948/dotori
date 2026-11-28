@@ -60,6 +60,7 @@ fn the_sizes_match_design_md() {
     ] {
         assert_eq!(token("size", key), format!("{size}px"), "size.{key}");
     }
+    assert_eq!(token("rounded", "composer"), format!("{COMPOSER_RADIUS}px"));
 }
 
 #[test]

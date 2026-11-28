@@ -2,7 +2,7 @@
 //! (Apache-2.0, Copyright Zed Industries). Changed: public constructors and text access,
 //! a `Submit` action in place of `Quit`, the project's import style, colors and size taken
 //! from the theme and the parent instead of fixed ones, and wrapped lines with a line break
-//! on Shift+Enter, moving up and down, and scrolling to the cursor.
+//! on Shift+Enter, moving up and down, scrolling to the cursor, and undo and redo.
 
 use std::ops::Range;
 
@@ -72,11 +72,27 @@ actions!(
         Copy,
         Submit,
         Newline,
+        Undo,
+        Redo,
     ]
 );
 
 const MAX_ROWS: f32 = 8.;
 const DOT: char = '•';
+const MAX_UNDO: usize = 200;
+
+#[derive(Clone)]
+struct Snapshot {
+    content: SharedString,
+    selected_range: Range<usize>,
+    selection_reversed: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Change {
+    Typing,
+    Deleting,
+}
 
 /// A text field, of one line or of several.
 pub(crate) struct TextInput {
@@ -96,9 +112,77 @@ pub(crate) struct TextInput {
     scroll: ScrollHandle,
     followed: Option<(SharedString, usize, Pixels)>,
     column: Option<Pixels>,
+    undo: Vec<Snapshot>,
+    redo: Vec<Snapshot>,
+    run: Option<(Change, usize)>,
 }
 
 impl TextInput {
+    fn snapshot(&self) -> Snapshot {
+        Snapshot {
+            content: self.content.clone(),
+            selected_range: self.selected_range.clone(),
+            selection_reversed: self.selection_reversed,
+        }
+    }
+
+    fn restore(&mut self, snapshot: Snapshot, cx: &mut Context<Self>) {
+        self.content = snapshot.content;
+        self.selected_range = snapshot.selected_range;
+        self.selection_reversed = snapshot.selection_reversed;
+        self.marked_range = None;
+        self.column = None;
+        self.run = None;
+        cx.notify();
+    }
+
+    fn record(&mut self, range: &Range<usize>, new_text: &str) {
+        let change = if new_text.is_empty() {
+            Change::Deleting
+        } else {
+            Change::Typing
+        };
+        let word_starts = new_text.starts_with(char::is_whitespace)
+            && !self.content[..range.start].ends_with(char::is_whitespace);
+        let continues = match (change, self.run) {
+            (Change::Typing, Some((Change::Typing, at))) => {
+                range.is_empty() && range.start == at && !word_starts
+            }
+            (Change::Deleting, Some((Change::Deleting, at))) => {
+                range.start == at || range.end == at
+            }
+            _ => false,
+        };
+        if !continues {
+            self.undo.push(self.snapshot());
+            if self.undo.len() > MAX_UNDO {
+                self.undo.remove(0);
+            }
+        }
+        self.redo.clear();
+        self.run = Some((change, range.start + new_text.len()));
+    }
+
+    fn undo(&mut self, _: &Undo, _: &mut Window, cx: &mut Context<Self>) {
+        if self.locked || self.marked_range.is_some() {
+            return;
+        }
+        if let Some(before) = self.undo.pop() {
+            self.redo.push(self.snapshot());
+            self.restore(before, cx);
+        }
+    }
+
+    fn redo(&mut self, _: &Redo, _: &mut Window, cx: &mut Context<Self>) {
+        if self.locked || self.marked_range.is_some() {
+            return;
+        }
+        if let Some(after) = self.redo.pop() {
+            self.undo.push(self.snapshot());
+            self.restore(after, cx);
+        }
+    }
+
     fn left(&mut self, _: &Left, _: &mut Window, cx: &mut Context<Self>) {
         if self.selected_range.is_empty() {
             self.move_to(self.previous_boundary(self.cursor_offset()), cx);
@@ -269,7 +353,9 @@ impl TextInput {
             } else {
                 text.replace('\n', " ")
             };
+            self.run = None;
             self.replace_text_in_range(None, &text, window, cx);
+            self.run = None;
         }
     }
 
@@ -409,6 +495,9 @@ impl TextInput {
             scroll: ScrollHandle::new(),
             followed: None,
             column: None,
+            undo: Vec::new(),
+            redo: Vec::new(),
+            run: None,
         }
     }
 
@@ -468,6 +557,11 @@ impl TextInput {
         }
     }
 
+    /// Whether some of the text is selected.
+    pub(crate) fn has_selection(&self) -> bool {
+        !self.selected_range.is_empty()
+    }
+
     pub(crate) fn text(&self) -> &str {
         &self.content
     }
@@ -499,6 +593,9 @@ impl TextInput {
         self.last_layout = None;
         self.last_bounds = None;
         self.is_selecting = false;
+        self.undo.clear();
+        self.redo.clear();
+        self.run = None;
     }
 }
 
@@ -565,6 +662,13 @@ impl EntityInputHandler for TextInput {
             .or(self.marked_range.clone())
             .unwrap_or(self.selected_range.clone());
 
+        if self.marked_range.is_some() {
+            self.run = Some((Change::Typing, range.start + new_text.len()));
+        } else if range.is_empty() && new_text.is_empty() {
+            return;
+        } else {
+            self.record(&range, new_text);
+        }
         self.column = None;
         self.content =
             (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
@@ -591,6 +695,9 @@ impl EntityInputHandler for TextInput {
             .or(self.marked_range.clone())
             .unwrap_or(self.selected_range.clone());
 
+        if self.marked_range.is_none() && !new_text.is_empty() {
+            self.record(&range, new_text);
+        }
         self.column = None;
         self.content =
             (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
@@ -1015,6 +1122,8 @@ impl Render for TextInput {
             .on_action(cx.listener(Self::paste))
             .on_action(cx.listener(Self::cut))
             .on_action(cx.listener(Self::copy))
+            .on_action(cx.listener(Self::undo))
+            .on_action(cx.listener(Self::redo))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
@@ -1064,6 +1173,9 @@ pub(crate) fn bindings() -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-cmd-space", ShowCharacterPalette, field),
         KeyBinding::new("enter", Submit, field),
         KeyBinding::new("shift-enter", Newline, field),
+        KeyBinding::new("secondary-z", Undo, field),
+        KeyBinding::new("secondary-shift-z", Redo, field),
+        KeyBinding::new("secondary-y", Redo, field),
     ]
 }
 

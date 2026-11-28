@@ -12,6 +12,7 @@ mod rich;
 mod routines;
 mod sandbox;
 mod screen;
+mod select;
 mod settings;
 mod surface;
 mod theme;
@@ -99,6 +100,7 @@ pub(crate) fn run(home: Home, which: Which) -> Result<(), String> {
                 eprintln!("dotori: the windows write in the system font: {error}");
             }
             cx.bind_keys(input::bindings());
+            cx.bind_keys(chat::bindings());
             cx.bind_keys([KeyBinding::new("secondary-q", Quit, None)]);
             let title = match which {
                 Which::Chat | Which::Settings => identity::name(),

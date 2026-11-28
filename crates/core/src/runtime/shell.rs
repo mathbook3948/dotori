@@ -228,6 +228,7 @@ impl Shell {
                 let toolbox = Arc::clone(&self.toolbox);
                 let tx = self.tx.clone();
                 let timeout = self.tool_timeout;
+                let waits = self.toolbox.waits_for_owner(&call);
                 self.tasks.spawn(asked_from(origin, async move {
                     let result = match time::timeout(timeout, caught(|| toolbox.run(call))).await {
                         Ok(Ok(result)) => result,
@@ -236,7 +237,14 @@ impl Shell {
                             detail: format!("timed out after {timeout:?}"),
                         }),
                     };
-                    let _ = tx.send(Event::ToolDone { run, result }).await;
+                    let asked_owner = waits && result.is_ok();
+                    let _ = tx
+                        .send(Event::ToolDone {
+                            run,
+                            result,
+                            asked_owner,
+                        })
+                        .await;
                 }));
             }
             Effect::SpawnSubSession { sub_session, spec } => {

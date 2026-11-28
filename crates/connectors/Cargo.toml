@@ -25,6 +25,9 @@ tokio = { version = "1.54.1", default-features = false, features = ["rt", "time"
 tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["connect", "native-tls"] }
 uuid = { version = "1.29.3", features = ["v7"] }
 
+[target.'cfg(windows)'.dependencies]
+dotori-native = { path = "../native" }
+
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1.1.6", features = ["fs"] }
 

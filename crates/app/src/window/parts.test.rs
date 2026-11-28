@@ -29,3 +29,13 @@ fn a_picture_is_named_for_its_size_and_only_the_chosen_one_is_served() {
 fn logo_named(size: f32) -> String {
     format!("{LIGHT_LOGO}/{}.svg", side(size))
 }
+
+#[test]
+fn indentation_and_runs_of_spaces_stay_with_the_words() {
+    assert_eq!(
+        words_keeping_spaces("    return x"),
+        vec!["    return", "x"]
+    );
+    assert_eq!(words_keeping_spaces("a  b   c "), vec!["a", " b", "  c"]);
+    assert_eq!(words_keeping_spaces("one two"), vec!["one", "two"]);
+}

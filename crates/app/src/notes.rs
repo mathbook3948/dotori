@@ -485,6 +485,10 @@ impl Toolbox for MainTools {
         specs
     }
 
+    fn waits_for_owner(&self, call: &ToolCall) -> bool {
+        !OWN_TOOLS.contains(&call.name.as_str()) && self.shared.waits_for_owner(call)
+    }
+
     fn run(&self, call: ToolCall) -> BoxFuture<'_, Result<String, ToolError>> {
         if !OWN_TOOLS.contains(&call.name.as_str()) {
             return self.shared.run(call);

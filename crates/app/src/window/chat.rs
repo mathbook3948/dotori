@@ -22,11 +22,17 @@ use gpui::Entity;
 use gpui::FocusHandle;
 use gpui::Focusable;
 use gpui::FontWeight;
+use gpui::Hsla;
 use gpui::ImageSource;
+use gpui::KeyBinding;
 use gpui::MouseButton;
+use gpui::MouseDownEvent;
+use gpui::MouseMoveEvent;
+use gpui::MouseUpEvent;
 use gpui::ObjectFit;
 use gpui::Pixels;
 use gpui::RenderImage;
+use gpui::Rgba;
 use gpui::ScrollHandle;
 use gpui::ScrollWheelEvent;
 use gpui::SharedString;
@@ -37,6 +43,8 @@ use gpui::Window;
 use gpui::WindowHandle;
 use gpui::div;
 use gpui::img;
+use gpui::linear_color_stop;
+use gpui::linear_gradient;
 use gpui::point;
 use gpui::prelude::*;
 use gpui::px;
@@ -48,7 +56,7 @@ use tokio::sync::mpsc;
 use crate::asked;
 use crate::asked::asked_fields;
 use crate::asked::field_label;
-use crate::asked::own_tool;
+use crate::asked::is_own;
 use crate::home::Home;
 use crate::link;
 use crate::link::Link;
@@ -61,11 +69,13 @@ use crate::window::Title;
 use crate::window::browser;
 use crate::window::browser::BrowserWindow;
 use crate::window::chrome::Frame;
+use crate::window::chrome::TOP_HEIGHT;
 use crate::window::chrome::round_button;
 use crate::window::identity;
 use crate::window::identity::Particle;
 use crate::window::identity::called;
 use crate::window::identity::ends_closed;
+use crate::window::input::Copy;
 use crate::window::input::Submit;
 use crate::window::input::TextInput;
 use crate::window::motion::FOLLOW;
@@ -74,23 +84,34 @@ use crate::window::motion::MESSAGE_ENTER;
 use crate::window::motion::RISE;
 use crate::window::motion::WORKING;
 use crate::window::motion::breath;
+use crate::window::parts::CHECK_ICON;
+use crate::window::parts::CLOCK_ICON;
+use crate::window::parts::COPY_ICON;
+use crate::window::parts::DECLINED_ICON;
+use crate::window::parts::ERROR_ICON;
 use crate::window::parts::MONO;
+use crate::window::parts::RESULT_ICON;
 use crate::window::parts::SETTINGS_ICON;
-use crate::window::parts::SHIELD_ON_ICON;
 use crate::window::parts::lock;
 use crate::window::parts::picture_tile;
 use crate::window::parts::prose;
+use crate::window::parts::prose_in;
 use crate::window::parts::thinking;
 use crate::window::parts::typeface;
 use crate::window::rich::rich;
 use crate::window::screen::CardShown;
 use crate::window::screen::ScreenView;
+use crate::window::select::Pen;
+use crate::window::select::Selection;
 use crate::window::settings::BackToChat;
 use crate::window::settings::Part;
 use crate::window::settings::SettingsView;
 use crate::window::surface::SurfaceExt;
+use crate::window::surface::framed;
+use crate::window::surface::hairline;
 use crate::window::theme::Theme;
 use crate::window::tokens::COLUMN;
+use crate::window::tokens::COMPOSER_RADIUS;
 use crate::window::tokens::PICTURE;
 use crate::window::tokens::SIDEBAR;
 use crate::window::when::Mark;
@@ -101,9 +122,22 @@ use crate::words::words;
 const COPIED_FOR: Duration = Duration::from_millis(1500);
 const BOTTOM_SLACK: f32 = 8.;
 const TURN_SPACE: f32 = 18.;
+const CHAT_KEYS: &str = "Chat";
+const ROW_ICON: f32 = 14.;
+const META_TOP: f32 = 4.;
+const META_BUTTON: f32 = 24.;
+const META_ICON: f32 = 14.;
+const META_GAP: f32 = 10.;
 const PREVIEW_EVERY: Duration = Duration::from_millis(500);
 const EDGE: f32 = 20.;
+const TOP_GAP: f32 = 4.;
+const BOTTOM_GAP: f32 = 4.;
 const WORKING_ROW: f32 = 40.;
+
+/// The keys of the chat window: copying what the owner selected in the conversation.
+pub(crate) fn bindings() -> Vec<KeyBinding> {
+    vec![KeyBinding::new("secondary-c", Copy, Some(CHAT_KEYS))]
+}
 
 /// The chat window: the conversation with dotori and the traffic of every other channel.
 pub(crate) struct ChatView {
@@ -118,12 +152,15 @@ pub(crate) struct ChatView {
     copied: Option<usize>,
     hovered: Option<usize>,
     decided: HashMap<u64, Option<bool>>,
+    ran: HashMap<u64, String>,
+    selection: Selection,
     clicked: HashSet<u64>,
     whole: HashSet<u64>,
     live: bool,
     entered: HashMap<usize, Instant>,
     follow: Option<(Instant, f32)>,
     busy: bool,
+    working_shown: bool,
     rows: Entity<Rows>,
     working: Entity<WorkingView>,
     browser: Option<WindowHandle<BrowserWindow>>,
@@ -135,6 +172,7 @@ pub(crate) struct ChatView {
     preview: Option<Arc<RenderImage>>,
     focus_card: bool,
     focus_composer: bool,
+    keys: FocusHandle,
     _uncopy: Option<Task<()>>,
     title: Title,
     _pump: Task<()>,
@@ -322,7 +360,7 @@ impl ChatView {
             .flex_col()
             .gap_2()
             .px_3()
-            .pt_2()
+            .pt(px(TOP_HEIGHT + 8.))
             .pb_4()
             .overflow_y_scroll()
             .child(heading(
@@ -427,12 +465,15 @@ impl ChatView {
             copied: None,
             hovered: None,
             decided: HashMap::new(),
+            ran: HashMap::new(),
+            selection: Selection::default(),
             clicked: HashSet::new(),
             whole: HashSet::new(),
             live: false,
             entered: HashMap::new(),
             follow: None,
             busy: false,
+            working_shown: false,
             rows,
             working,
             browser: None,
@@ -444,6 +485,7 @@ impl ChatView {
             preview: None,
             focus_card: false,
             focus_composer: false,
+            keys: cx.focus_handle(),
             _uncopy: None,
             title: Title::new(identity::name),
             _pump: pump,
@@ -487,6 +529,9 @@ impl ChatView {
             ToWindow::Lapsed { id } => {
                 self.decided.insert(id, None);
             }
+            ToWindow::Ran { id, text } => {
+                self.ran.insert(id, text);
+            }
             ToWindow::BrowserAt { pc, here } => self.browser_at = Some((pc, here)),
             ToWindow::Live => {
                 self.live = true;
@@ -501,6 +546,12 @@ impl ChatView {
         let Some(event) = crate::greeting::shown(event) else {
             return;
         };
+        if let ToWindow::Traffic { channel, text, .. } = &event
+            && channel == DECISION
+            && self.ran.values().any(|ran| ran.trim() == text.trim())
+        {
+            return;
+        }
         if !self.live {
             self.lines.push(event);
             self.scroll.scroll_to_bottom();
@@ -545,8 +596,13 @@ impl ChatView {
     fn working_top(&self) -> Option<Pixels> {
         let viewport = self.scroll.bounds();
         let content = self.scroll.bounds_for_item(0)?;
-        let top = content.bottom() + self.scroll.offset().y - viewport.top();
-        let lowest = viewport.size.height - px(EDGE + WORKING_ROW);
+        let scrolled = self
+            .scroll
+            .offset()
+            .y
+            .clamp(-self.scroll.max_offset().height, px(0.));
+        let top = content.bottom() + scrolled - viewport.top();
+        let lowest = viewport.size.height - px(BOTTOM_GAP + WORKING_ROW);
         (top <= lowest + px(0.5)).then_some(top.min(lowest))
     }
 
@@ -564,6 +620,16 @@ impl ChatView {
             }
             _ => false,
         })
+    }
+
+    fn copy_selection(&mut self, _: &Copy, window: &mut Window, cx: &mut Context<Self>) {
+        if self.input.read(cx).has_selection() && self.input.focus_handle(cx).is_focused(window) {
+            return;
+        }
+        if let Some(text) = self.selection.copied() {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+            cx.stop_propagation();
+        }
     }
 
     fn submit(&mut self, _: &Submit, _: &mut Window, cx: &mut Context<Self>) {
@@ -603,14 +669,27 @@ impl ChatView {
 
     fn pane(&mut self, theme: &Theme, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let card = self.browser_card(theme, window, cx);
+        self.selection.begin(theme.selection.into());
         div()
             .id("conversation")
             .size_full()
             .overflow_y_scroll()
             .track_scroll(&self.scroll)
             .px(px(EDGE))
-            .pt(px(4.))
-            .pb(px(EDGE + WORKING_ROW))
+            .pt(px(TOP_HEIGHT + TOP_GAP))
+            .pb(px(BOTTOM_GAP
+                + if self.shows_working() {
+                    WORKING_ROW
+                } else {
+                    0.
+                }))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|view, event: &MouseDownEvent, _, cx| {
+                    view.selection.press(event.position, event.click_count);
+                    cx.notify();
+                }),
+            )
             .on_scroll_wheel(cx.listener(|view, _: &ScrollWheelEvent, _, cx| {
                 view.follow = None;
                 if view.shows_working() {
@@ -648,7 +727,7 @@ impl ChatView {
         &self,
         theme: &Theme,
         n: usize,
-        text: &str,
+        text: Option<&str>,
         mark: &Mark,
         cx: &mut Context<Self>,
     ) -> Option<AnimationElement<Div>> {
@@ -656,28 +735,28 @@ impl ChatView {
         if !copied && self.hovered != Some(n) {
             return None;
         }
-        let text = text.to_owned();
-        let copy = div()
-            .id(("copy", n))
-            .debug_selector(move || format!("copy-{n}"))
-            .px_1p5()
-            .rounded_md()
-            .text_size(px(12.))
-            .line_height(px(16.))
-            .cursor_pointer()
-            .when(copied, |copy| copy.text_color(theme.text))
-            .when(!copied, |copy| {
-                copy.text_color(theme.muted)
-                    .hover(|copy| copy.bg(theme.bubble).text_color(theme.text))
-            })
-            .child(if copied {
-                words().chat.copied
-            } else {
-                words().chat.copy
-            })
-            .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
-                view.copy(n, text.clone(), cx);
-            }));
+        let copy = text.map(str::to_owned).map(|text| {
+            div()
+                .id(("copy", n))
+                .debug_selector(move || format!("copy-{n}"))
+                .flex()
+                .items_center()
+                .justify_center()
+                .size(px(META_BUTTON))
+                .ml(px(-(META_BUTTON - META_ICON) / 2.))
+                .rounded_md()
+                .cursor_pointer()
+                .hover(|copy| copy.bg(theme.bubble))
+                .child(
+                    svg()
+                        .path(if copied { CHECK_ICON } else { COPY_ICON })
+                        .size(px(META_ICON))
+                        .text_color(if copied { theme.text } else { theme.muted }),
+                )
+                .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                    view.copy(n, text.clone(), cx);
+                }))
+        });
         let time = mark.time.clone().map(|time| {
             div()
                 .text_size(px(12.))
@@ -690,9 +769,9 @@ impl ChatView {
                 .flex()
                 .flex_none()
                 .items_center()
-                .gap_0p5()
+                .gap_1()
+                .children(copy)
                 .children(time)
-                .child(copy)
                 .with_animation(("meta", n), HOVER.animation(), |meta, shown| {
                     meta.opacity(shown)
                 }),
@@ -703,14 +782,15 @@ impl ChatView {
         &self,
         theme: &Theme,
         n: usize,
-        text: &str,
+        text: Option<&str>,
         mark: &Mark,
         cx: &mut Context<Self>,
     ) -> Div {
         div()
             .flex()
-            .h(px(TURN_SPACE))
-            .items_center()
+            .h(px(META_TOP + META_BUTTON + META_GAP))
+            .items_start()
+            .pt(px(META_TOP))
             .children(self.meta(theme, n, text, mark, cx))
     }
 
@@ -722,23 +802,33 @@ impl ChatView {
         mark: &Mark,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
+        let pen = self.selection.pen(n);
         let row = match event {
             ToWindow::BrowserAt { .. }
             | ToWindow::Live
             | ToWindow::Working { .. }
             | ToWindow::Decided { .. }
-            | ToWindow::Lapsed { .. } => {
+            | ToWindow::Lapsed { .. }
+            | ToWindow::Ran { .. } => {
                 return None;
             }
             ToWindow::Ask {
-                id,
-                tool,
-                input,
-                sandboxed,
-                ..
-            } => self
-                .ask_card(theme, n, (*id, tool, input, *sandboxed), mark, cx)
-                .pb(px(TURN_SPACE)),
+                id, tool, input, ..
+            } => div()
+                .flex()
+                .flex_col()
+                .child(self.ask_card(theme, (*id, tool, input), &pen, cx))
+                .child({
+                    let copied = match self.decided.get(id) {
+                        Some(Some(true)) => self
+                            .ran
+                            .get(id)
+                            .map(|text| came(tool, text).copied())
+                            .filter(|copied| !copied.is_empty()),
+                        _ => None,
+                    };
+                    self.under(theme, n, copied.as_deref(), mark, cx)
+                }),
             ToWindow::Owner { text, .. } => div()
                 .flex()
                 .flex_col()
@@ -751,39 +841,25 @@ impl ChatView {
                         .rounded_2xl()
                         .bg(theme.bubble)
                         .text_color(theme.text)
-                        .child(prose(text)),
+                        .child(prose_in(text, Some(&pen))),
                 )
-                .child(self.under(theme, n, text, mark, cx).justify_end()),
+                .child(self.under(theme, n, Some(text), mark, cx).justify_end()),
             ToWindow::Reply { text, .. } => div()
                 .flex()
+                .flex_col()
                 .items_start()
-                .gap(px(10.))
                 .child(
                     div()
-                        .flex_none()
-                        .pt(px(8.))
-                        .child(picture_tile(theme, 28., 8.)),
+                        .max_w(relative(0.85))
+                        .px_4()
+                        .py_2p5()
+                        .rounded_2xl()
+                        .raised(theme)
+                        .text_size(px(15.))
+                        .line_height(px(24.))
+                        .child(rich(text, theme, &pen)),
                 )
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .items_start()
-                        .flex_1()
-                        .min_w_0()
-                        .child(
-                            div()
-                                .max_w(relative(0.85))
-                                .px_4()
-                                .py_2p5()
-                                .rounded_2xl()
-                                .raised(theme)
-                                .text_size(px(15.))
-                                .line_height(px(24.))
-                                .child(rich(text, theme)),
-                        )
-                        .child(self.under(theme, n, text, mark, cx)),
-                ),
+                .child(self.under(theme, n, Some(text), mark, cx)),
             ToWindow::Traffic {
                 channel,
                 place,
@@ -798,7 +874,7 @@ impl ChatView {
                 who,
                 text,
                 ..
-            } => self.traffic(theme, n, (channel, place, who, text), mark, cx),
+            } => self.traffic(theme, n, (channel, place, who, text), mark, &pen, cx),
         };
         Some(
             row.id(("line", n))
@@ -820,69 +896,17 @@ impl ChatView {
         n: usize,
         (channel, place, who, text): (&str, &str, &str, &str),
         mark: &Mark,
+        pen: &Pen,
         cx: &mut Context<Self>,
     ) -> Div {
-        let (mut status, mut body) = if channel == "decision" {
-            decision_shown(text)
-        } else {
-            (None, text.to_owned())
-        };
-        let mut streams = Vec::new();
-        if place == "run_shell"
-            && let Some((_, tone)) = &status
-            && let Some(shell) = shell_shown(*tone == Tone::Ok, &body)
-        {
-            status = Some(shell.status);
-            streams = shell.streams;
-            body = String::new();
+        if channel == DECISION {
+            return self.decided_row(theme, n, (place, text), mark, pen, cx);
         }
-        let room = match own_tool(place) {
-            Some(own) => own.to_owned(),
-            None => room_name(place),
-        };
-        let said = !body.trim().is_empty() || !streams.is_empty() || status.is_some();
-        let streams = streams.into_iter().map(|(label, output)| {
-            div()
-                .flex()
-                .flex_col()
-                .gap_1()
-                .child(div().text_xs().text_color(theme.muted).child(label))
-                .child(
-                    div()
-                        .px_3()
-                        .py_2()
-                        .rounded_lg()
-                        .bg(theme.canvas)
-                        .font_family(MONO)
-                        .text_size(px(12.5))
-                        .line_height(px(19.))
-                        .child(prose(&output)),
-                )
-        });
-        let pill = status.map(|(words, tone)| {
-            let (ink, soft) = match tone {
-                Tone::Ok => (theme.ok, theme.ok_soft),
-                Tone::Warn => (theme.warn, theme.warn_soft),
-                Tone::Danger => (theme.danger, theme.danger_soft),
-                Tone::Quiet => (theme.muted, theme.canvas),
-            };
-            div().flex().child(
-                div()
-                    .px_2p5()
-                    .py_0p5()
-                    .rounded_full()
-                    .bg(soft)
-                    .text_color(ink)
-                    .text_xs()
-                    .font_weight(FontWeight::MEDIUM)
-                    .child(words),
-            )
-        });
+        let said = !text.trim().is_empty();
         div()
             .flex()
             .flex_col()
             .gap_1()
-            .pb(px(TURN_SPACE))
             .child(
                 div()
                     .flex()
@@ -896,7 +920,7 @@ impl ChatView {
                             .font_weight(FontWeight::SEMIBOLD)
                             .child(SharedString::from(channel_name(channel))),
                     )
-                    .child(SharedString::from(room))
+                    .child(SharedString::from(room_name(place)))
                     .child(
                         div()
                             .font_weight(FontWeight::MEDIUM)
@@ -905,9 +929,7 @@ impl ChatView {
                             } else {
                                 who.to_owned()
                             })),
-                    )
-                    .child(div().flex_1())
-                    .children(self.meta(theme, n, text, mark, cx)),
+                    ),
             )
             .when(said, |traffic| {
                 traffic.child(
@@ -921,24 +943,72 @@ impl ChatView {
                             .py_2()
                             .rounded_xl()
                             .card(theme)
-                            .children(pill)
-                            .when(!body.trim().is_empty(), |line| line.child(prose(&body)))
-                            .children(streams),
+                            .child(prose_in(text, Some(pen))),
                     ),
                 )
             })
+            .child(self.under(theme, n, Some(text), mark, cx))
+    }
+
+    fn decided_row(
+        &self,
+        theme: &Theme,
+        n: usize,
+        (tool, text): (&str, &str),
+        mark: &Mark,
+        pen: &Pen,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let came = came(tool, text);
+        let copied = came.copied();
+        let (icon, said, tone) = decided_heading(&came);
+        let ink = match tone {
+            Tone::Warn => theme.warn,
+            Tone::Danger => theme.danger,
+            Tone::Ok | Tone::Quiet => theme.muted,
+        };
+        let gave = came_outputs(theme, came, pen);
+        div()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .h(px(20.))
+                    .text_size(px(13.))
+                    .text_color(ink)
+                    .child(
+                        svg()
+                            .path(icon)
+                            .flex_none()
+                            .size(px(ROW_ICON))
+                            .text_color(ink),
+                    )
+                    .child(said),
+            )
+            .when(!gave.is_empty(), |row| {
+                row.child(div().pt_1p5().flex().flex_col().gap_1p5().children(gave))
+            })
+            .child(self.under(
+                theme,
+                n,
+                (!copied.is_empty()).then_some(copied.as_str()),
+                mark,
+                cx,
+            ))
     }
 
     fn ask_card(
         &self,
         theme: &Theme,
-        n: usize,
-        (id, tool, input, sandboxed): (u64, &str, &str, bool),
-        mark: &Mark,
+        (id, tool, input): (u64, &str, &str),
+        pen: &Pen,
         cx: &mut Context<Self>,
     ) -> gpui::Div {
         let (server, name) = tool.split_once("__").unwrap_or(("", tool));
-        let own = own_tool(tool);
+        let own = is_own(tool);
         let (fields, cut) = asked_fields(tool, input, self.whole.contains(&id));
         let clicked = self.clicked.contains(&id);
         let decided = self.decided.get(&id).copied();
@@ -990,12 +1060,17 @@ impl ChatView {
                     .child(words),
             )
         };
-        let footer = match decided {
-            Some(Some(true)) => pill(theme.ok, theme.ok_soft, words().chat.allowed),
-            Some(Some(false)) => pill(theme.muted, theme.canvas, words().chat.declined),
-            Some(None) => pill(theme.warn, theme.warn_soft, asked::lapsed()),
-            None if clicked => pill(theme.muted, theme.surface, words().chat.deciding),
-            None => div()
+        let footer = match (decided, self.ran.get(&id)) {
+            (Some(Some(true)), Some(text)) => div()
+                .flex()
+                .flex_col()
+                .gap_1p5()
+                .children(came_view(theme, came(tool, text), pen)),
+            (Some(Some(true)), None) => div().child(thinking(theme, ("card-working", id))),
+            (Some(Some(false)), _) => pill(theme.muted, theme.canvas, words().chat.declined),
+            (Some(None), _) => pill(theme.warn, theme.warn_soft, asked::lapsed()),
+            (None, _) if clicked => div().child(thinking(theme, ("card-working", id))),
+            (None, _) => div()
                 .flex()
                 .items_center()
                 .gap_2()
@@ -1003,12 +1078,8 @@ impl ChatView {
                     div()
                         .flex_1()
                         .text_xs()
-                        .text_color(if tool == crate::forget::FORGET {
-                            theme.danger
-                        } else {
-                            theme.muted
-                        })
-                        .child(asked::hint(tool, &called(Particle::Subject))),
+                        .text_color(theme.danger)
+                        .children(asked::warning(tool)),
                 )
                 .child(button("decline", words().chat.decline, false, cx))
                 .child(button("allow", words().chat.allow, true, cx)),
@@ -1025,56 +1096,39 @@ impl ChatView {
                 .bg(fill)
                 .lifted(theme)
                 .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .child(
-                            div()
-                                .flex_1()
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child(asked::title(&called(Particle::Subject))),
-                        )
-                        .children(self.meta(theme, n, input, mark, cx)),
+                    div().flex().items_center().gap_2().child(
+                        div()
+                            .flex_1()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(asked::title(&called(Particle::Subject))),
+                    ),
                 )
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_1p5()
-                        .text_xs()
-                        .when_some(own, |row, own| {
-                            row.child(
-                                div()
-                                    .px_2()
-                                    .py_0p5()
-                                    .rounded_md()
-                                    .bg(inner)
-                                    .text_color(theme.text)
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child(own),
-                            )
-                        })
-                        .when(own.is_none() && !server.is_empty(), |row| {
-                            row.child(
-                                div()
-                                    .px_1p5()
-                                    .rounded_sm()
-                                    .bg(inner)
-                                    .text_color(theme.muted)
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child(SharedString::from(server.to_owned())),
-                            )
-                        })
-                        .when(own.is_none(), |row| {
-                            row.child(
+                .when(!own, |card| {
+                    card.child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_1p5()
+                            .text_xs()
+                            .when(!server.is_empty(), |row| {
+                                row.child(
+                                    div()
+                                        .px_1p5()
+                                        .rounded_sm()
+                                        .bg(inner)
+                                        .text_color(theme.muted)
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .child(SharedString::from(server.to_owned())),
+                                )
+                            })
+                            .child(
                                 div()
                                     .font_family(MONO)
                                     .text_color(theme.text)
                                     .child(SharedString::from(name.to_owned())),
-                            )
-                        }),
-                )
+                            ),
+                    )
+                })
                 .child(
                     div()
                         .flex()
@@ -1108,7 +1162,7 @@ impl ChatView {
                                                 .text_size(px(12.5))
                                                 .line_height(px(19.))
                                         })
-                                        .child(prose(&value)),
+                                        .child(prose_in(&value, Some(pen))),
                                 )
                         }))
                         .when(cut, |box_| {
@@ -1134,25 +1188,6 @@ impl ChatView {
                             )
                         }),
                 )
-                .when(sandboxed, |card| {
-                    card.child(
-                        div()
-                            .debug_selector(|| format!("sandboxed-{id}"))
-                            .flex()
-                            .items_center()
-                            .gap_1p5()
-                            .text_xs()
-                            .text_color(theme.muted)
-                            .child(
-                                svg()
-                                    .path(SHIELD_ON_ICON)
-                                    .flex_none()
-                                    .size(px(14.))
-                                    .text_color(theme.muted),
-                            )
-                            .child(prose(&asked::sandboxed())),
-                    )
-                })
                 .child(footer),
         )
     }
@@ -2037,17 +2072,23 @@ impl ChatView {
             .into_any_element()
     }
 
-    fn composer(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+    fn composer(&self, theme: &Theme, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let ready = matches!(self.link, LinkState::Connected)
             && !self.input.read(cx).text().trim().is_empty();
         let status = self.status();
         let focus = self.input.focus_handle(cx);
+        let ring =
+            (focus.is_focused(window) && window.is_window_active()).then(|| theme.primary.into());
+        let width = hairline(window);
         div()
             .flex_none()
             .px_4()
             .pt_2()
             .pb_3()
-            .child(
+            .child(framed(
+                ring,
+                COMPOSER_RADIUS - width,
+                width,
                 div()
                     .id("composer")
                     .flex()
@@ -2056,12 +2097,19 @@ impl ChatView {
                     .pl_4()
                     .pr_1p5()
                     .py_1p5()
-                    .rounded_full()
+                    .rounded(px(COMPOSER_RADIUS - width))
                     .card(theme)
                     .cursor_text()
-                    .on_mouse_down(MouseButton::Left, move |_, window, _| {
-                        window.focus(&focus);
-                    })
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |view, _, window, cx| {
+                            window.focus(&focus);
+                            cx.stop_propagation();
+                            if view.selection.clear() {
+                                cx.notify();
+                            }
+                        }),
+                    )
                     .child(
                         div()
                             .flex_1()
@@ -2092,7 +2140,7 @@ impl ChatView {
                             .child("↑")
                             .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.send(cx))),
                     ),
-            )
+            ))
             .child(
                 div()
                     .pt_1p5()
@@ -2167,7 +2215,15 @@ impl Render for ChatView {
                 .when(!self.in_settings, |root| root.child(self.splash(&theme)))
                 .into_any_element();
         }
-        let working_at = if self.shows_working() {
+        let working = self.shows_working();
+        if working && !self.working_shown {
+            if self.follow.is_none() && self.at_bottom() {
+                self.scroll.scroll_to_bottom();
+            }
+            window.request_animation_frame();
+        }
+        self.working_shown = working;
+        let working_at = if working {
             if self.scroll.bounds_for_item(0).is_none() {
                 window.request_animation_frame();
             }
@@ -2207,26 +2263,45 @@ impl Render for ChatView {
                     div()
                         .w_full()
                         .max_w(px(column))
-                        .child(self.composer(&theme, cx)),
+                        .child(self.composer(&theme, window, cx)),
                 ),
             );
-        let body = if self.in_settings {
-            self.settings
-                .clone()
-                .map(|settings| div().flex_1().min_h_0().child(settings))
-        } else {
-            None
+        let settings = self
+            .settings
+            .clone()
+            .filter(|_| self.in_settings)
+            .map(|settings| div().flex_1().min_h_0().child(settings));
+        let strip = frame.strip(&theme, self.settings_button(&theme, cx), div());
+        let canvas = Hsla::from(theme.canvas);
+        let (strip, body) = match settings {
+            Some(settings) => (Some(strip), settings),
+            None => (
+                None,
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .relative()
+                    .flex()
+                    .when(self.home.is_some(), |row| {
+                        row.child(self.side_panel(&theme, cx))
+                    })
+                    .child(conversation)
+                    .child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .right_0()
+                            .h(px(TOP_HEIGHT + TOP_GAP))
+                            .bg(linear_gradient(
+                                180.,
+                                linear_color_stop(canvas, 0.5),
+                                linear_color_stop(canvas.opacity(0.), 1.),
+                            )),
+                    )
+                    .child(div().absolute().top_0().left_0().right_0().child(strip)),
+            ),
         };
-        let body = body.unwrap_or_else(|| {
-            div()
-                .flex_1()
-                .min_h_0()
-                .flex()
-                .when(self.home.is_some(), |row| {
-                    row.child(self.side_panel(&theme, cx))
-                })
-                .child(conversation)
-        });
         frame
             .resizable(div())
             .flex()
@@ -2237,7 +2312,25 @@ impl Render for ChatView {
             .text_color(theme.text)
             .text_sm()
             .line_height(px(21.))
-            .child(frame.strip(&theme, self.settings_button(&theme, cx), div()))
+            .key_context(CHAT_KEYS)
+            .track_focus(&self.keys)
+            .on_action(cx.listener(Self::submit))
+            .capture_action(cx.listener(Self::copy_selection))
+            .on_mouse_move(cx.listener(|view, event: &MouseMoveEvent, _, cx| {
+                if !view.selection.dragging() {
+                    return;
+                }
+                if event.pressed_button != Some(MouseButton::Left) {
+                    view.selection.release();
+                } else if view.selection.drag(event.position) {
+                    cx.notify();
+                }
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|view, _: &MouseUpEvent, _, _| view.selection.release()),
+            )
+            .children(strip)
             .child(body)
             .into_any_element()
     }
@@ -2354,8 +2447,6 @@ impl Render for WorkingView {
             .flex()
             .items_center()
             .h(px(WORKING_ROW))
-            .gap(px(10.))
-            .child(picture_tile(&theme, 28., 8.))
             .child(
                 div()
                     .px_4()
@@ -2417,6 +2508,156 @@ pub(crate) enum Tone {
     Quiet,
 }
 
+struct Came {
+    status: Option<(SharedString, Tone)>,
+    body: String,
+    streams: Vec<(&'static str, String)>,
+}
+
+impl Came {
+    fn copied(&self) -> String {
+        self.streams
+            .iter()
+            .map(|(_, output)| output.as_str())
+            .chain((!self.body.trim().is_empty()).then_some(self.body.as_str()))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
+fn came(tool: &str, text: &str) -> Came {
+    let (status, body) = decision_shown(text);
+    let came = match &status {
+        Some((_, tone)) if tool == "run_shell" => match shell_shown(*tone == Tone::Ok, &body) {
+            Some(shell) => Came {
+                status: Some(shell.status),
+                body: String::new(),
+                streams: shell.streams,
+            },
+            None => Came {
+                status,
+                body,
+                streams: Vec::new(),
+            },
+        },
+        _ => Came {
+            status,
+            body,
+            streams: Vec::new(),
+        },
+    };
+    match came.status {
+        Some((_, Tone::Danger)) => Came {
+            status: came.status,
+            body: String::new(),
+            streams: Vec::new(),
+        },
+        _ => came,
+    }
+}
+
+fn decided_heading(came: &Came) -> (&'static str, SharedString, Tone) {
+    match &came.status {
+        Some((said, Tone::Quiet)) => (DECLINED_ICON, said.clone(), Tone::Quiet),
+        Some((said, Tone::Warn)) => (CLOCK_ICON, said.clone(), Tone::Warn),
+        Some((_, Tone::Danger)) => (
+            ERROR_ICON,
+            SharedString::new_static(words().chat.error),
+            Tone::Danger,
+        ),
+        _ => (
+            RESULT_ICON,
+            SharedString::new_static(words().chat.result),
+            Tone::Quiet,
+        ),
+    }
+}
+
+fn came_view(theme: &Theme, came: Came, pen: &Pen) -> Vec<AnyElement> {
+    let failed = matches!(came.status, Some((_, Tone::Danger)));
+    let status = came
+        .status
+        .filter(|(_, tone)| matches!(tone, Tone::Quiet | Tone::Warn))
+        .map(|(words, tone)| {
+            div()
+                .debug_selector(|| String::from("came-status"))
+                .text_xs()
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(match tone {
+                    Tone::Warn => theme.warn,
+                    Tone::Ok | Tone::Danger | Tone::Quiet => theme.muted,
+                })
+                .child(words)
+                .into_any_element()
+        });
+    let failed = failed.then(|| {
+        div()
+            .debug_selector(|| String::from("came-error"))
+            .flex()
+            .items_center()
+            .gap_1p5()
+            .text_xs()
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(theme.danger)
+            .child(
+                svg()
+                    .path(ERROR_ICON)
+                    .flex_none()
+                    .size(px(ROW_ICON))
+                    .text_color(theme.danger),
+            )
+            .child(words().chat.error)
+            .into_any_element()
+    });
+    let body =
+        (!came.body.trim().is_empty()).then(|| prose_in(&came.body, Some(pen)).into_any_element());
+    let streams = came.streams.into_iter().map(|(label, output)| {
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(div().text_xs().text_color(theme.muted).child(label))
+            .child(output_box(theme.canvas, &output, pen))
+            .into_any_element()
+    });
+    status
+        .into_iter()
+        .chain(failed)
+        .chain(body)
+        .chain(streams)
+        .collect()
+}
+
+fn came_outputs(theme: &Theme, came: Came, pen: &Pen) -> Vec<AnyElement> {
+    let stdout = words().chat.stdout;
+    let body =
+        (!came.body.trim().is_empty()).then(|| prose_in(&came.body, Some(pen)).into_any_element());
+    let streams = came.streams.into_iter().map(|(label, output)| {
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .when(label != stdout, |stream| {
+                stream.child(div().text_xs().text_color(theme.muted).child(label))
+            })
+            .child(output_box(theme.surface, &output, pen))
+            .into_any_element()
+    });
+    body.into_iter().chain(streams).collect()
+}
+
+fn output_box(fill: Rgba, output: &str, pen: &Pen) -> Div {
+    div()
+        .px_3()
+        .py_2()
+        .rounded_lg()
+        .bg(fill)
+        .font_family(MONO)
+        .text_size(px(12.5))
+        .line_height(px(19.))
+        .child(prose_in(output, Some(pen)))
+}
+
 /// What came of a call the owner decided, in the owner's words, and what is left to show below
 /// it, such as what the tool returned. The words the main session gets stay as they are.
 pub(crate) fn decision_shown(text: &str) -> (Option<(SharedString, Tone)>, String) {
@@ -2426,19 +2667,19 @@ pub(crate) fn decision_shown(text: &str) -> (Option<(SharedString, Tone)>, Strin
     let chat = &words().chat;
     if let Some(output) = text.strip_prefix(RAN) {
         return (
-            Some((SharedString::new_static(chat.ran), Tone::Ok)),
+            Some((SharedString::new_static(chat.succeeded), Tone::Ok)),
             output.strip_prefix('\n').unwrap_or(output).to_owned(),
         );
     }
     if let Some(reason) = text.strip_prefix(FAILED) {
         return (
-            Some((SharedString::new_static(chat.ran_failed), Tone::Danger)),
+            Some((SharedString::new_static(chat.failed), Tone::Danger)),
             reason.to_owned(),
         );
     }
     if text.starts_with("The owner allowed this call, but it did not finish in time.") {
         return (
-            Some((SharedString::new_static(chat.timed_out), Tone::Warn)),
+            Some((SharedString::new_static(chat.failed), Tone::Danger)),
             String::new(),
         );
     }
@@ -2470,10 +2711,10 @@ pub(crate) fn shell_shown(ran: bool, text: &str) -> Option<ShellShown> {
     if ran {
         let rest = text.strip_prefix("exit code: ")?;
         let (code, rest) = rest.split_once('\n')?;
-        let status = match code.trim().parse::<i64>() {
-            Ok(0) => (SharedString::new_static(chat.command_done), Tone::Ok),
-            Ok(code) => (SharedString::from((chat.command_exited)(code)), Tone::Warn),
-            Err(_) => (SharedString::new_static(chat.command_signalled), Tone::Warn),
+        let status = if code.trim() == "0" {
+            (SharedString::new_static(chat.succeeded), Tone::Ok)
+        } else {
+            (SharedString::new_static(chat.failed), Tone::Danger)
         };
         return Some(ShellShown {
             status,
@@ -2481,13 +2722,10 @@ pub(crate) fn shell_shown(ran: bool, text: &str) -> Option<ShellShown> {
         });
     }
     let rest = text.strip_prefix("the command did not finish in ")?;
-    let (seconds, rest) = rest.split_once(" seconds")?;
+    let (_, rest) = rest.split_once(" seconds")?;
     let (_, outputs) = rest.split_once("Its output so far:\n")?;
     Some(ShellShown {
-        status: (
-            SharedString::from((chat.command_too_slow)(seconds)),
-            Tone::Warn,
-        ),
+        status: (SharedString::new_static(chat.failed), Tone::Danger),
         streams: shell_streams(outputs)?,
     })
 }

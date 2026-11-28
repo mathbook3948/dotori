@@ -149,14 +149,7 @@ impl RoomCards {
     /// Posts the call `id` that waits for the owner where `origin` says they asked, if it was a
     /// chat. A room only the owner reads gets the card. Any other room gets only a pointer, and
     /// the card goes to the place in that chat only the owner reads, or nowhere if it has none.
-    pub(crate) fn ask(
-        self: &Arc<Self>,
-        origin: Option<Origin>,
-        id: u64,
-        tool: &str,
-        input: &str,
-        sandboxed: bool,
-    ) {
+    pub(crate) fn ask(self: &Arc<Self>, origin: Option<Origin>, id: u64, tool: &str, input: &str) {
         let Some(origin) = origin else {
             return;
         };
@@ -164,25 +157,21 @@ impl RoomCards {
             return;
         };
         let (fields, cut) = asked::asked_fields(tool, input, false);
-        let named = match asked::own_tool(tool) {
-            Some(own) => own.to_owned(),
-            None => tool.replacen("__", " ", 1),
-        };
-        let rows = std::iter::once((String::from(words().chat.tool_row), named))
+        let named = (!asked::is_own(tool)).then(|| {
+            (
+                String::from(words().chat.tool_row),
+                tool.replacen("__", " ", 1),
+            )
+        });
+        let rows = named
+            .into_iter()
             .chain(
                 fields
                     .into_iter()
                     .map(|(key, value)| (asked::field_label(&key).to_owned(), value)),
             )
             .collect();
-        let notes = sandboxed
-            .then(asked::sandboxed)
-            .into_iter()
-            .chain(std::iter::once(asked::hint(
-                tool,
-                &called(Particle::Subject),
-            )))
-            .collect();
+        let notes = asked::warning(tool).map(String::from).into_iter().collect();
         let choices = [(words().chat.decline, false), (words().chat.allow, true)]
             .into_iter()
             .map(|(label, ok)| (button(label, ok), Answer::Call { id, ok }))

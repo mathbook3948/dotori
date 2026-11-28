@@ -28,7 +28,6 @@ fn asking() -> (Asking, Arc<Counting>, Arc<AppChannel>) {
     let app = Arc::new(app);
     let asking = Asking::new(
         settings.asked(),
-        None,
         Arc::clone(&counting) as Arc<dyn Toolbox>,
         Arc::clone(&app),
         RoomCards::new(Arc::clone(&app)).0,
@@ -57,6 +56,14 @@ async fn a_call_the_owner_did_not_list_runs_at_once() {
         "ran mail__read"
     );
     assert_eq!(counting.0.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn only_a_listed_call_says_it_waits_for_the_owner_so_the_model_is_not_asked_to_explain_it() {
+    let (asking, _, _) = asking();
+
+    assert!(asking.waits_for_owner(&call("mail__send")));
+    assert!(!asking.waits_for_owner(&call("mail__read")));
 }
 
 #[tokio::test]
@@ -89,6 +96,14 @@ async fn a_listed_call_waits_and_runs_only_once_the_owner_allows_it() {
     assert_eq!(
         shown(&published.recv().await.expect("decided").line),
         ToWindow::Decided { id, ok: true }
+    );
+    assert_eq!(
+        shown(&published.recv().await.expect("ran").line),
+        ToWindow::Ran {
+            id,
+            text: outcome.text.clone()
+        },
+        "the card shows what came of it"
     );
 
     assert_eq!(
@@ -193,42 +208,6 @@ fn what_came_of_a_call_arrives_as_data_not_as_the_owner() {
 }
 
 #[tokio::test]
-async fn a_shell_command_s_card_says_whether_it_runs_in_the_sandbox() {
-    let base = std::env::temp_dir().join(format!("dotori-confirm-sandbox-{}", std::process::id()));
-    let private = dotori_connectors::tool::basic::Private {
-        folder: base.clone(),
-        open: base.join("work"),
-    };
-    let sandbox = Arc::new(Sandbox::new(&private));
-    let works = matches!(sandbox.ready().await, Ok(Some(_)));
-    let mut asked = Asked::default();
-    asked.always(RUN_SHELL);
-    asked.always("write_file");
-    let (app, _) = AppChannel::bind("token").expect("bound");
-    let app = Arc::new(app);
-    let asking = Asking::new(
-        asked,
-        Some(sandbox),
-        Arc::new(Counting(AtomicUsize::new(0))),
-        Arc::clone(&app),
-        RoomCards::new(Arc::clone(&app)).0,
-    );
-    let mut published = app.published();
-
-    for (tool, sandboxed) in [(RUN_SHELL, works), ("write_file", false)] {
-        asking.run(call(tool)).await.expect("waits");
-        let ToWindow::Ask {
-            sandboxed: said, ..
-        } = shown(&published.recv().await.expect("asked").line)
-        else {
-            panic!("an ask");
-        };
-        assert_eq!(said, sandboxed, "{tool}");
-    }
-    let _ = std::fs::remove_dir_all(base);
-}
-
-#[tokio::test]
 async fn a_card_call_returns_at_once_and_what_came_of_it_arrives_on_the_decision_channel() {
     let (asking, counting, _) = asking();
     let owner = Arc::new(Counting(AtomicUsize::new(0)));
@@ -247,6 +226,10 @@ async fn a_card_call_returns_at_once_and_what_came_of_it_arrives_on_the_decision
 
     assert_eq!(shown, CARD_SHOWN);
     assert_eq!(ran, "ran mail__read");
+    assert!(waits.waits_for_owner(&call(dotori_mcp::browser::FILL)));
+    assert!(waits.waits_for_owner(&call("mail__send")));
+    assert!(!waits.waits_for_owner(&call("mail__read")));
+    assert!(!waits.waits_for_owner(&call(dotori_mcp::browser::ASK)));
     let outcome = time::timeout(Duration::from_secs(5), heard.recv())
         .await
         .expect("in time")

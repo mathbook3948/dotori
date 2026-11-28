@@ -163,6 +163,7 @@ pub(crate) enum Phase {
     /// An owner message waits here too. Tools finish, or time out, before the next call.
     UsingTools {
         waiting: HashMap<ToolRunId, ToolCallId>,
+        call_again: bool,
     },
     /// Shutdown waits for running tools, so their results are recorded.
     Stopping {
