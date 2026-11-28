@@ -78,12 +78,26 @@ pub enum Action {
 
 impl Entry {
     /// Whether `other` is this same entry as a record loaded it. A heard message is told by its
-    /// channel and id, because the record may keep a different time for it.
+    /// channel and id, because the record may keep a different time for it. A reply is told by
+    /// what it did, because forgetting an earlier entry moves its `answered` here but not in the
+    /// record.
     pub fn is_same(&self, other: &Entry) -> bool {
         match (self, other) {
             (Entry::Heard { message: a, .. }, Entry::Heard { message: b, .. }) => {
                 a.address.channel == b.address.channel && a.id == b.id
             }
+            (
+                Entry::Acted {
+                    actions: a,
+                    trace: x,
+                    ..
+                },
+                Entry::Acted {
+                    actions: b,
+                    trace: y,
+                    ..
+                },
+            ) => a == b && x == y,
             _ => self == other,
         }
     }
