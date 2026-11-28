@@ -38,6 +38,7 @@ pub(crate) enum Event {
     ToolDone {
         run: ToolRunId,
         result: Result<String, ToolError>,
+        asked_owner: bool,
     },
     SubSessionDone {
         sub_session: SubSessionId,

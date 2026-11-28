@@ -247,6 +247,10 @@ impl Toolbox for FencedTools {
         self.tools.specs()
     }
 
+    fn waits_for_owner(&self, call: &ToolCall) -> bool {
+        self.tools.waits_for_owner(call)
+    }
+
     fn run(&self, call: ToolCall) -> BoxFuture<'_, Result<String, ToolError>> {
         if let Err(error) = still_main(self.linked.as_ref()) {
             return Box::pin(async move {

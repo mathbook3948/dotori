@@ -60,6 +60,14 @@ async fn a_call_the_owner_did_not_list_runs_at_once() {
 }
 
 #[tokio::test]
+async fn only_a_listed_call_says_it_waits_for_the_owner_so_the_model_is_not_asked_to_explain_it() {
+    let (asking, _, _) = asking();
+
+    assert!(asking.waits_for_owner(&call("mail__send")));
+    assert!(!asking.waits_for_owner(&call("mail__read")));
+}
+
+#[tokio::test]
 async fn a_listed_call_waits_and_runs_only_once_the_owner_allows_it() {
     let (asking, counting, app) = asking();
     let mut published = app.published();
@@ -89,6 +97,14 @@ async fn a_listed_call_waits_and_runs_only_once_the_owner_allows_it() {
     assert_eq!(
         shown(&published.recv().await.expect("decided").line),
         ToWindow::Decided { id, ok: true }
+    );
+    assert_eq!(
+        shown(&published.recv().await.expect("ran").line),
+        ToWindow::Ran {
+            id,
+            text: outcome.text.clone()
+        },
+        "the card shows what came of it"
     );
 
     assert_eq!(
@@ -247,6 +263,10 @@ async fn a_card_call_returns_at_once_and_what_came_of_it_arrives_on_the_decision
 
     assert_eq!(shown, CARD_SHOWN);
     assert_eq!(ran, "ran mail__read");
+    assert!(waits.waits_for_owner(&call(dotori_mcp::browser::FILL)));
+    assert!(waits.waits_for_owner(&call("mail__send")));
+    assert!(!waits.waits_for_owner(&call("mail__read")));
+    assert!(!waits.waits_for_owner(&call(dotori_mcp::browser::ASK)));
     let outcome = time::timeout(Duration::from_secs(5), heard.recv())
         .await
         .expect("in time")

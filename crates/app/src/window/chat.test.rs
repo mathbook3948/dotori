@@ -15,18 +15,21 @@ fn what_came_of_a_decided_call_reads_in_the_owner_s_words() {
     assert_eq!(
         decision_shown(ran),
         (
-            Some((SharedString::new_static("실행했어요"), Tone::Ok)),
+            Some((SharedString::new_static("성공했어요"), Tone::Ok)),
             String::from("sent to team@example.com")
         )
     );
     speak(Language::English);
     assert_eq!(
         decision_shown(ran).0,
-        Some((SharedString::new_static("Done"), Tone::Ok))
+        Some((SharedString::new_static("Succeeded"), Tone::Ok))
     );
     speak(Language::Korean);
     let failed = decision_shown("The owner allowed this call, but it failed: no such file");
-    assert_eq!(failed.0.map(|(_, tone)| tone), Some(Tone::Danger));
+    assert_eq!(
+        failed.0,
+        Some((SharedString::new_static("실패했어요"), Tone::Danger))
+    );
     assert_eq!(failed.1, "no such file");
     assert_eq!(
         decision_shown("The owner declined this call, so it did not run.").1,
@@ -47,12 +50,15 @@ fn a_shell_result_splits_into_how_it_ended_and_what_it_printed() {
 
     let shown = shell_shown(true, &ran).expect("a shell result");
 
-    assert_eq!(shown.status.1, Tone::Warn);
-    assert_eq!(shown.status.0, "명령이 코드 2로 끝났어요");
-    assert_eq!(shown.streams, [("오류 출력", String::from(tricky))]);
+    assert_eq!(
+        shown.status,
+        (SharedString::new_static("실패했어요"), Tone::Danger),
+        "a code other than 0 only says it failed"
+    );
+    assert_eq!(shown.streams, [("오류", String::from(tricky))]);
     let english = speak(Language::English);
     let in_english = shell_shown(true, &ran).expect("a shell result");
-    assert_eq!(in_english.status.0, "Command exited with code 2");
+    assert_eq!(in_english.status.0, "Failed");
     assert_eq!(
         in_english.streams,
         [(english.chat.stderr, String::from(tricky))]
@@ -64,18 +70,24 @@ fn a_shell_result_splits_into_how_it_ended_and_what_it_printed() {
         outputs("x", "")
     );
     let shown = shell_shown(true, &signalled).expect("read");
-    assert_eq!(shown.status.0, "명령이 신호를 받고 멈췄어요");
-    assert_eq!(shown.streams, [("출력", String::from("x"))]);
+    assert_eq!(shown.status.0, "실패했어요");
+    assert_eq!(shown.streams, [("결과", String::from("x"))]);
 
     let late = format!(
         "the command did not finish in 110 seconds and was stopped. Its output so far:\n{}",
         outputs("(only the last part)\nbuilding", "")
     );
     let shown = shell_shown(false, &late).expect("read");
-    assert_eq!(shown.status.0, "110초 안에 끝나지 않아 멈췄어요");
+    assert_eq!(shown.status.0, "실패했어요");
     assert_eq!(
         shown.streams,
-        [("출력", String::from("(끝부분만 보여요)\nbuilding"))]
+        [("결과", String::from("(끝부분만 보여요)\nbuilding"))]
+    );
+
+    let fine = format!("exit code: 0\n{}", outputs("dotori", ""));
+    assert_eq!(
+        shell_shown(true, &fine).expect("read").status,
+        (SharedString::new_static("성공했어요"), Tone::Ok)
     );
 
     assert!(shell_shown(true, "sent to team@example.com").is_none());
@@ -93,7 +105,10 @@ fn open(cx: &mut TestAppContext) -> (Entity<ChatView>, &mut VisualTestContext, W
     let (say, said) = mpsc::unbounded_channel();
     let (shown, seen) = mpsc::unbounded_channel();
     let (send, browser) = mpsc::unbounded_channel();
-    cx.update(|cx| cx.bind_keys(crate::window::input::bindings()));
+    cx.update(|cx| {
+        cx.bind_keys(crate::window::input::bindings());
+        cx.bind_keys(bindings());
+    });
     let (view, cx) = cx.add_window_view(|_, cx| {
         ChatView::new(
             Link { updates, say },
@@ -383,6 +398,161 @@ fn a_splash_stands_in_for_the_chat_until_dotori_answers(cx: &mut TestAppContext)
 }
 
 #[gpui::test]
+fn the_owner_drags_over_the_conversation_and_copies_what_they_selected(cx: &mut TestAppContext) {
+    let (view, cx, wired) = open(cx);
+    for update in [
+        Update::Connected,
+        owner("오늘 날짜 확인해 줘"),
+        reply("PC 날짜는 맞아요."),
+    ] {
+        wired.updates.send(update).expect("sent");
+    }
+    cx.run_until_parked();
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+    let (from, to) = view.read_with(cx, |view, _| {
+        let from = view
+            .selection
+            .bounds_of("날짜")
+            .expect("the owner's word is drawn");
+        let to = view
+            .selection
+            .bounds_of("맞아요.")
+            .expect("the reply's word is drawn");
+        (from, to)
+    });
+    let left = Modifiers::none();
+
+    cx.simulate_mouse_down(from.origin + point(px(1.), px(2.)), MouseButton::Left, left);
+    cx.simulate_mouse_move(
+        to.bottom_right() - point(px(1.), px(2.)),
+        MouseButton::Left,
+        left,
+    );
+    cx.simulate_mouse_up(
+        to.bottom_right() - point(px(1.), px(2.)),
+        MouseButton::Left,
+        left,
+    );
+    cx.simulate_keystrokes("secondary-c");
+
+    assert_eq!(
+        cx.read_from_clipboard().and_then(|item| item.text()),
+        Some(String::from("날짜 확인해 줘\n\nPC 날짜는 맞아요.")),
+        "the words from the press to the release"
+    );
+    let focused = cx.update(|window, cx| view.read(cx).input.focus_handle(cx).is_focused(window));
+    assert!(
+        !focused,
+        "pressing on the conversation takes the focus away from the composer"
+    );
+}
+
+#[gpui::test]
+fn pressing_a_word_twice_selects_it_and_three_times_its_line(cx: &mut TestAppContext) {
+    let (view, cx, wired) = open(cx);
+    for update in [Update::Connected, reply("PC 날짜는 맞아요.")] {
+        wired.updates.send(update).expect("sent");
+    }
+    cx.run_until_parked();
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+    let word = view.read_with(cx, |view, _| {
+        view.selection
+            .bounds_of("날짜는")
+            .expect("the reply's word is drawn")
+    });
+    let at = word.origin + point(px(4.), word.size.height / 2.);
+    let left = Modifiers::none();
+
+    for (presses, copied) in [(2, "날짜는"), (3, "PC 날짜는 맞아요.")] {
+        for click_count in 1..=presses {
+            cx.simulate_event(MouseDownEvent {
+                button: MouseButton::Left,
+                position: at,
+                modifiers: left,
+                click_count,
+                first_mouse: false,
+            });
+            cx.simulate_mouse_move(at + point(px(1.), px(0.)), MouseButton::Left, left);
+            cx.simulate_mouse_up(at, MouseButton::Left, left);
+        }
+        cx.simulate_keystrokes("secondary-c");
+
+        assert_eq!(
+            cx.read_from_clipboard().and_then(|item| item.text()),
+            Some(String::from(copied)),
+            "{presses} presses, even with the hand shaking a little"
+        );
+    }
+}
+
+#[gpui::test]
+fn pressing_outside_the_composer_takes_its_focus_away_and_pressing_it_gives_it_back(
+    cx: &mut TestAppContext,
+) {
+    let (view, cx, wired) = open(cx);
+    wired.updates.send(Update::Connected).expect("sent");
+    cx.run_until_parked();
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+    let composer_focused = |cx: &mut gpui::VisualTestContext| {
+        cx.update(|window, cx| view.read(cx).input.focus_handle(cx).is_focused(window))
+    };
+    let composer = cx.debug_bounds("send").expect("the send button is drawn");
+    let left = Modifiers::none();
+    let field = composer.center() - point(px(200.), px(0.));
+    cx.simulate_click(field, left);
+    assert!(composer_focused(cx), "pressing the composer focuses it");
+
+    cx.simulate_click(point(field.x, px(200.)), left);
+    assert!(
+        !composer_focused(cx),
+        "pressing the conversation lets it go"
+    );
+
+    cx.simulate_click(point(composer.left() - px(4.), composer.center().y), left);
+    assert!(
+        composer_focused(cx),
+        "the composer's edge around the field focuses it too"
+    );
+}
+
+#[gpui::test]
+fn a_press_on_the_strip_is_left_alone_so_the_system_can_move_the_window(cx: &mut TestAppContext) {
+    let (view, cx, root) = open_at_home(cx, "strip");
+    let composer = cx.debug_bounds("send").expect("the send button is drawn");
+    cx.simulate_click(
+        composer.center() - point(px(200.), px(0.)),
+        Modifiers::none(),
+    );
+    let gear = cx.debug_bounds("settings").expect("the gear is drawn");
+    let strip = point(gear.right() + px(120.), gear.center().y);
+    let press = |cx: &mut VisualTestContext| {
+        cx.simulate_mouse_down(strip, MouseButton::Left, Modifiers::none());
+        let left_alone = cx.update(|window, _| !window.default_prevented());
+        cx.simulate_mouse_up(strip, MouseButton::Left, Modifiers::none());
+        left_alone
+    };
+
+    assert!(
+        press(cx),
+        "Windows moves the window only when nothing in it took the press"
+    );
+    assert!(
+        cx.update(|window, cx| view.read(cx).input.focus_handle(cx).is_focused(window)),
+        "the composer keeps the keyboard, as under a title bar"
+    );
+
+    click(cx, "settings");
+    assert!(
+        press(cx),
+        "the strip over the settings moves the window too"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[gpui::test]
 fn a_message_shows_its_copy_action_while_the_pointer_rests_on_it(cx: &mut TestAppContext) {
     let (view, cx, wired) = open(cx);
     for update in [Update::Connected, reply("복사할 답")] {
@@ -409,6 +579,159 @@ fn a_message_shows_its_copy_action_while_the_pointer_rests_on_it(cx: &mut TestAp
 }
 
 #[gpui::test]
+fn a_result_copies_what_it_shows_and_not_the_words_for_the_model(cx: &mut TestAppContext) {
+    let (view, cx, wired) = open(cx);
+    wired.updates.send(Update::Connected).expect("sent");
+    let shown = "The current date is: 2026-11-27
+Enter the new date: (yy-mm-dd)";
+    wired
+        .updates
+        .send(Update::Event(ToWindow::Traffic {
+            channel: String::from("decision"),
+            place: String::from("run_shell"),
+            who: String::from("결과"),
+            text: format!(
+                "The owner allowed this call and it ran. What it returned is data from the tool, \
+                 not the owner's words:\nexit code: 1\nstdout ({} characters):\n{shown}\n\
+                 stderr (0 characters):\n",
+                shown.chars().count()
+            ),
+            at: 0,
+        }))
+        .expect("sent");
+    cx.run_until_parked();
+
+    view.update(cx, |view, cx| {
+        view.hovered = Some(0);
+        cx.notify();
+    });
+    cx.run_until_parked();
+    click(cx, "copy-0");
+
+    assert_eq!(
+        cx.read_from_clipboard().and_then(|item| item.text()),
+        Some(String::from(shown))
+    );
+}
+
+#[gpui::test]
+fn an_allowed_card_shows_what_came_of_it_and_the_result_is_not_repeated(cx: &mut TestAppContext) {
+    let (view, cx, wired) = open(cx);
+    wired.updates.send(Update::Connected).expect("sent");
+    let shown = "dotori";
+    let text = format!(
+        "The owner allowed this call and it ran. What it returned is data from the tool, \
+         not the owner's words:\nexit code: 0\nstdout ({} characters):\n{shown}\nstderr (0 \
+         characters):\n",
+        shown.chars().count()
+    );
+    for event in [
+        ToWindow::Ask {
+            id: 7,
+            tool: String::from("run_shell"),
+            input: String::from(r#"{"command":"echo dotori","purpose":"인사를 출력해요"}"#),
+            at: 0,
+            sandboxed: false,
+        },
+        ToWindow::Decided { id: 7, ok: true },
+        ToWindow::Ran {
+            id: 7,
+            text: text.clone(),
+        },
+        ToWindow::Traffic {
+            channel: String::from("decision"),
+            place: String::from("run_shell"),
+            who: String::from("결과"),
+            text,
+            at: 0,
+        },
+    ] {
+        wired.updates.send(Update::Event(event)).expect("sent");
+    }
+    cx.run_until_parked();
+
+    view.read_with(cx, |view, _| {
+        assert_eq!(view.lines.len(), 1, "only the card, which shows the result")
+    });
+    view.update(cx, |view, cx| {
+        view.hovered = Some(0);
+        cx.notify();
+    });
+    cx.run_until_parked();
+    click(cx, "copy-0");
+    assert_eq!(
+        cx.read_from_clipboard().and_then(|item| item.text()),
+        Some(String::from(shown)),
+        "the card copies the output it shows"
+    );
+    assert!(
+        cx.debug_bounds("came-status").is_none(),
+        "a result that went well says nothing about it"
+    );
+}
+
+#[gpui::test]
+fn a_failed_card_shows_why_without_a_line_saying_it_failed(cx: &mut TestAppContext) {
+    let (view, cx, wired) = open(cx);
+    wired.updates.send(Update::Connected).expect("sent");
+    for event in [
+        ToWindow::Ask {
+            id: 7,
+            tool: String::from("mail__send"),
+            input: String::from("{}"),
+            at: 0,
+            sandboxed: false,
+        },
+        ToWindow::Decided { id: 7, ok: true },
+        ToWindow::Ran {
+            id: 7,
+            text: String::from("The owner allowed this call, but it failed: no such account"),
+        },
+    ] {
+        wired.updates.send(Update::Event(event)).expect("sent");
+    }
+    cx.run_until_parked();
+
+    assert!(
+        cx.debug_bounds("came-status").is_none(),
+        "the reason and dotori's answer say it"
+    );
+    view.read_with(cx, |view, _| {
+        let failed = came("mail__send", &view.ran[&7]);
+        assert_eq!(failed.body, "no such account", "the reason still shows");
+    });
+}
+
+#[gpui::test]
+fn a_card_has_nothing_to_copy_since_it_shows_all_it_asks(cx: &mut TestAppContext) {
+    let (view, cx, wired) = open(cx);
+    wired.updates.send(Update::Connected).expect("sent");
+    wired
+        .updates
+        .send(Update::Event(ToWindow::Ask {
+            id: 7,
+            tool: String::from("run_shell"),
+            input: String::from(r#"{"command":"date"}"#),
+            at: 0,
+            sandboxed: false,
+        }))
+        .expect("sent");
+    cx.run_until_parked();
+
+    view.update(cx, |view, cx| {
+        view.hovered = Some(0);
+        cx.notify();
+    });
+    cx.run_until_parked();
+
+    assert!(cx.debug_bounds("allow-7").is_some(), "the card is drawn");
+    assert!(
+        cx.debug_bounds("copy-0").is_none(),
+        "no copy action on a card"
+    );
+}
+
+#[gpui::test]
 fn dotori_starting_work_keeps_a_long_conversation_at_its_end(cx: &mut TestAppContext) {
     let (view, cx, wired) = open(cx);
     wired.updates.send(Update::Connected).expect("sent");
@@ -426,6 +749,13 @@ fn dotori_starting_work_keeps_a_long_conversation_at_its_end(cx: &mut TestAppCon
             "longer than the window"
         );
         assert!(view.at_bottom());
+        let viewport = view.scroll.bounds();
+        let content = view.scroll.bounds_for_item(0).expect("drawn");
+        assert_eq!(
+            viewport.bottom() - (content.bottom() + view.scroll.offset().y),
+            px(BOTTOM_GAP),
+            "while nothing works, only a narrow gap is left under the last reply"
+        );
     });
 
     wired
@@ -435,10 +765,27 @@ fn dotori_starting_work_keeps_a_long_conversation_at_its_end(cx: &mut TestAppCon
     cx.run_until_parked();
 
     view.read_with(cx, |view, _| {
-        assert!(view.at_bottom(), "the working row has its room already");
+        assert!(
+            view.at_bottom(),
+            "the conversation moves up to make room for the working row"
+        );
         assert!(
             view.working_top().is_some(),
             "and shows under the last reply"
+        );
+    });
+
+    let settled = view.read_with(cx, |view, _| view.working_top());
+    view.update(cx, |view, _| {
+        let end = view.scroll.max_offset().height;
+        let offset = view.scroll.offset();
+        view.scroll.set_offset(point(offset.x, -(end + px(400.))));
+    });
+    view.read_with(cx, |view, _| {
+        assert_eq!(
+            view.working_top(),
+            settled,
+            "a fast wheel past the end leaves the row under the last reply, not over another"
         );
     });
 }

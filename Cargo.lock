@@ -1701,6 +1701,7 @@ version = "0.1.0"
 dependencies = [
  "dotori-core",
  "dotori-mcp",
+ "dotori-native",
  "futures-util",
  "getrandom 0.4.3",
  "jiff",

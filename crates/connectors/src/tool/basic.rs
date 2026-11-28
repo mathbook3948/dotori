@@ -39,6 +39,8 @@ pub const WRITE_FILE: &str = "write_file";
 pub const EDIT_FILE: &str = "edit_file";
 /// The name of the tool that runs a shell command.
 pub const RUN_SHELL: &str = "run_shell";
+/// The field of a shell call that says, for the owner, what the command does.
+pub const PURPOSE: &str = "purpose";
 const LINES: usize = 2000;
 const READ_BYTES: u64 = 10 * 1024 * 1024;
 const SHOWN: usize = 256 * 1024;
@@ -211,10 +213,14 @@ impl BasicTools {
                     "type": "object",
                     "properties": {
                         "command": { "type": "string" },
+                        "purpose": {
+                            "type": "string",
+                            "description": "What the command does, in one short sentence in the owner's language. The owner reads it on the card before allowing the command."
+                        },
                         "folder": { "type": "string" },
                         "seconds": { "type": "integer", "minimum": 1, "description": "How long it may run." }
                     },
-                    "required": ["command"],
+                    "required": ["command", "purpose"],
                     "additionalProperties": false
                 }),
             ),
@@ -635,6 +641,23 @@ pub fn outputs(stdout: &str, stderr: &str) -> String {
     )
 }
 
+fn console_text(bytes: &[u8]) -> String {
+    match std::str::from_utf8(bytes) {
+        Ok(text) => text.to_owned(),
+        Err(_) => local_text(bytes).unwrap_or_else(|| String::from_utf8_lossy(bytes).into_owned()),
+    }
+}
+
+#[cfg(windows)]
+fn local_text(bytes: &[u8]) -> Option<String> {
+    dotori_native::console_text(bytes)
+}
+
+#[cfg(not(windows))]
+fn local_text(_: &[u8]) -> Option<String> {
+    None
+}
+
 #[cfg(windows)]
 fn shell_command(line: &str) -> Command {
     let mut command = Command::new("cmd");
@@ -684,7 +707,7 @@ async fn drained(reading: Option<(Kept, JoinHandle<()>)>) -> String {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .clone();
-    let text = String::from_utf8_lossy(&bytes);
+    let text = console_text(&bytes);
     let mut shown = tail(&text);
     if cut && !shown.starts_with("(only the last part)") {
         shown = format!("(only the last part)\n{shown}");

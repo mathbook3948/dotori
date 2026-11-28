@@ -115,6 +115,9 @@ pub enum ToWindow {
     Decided { id: u64, ok: bool },
     /// What dotori asked about no longer waits, so the owner's answer came too late.
     Lapsed { id: u64 },
+    /// What came of the call `id` once the owner decided, as the main session hears it on the
+    /// decision channel, so the card can show it.
+    Ran { id: u64, text: String },
     /// Which of the owner's PCs holds the browser now. Sent only while PCs are linked, and never
     /// kept in the conversation.
     BrowserAt { pc: String, here: bool },
@@ -238,6 +241,11 @@ impl AppChannel {
     /// Shows every window what the owner decided about the call `id`.
     pub fn decided(&self, id: u64, ok: bool) {
         self.hub.publish(&ToWindow::Decided { id, ok });
+    }
+
+    /// Shows every window what came of the call `id`, in the words the main session hears.
+    pub fn ran(&self, id: u64, text: String) {
+        self.hub.publish(&ToWindow::Ran { id, text });
     }
 
     /// Shows every window that the call `id` no longer waits for the owner.

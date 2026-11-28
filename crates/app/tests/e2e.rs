@@ -196,10 +196,13 @@ fn routines_named(home: &Path, name: &str) -> i64 {
 async fn the_owner_talks_to_dotori_and_decides_on_a_command() {
     let command = "echo e2e";
     let tools = std::sync::Arc::default();
+    let results = std::sync::Arc::<std::sync::Mutex<Vec<String>>>::default();
     let model = model::start(Script {
         command: command.to_owned(),
+        purpose: String::from("확인 문구를 출력해요"),
         think: Duration::from_millis(200),
         tools: std::sync::Arc::clone(&tools),
+        results: std::sync::Arc::clone(&results),
     })
     .await;
     let home = home("decide");
@@ -264,14 +267,21 @@ async fn the_owner_talks_to_dotori_and_decides_on_a_command() {
     let declined = window.asked_to_run(command).await;
     window.decide(declined, false).await;
     window.reply(model::SKIPPED).await;
+    let after: Vec<String> = results.lock().expect("results").clone();
+    assert!(
+        !after.iter().any(|tool| tool == "run_shell"),
+        "a call that only asked the owner waits for the decision without the model: {after:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_model_changed_in_the_settings_answers_the_next_message_without_a_restart() {
     let script = |tools: &std::sync::Arc<std::sync::Mutex<Vec<String>>>| Script {
         command: String::from("echo e2e"),
+        purpose: String::from("확인 문구를 출력해요"),
         think: Duration::from_millis(50),
         tools: std::sync::Arc::clone(tools),
+        results: std::sync::Arc::default(),
     };
     let (first_heard, second_heard) = (std::sync::Arc::default(), std::sync::Arc::default());
     let first = model::start(script(&first_heard)).await;
@@ -322,8 +332,10 @@ async fn a_model_changed_in_the_settings_answers_the_next_message_without_a_rest
 async fn a_long_conversation_is_summarized_and_the_next_request_carries_the_summary() {
     let model = model::start(Script {
         command: String::from("echo e2e"),
+        purpose: String::new(),
         think: Duration::from_millis(50),
         tools: std::sync::Arc::default(),
+        results: std::sync::Arc::default(),
     })
     .await;
     let home = home("summary");

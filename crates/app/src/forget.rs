@@ -154,6 +154,10 @@ impl Toolbox for Previewed {
         self.inner.specs()
     }
 
+    fn waits_for_owner(&self, call: &ToolCall) -> bool {
+        self.inner.waits_for_owner(call)
+    }
+
     fn run(&self, mut call: ToolCall) -> BoxFuture<'_, Result<String, ToolError>> {
         if call.name != FORGET {
             return self.inner.run(call);

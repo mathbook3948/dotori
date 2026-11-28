@@ -23,6 +23,47 @@ pub fn set_window_icon(
     }
 }
 
+/// Reads `bytes` that a console program wrote, such as `cmd`, in the code page Windows gives
+/// console programs, when they are not UTF-8. Elsewhere than on Windows, or when Windows cannot
+/// read them, it gives nothing.
+pub fn console_text(bytes: &[u8]) -> Option<String> {
+    #[cfg(target_os = "windows")]
+    {
+        windows_text::read(bytes)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = bytes;
+        None
+    }
+}
+
+#[cfg(target_os = "windows")]
+mod windows_text {
+    use windows::Win32::Globalization::CP_OEMCP;
+    use windows::Win32::Globalization::MULTI_BYTE_TO_WIDE_CHAR_FLAGS;
+    use windows::Win32::Globalization::MultiByteToWideChar;
+
+    pub(super) fn read(bytes: &[u8]) -> Option<String> {
+        if bytes.is_empty() || i32::try_from(bytes.len()).is_err() {
+            return None;
+        }
+        let none = MULTI_BYTE_TO_WIDE_CHAR_FLAGS(0);
+        // ast-grep-ignore
+        // SAFETY: `bytes` fits an i32, checked above, and with no buffer the call only counts.
+        let wide = unsafe { MultiByteToWideChar(CP_OEMCP, none, bytes, None) };
+        let wide = usize::try_from(wide).ok().filter(|wide| *wide > 0)?;
+        let mut text = vec![0u16; wide];
+        // ast-grep-ignore
+        // SAFETY: `text` holds as many units as the call counted for the same `bytes`.
+        let written = unsafe { MultiByteToWideChar(CP_OEMCP, none, bytes, Some(&mut text)) };
+        let written = usize::try_from(written)
+            .ok()
+            .filter(|written| *written > 0)?;
+        Some(String::from_utf16_lossy(&text[..written.min(wide)]))
+    }
+}
+
 #[cfg(target_os = "windows")]
 mod windows_icon {
     use windows::Win32::Foundation::HWND;

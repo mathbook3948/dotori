@@ -14,8 +14,12 @@ use tokio::net::TcpStream;
 #[derive(Clone, Debug)]
 pub struct Script {
     pub command: String,
+    /// What the command does, as the card shows it.
+    pub purpose: String,
     pub think: std::time::Duration,
     pub tools: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    /// Each tool whose result the model was called with, in order.
+    pub results: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 /// Set to a file path to keep each last message and answer there, one JSON object per line.
@@ -144,6 +148,9 @@ pub fn answer(asked: &Value, script: &Script) -> Value {
                 .rev()
                 .find_map(|message| message["tool_calls"].as_array()?.last().cloned())
                 .and_then(|call| call["function"]["name"].as_str().map(str::to_owned));
+            if let (Some(called), Ok(mut results)) = (&called, script.results.lock()) {
+                results.push(called.clone());
+            }
             match called.as_deref() {
                 Some("add_routine") => to_owner(REMINDED),
                 Some("search_memory") => to_owner(LISTED),
@@ -184,7 +191,10 @@ pub fn answer(asked: &Value, script: &Script) -> Value {
                 return call("search_memory", json!({ "query": "이번 주 일정" }));
             }
             if said.text.contains("실행") || said.text.contains("옮겨") {
-                return call("run_shell", json!({ "command": script.command }));
+                return call(
+                    "run_shell",
+                    json!({ "command": script.command, "purpose": script.purpose }),
+                );
             }
             call("say", json!({ "thread": said.thread, "text": OTHER }))
         }

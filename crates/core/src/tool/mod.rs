@@ -98,6 +98,15 @@ pub trait Toolbox: Send + Sync + 'static {
 
     /// Core never cancels a running tool, except when it exceeds the configured timeout.
     fn run(&self, call: ToolCall) -> BoxFuture<'_, Result<String, ToolError>>;
+
+    /// Whether `call` only asks the owner, so that a result that is not an error says just that
+    /// the owner was asked. When every call of a reply only asked, the model is not called again
+    /// until something arrives, such as what the owner decided. A toolbox that wraps another
+    /// passes this on.
+    fn waits_for_owner(&self, call: &ToolCall) -> bool {
+        let _ = call;
+        false
+    }
 }
 
 #[cfg(test)]

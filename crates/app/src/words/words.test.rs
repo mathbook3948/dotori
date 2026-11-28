@@ -25,8 +25,6 @@ fn every_function(words: &Words) -> Vec<(&'static str, String)> {
         &words.settings,
     );
     let mut said = vec![
-        ("chat.run_hint", (chat.run_hint)("Dotori")),
-        ("chat.write_hint", (chat.write_hint)("Dotori")),
         ("chat.asking", (chat.asking)("Dotori")),
         ("chat.in_browser_hint", (chat.in_browser_hint)()),
         ("chat.closed", (chat.closed)()),
@@ -37,8 +35,6 @@ fn every_function(words: &Words) -> Vec<(&'static str, String)> {
         ("chat.rest_on_pc", (chat.rest_on_pc)()),
         ("chat.log_in_to", (chat.log_in_to)("example.com")),
         ("chat.say_to", (chat.say_to)()),
-        ("chat.command_exited", (chat.command_exited)(3)),
-        ("chat.command_too_slow", (chat.command_too_slow)("110")),
         ("chat.cut_note", (chat.cut_note)(700)),
         ("chat.thread", (chat.thread)("general")),
         (

@@ -201,7 +201,7 @@ async fn a_call_asked_in_a_chat_room_goes_there_as_the_window_shows_it() {
         from("slack"),
         7,
         "run_shell",
-        &json!({ "command": "ls -la" }).to_string(),
+        &json!({ "command": "ls -la", "purpose": "폴더의 파일을 모두 보여 줘요" }).to_string(),
         true,
     );
 
@@ -211,17 +211,19 @@ async fn a_call_asked_in_a_chat_room_goes_there_as_the_window_shows_it() {
     assert_eq!(
         card.rows,
         [
-            (String::from("도구"), String::from("명령 실행")),
+            (
+                String::from("하는 일"),
+                String::from("폴더의 파일을 모두 보여 줘요")
+            ),
             (String::from("명령"), String::from("ls -la")),
         ]
     );
     assert!(!card.cut);
     assert_eq!(
         card.notes,
-        [
-            String::from("샌드박스 안에서 실행해요. Dotori의 금고와 기록은 보이지 않아요."),
-            String::from("허락하면 Dotori가 이 명령을 바로 실행해요"),
-        ]
+        [String::from(
+            "샌드박스 안에서 실행해요. Dotori의 금고와 기록은 보이지 않아요."
+        )]
     );
     assert_eq!(labels(&card), ["거절", "허락"]);
     assert!(card.buttons[1].primary);
@@ -247,10 +249,9 @@ async fn a_card_names_the_assistant_as_the_settings_call_it_now() {
     assert_eq!(card.title, "별이 이 일을 해도 될지 물어요");
     assert_eq!(
         card.notes,
-        [
-            String::from("샌드박스 안에서 실행해요. 별의 금고와 기록은 보이지 않아요."),
-            String::from("허락하면 별이 이 명령을 바로 실행해요"),
-        ]
+        [String::from(
+            "샌드박스 안에서 실행해요. 별의 금고와 기록은 보이지 않아요."
+        )]
     );
 }
 
@@ -271,18 +272,9 @@ async fn a_card_in_a_chat_room_speaks_english_when_dotori_does() {
     assert_eq!(card.title, "Can I do this?");
     assert_eq!(
         card.rows,
-        [
-            (String::from("Tool"), String::from("Run command")),
-            (String::from("Command"), String::from("ls -la")),
-        ]
+        [(String::from("Command"), String::from("ls -la")),]
     );
-    assert_eq!(
-        card.notes,
-        [
-            (english.chat.sandboxed)(),
-            String::from("Allow and I'll run this command right away."),
-        ]
-    );
+    assert_eq!(card.notes, [(english.chat.sandboxed)()]);
     assert_eq!(labels(&card), ["Decline", "Allow"]);
     desk.cards.decided(7, Some(true));
     assert_eq!(desk.settled().await.2, "김민지 allowed it");
@@ -717,7 +709,7 @@ async fn a_shared_room_gets_only_a_pointer_and_the_card_goes_to_the_owners_direc
     let (direct, card) = desk.posted().await;
     let (room, pointer) = desk.posted().await;
     assert_eq!(direct, Place::new("@owner"));
-    assert_eq!(card.rows[1].1, "cat ~/secret");
+    assert_eq!(card.rows[0].1, "cat ~/secret");
     assert_eq!(room, Place::new("C1/10.5"));
     assert_eq!(pointer.title, "확인할 일을 DM으로 보냈어요.");
     assert!(pointer.rows.is_empty() && pointer.notes.is_empty() && pointer.buttons.is_empty());

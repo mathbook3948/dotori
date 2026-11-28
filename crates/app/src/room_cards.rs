@@ -164,11 +164,14 @@ impl RoomCards {
             return;
         };
         let (fields, cut) = asked::asked_fields(tool, input, false);
-        let named = match asked::own_tool(tool) {
-            Some(own) => own.to_owned(),
-            None => tool.replacen("__", " ", 1),
-        };
-        let rows = std::iter::once((String::from(words().chat.tool_row), named))
+        let named = (!asked::is_own(tool)).then(|| {
+            (
+                String::from(words().chat.tool_row),
+                tool.replacen("__", " ", 1),
+            )
+        });
+        let rows = named
+            .into_iter()
             .chain(
                 fields
                     .into_iter()
@@ -178,10 +181,7 @@ impl RoomCards {
         let notes = sandboxed
             .then(asked::sandboxed)
             .into_iter()
-            .chain(std::iter::once(asked::hint(
-                tool,
-                &called(Particle::Subject),
-            )))
+            .chain(asked::warning(tool).map(String::from))
             .collect();
         let choices = [(words().chat.decline, false), (words().chat.allow, true)]
             .into_iter()

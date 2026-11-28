@@ -1,5 +1,7 @@
 //! What a card that waits for the owner says, the same in the chat window and in a chat room.
 
+use dotori_connectors::tool::basic::PURPOSE;
+
 use crate::forget::CARRIERS_SHOWN;
 use crate::forget::FORGET;
 use crate::forget::NOTES_SHOWN;
@@ -8,17 +10,11 @@ use crate::words::words;
 
 pub(crate) const SHOWN_VALUE: usize = 600;
 const HIDDEN_FIELDS: [&str; 3] = ["records", "carriers", "notes"];
+const SHELL_HIDDEN: [&str; 1] = ["seconds"];
 
-/// What the owner calls one of dotori's own tools that waits for their OK.
-pub(crate) fn own_tool(tool: &str) -> Option<&'static str> {
-    let chat = &words().chat;
-    match tool {
-        "run_shell" => Some(chat.run_shell),
-        "write_file" => Some(chat.write_file),
-        "edit_file" => Some(chat.edit_file),
-        FORGET => Some(chat.erase_memory),
-        _ => None,
-    }
+/// Whether `tool` is one of dotori's own, whose card says what it does without naming the tool.
+pub(crate) fn is_own(tool: &str) -> bool {
+    matches!(tool, "run_shell" | "write_file" | "edit_file" | FORGET)
 }
 
 /// The label a field of a waiting call shows under, in the owner's words where dotori knows the
@@ -26,9 +22,9 @@ pub(crate) fn own_tool(tool: &str) -> Option<&'static str> {
 pub(crate) fn field_label(key: &str) -> &str {
     let chat = &words().chat;
     match key {
+        PURPOSE => chat.purpose_field,
         "command" => chat.command_field,
         "folder" => chat.folder_field,
-        "seconds" => chat.seconds_field,
         "path" => chat.path_field,
         "content" => chat.content_field,
         "old" => chat.old_field,
@@ -42,9 +38,14 @@ pub(crate) fn field_label(key: &str) -> &str {
 }
 
 /// The fields of a waiting call as the card shows them, and whether any was shortened. An erase
-/// shows what the notes and records say, not their numbers.
+/// shows what the notes and records say, not their numbers, and a command leaves out how long it
+/// may run.
 pub(crate) fn asked_fields(tool: &str, input: &str, whole: bool) -> (Vec<(String, String)>, bool) {
-    let hidden: &[&str] = if tool == FORGET { &HIDDEN_FIELDS } else { &[] };
+    let hidden: &[&str] = match tool {
+        FORGET => &HIDDEN_FIELDS,
+        "run_shell" => &SHELL_HIDDEN,
+        _ => &[],
+    };
     let fields: Vec<(String, String)> = match serde_json::from_str::<serde_json::Value>(input) {
         Ok(serde_json::Value::Object(fields)) if !fields.is_empty() => fields
             .into_iter()
@@ -60,8 +61,10 @@ pub(crate) fn asked_fields(tool: &str, input: &str, whole: bool) -> (Vec<(String
         _ => vec![(String::from("input"), input.to_owned())],
     };
     let mut cut = false;
-    let fields = fields
+    let (purpose, rest): (Vec<_>, Vec<_>) = fields.into_iter().partition(|(key, _)| key == PURPOSE);
+    let fields = purpose
         .into_iter()
+        .chain(rest)
         .map(|(key, value)| {
             let (shown, shortened) = shown_value(&value, whole);
             cut |= shortened;
@@ -94,15 +97,9 @@ pub(crate) fn title(subject: &str) -> String {
     (words().chat.asking)(subject)
 }
 
-/// What allowing the call `tool` does, said beside the buttons.
-pub(crate) fn hint(tool: &str, subject: &str) -> String {
-    let chat = &words().chat;
-    match tool {
-        FORGET => String::from(chat.erase_hint),
-        "run_shell" => (chat.run_hint)(subject),
-        "write_file" | "edit_file" => (chat.write_hint)(subject),
-        _ => String::from(chat.allow_hint),
-    }
+/// A warning said beside the buttons when allowing `tool` cannot be undone.
+pub(crate) fn warning(tool: &str) -> Option<&'static str> {
+    (tool == FORGET).then_some(words().chat.erase_hint)
 }
 
 /// What a card says once its call no longer waits.

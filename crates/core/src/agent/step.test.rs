@@ -124,7 +124,20 @@ impl Harness {
 
     fn tool_returns(&mut self, result: Result<String, ToolError>) {
         let run = self.running_tool();
-        self.feed(Event::ToolDone { run, result });
+        self.feed(Event::ToolDone {
+            run,
+            result,
+            asked_owner: false,
+        });
+    }
+
+    fn tool_asks_the_owner(&mut self) {
+        let run = self.running_tool();
+        self.feed(Event::ToolDone {
+            run,
+            result: Ok(String::from("the owner was asked")),
+            asked_owner: true,
+        });
     }
 
     fn shut_down(&mut self) {
@@ -161,7 +174,7 @@ impl Harness {
 
     fn running_tool(&self) -> ToolRunId {
         match &self.state.phase {
-            Phase::UsingTools { waiting } | Phase::Stopping { waiting } => {
+            Phase::UsingTools { waiting, .. } | Phase::Stopping { waiting } => {
                 *waiting.keys().next().expect("a running tool")
             }
             _ => panic!("no tool running"),
@@ -459,6 +472,54 @@ fn owner_message_waits_for_running_tools() {
         heard(conversation),
         vec!["read the notes", "also the todo list"]
     );
+}
+
+#[test]
+fn a_call_that_only_asked_the_owner_waits_for_the_answer_without_calling_the_model() {
+    let mut h = Harness::new();
+    h.owner_says("what time is it");
+    h.model_answers(vec![use_tool("t1")]);
+
+    h.tool_asks_the_owner();
+
+    assert!(h.model_calls().is_empty(), "the card says it all");
+    assert!(matches!(h.state.phase, Phase::Idle));
+
+    h.owner_says("allowed");
+
+    let conversation = h.the_model_call();
+    assert_eq!(tool_results(conversation), vec!["t1"]);
+    assert_eq!(heard(conversation), vec!["what time is it", "allowed"]);
+}
+
+#[test]
+fn a_message_that_came_while_the_owner_was_asked_is_answered() {
+    let mut h = Harness::new();
+    h.owner_says("what time is it");
+    h.model_answers(vec![use_tool("t1")]);
+
+    h.owner_says("and the date");
+    h.tool_asks_the_owner();
+
+    assert_eq!(
+        heard(h.the_model_call()),
+        vec!["what time is it", "and the date"]
+    );
+}
+
+#[test]
+fn a_reply_with_a_result_to_act_on_calls_the_model_even_if_another_call_asked() {
+    let mut h = Harness::new();
+    h.owner_says("read the notes and run date");
+    h.model_answers(vec![use_tool("t1"), use_tool("t2")]);
+
+    h.tool_asks_the_owner();
+    h.tool_returns(Ok(String::from("notes")));
+
+    let conversation = h.the_model_call();
+    let mut returned = tool_results(conversation);
+    returned.sort_unstable();
+    assert_eq!(returned, vec!["t1", "t2"]);
 }
 
 #[test]
